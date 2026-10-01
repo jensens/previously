@@ -142,7 +142,7 @@ er vom Eingang, nicht vom Benutzer.
 | lesend | schreibend |
 |---|---|
 | `protokoll(organisation\|projekt\|vorgang, stichtag?)` | `einwerfen(inhalt, organisation?, projekt?, vorgang?)` |
-| `offene_verpflichtungen(projekt?, rolle_eigene?)` | `feststellen(…)` — Korrektur, `verantwortung: jens` |
+| `offene_verpflichtungen(projekt?, rolle_eigene?)` | `feststellen(…)` — Korrektur, `verantwortung: {jens, direkt}` |
 | `entscheidungen(projekt\|organisation, zeitraum?)` | `queue()` / `abnehmen(id, einmal\|klasse)` |
 | `suche(frage, projekt?, vor?)` — der RAG-Pfad (§18) | |
 | `event(id)` / `einheiten(event_id)` — Zitaten folgen | |
@@ -213,7 +213,7 @@ nachzuziehen.
 `belegart` steht orthogonal zu `urheber` und `verantwortung` (§5.2): die
 beiden sagen, wer formuliert hat und wer einsteht; `belegart` sagt, **wie gut
 der Beleg darunter ist**. Eine von Jens eingeworfene Notiz hat
-`verantwortung: jens` und trägt volles Gewicht — und gleichzeitig
+`verantwortung: {jens, direkt}` und trägt volles Gewicht — und gleichzeitig
 `belegart: erinnerung`, weil die Grundlage ein Gedächtnis ist. Seine Zuordnung
 bleibt Grundwahrheit; nur die inhaltliche Behauptung trägt den Vorbehalt.
 
@@ -247,7 +247,7 @@ art                 zuordnung | verpflichtung | entscheidung | …
 ziel                event-id
 einheiten           [3, 4, 7, 12]      verteilt, nicht zusammenhängend
 urheber             mensch:<person> | modell:<id+version> | regel:<id> | unbekannt
-verantwortung       <person> | offen
+verantwortung       { person, art: direkt | transitiv, grundlage? } | offen
 sicherheit
 inhalt              artabhängig
 quellen             Event-IDs + Einheiten, auf die sie sich stützt
@@ -258,19 +258,49 @@ quellen             Event-IDs + Einheiten, auf die sie sich stützt
 
 | Fall | `urheber` | `verantwortung` |
 |---|---|---|
-| Jens tippt eine Korrektur | `mensch:jens` | `jens` |
+| Jens tippt eine Korrektur | `mensch:jens` | `{jens, direkt}` |
 | Die Pipeline extrahiert eine Verpflichtung | `modell:haiku-4-5` | `offen` — Vorschlag bis zur Abnahme |
-| Ein Agent legt auf Jens' Anweisung ein Issue an | `modell:claude-code` | `jens` |
+| Ein Agent legt auf Jens' Anweisung ein Issue an | `modell:claude-code` | `{jens, transitiv}` |
 | Der Auftraggeber schreibt eine Mail | `mensch:<ansprechpartner>` | **nicht Jens** |
+
+### Verantwortung ist direkt oder transitiv
+
+Ein `Assisted-By`-Marker heißt nicht "unverantwortet". Arbeitet ein Agent unter
+einem Spec oder Plan, den Jens abgenommen hat, dann ist das Ergebnis **transitiv
+abgesegnet** — er hat den Vorgang autorisiert, auch wenn er diese einzelne
+Zeile nicht gelesen hat.
+
+| `art` | Bedeutung |
+|---|---|
+| `direkt` | selbst getippt, oder dieser Einzelfall abgenommen |
+| `transitiv` | unter einem abgenommenen Spec, Plan oder einer Freigabeklasse entstanden; `grundlage` zeigt darauf |
+| — (`offen`) | niemand hat etwas autorisiert |
+
+**Transitive Verantwortung ist kein Notbehelf, sondern das, was Delegation erst
+tragfähig macht.** Müsste jede Agentenausgabe einzeln gelesen werden, wäre
+Delegieren sinnlos. Dieselbe Idee trägt schon die Handlungs-Befugnis
+`freigabe: klasse:<id>` (§5.4) — hier ist sie für Feststellungen formuliert, und
+die Symmetrie ist ein Hinweis darauf, dass es die richtige Abstraktion ist.
+
+Wo die `grundlage` nicht ermittelbar ist — ein Marker sagt "ein Modell war
+beteiligt", aber nicht unter welchem Plan — ist `transitiv` mit unbekannter
+Grundlage ein zulässiger Zustand. Jens hat *etwas* autorisiert; was, wissen wir
+nicht.
 
 ### Vorrangordnung läuft über `verantwortung`, nicht über `urheber`
 
-Eine verantwortete Feststellung schlägt eine unverantwortete — unabhängig
-davon, wer sie formuliert hat. Unter den unverantworteten gilt **Regel vor
-Modell**, weil Regeln deterministisch und nachprüfbar sind.
+**`direkt` schlägt `transitiv` schlägt `offen`**; unter `offen` gilt **Regel vor
+Modell**, weil Regeln deterministisch und nachprüfbar sind. Unabhängig davon,
+wer formuliert hat.
+
+Der Grund für die Abstufung: was Jens selbst gelesen hat, wägt schwerer als
+was unter einem von ihm abgenommenen Plan entstand, ohne dass er es gesehen
+hat. Beides trägt, aber nicht gleich schwer — und im Streitfall sind "das habe
+ich selbst geprüft" und "das entstand unter einem abgenommenen Verfahren" zwei
+verschiedene, beide ehrliche Aussagen. Die Unterscheidung ist abfragbar.
 
 Eine Korrektur durch Jens ist damit kein Sonderfall: sie ist eine Feststellung
-mit `verantwortung: jens`. Das gilt gleichermaßen für eine Korrektur am
+mit `verantwortung: {jens, direkt}`. Das gilt gleichermaßen für eine Korrektur am
 Protokoll und für eine Änderung, die direkt in einem Fremdsystem gemacht wurde.
 
 **Warum die Trennung nötig ist — der Fall, der sonst still falsch läuft:** Eine
@@ -289,8 +319,11 @@ gezogene Feststellung hat `urheber: modell` (der Extraktor hat sie gelesen) und
 
 Ein Fremdsystem verzeichnet als Autor den Kontoinhaber — ein Agent handelt mit
 Jens' Token und ist von Handänderung nicht zu unterscheiden. Das einzige
-maschinenlesbare Signal sind **Marker im Text**: `Co-Authored-By`-Zeilen in
-Commits, Trailer in Beschreibungen, Labels. Der Konnektor wertet sie aus.
+maschinenlesbare Signal sind **Marker im Text**: `Co-Authored-By`- und
+`Assisted-By`-Zeilen in Commits, Trailer in Beschreibungen, Labels. Der
+Konnektor wertet sie aus. (`Assisted-By` wird in den Projekten schon gesetzt,
+aber nicht flächendeckend — deshalb bleibt `unbekannt` ein eigener Wert und
+keine Annahme.)
 
 **Wo kein Marker ist: `urheber: unbekannt`, nicht `mensch` angenommen.**
 Unbekannt wird aus der Grundwahrheitsmenge ausgeschlossen (§8.3). Lieber eine
@@ -333,7 +366,8 @@ das System getan, und mit welcher Befugnis?".
 Daraus folgt eine beabsichtigte Asymmetrie: **Was Jens selbst tut, ist keine
 Handlung, sondern Eingang.** Legt er ein Issue direkt in GitLab an, sieht der
 Konnektor die Änderung, sie wird Wahrnehmung, daraus eine Feststellung mit
-`verantwortung: jens`. Ein Befugnisnachweis ist dafür sinnlos — er ist der
+`verantwortung: {jens, direkt}`. Ein Befugnisnachweis ist dafür sinnlos — er
+ist der
 Auftraggeber, nicht der Beauftragte.
 
 Die drei Befugnisse:
@@ -545,6 +579,50 @@ Vorgangsgrenze abhängt, wäre falsch.
 
 **Also: zentral als Zugang, nie autoritativ für Fakten.**
 
+#### Mergen und Splitten
+
+Durch neue Erkenntnis muss ein Vorgang aufgeteilt werden, oder zwei stellen
+sich als dasselbe heraus. Beides ist vorgesehen — und beides ist **nicht
+symmetrisch**.
+
+**Mergen: umleiten, nie löschen.** Eine Feststellung
+`vorgang_zusammenlegung { von: B, nach: A, begründung, quellen }`. B behält
+seine Kennung und bekommt den Zustand `zusammengelegt_in: A`; Projektionen
+folgen der Umleitung.
+
+Das ist praktisch wichtig, nicht nur formal: **alte Verweise auf B funktionieren
+weiter.** B's Kennung steht vielleicht in einem Work Item, in einer Mail, in
+einem Protokoll beim Auftraggeber. Und Verpflichtungen und Entscheidungen, die
+auf B zeigten, werden **nicht umgeschrieben** — die Auflösung folgt dem Zeiger.
+Keine Historienänderung.
+
+**Splitten braucht einen Standard-Nachfolger.** Die Einheiten brauchen keinen
+neuen Mechanismus: das sind Zuordnungs-Feststellungen mit anderem `vorgang`,
+genau wie jede menschliche Korrektur. Das Problem ist, **was an A hing**: eine
+Verpflichtung, die auf A zeigte, gehört zu A1 oder A2, und das kann das System
+nicht wissen. Offenlassen erzeugt verwaiste Verpflichtungen; pro Abhängigkeit
+fragen erzeugt einen Fragebogen, den niemand beendet.
+
+Daher `vorgang_teilung { von: A, nach: [A1, A2], standard_nachfolger: A1 }` —
+alles nicht ausdrücklich Zugewiesene landet beim Standard-Nachfolger und wird
+danach einzeln korrigiert. Kein Spezialwerkzeug, nur eine Vorgabe, damit nichts
+in der Luft hängt.
+
+**Beides bleibt dauerhaft freigabepflichtig — benannte Ausnahme von der
+Risiko-Ordnung in §10.3.** Ein Merge ist strukturiert und intern, wäre nach jener
+Tabelle also früh automatisierbar. Hier ist das falsch: der Vorgang ist die
+primäre Zugangsebene, und wenn das Modell im Hintergrund umgruppiert, bricht die
+mentale Landkarte. Der Schaden ist nicht Datenverlust — beides ist umkehrbar —
+sondern **Orientierungsverlust**, und der ist bei einem Werkzeug, das Übersicht
+verschaffen soll, der schwerere. Modell darf vorschlagen, nur ein Mensch
+ausführen.
+
+**Stichtagsabfragen funktionieren weiter.** "Vorgangsprotokoll von A, Stand
+März", obwohl A und B im September zusammengelegt wurden: über `erfasst_am`
+erscheint A ungemergt, so wie es im März bekannt war; über `ereignis_zeit` der
+zusammengelegte Inhalt bis März. Beide Antworten sind sinnvoll, und die zwei
+Zeitstempel liefern beide.
+
 ---
 
 ## 7. Kern, Schicht 3: Organisationsprofil
@@ -654,7 +732,7 @@ Evaluierungsprojekt.
 
 **Der Filter läuft auf `urheber`, nicht auf `verantwortung`** — und das ist
 nicht gleichgültig. Legt ein Agent auf Jens' Anweisung etwas an, ist das
-`verantwortung: jens`, aber `urheber: modell`. Würde die Messung auf
+`verantwortung: {jens, transitiv}`, aber `urheber: modell`. Würde die Messung auf
 `verantwortung` filtern, verglich man das Modell mit sich selbst und bekäme
 eine geschmeichelte Trefferquote.
 
@@ -694,7 +772,8 @@ nachprüfbar, klickbar.
 
 **Das Protokoll ist keine gepflegte Datei.** Es wird nie nachgeführt und ist
 deshalb nie veraltet. Eine Korrektur daran ist eine Feststellung mit
-`verantwortung: jens`: sie überschreibt die Quelle nicht, tritt daneben und
+`verantwortung: {jens, direkt}`: sie überschreibt die Quelle nicht, tritt
+daneben und
 gewinnt in der Projektion.
 
 ### 9.2 Audit-Sicht
@@ -798,6 +877,24 @@ welchem Template. Pro Klasse ein Zustand: `fragen` (Vorgabe für alles Neue),
 Abnehmen stehen "einmal" und "diese Klasse ab jetzt" nebeneinander. Der
 Regelsatz lagert sich aus echten Entscheidungen ab; niemand setzt sich hin,
 um Berechtigungen zu konfigurieren.
+
+### 10.4 Ablehnung wird festgehalten, nicht nur Annahme
+
+Lehnt Jens einen Vorschlag ab, ist **das Nein selbst eine Feststellung** mit
+`verantwortung: {jens, direkt}` — etwa *"diese zwei Vorgänge sind absichtlich
+getrennt"* oder *"diese Aussage ist keine Verpflichtung"*. Der nächste Durchlauf
+sieht sie und schlägt dasselbe nicht erneut vor.
+
+**Ohne das nagt das System.** Die Vorrangordnung (§5.2) verhindert, dass ein
+Modell gegen eine menschliche Entscheidung *gewinnt* — aber nicht, dass es
+dieselbe Frage bei jedem Durchlauf neu stellt. Eine Queue, in der immer die
+gleichen abgelehnten Vorschläge liegen, schaut sich nach drei Wochen niemand
+mehr an, und dann ist die gesamte Freigabe-Mechanik wertlos — einschließlich
+der Dauerfreigaben, die aus ihr entstehen sollen.
+
+Eine Ablehnung gilt für die **konkrete Aussage über dieselben Einheiten**, nicht
+pauschal für eine Art von Vorschlag; ändert sich die Eingangsmenge, darf erneut
+vorgeschlagen werden.
 
 Risiko-Ordnung, die bestimmt, was wann automatisierbar wird:
 
@@ -1001,6 +1098,12 @@ Testbare Kriterien, keine Absichtserklärungen.
    nicht so dicht gemacht werden, dass sie das Lernen mit abwürgt.
 10. **Schwingungserkennung.** Eine künstlich konstruierte Zirkularität wird
    vom Wächter angehalten und landet in der Queue, statt unbemerkt zu laufen.
+11. **Umleitung nach Merge.** Ein Verweis auf einen zusammengelegten Vorgang
+   löst weiter auf, und keine Feststellung musste dafür umgeschrieben werden.
+12. **Kein Nagen.** Ein abgelehnter Vorschlag erscheint beim nächsten Durchlauf
+   nicht wieder, solange die Eingangsmenge unverändert ist.
+13. **Verantwortungsgrad.** "Was hat Jens selbst geprüft?" und "was entstand
+   unter einem abgenommenen Plan?" sind getrennt abfragbar.
 
 ---
 
@@ -1039,6 +1142,10 @@ Daten messen, danach entscheiden.
 | Verworfen | Grund |
 |---|---|
 | "Aussage" / "Zusage" als eigene Entität | Überlappt mit Verpflichtung und Entscheidung, wird zur Resterampe. Kommt, wenn im Betrieb etwas fehlt, das nirgends passt. |
+| Löschen beim Mergen von Vorgängen | Alte Verweise auf die Kennung stehen in Work Items, Mails und Protokollen beim Auftraggeber. Statt Löschen eine Umleitung. |
+| Pro-Abhängigkeit-Fragebogen beim Splitten | Niemand beendet ihn. Stattdessen ein Standard-Nachfolger und Einzelkorrektur danach. |
+| Nur Annahmen festhalten | Ohne festgehaltene Ablehnung nagt das System bei jedem Durchlauf, und die Queue wird nach drei Wochen ignoriert. |
+| Verantwortung als Ja/Nein | Agentenarbeit unter einem abgenommenen Spec ist transitiv abgesegnet, nicht unverantwortet. Ohne die Abstufung wäre entweder Delegation unmöglich oder "selbst geprüft" nicht mehr von "unter Verfahren entstanden" unterscheidbar. |
 | Einzelnes `herkunft`-Feld | Vermischte "wer hat formuliert" mit "wer steht dafür ein". Hätte die Mail eines Auftraggebers mit Jens' eigener Korrektur gleichgestellt und die Messung der Modellgüte still korrumpiert. Ersetzt durch `urheber` + `verantwortung`. |
 | Entität "Kunde" | "Kunde" ist eine Rolle in einem Projekt, keine Art von Organisation. Dieselbe Organisation ist mal Auftraggeber, mal ARGE-Partner, mal Allianzpartner. Ersetzt durch `Organisation` + `Beteiligung`. |
 | Binäre Richtung an der Verpflichtung | "wir / die anderen" kann den Fall nicht ausdrücken, dass zwei Dritte sich etwas schulden und uns das blockiert. Ersetzt durch Schuldner und Gläubiger als Akteure. |
