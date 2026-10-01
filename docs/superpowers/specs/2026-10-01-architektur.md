@@ -733,6 +733,61 @@ Die erste Migration richtet die Erweiterungen ein (`CREATE EXTENSION`) —
 | Projektionen schreiben | `COPY` oder `executemany`, nicht zeilenweise |
 | Vektorsuche mit Vorfilter | `pgvector.sqlalchemy` für den `vector`-Typ, Indexsteuerung in rohem SQL |
 
+### 10.2 Modularer Monolith mit mehreren Einsprungpunkten
+
+**Ein Codestand, ein Abhängigkeitssatz, eine Datenbank, eine Version — und
+mehrere daraus gestartete Prozesse.** Keine Microservices.
+
+Die Frage "ein Prozess oder viele" stellt sich nicht: §7.1 beschreibt schon
+sechs. Die Frage ist, ob sie **unabhängig ausgelieferte Dienste mit
+Netzschnittstellen** sind. Sie sind es nicht.
+
+#### Warum nicht
+
+- **Microservices würden Grenzen kaufen, die schon bestehen.** §2 legt die
+  Modulgrenzen mit drei **statisch prüfbaren** Regeln fest. Das ist genau der
+  Nutzen, für den man sonst Netzgrenzen zieht — ohne Serialisierung,
+  Versionierung und verteiltes Debugging.
+- **Sie müssten sich dieselbe Datenbank teilen**, und Dienste mit geteilter
+  Datenbank sind ein verteilter Monolith mit Zusatzaufwand. Teilen lässt sich
+  die Datenbank hier auch nicht: der Entwurf ruht auf **einem** append-only Log,
+  aus dem alles projiziert wird. **Das Log ist der Integrationspunkt.**
+- **Die Architektur ist schon ereignisgetrieben.** Module rufen sich nicht auf —
+  sie fügen an und projizieren. Das ist dieselbe lose Kopplung, die
+  Microservices anstreben, prozessintern erreicht. Das Netz würde nichts
+  entkoppeln, was nicht schon entkoppelt ist.
+- **Ein Benutzer.** Kein Bedarf, etwas unabhängig zu skalieren.
+- **Der FOSS-Gedanke schneidet umgekehrt:** etwas, das man mit einem Postgres
+  daneben installiert und startet, wird benutzt. Acht Dienste mit Compose-Datei
+  werden angeschaut.
+
+#### Die Verwechslung, die das Thema meist trägt
+
+> **Gute Schnitte sind die Voraussetzung für Microservices, nicht der Grund
+> dafür.**
+
+Der Grund wären unabhängige Skalierung, unabhängige Auslieferungstakte oder
+Teamgrenzen — bei einem Benutzer und einem Entwickler existiert keiner davon.
+Die Schnitte sind gut, und genau deshalb brauchen sie kein Netz dazwischen.
+
+> **Modulgrenzen trennen Verantwortung. Prozessgrenzen trennen Laufzeitbedarf.**
+
+Zwei Achsen. Sie zu verwechseln ist der Weg zu Microservices, die niemand
+braucht.
+
+#### Zwei vorgemerkte Nähte
+
+Nach der Regel oben — unterschiedlicher **Laufzeitbedarf**, nicht
+unterschiedliche Verantwortung:
+
+| Naht | Grund |
+|---|---|
+| **Voice** (Teil 2) | braucht PipeWire-Zugriff, läuft also dort, wo das Audio ist — nicht wo die Datenbank steht. Dazu Torch, viel RAM, eigener Lebenszyklus. Reine Eingangsrichtung |
+| **Embeddings** | Modell laden, speicherintensiv; wandert bei eigener GPU-Hardware dorthin. Reine Eingangsrichtung |
+
+Beide brauchen **keine Netzschnittstelle zum Rest** — sie brauchen Zugriff auf
+das Log. Das ist ein Datenbankzugang, kein Dienstvertrag.
+
 ## 11. Was bewusst offen bleibt
 
 Nach dem Aufnahmekriterium aus §1 gehört nichts davon hierher.
@@ -745,7 +800,7 @@ Nach dem Aufnahmekriterium aus §1 gehört nichts davon hierher.
 | Interne Abgleichlogik je Konnektor | je Konnektor |
 | Prompt- und Templatetexte | Teilprojekt 5 |
 | Rangfunktion der Triage-Hebelwirkung | Teilprojekt 5, messbar nachjustierbar |
-| Deployment (Container, systemd, k3s) | Betriebsentscheidung, kein Modul hängt daran |
+| Deployment-*Mechanismus* (Container, systemd, k3s) | Betriebsentscheidung, kein Modul hängt daran. Die Architekturfrage ist in §10.2 entschieden |
 | Oberfläche jenseits MCP | verschoben (§14 im Entwurf) |
 
 ---
