@@ -166,7 +166,8 @@ CREATE TABLE event (
   occurred_at  timestamptz NOT NULL,
   hash         bytea NOT NULL,
   prev_hash    bytea,
-  payload      jsonb NOT NULL
+  payload_hash bytea NOT NULL,       -- die Kette hängt hieran, nicht am Inhalt
+  payload      jsonb NOT NULL        -- tilgbar (§4.6)
 );
 
 CREATE INDEX event_occurred_idx ON event (occurred_at);
@@ -193,6 +194,14 @@ statt Prüfroutine.
 - `payload` ist `jsonb`, validiert gegen JSON-Schema **in `core`**, nicht als
   Spaltenzwang. Grund: Leitsatz 9 — neue Arten von `assertion` dürfen ohne
   Migration dazukommen.
+- **`payload_hash` ist nicht redundant.** Die Kette hängt an ihm, nicht am
+  Inhalt — das ist die Voraussetzung für Tilgung (§4.6) und heute zu
+  entscheiden.
+
+```
+event_hash   = sha256( id ‖ kind ‖ recorded_at ‖ occurred_at ‖ prev_hash ‖ payload_hash )
+payload_hash = sha256( canonical(payload) )
+```
 
 ### 4.2 Idempotenz
 
@@ -294,6 +303,65 @@ Suchschnittstelle nimmt eine Anfrage und gibt Einheitenverweise zurück, nicht
 `tsquery`.
 
 ---
+
+### 4.6 Tilgung: heute nichts verbauen
+
+Append-only verträgt sich nicht von selbst mit einem Löschverlangen (DSGVO
+Art. 17). Gebaut wird der Mechanismus **jetzt nicht** — aber drei Dinge müssen
+heute stimmen, sonst ist er später unerreichbar.
+
+#### 1. Die Kette hängt am Hash, nicht am Inhalt
+
+Hasht die Kette die Nutzlast inline, bricht jede Tilgung sie. Über
+`payload_hash` (§4.1) bleibt sie gültig: Tilgung ersetzt `payload` durch einen
+Grabstein und **behält `payload_hash`**. Die Verifikation läuft unverändert
+durch — und es bleibt beweisbar, *was* dort stand, ohne es zu haben.
+
+Kosten heute: eine Spalte. Nachträglich: unmöglich, weil die Kette über alle
+Altdaten falsch würde.
+
+Eine Tilgung ist selbst ein Event (`action`, `kind: redaction`) mit Ziel,
+Umfang und Begründung. Kein neuer Mechanismus.
+
+#### 2. Schlüssel-Platzhalter beim Blob
+
+Für Krypto-Schreddern genügt die offene **Naht**, nicht heutige Verschlüsselung:
+
+- die Blob-Referenz trägt `key_id`, heute `null`
+- der Blob-Adapter hat einen Ver-/Entschlüsselungshaken, der heute nichts tut
+
+Damit lassen sich **neue** Blobs später verschlüsseln, ohne Bestand anzufassen.
+Rückwirkend wäre es aussichtslos — man wüsste nicht mehr zuverlässig, welcher
+Blob wen betrifft.
+
+#### 3. Keine Versionierung auf dem Blob-Bucket
+
+Der nicht offensichtliche Punkt, weil er eine Betriebsbequemlichkeit mit einer
+Rechtsfähigkeit koppelt:
+
+> **Objektversionierung oder Object Lock auf dem Blob-Bucket verwandelt "Blob
+> löschen" in "Krypto-Schreddern oder nichts".**
+
+Inhaltsadressierte Blobs lassen sich einzeln löschen, ohne die Kette zu
+berühren — der Hash bleibt im Log als Beleg, dass dort etwas war. Das
+funktioniert nur, solange Löschen auch löscht. Versionierung, die man sonst
+gern "zur Sicherheit" anschaltet, macht den einfachen Weg kaputt und erzwingt
+rückwirkend genau das, was rückwirkend nicht geht.
+
+**Versionierung auf dem Backup-Bucket gern, auf dem Blob-Bucket nicht.** Dritter
+Grund für die Zwei-Bucket-Trennung (§10.3), aus wieder einer anderen Richtung.
+
+#### Was eine Tilgung kostet
+
+Sie nimmt den **Beleg**, nicht die **abgeleiteten Fakten**. Die `assertion`
+"Einheiten 3–4 sind eine Verpflichtung mit Frist 30.4." ist ein eigenes Event
+und überlebt; die Verpflichtung bleibt im Protokoll, ihre Quellenangabe zeigt
+auf einen Grabstein.
+
+Das ist richtiges Verhalten: dass etwas vereinbart wurde, verschwindet nicht,
+weil jemand Löschung verlangt — was verschwindet, ist der Wortlaut. Trägt auch
+die `assertion` personenbezogene Daten, greift derselbe Mechanismus auf sie,
+weil `payload_hash` einheitlich gilt.
 
 ## 5. Die Storage-Schnittstelle
 
@@ -812,7 +880,7 @@ Blob-Hash im Log, und der Hash ist der Schlüssel:**
 ```
 observation
   …
-  blob: { hash: sha256, media_type, size, ref }
+  blob: { hash: sha256, media_type, size, ref, key_id }   # key_id heute null
 ```
 
 | Eigenschaft | Folge |
@@ -921,7 +989,7 @@ Reihenfolge aus §14 im Entwurf, mit der Kaltstart-Vorgabe aus §8.1.
 
 | # | Teilprojekt | Umfang | eigenes Detail-Spec? |
 |---|---|---|---|
-| 1 | **`core` und `storage`** | Log, Hash-Kette, Idempotenz, Units, Projektionsgerüst, Storage-Schnittstelle | **ja** — Hash-Kette und Reprojektion verdienen es |
+| 1 | **`core` und `storage`** | Log, Hash-Kette, Idempotenz, Units, Projektionsgerüst, Storage-Schnittstelle, **die drei Tilgungs-Vorkehrungen (§4.6)** | **ja** — Hash-Kette und Reprojektion verdienen es |
 | 2 | **`contract` und manueller Einwurf** | `contract`, Drop-Ordner, Einwurf per Prompt, Quelle verlinken | nein |
 | 3 | **`mcp_server`** | Protokoll 2026-07-28, Werkzeuge, Handles, Offenlegungsprüfung | nein |
 | 4 | **`gate`** | Policy, Adapter, Audit, `processing_region` | nein |
@@ -946,27 +1014,17 @@ nur noch Arbeit — und ein Spec dafür wäre die Fiktion aus §1.
 | Verifizieren, dass `pg_dict` in `pg_tokenizer` ein Hunspell-Wörterbuch einbinden kann | §12.2 im Entwurf, beim Bau |
 | Versionsstände der Postgres-Erweiterungen | beim Bau |
 | Fähigkeit von Claude Code bezüglich MRTR und der Tasks-Erweiterung | vor Teilprojekt 3 zu prüfen |
-| **Append-only gegen Löschpflicht** (DSGVO Art. 17) | **vor großem Datenbestand zu entscheiden** — siehe unten |
+| Zeitpunkt für den Bau der Tilgung | §4.6 hält sie offen; wann sie gebaut wird, ist offen |
 | Trace-Verknüpfung MCP-Aufruf ↔ Gate-Einträge über OpenTelemetry | Komfort, Teilprojekt 4 |
 
 Der dritte ist der einzige, der einen Umbau auslösen könnte: unterstützt der
 Client MRTR nicht, müssen blockierende Rückfragen vorerst als gewöhnliche
 Werkzeuge laufen — unschön, aber nicht strukturell.
 
-**Zur Löschpflicht:** Append-only verträgt sich nicht von selbst mit einem
-Löschverlangen. Das ist lösbar, aber nur wenn man es **vor** zwei Jahren
-Datenbestand entscheidet — derselbe Fall wie die Hash-Kette selbst. Zwei
-benannte Mechanismen, hier **nicht gebaut, nur reserviert**:
-
-- **Blobs: Krypto-Schreddern.** Jeder Blob wird mit einem Schlüssel pro
-  Betroffenem verschlüsselt; gelöscht wird der Schlüssel. Der Chiffretext
-  bleibt, die Kette bleibt intakt, der Inhalt ist unwiederbringlich.
-- **Log: Tilgungs-Event.** Einheiten werden durch einen Grabstein ersetzt, dessen
-  Hash mitprotokolliert ist. Die Kette bricht nicht, die Tilgung ist belegt.
-
-Zu entscheiden ist nur, **ob die Verschlüsselung pro Betroffenem von Anfang an
-eingebaut wird** — nachträglich lässt sie sich auf Bestandsblobs nicht mehr
-anwenden, ohne sie neu zu schreiben.
+**Zur Tilgung:** Entschieden ist, dass Tombstoning und Krypto-Schreddern
+**gebaut werden sollen, aber nicht jetzt** — und dass heute nichts verbaut wird.
+Die drei Vorkehrungen dafür stehen in §4.6 und sind Teil von Teilprojekt 1.
+Offen ist nur der Zeitpunkt des Baus.
 
 ---
 
