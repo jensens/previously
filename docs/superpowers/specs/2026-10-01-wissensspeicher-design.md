@@ -142,7 +142,7 @@ er vom Eingang, nicht vom Benutzer.
 | lesend | schreibend |
 |---|---|
 | `protokoll(organisation\|projekt\|vorgang, stichtag?)` | `einwerfen(inhalt, organisation?, projekt?, vorgang?)` |
-| `offene_verpflichtungen(projekt?, rolle_eigene?)` | `feststellen(…)` — Korrektur, `herkunft: mensch` |
+| `offene_verpflichtungen(projekt?, rolle_eigene?)` | `feststellen(…)` — Korrektur, `verantwortung: jens` |
 | `entscheidungen(projekt\|organisation, zeitraum?)` | `queue()` / `abnehmen(id, einmal\|klasse)` |
 | `suche(frage, projekt?, vor?)` — der RAG-Pfad (§18) | |
 | `event(id)` / `einheiten(event_id)` — Zitaten folgen | |
@@ -210,10 +210,12 @@ ist unwiederbringlich verloren, wenn beides als gleichwertiges Event eingeht.
 nur von einer `erinnerung` getragen wird, ist ein Signal, das schriftlich
 nachzuziehen.
 
-`belegart` und `herkunft` sind orthogonal: `herkunft: mensch` heißt "Jens hat
-das festgestellt" und schlägt weiterhin jedes Modell; `belegart: erinnerung`
-heißt "die Grundlage ist ein Gedächtnis". Eine von Jens gegebene Zuordnung
-bleibt Grundwahrheit — nur die inhaltliche Behauptung trägt den Vorbehalt.
+`belegart` steht orthogonal zu `urheber` und `verantwortung` (§5.2): die
+beiden sagen, wer formuliert hat und wer einsteht; `belegart` sagt, **wie gut
+der Beleg darunter ist**. Eine von Jens eingeworfene Notiz hat
+`verantwortung: jens` und trägt volles Gewicht — und gleichzeitig
+`belegart: erinnerung`, weil die Grundlage ein Gedächtnis ist. Seine Zuordnung
+bleibt Grundwahrheit; nur die inhaltliche Behauptung trägt den Vorbehalt.
 
 **Zwei Zeitstempel sind zwingend.** Die Hash-Kette ist nach `erfasst_am`
 geordnet — anders ist sie keine Kette. Jede Chronik ist nach `ereignis_zeit`
@@ -244,17 +246,56 @@ id, hash, vorgaenger_hash, erfasst_am
 art                 zuordnung | verpflichtung | entscheidung | …
 ziel                event-id
 einheiten           [3, 4, 7, 12]      verteilt, nicht zusammenhängend
-herkunft            mensch | regel | modell
+urheber             mensch:<person> | modell:<id+version> | regel:<id> | unbekannt
+verantwortung       <person> | offen
 sicherheit
 inhalt              artabhängig
 quellen             Event-IDs + Einheiten, auf die sie sich stützt
 ```
 
-**`herkunft` ist der Kern des Audits und des Lernens.** Bei Konflikt gilt:
-**Mensch schlägt Regel schlägt Modell.** Eine Korrektur durch Jens ist eine
-Feststellung mit `herkunft: mensch` — kein Sonderfall, kein eigener
-Mechanismus. Das gilt gleichermaßen für eine Korrektur am Protokoll und für
-eine Änderung, die direkt in OpenProject gemacht wurde.
+**Zwei Felder, weil es zwei verschiedene Fragen sind:** wer hat die Aussage
+*formuliert*, und wer *steht dafür ein*. Sie fallen regelmäßig auseinander:
+
+| Fall | `urheber` | `verantwortung` |
+|---|---|---|
+| Jens tippt eine Korrektur | `mensch:jens` | `jens` |
+| Die Pipeline extrahiert eine Verpflichtung | `modell:haiku-4-5` | `offen` — Vorschlag bis zur Abnahme |
+| Ein Agent legt auf Jens' Anweisung ein Issue an | `modell:claude-code` | `jens` |
+| Der Auftraggeber schreibt eine Mail | `mensch:<ansprechpartner>` | **nicht Jens** |
+
+### Vorrangordnung läuft über `verantwortung`, nicht über `urheber`
+
+Eine verantwortete Feststellung schlägt eine unverantwortete — unabhängig
+davon, wer sie formuliert hat. Unter den unverantworteten gilt **Regel vor
+Modell**, weil Regeln deterministisch und nachprüfbar sind.
+
+Eine Korrektur durch Jens ist damit kein Sonderfall: sie ist eine Feststellung
+mit `verantwortung: jens`. Das gilt gleichermaßen für eine Korrektur am
+Protokoll und für eine Änderung, die direkt in einem Fremdsystem gemacht wurde.
+
+**Warum die Trennung nötig ist — der Fall, der sonst still falsch läuft:** Eine
+Mail des Auftraggebers ist von einem Menschen geschrieben. Mit einem einzigen
+`herkunft`-Feld hätte sie unser Modell geschlagen *und* wäre gleichrangig mit
+Jens' eigener Korrektur gewesen. Behauptet der Auftraggeber "Sie haben X
+zugesagt" und die Aufzeichnungen sagen anderes, darf seine Behauptung nicht
+gewinnen, nur weil ein Mensch sie getippt hat.
+
+**Wessen Behauptung es ist, ist Inhalt. Wessen Autorität sie trägt, ist
+Metadatum.** Die Mail bleibt `belegart: wortlaut` und starker Beleg; die daraus
+gezogene Feststellung hat `urheber: modell` (der Extraktor hat sie gelesen) und
+`verantwortung: offen`, bis Jens sie sich zu eigen macht.
+
+### `urheber` ist oft nicht feststellbar
+
+Ein Fremdsystem verzeichnet als Autor den Kontoinhaber — ein Agent handelt mit
+Jens' Token und ist von Handänderung nicht zu unterscheiden. Das einzige
+maschinenlesbare Signal sind **Marker im Text**: `Co-Authored-By`-Zeilen in
+Commits, Trailer in Beschreibungen, Labels. Der Konnektor wertet sie aus.
+
+**Wo kein Marker ist: `urheber: unbekannt`, nicht `mensch` angenommen.**
+Unbekannt wird aus der Grundwahrheitsmenge ausgeschlossen (§8.3). Lieber eine
+kleinere, ehrliche Messbasis als eine große, in der Modelloutput als
+menschliches Urteil mitläuft.
 
 **Nur Feststellungen kommen aus dem Modell.** Damit ist "Was hat das Modell je
 behauptet, und worauf gestützt?" eine Abfrage über eine Event-Art.
@@ -292,7 +333,7 @@ das System getan, und mit welcher Befugnis?".
 Daraus folgt eine beabsichtigte Asymmetrie: **Was Jens selbst tut, ist keine
 Handlung, sondern Eingang.** Legt er ein Issue direkt in GitLab an, sieht der
 Konnektor die Änderung, sie wird Wahrnehmung, daraus eine Feststellung mit
-`herkunft: mensch`. Ein Befugnisnachweis ist dafür sinnlos — er ist der
+`verantwortung: jens`. Ein Befugnisnachweis ist dafür sinnlos — er ist der
 Auftraggeber, nicht der Beauftragte.
 
 Die drei Befugnisse:
@@ -333,10 +374,11 @@ der eingehende Zustand von dem abweicht, was er zuletzt dorthin gerendert hat
 anders hat etwas geändert. Der Vergleich dient der **Informationsprüfung**,
 nicht der Abwehr.
 
-**3. Strikte Vorrangordnung.** Mensch schlägt Regel schlägt Modell, strikt
-(§5.2). Damit ist die wahrscheinlichste Schwingung konstruktiv unmöglich —
-Modell behauptet A, Mensch korrigiert auf B, Modell behauptet wieder A — weil
-ein Modell eine menschliche Feststellung nie überschreiben darf.
+**3. Strikte Vorrangordnung.** Verantwortet schlägt unverantwortet, darunter
+Regel vor Modell, strikt (§5.2). Damit ist die wahrscheinlichste Schwingung
+konstruktiv unmöglich — Modell behauptet A, Mensch korrigiert auf B, Modell
+behauptet wieder A — weil eine unverantwortete Feststellung eine verantwortete
+nie überschreiben darf.
 
 Für Modell gegen Modell gilt zusätzlich: **nur bei sachlicher Änderung
 schreiben.** Eine neue Feststellung entsteht nur, wenn sich die Eingangsmenge
@@ -548,12 +590,12 @@ Projekt übrig, ist es das.**
 Discord #general, 10:00–10:45
   anwesend: Jens, Alex, [Ansprechpartner Organisation A]
   → Schnittmenge der Beteiligungen: { Projekt A }
-  → Zuordnung: Projekt A · herkunft: regel · sicher
+  → Zuordnung: Projekt A · urheber: regel · sicher
 
 Discord #general, 11:00–12:00
   anwesend: Jens, Alex, [Ansprechpartner Org. B], [Ansprechpartner Org. B]
   → Schnittmenge: { Projekt B }
-  → Zuordnung: Projekt B · herkunft: regel · sicher
+  → Zuordnung: Projekt B · urheber: regel · sicher
 ```
 
 Derselbe Raum, dieselbe Person Alex, zwei Projekte. Alex trägt zur
@@ -600,17 +642,24 @@ Kosten: ein 2-Stunden-Transkript sind ~30.000 Tokens, ein Aufruf pro
 Besprechung. Bei Mails läuft ein billiger Vorlauf, der "ein Thema" erkennt
 und die Zerlegung überspringt; das dürfte die Mehrheit sein.
 
-### 8.3 Messbarkeit fällt gratis an
+### 8.3 Messbarkeit fällt gratis an — aber nur bei sauberem Filter
 
-Beim manuellen Einwurf gibt Jens die Zuordnung mit — `herkunft: mensch`, also
-**Grundwahrheit**. Damit wird die Güte der automatischen Zuordnung eine
-Abfrage: vergleiche Feststellungen mit `herkunft: regel` oder `modell` gegen
-spätere mit `herkunft: mensch` **über derselben Einheitenmenge**.
+Beim manuellen Einwurf gibt Jens die Zuordnung mit, also entsteht
+**Grundwahrheit**. Die Güte der automatischen Zuordnung wird damit eine
+Abfrage: vergleiche Feststellungen mit `urheber: regel` oder `modell` gegen
+spätere mit `urheber: mensch:<person>` **über derselben Einheitenmenge**.
 
 Treffergenauigkeit pro Abschnitt, aus normaler Arbeit erzeugt, ohne
 Evaluierungsprojekt.
 
----
+**Der Filter läuft auf `urheber`, nicht auf `verantwortung`** — und das ist
+nicht gleichgültig. Legt ein Agent auf Jens' Anweisung etwas an, ist das
+`verantwortung: jens`, aber `urheber: modell`. Würde die Messung auf
+`verantwortung` filtern, verglich man das Modell mit sich selbst und bekäme
+eine geschmeichelte Trefferquote.
+
+Ebenso ausgeschlossen: `urheber: unbekannt`. Eine kleinere, ehrliche Messbasis
+ist mehr wert als eine große mit Modelloutput darin.
 
 ## 9. Projektionen
 
@@ -645,7 +694,7 @@ nachprüfbar, klickbar.
 
 **Das Protokoll ist keine gepflegte Datei.** Es wird nie nachgeführt und ist
 deshalb nie veraltet. Eine Korrektur daran ist eine Feststellung mit
-`herkunft: mensch`: sie überschreibt die Quelle nicht, tritt daneben und
+`verantwortung: jens`: sie überschreibt die Quelle nicht, tritt daneben und
 gewinnt in der Projektion.
 
 ### 9.2 Audit-Sicht
@@ -768,7 +817,7 @@ Ein Konnektor ist nichts Besonderes: **Renderer** in die eine Richtung,
 Work Item ist eine Projektion, gerendert als Work Item.
 
 Dadurch verschwindet das Sync-Problem: eine Änderung direkt im Fremdsystem
-kommt als Feststellung mit `herkunft: mensch` herein, die Wahrheit im Kern
+kommt als Feststellung mit `verantwortung: <person>` herein, die Wahrheit im Kern
 aktualisiert sich, und das nächste Rendern ist ein No-Op. **Die Idempotenz des
 Renderns ist dabei eine Konvergenzbedingung, keine Bequemlichkeit** — siehe
 §5.5. Kein Konfliktdialog,
@@ -939,8 +988,10 @@ Testbare Kriterien, keine Absichtserklärungen.
    erzwungen, durch Test belegt.
 5. **Stichtagsabfrage.** "Stand am Datum X" ist in beiden Zeitordnungen
    beantwortbar.
-6. **Zuordnungsgüte.** Die Trefferquote von `regel` und `modell` gegen
-   `mensch` ist pro Abschnitt abfragbar.
+6. **Zuordnungsgüte.** Die Trefferquote von `urheber: regel` und
+   `urheber: modell` gegen `urheber: mensch` ist pro Abschnitt abfragbar — und
+   die Abfrage schließt `unbekannt` sowie modellformulierte Einträge mit
+   menschlicher Verantwortung aus.
 7. **Gate-Dichte.** Kein Modellaufruf außerhalb des Gates. Statisch geprüft.
 8. **Befugnis.** Keine Handlung ohne `auftrag`, `einmal` oder `klasse:<id>`.
 9. **Konvergenz.** Rendern, abfragen, erneut rendern erreicht einen Festpunkt
@@ -988,6 +1039,7 @@ Daten messen, danach entscheiden.
 | Verworfen | Grund |
 |---|---|
 | "Aussage" / "Zusage" als eigene Entität | Überlappt mit Verpflichtung und Entscheidung, wird zur Resterampe. Kommt, wenn im Betrieb etwas fehlt, das nirgends passt. |
+| Einzelnes `herkunft`-Feld | Vermischte "wer hat formuliert" mit "wer steht dafür ein". Hätte die Mail eines Auftraggebers mit Jens' eigener Korrektur gleichgestellt und die Messung der Modellgüte still korrumpiert. Ersetzt durch `urheber` + `verantwortung`. |
 | Entität "Kunde" | "Kunde" ist eine Rolle in einem Projekt, keine Art von Organisation. Dieselbe Organisation ist mal Auftraggeber, mal ARGE-Partner, mal Allianzpartner. Ersetzt durch `Organisation` + `Beteiligung`. |
 | Binäre Richtung an der Verpflichtung | "wir / die anderen" kann den Fall nicht ausdrücken, dass zwei Dritte sich etwas schulden und uns das blockiert. Ersetzt durch Schuldner und Gläubiger als Akteure. |
 | Getrennte Relationen für Personen- und Organisationsbeteiligung | Strukturell dieselbe Relation. Ein Ort für Rollen, damit Leitsatz 7 nicht wieder vergessen wird. |
