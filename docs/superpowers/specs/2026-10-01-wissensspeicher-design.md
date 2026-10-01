@@ -168,9 +168,40 @@ id, hash, vorgaenger_hash
 erfasst_am                  wann es in den Speicher kam
 ereignis_zeit               wann es tatsächlich geschah
 quelle                      welcher Pfad + quellennative ID
+belegart                    wortlaut | erinnerung
 beteiligte_kanalidentitaeten
 einheiten                   [{nr, inhalt, …}]
 ```
+
+**`belegart` trennt Beweis von Bericht.** Mail, Issue, Transkript und PDF sind
+`wortlaut`. Eine diktierte Notiz ist `erinnerung`.
+
+Der Unterschied ist nicht kosmetisch. Wird ein Telefonat eingeworfen — "Kunde
+XYZ hat angerufen und gesagt, die Lieferung kommt erst im Mai" — dann ist die
+**Wahrnehmung nicht das Telefonat, sondern die Notiz darüber.** Das Telefonat
+wurde nicht erfasst, nur der Bericht davon. So bleibt Leitsatz 4 intakt:
+"Jens hat das notiert" kann nicht falsch sein, "der Kunde hat zugesagt" kann es.
+
+Im Protokoll wird es sichtbar:
+
+```
+2026-05-02  Kunde verschiebt Lieferung auf Mai.  [M-0455 ¶3]
+2026-10-01  Kunde verschiebt Lieferung auf Juni.  [N-0112 — Notiz, Erinnerung]
+```
+
+Im Streitfall ist der Unterschied zwischen "der Kunde hat das geschrieben" und
+"Jens erinnert sich, dass der Kunde das sagte" entscheidend. Die
+Unterscheidung fällt gratis an, wenn die Notiz als Notiz modelliert wird, und
+ist unwiederbringlich verloren, wenn beides als gleichwertiges Event eingeht.
+
+**Nebeneffekt, der eigenständigen Wert hat:** Eine große Verpflichtung, die
+nur von einer `erinnerung` getragen wird, ist ein Signal, das schriftlich
+nachzuziehen.
+
+`belegart` und `herkunft` sind orthogonal: `herkunft: mensch` heißt "Jens hat
+das festgestellt" und schlägt weiterhin jedes Modell; `belegart: erinnerung`
+heißt "die Grundlage ist ein Gedächtnis". Eine von Jens gegebene Zuordnung
+bleibt Grundwahrheit — nur die inhaltliche Behauptung trägt den Vorbehalt.
 
 **Zwei Zeitstempel sind zwingend.** Die Hash-Kette ist nach `erfasst_am`
 geordnet — anders ist sie keine Kette. Jede Chronik ist nach `ereignis_zeit`
@@ -606,8 +637,19 @@ entsprechend gut sein.**
 |---|---|---|
 | **IMAP** | geraten | automatisch, kontinuierlich |
 | **Drop-Ordner** | Unterordner = Kunde | ein Nextcloud-Ordner: funktioniert auch vom Telefon |
-| **Einwurf per Prompt** | Jens sagt sie | hier landet später die Spracheingabe — derselbe Pfad, anderes Eingabegerät |
+| **Einwurf per Prompt** | Jens sagt sie | `belegart: erinnerung`. Hier landet später die Spracheingabe — derselbe Pfad, anderes Eingabegerät |
 | **Quelle verlinken** | Jens sagt sie | GitLab-/GitHub-Issue-URL; wird geholt und nachgehalten |
+
+**Der Prompt-Pfad ist der qualitativ beste, nicht der Notausgang.** Er kann
+etwas, was weder Formular noch Drop-Ordner kann: **beim Einwurf nachfragen** —
+"Welches Projekt?", "Hat er ein Datum genannt?", "Zusage oder
+Absichtserklärung?" — und zwar während die Erinnerung frisch ist. Bei
+Telefonaten ist er auch dauerhaft der einzige Weg: ein Handy-Anruf läuft nie
+durch die PipeWire-Pipeline, Teil 2 deckt das nie ab.
+
+Suboptimal ist er nur dort, wo ein Konnektor dasselbe holen könnte — nicht
+wegen des Aufwands, sondern weil die Quelle dann `wortlaut` wäre und die
+Zusammenfassung davon `erinnerung`.
 
 Diese Pfade decken ab Tag eins jede Quelle ab, ohne Token, Kundenfreigabe
 oder Wartezyklus. **Deshalb sind sie zuerst zu bauen:** jeder automatische
