@@ -3,7 +3,11 @@
 Stand: 2026-10-01 · Status: zur Abnahme
 
 Geschrieben für Jens als Reviewer und als Grundlage für den
-Implementierungsplan. Das Gesprächsprotokoll mit allen Zwischenschritten und
+Implementierungsplan.
+
+**Sprachregelung: Prosa deutsch, alles Technische englisch.** Bezeichner,
+Feldnamen, Werkzeugnamen und Aufzählungswerte sind englisch; das Glossar steht
+in §3 des Architektur-Specs und ist die einzige erlaubte Zuordnung. Das Gesprächsprotokoll mit allen Zwischenschritten und
 verworfenen Varianten liegt in `../../../NOTIZEN.md`.
 
 ---
@@ -92,9 +96,9 @@ Minimum. Wer das verwechselt, baut entweder zu viel oder zu wenig.
 **9. Unentschiedenheit muss darstellbar sein, nicht erzwungen entschieden.**
 Wo das System es nicht wissen kann, gibt es einen Zustand für "noch offen" —
 keinen Vorgabewert, der eine Vermutung als Tatsache ausgibt. Dieser Grundsatz
-wirkt schon an sechs Stellen: `zuordnung.sicherheit`, `schuldner: null`,
+wirkt schon an sechs Stellen: `assignment.confidence`, `debtor: null`,
 erlaubte Lücken bei der Zerlegung, "der Import darf unsicher sein" (§13),
-`urheber: unbekannt` und das Dach beim Teilen (§6.3, §6.2). Wer hier
+`author: unknown` und das Dach beim Teilen (§6.3, §6.2). Wer hier
 "aufräumt" und Vorgabewerte einsetzt, macht das System still kaputt.
 
 ### Warum das zusammen die Revisionsfähigkeit trägt
@@ -127,7 +131,7 @@ Punkte berührt. Wenn nicht, ist sie harmlos. Wenn ja, ist sie keine Abkürzung.
   Link        ──────────►  │                        │           ├─► Claude Code
   OpenProject ◄─────────►  │  Projektionen          │           │   (Max-Plan)
   GitLab      ◄─────────►  │  Entitäten             │           │
-  Nextcloud   ◄─────────►  │  Organisationsprofil   │           └─► später: eigene
+  Nextcloud   ◄─────────►  │  Organisationsprofil   │           └─► später: own
                            └───────────┬────────────┘               UI, Spracheingabe
                                        │
                                        ▼
@@ -153,11 +157,11 @@ er vom Eingang, nicht vom Benutzer.
 
 | lesend | schreibend |
 |---|---|
-| `protokoll(organisation\|projekt\|vorgang, stichtag?)` | `einwerfen(inhalt, organisation?, projekt?, vorgang?)` |
-| `offene_verpflichtungen(projekt?, rolle_eigene?)` | `feststellen(…)` — Korrektur, `verantwortung: {jens, direkt}` |
-| `entscheidungen(projekt\|organisation, zeitraum?)` | `queue()` / `abnehmen(id, einmal\|klasse)` |
-| `suche(frage, projekt?, vor?)` — der RAG-Pfad (§18) | |
-| `event(id)` / `einheiten(event_id)` — Zitaten folgen | |
+| `get_dossier(organization\|project\|matter, as_of?)` | `submit(content, organization?, project?, matter?)` |
+| `list_open_obligations(project?, own_role?)` | `record_assertion(…)` — Korrektur, `responsibility: {jens, direct}` |
+| `list_decisions(project\|organization, period?)` | `list_approvals()` / `approve(id, once\|class)` |
+| `search(query, project?, before?)` — der RAG-Pfad (§18) | |
+| `get_event(id)` / `get_units(event_id)` — Zitaten folgen | |
 
 **Fünf Teile.** Ingest und Write-back sind *eine* Schicht, weil jedes
 Fremdsystem beides ist.
@@ -188,17 +192,17 @@ gesamte Audit-Konzept.
 ### 5.1 Wahrnehmung
 
 ```
-id, hash, vorgaenger_hash
-erfasst_am                  wann es in den Speicher kam
-ereignis_zeit               wann es tatsächlich geschah
-quelle                      welcher Pfad + quellennative ID
-belegart                    wortlaut | erinnerung
-beteiligte_kanalidentitaeten
-einheiten                   [{nr, inhalt, …}]
+id, hash, prev_hash
+recorded_at                 wann es in den Speicher kam
+occurred_at                 wann es tatsächlich geschah
+source + external_id        welcher Pfad + sourcesnative ID
+evidence                    verbatim | recollection
+channel_identities
+units                       [{seq, content, …}]
 ```
 
-**`belegart` trennt Beweis von Bericht.** Mail, Issue, Transkript und PDF sind
-`wortlaut`. Eine diktierte Notiz ist `erinnerung`.
+**`evidence` trennt Beweis von Bericht.** Mail, Issue, Transkript und PDF sind
+`verbatim`. Eine diktierte Notiz ist `recollection`.
 
 Der Unterschied ist nicht kosmetisch. Wird ein Telefonat eingeworfen — "Kunde
 XYZ hat angerufen und gesagt, die Lieferung kommt erst im Mai" — dann ist die
@@ -219,14 +223,14 @@ Unterscheidung fällt gratis an, wenn die Notiz als Notiz modelliert wird, und
 ist unwiederbringlich verloren, wenn beides als gleichwertiges Event eingeht.
 
 **Nebeneffekt, der eigenständigen Wert hat:** Eine große Verpflichtung, die
-nur von einer `erinnerung` getragen wird, ist ein Signal, das schriftlich
+nur von einer `recollection` getragen wird, ist ein Signal, das schriftlich
 nachzuziehen.
 
-`belegart` steht orthogonal zu `urheber` und `verantwortung` (§5.2): die
-beiden sagen, wer formuliert hat und wer einsteht; `belegart` sagt, **wie gut
+`evidence` steht orthogonal zu `author` und `responsibility` (§5.2): die
+beiden sagen, wer formuliert hat und wer einsteht; `evidence` sagt, **wie gut
 der Beleg darunter ist**. Eine von Jens eingeworfene Notiz hat
-`verantwortung: {jens, direkt}` und trägt volles Gewicht — und gleichzeitig
-`belegart: erinnerung`, weil die Grundlage ein Gedächtnis ist. Seine Zuordnung
+`responsibility: {jens, direct}` und trägt volles Gewicht — und gleichzeitig
+`evidence: recollection`, weil die Grundlage ein Gedächtnis ist. Seine Zuordnung
 bleibt Grundwahrheit; nur die inhaltliche Behauptung trägt den Vorbehalt.
 
 **Zwei Zeitstempel sind zwingend.** Die Hash-Kette ist nach `erfasst_am`
@@ -265,26 +269,26 @@ Eine Neutranskription mit besserem Modell ist eine **neue** Wahrnehmung, keine
 ### 5.2 Feststellung
 
 ```
-id, hash, vorgaenger_hash, erfasst_am
-art                 zuordnung | verpflichtung | entscheidung | …
-ziel                event-id
-einheiten           [3, 4, 7, 12]      verteilt, nicht zusammenhängend
-urheber             mensch:<person> | modell:<id+version> | regel:<id> | unbekannt
-verantwortung       { person, art: direkt | transitiv, grundlage? } | offen
-sicherheit
-inhalt              artabhängig
-quellen             Event-IDs + Einheiten, auf die sie sich stützt
+id, hash, prev_hash, recorded_at
+kind                assignment | obligation | decision | language | …
+target              event-id
+units               [3, 4, 7, 12]      verteilt, nicht zusammenhängend
+author              human:<person> | model:<id+version> | rule:<id> | unknown
+responsibility      { person, kind: direct | transitive, basis? } | null
+confidence
+payload             artabhängig
+sources             Event-IDs + Einheiten, auf die sie sich stützt
 ```
 
 **Zwei Felder, weil es zwei verschiedene Fragen sind:** wer hat die Aussage
 *formuliert*, und wer *steht dafür ein*. Sie fallen regelmäßig auseinander:
 
-| Fall | `urheber` | `verantwortung` |
+| Fall | `author` | `responsibility` |
 |---|---|---|
-| Jens tippt eine Korrektur | `mensch:jens` | `{jens, direkt}` |
-| Die Pipeline extrahiert eine Verpflichtung | `modell:haiku-4-5` | `offen` — Vorschlag bis zur Abnahme |
-| Ein Agent legt auf Jens' Anweisung ein Issue an | `modell:claude-code` | `{jens, transitiv}` |
-| Der Auftraggeber schreibt eine Mail | `mensch:<ansprechpartner>` | **nicht Jens** |
+| Jens tippt eine Korrektur | `human:jens` | `{jens, direkt}` |
+| Die Pipeline extrahiert eine Verpflichtung | `model:haiku-4-5` | `offen` — Vorschlag bis zur Abnahme |
+| Ein Agent legt auf Jens' Anweisung ein Issue an | `model:claude-code` | `{jens, transitiv}` |
+| Der Auftraggeber schreibt eine Mail | `human:<contact>` | **nicht Jens** |
 
 ### Verantwortung ist direkt oder transitiv
 
@@ -302,7 +306,7 @@ Zeile nicht gelesen hat.
 **Transitive Verantwortung ist kein Notbehelf, sondern das, was Delegation erst
 tragfähig macht.** Müsste jede Agentenausgabe einzeln gelesen werden, wäre
 Delegieren sinnlos. Dieselbe Idee trägt schon die Handlungs-Befugnis
-`freigabe: klasse:<id>` (§5.4) — hier ist sie für Feststellungen formuliert, und
+`authorization: class:<id>` (§5.4) — hier ist sie für Feststellungen formuliert, und
 die Symmetrie ist ein Hinweis darauf, dass es die richtige Abstraktion ist.
 
 Wo die `grundlage` nicht ermittelbar ist — ein Marker sagt "ein Modell war
@@ -310,7 +314,7 @@ beteiligt", aber nicht unter welchem Plan — ist `transitiv` mit unbekannter
 Grundlage ein zulässiger Zustand. Jens hat *etwas* autorisiert; was, wissen wir
 nicht.
 
-### Vorrangordnung läuft über `verantwortung`, nicht über `urheber`
+### Vorrangordnung läuft über `responsibility`, nicht über `author`
 
 **`direkt` schlägt `transitiv` schlägt `offen`**; unter `offen` gilt **Regel vor
 Modell**, weil Regeln deterministisch und nachprüfbar sind. Unabhängig davon,
@@ -323,32 +327,32 @@ ich selbst geprüft" und "das entstand unter einem abgenommenen Verfahren" zwei
 verschiedene, beide ehrliche Aussagen. Die Unterscheidung ist abfragbar.
 
 Eine Korrektur durch Jens ist damit kein Sonderfall: sie ist eine Feststellung
-mit `verantwortung: {jens, direkt}`. Das gilt gleichermaßen für eine Korrektur am
+mit `responsibility: {jens, direct}`. Das gilt gleichermaßen für eine Korrektur am
 Protokoll und für eine Änderung, die direkt in einem Fremdsystem gemacht wurde.
 
 **Warum die Trennung nötig ist — der Fall, der sonst still falsch läuft:** Eine
 Mail des Auftraggebers ist von einem Menschen geschrieben. Mit einem einzigen
-`herkunft`-Feld hätte sie unser Modell geschlagen *und* wäre gleichrangig mit
+`origin`-Feld hätte sie unser Modell geschlagen *und* wäre gleichrangig mit
 Jens' eigener Korrektur gewesen. Behauptet der Auftraggeber "Sie haben X
 zugesagt" und die Aufzeichnungen sagen anderes, darf seine Behauptung nicht
 gewinnen, nur weil ein Mensch sie getippt hat.
 
 **Wessen Behauptung es ist, ist Inhalt. Wessen Autorität sie trägt, ist
-Metadatum.** Die Mail bleibt `belegart: wortlaut` und starker Beleg; die daraus
-gezogene Feststellung hat `urheber: modell` (der Extraktor hat sie gelesen) und
-`verantwortung: offen`, bis Jens sie sich zu eigen macht.
+Metadatum.** Die Mail bleibt `evidence: verbatim` und starker Beleg; die daraus
+gezogene Feststellung hat `author: model` (der Extraktor hat sie gelesen) und
+`responsibility: null`, bis Jens sie sich zu eigen macht.
 
-### `urheber` ist oft nicht feststellbar
+### `author` ist oft nicht feststellbar
 
 Ein Fremdsystem verzeichnet als Autor den Kontoinhaber — ein Agent handelt mit
 Jens' Token und ist von Handänderung nicht zu unterscheiden. Das einzige
 maschinenlesbare Signal sind **Marker im Text**: `Co-Authored-By`- und
 `Assisted-By`-Zeilen in Commits, Trailer in Beschreibungen, Labels. Der
 Konnektor wertet sie aus. (`Assisted-By` wird in den Projekten schon gesetzt,
-aber nicht flächendeckend — deshalb bleibt `unbekannt` ein eigener Wert und
+aber nicht flächendeckend — deshalb bleibt `unknown` ein eigener Wert und
 keine Annahme.)
 
-**Wo kein Marker ist: `urheber: unbekannt`, nicht `mensch` angenommen.**
+**Wo kein Marker ist: `author: unknown`, nicht `human` angenommen.**
 Unbekannt wird aus der Grundwahrheitsmenge ausgeschlossen (§8.5). Lieber eine
 kleinere, ehrliche Messbasis als eine große, in der Modelloutput als
 menschliches Urteil mitläuft.
@@ -356,7 +360,7 @@ menschliches Urteil mitläuft.
 **Nur Feststellungen kommen aus dem Modell.** Damit ist "Was hat das Modell je
 behauptet, und worauf gestützt?" eine Abfrage über eine Event-Art.
 
-**`quellen` ist Pflicht und wird im Schema erzwungen.** Eine Feststellung ohne
+**`sources` ist Pflicht und wird im Schema erzwungen.** Eine Feststellung ohne
 Quellenangabe ist kein Vertrauensproblem, sondern ein Schemafehler. Das Modell
 wird nie um freien Text gebeten, sondern immer um strukturierte Ausgabe mit
 diesem Feld.
@@ -375,12 +379,12 @@ Inhalt **nicht abdecken**.
 ### 5.4 Handlung
 
 ```
-id, hash, vorgaenger_hash, erfasst_am
-art                 aufgabe_angelegt | mail_versendet | …
-ziel                Entität, auf die sie wirkt
-freigabe            auftrag | einmal | klasse:<id>
-begruendung         Feststellungs-IDs
-ergebnis            externe Referenz, gerenderter Zustand, Fehler
+id, hash, prev_hash, recorded_at
+kind                task_created | mail_sent | …
+target              Entität, auf die sie wirkt
+authorization       instructed | once | class:<id>
+basis               assertion-IDs
+result              external_ref, rendered_state, error
 ```
 
 **Handlung ist die Spur delegierter Handlungsmacht** — sie beantwortet "was hat
@@ -389,7 +393,7 @@ das System getan, und mit welcher Befugnis?".
 Daraus folgt eine beabsichtigte Asymmetrie: **Was Jens selbst tut, ist keine
 Handlung, sondern Eingang.** Legt er ein Issue direkt in GitLab an, sieht der
 Konnektor die Änderung, sie wird Wahrnehmung, daraus eine Feststellung mit
-`verantwortung: {jens, direkt}`. Ein Befugnisnachweis ist dafür sinnlos — er
+`responsibility: {jens, direct}`. Ein Befugnisnachweis ist dafür sinnlos — er
 ist der
 Auftraggeber, nicht der Beauftragte.
 
@@ -397,9 +401,9 @@ Die drei Befugnisse:
 
 | Wert | Bedeutung |
 |---|---|
-| `auftrag` | direkt angewiesen (z. B. in Claude Code), es gab keinen Vorschlag |
-| `einmal` | ein Vorschlag wurde abgenommen, dieses eine Mal |
-| `klasse:<id>` | eine Dauerfreigabe deckte es |
+| `instructed` | direkt angewiesen (z. B. in Claude Code), es gab keinen Vorschlag |
+| `once` | ein Vorschlag wurde abgenommen, dieses eine Mal |
+| `class:<id>` | eine Dauerfreigabe deckte es |
 
 **Eine Handlung ohne einen dieser Werte ist ein Defekt, kein Zustand.** Einen
 Wert wie "nie gefragt" als zulässig zu führen würde unautorisiertes Handeln
@@ -487,7 +491,7 @@ Alle sind Projektionen über das Event-Log, keine Wahrheitstabellen. Alle
 
 | # | Entität | Zweck |
 |---|---|---|
-| 1 | **Organisation** | Firma, Einzelperson, Verein, Behörde. **Keine Rolle im Namen** — "Kunde" ist eine Beteiligung, keine Art von Organisation. Die eigene ist mit `eigene` markiert. |
+| 1 | **Organisation** | Firma, Einzelperson, Verein, Behörde. **Keine Rolle im Namen** — "Kunde" ist eine Beteiligung, keine Art von Organisation. Die eigene ist mit `own` markiert. |
 | 2 | **Projekt** | Ein Vorhaben mit mehreren beteiligten Organisationen. Muss verschobene Grenzen und Umbenennungen aushalten. |
 | 3 | **Person** | Ein Mensch. |
 | 4 | **Kanalidentität** | Mailadresse, Signal-Nummer, Discord-Handle, Sprecherkennung, Fremdsystem-Benutzer. Eigenständig, weil eine unbekannte Adresse eine Identität **ohne** Person ist — das ist der Zustand "unsortiert". |
@@ -507,10 +511,10 @@ Projektpartner aus der BlueDynamics Alliance. Dieselbe Organisation ist in
 einem Projekt Auftraggeber (wir als Subunternehmer), im nächsten ARGE-Partner
 auf Augenhöhe, daneben dauerhaft Allianzpartner.
 
-`Organisation.art`: `firma | einzelperson | verein | behörde`. Der Fall
+`Organisation.art`: `company | sole_trader | association | public_body`. Der Fall
 `einzelperson` deckt ab, dass wirklich eine natürliche Person Auftraggeber
 ist, und darf auf eine `Person` verweisen — ohne den Menschen mit seiner
-Gesellschaft zu verwechseln. Die eigene Organisation trägt `eigene`.
+Gesellschaft zu verwechseln. Die eigene Organisation trägt `own`.
 
 **Beteiligung ist eine Relation über Akteure**, nicht zwei getrennte
 Relationen. Akteur ist Person oder Organisation; das Rollenvokabular ist nach
@@ -520,7 +524,7 @@ nächsten Mal nicht vergessen, eine Rolle relational zu machen.
 
 | Akteursart | Rollen (erweiterbar) |
 |---|---|
-| Organisation | `auftraggeber`, `auftragnehmer`, `subunternehmer`, `arge-partner`, `allianzpartner`, `dienstleister` |
+| Organisation | `client`, `contractor`, `subunternehmer`, `arge-partner`, `allianzpartner`, `dienstleister` |
 | Person | `mitarbeiter`, `partner`, `freelancer`, `ansprechpartner` |
 
 Das Vokabular ist **erweiterbar, nicht abgeschlossen.** Ein fester Satz wäre
@@ -562,21 +566,21 @@ Verpflichtung existieren (interne Arbeit).
 "Wir liefern den Bericht **und** die Datenmigration bis 30.4." ist eine
 Verpflichtung, die zwei Sachen bündelt. Solange sie eine ist, ist ihr Zustand
 **unehrlich**: Bericht geliefert, Migration nicht — "halb erfüllt" ist keine
-Information. Nach dem Teilen gibt es eine `erfüllt` und eine `offen`, und die
+Information. Nach dem Teilen gibt es eine `fulfilled` und eine `offen`, und die
 ist überfällig. **Das Teilen ist, was den Zustand wahr macht.**
 
 Darum ist es eine eigenständige Operation und kein Nebeneffekt eines
 Vorgangs-Splits — auch wenn ein Vorgangs-Split sie oft auslöst.
 
-Mechanik wie beim Vorgang: `verpflichtung_teilung { von: V, nach: [V1, V2] }`,
-V bleibt als **Dach** mit `aufgeteilt_in`, und sein Zustand wird aus den Teilen
+Mechanik wie beim Vorgang: `obligation_split { from: V, into: [V1, V2] }`,
+V bleibt als **Dach** mit `split_into`, und sein Zustand wird aus den Teilen
 berechnet:
 
 | Teile | Dach |
 |---|---|
-| alle erfüllt | `erfüllt` |
-| irgendeiner überfällig | `überfällig` |
-| gemischt | `teilweise erfüllt` |
+| alle erfüllt | `fulfilled` |
+| irgendeiner überfällig | `overdue` |
+| gemischt | `partially_fulfilled` |
 
 Frist, Schuldner und Gläubiger können sich pro Teil unterscheiden — das ist
 häufig der eigentliche Grund zu teilen.
@@ -589,14 +593,14 @@ Der dritte Fall ist kooperatives Projektmanagement in Reinform:
 Eine Verpflichtung, bei der wir weder Schuldner noch Gläubiger sind, die aber
 überfällig werden kann und im Protokoll stehen muss. In keinem Werkzeug
 abbildbar, das nur "meine Aufgaben" kennt. Dasselbe gilt für Ketten:
-`wir → Subunternehmer-Auftraggeber → Endauftraggeber` ist eine Kette, nicht
+wir → Subunternehmer-Auftraggeber → Endauftraggeber ist eine Kette, nicht
 zwei unverbundene Zweiparteien-Sachen.
 
-Arten: `lieferung`, `antwort`, `entscheidung`, `zahlung`.
+Arten: `delivery`, `answer`, `decision`, `payment`.
 
-**`schuldner` darf leer sein.** Eine unadressierte Frage — "weiß eigentlich
+**`debtor` darf leer sein.** Eine unadressierte Frage — "weiß eigentlich
 jemand, ob die Messdaten georeferenziert sind?" — ist eine Verpflichtung mit
-`art: antwort` und leerem Schuldner. Das liest sich als "jemand muss das
+`kind: answer` und leerem Schuldner. Das liest sich als "jemand muss das
 beantworten, wir wissen noch nicht wer" und ist der Zustand, aus dem heraus
 zugewiesen wird. Genau das ist die offene Frage von vor vier Monaten, die
 gefunden werden soll.
@@ -634,8 +638,8 @@ sich als dasselbe heraus. Beides ist vorgesehen — und beides ist **nicht
 symmetrisch**.
 
 **Mergen: umleiten, nie löschen.** Eine Feststellung
-`vorgang_zusammenlegung { von: B, nach: A, begründung, quellen }`. B behält
-seine Kennung und bekommt den Zustand `zusammengelegt_in: A`; Projektionen
+`matter_merge { from: B, into: A, rationale, sources }`. B behält
+seine Kennung und bekommt den Zustand `merged_into: A`; Projektionen
 folgen der Umleitung.
 
 Das ist praktisch wichtig, nicht nur formal: **alte Verweise auf B funktionieren
@@ -646,7 +650,7 @@ Keine Historienänderung.
 
 **Splitten lässt das Ursprüngliche als Dach stehen.** Die Einheiten brauchen
 keinen neuen Mechanismus: das sind Zuordnungs-Feststellungen mit anderem
-`vorgang`, genau wie jede menschliche Korrektur. Das Problem ist, **was an A
+`matter`, genau wie jede menschliche Korrektur. Das Problem ist, **was an A
 hing**: eine Verpflichtung, die auf A zeigte, gehört zu A1 oder A2, und das kann
 das System nicht wissen.
 
@@ -654,8 +658,8 @@ Beim Mergen zeigt die Umleitung auf *ein* Ziel; beim Splitten auf mehrere, also
 ist "löse A auf" nicht beantwortbar. Ein Standard-Nachfolger wäre eine
 Vermutung, die als Tatsache auftritt — Leitsatz 9 verbietet das. Stattdessen:
 
-`vorgang_teilung { von: A, nach: [A1, A2], begründung, quellen }`. A bleibt und
-bekommt `aufgeteilt_in: [A1, A2]`.
+`matter_split { from: A, into: [A1, A2], rationale, sources }`. A bleibt und
+bekommt `split_into: [A1, A2]`.
 
 - **Alte Verweise auf A bleiben sinnvoll** — sie meinen "die Sache als Ganzes".
 - **Abhängigkeiten bleiben am Dach, bis jemand es besser weiß.** Eine
@@ -709,17 +713,17 @@ sehen. **Gleiche Organisation, unterschiedliche Befugnis je Projekt — begrenze
 ist die Vereinbarung, nicht die Organisation.**
 
 ```
-Vereinbarung
-  art         nda | avv | rahmenvertrag | arge-vertrag
-  parteien    [Organisation]
-  umfang      Projekt | Organisation | global
-  gültig_von / gültig_bis
-  quellen     ← der unterschriebene Vertrag
+agreement
+  kind        nda | dpa | framework | joint_venture
+  parties     [organization]
+  scope       project | organization | global
+  valid_from / valid_until
+  sources     ← der unterschriebene Vertrag
 ```
 
 Die Entität passt in die vorhandene Mechanik, ohne etwas Neues zu brauchen: der
 Vertrag liegt als PDF im Drop-Ordner, ist damit eine Wahrnehmung mit
-`belegart: wortlaut`, und die Vereinbarung ist eine Feststellung mit genau
+`evidence: verbatim`, und die Vereinbarung ist eine Feststellung mit genau
 diesem Beleg. Die Frage "warum durfte die Agentur das sehen?" endet damit beim
 unterschriebenen Dokument.
 
@@ -733,18 +737,18 @@ Alles, was pro **Organisation** variiert, an einer Stelle. Gelesen vom
 Policy-Gate, vom Konnektor-Lader und von der Freigabe-Queue.
 
 ```
-organisation
-rechtsraum              AT | DE | CH | EU | …   (maßgebliche Rechtsordnung)
-systeme                 [{art, basis_url, fähigkeitsstufe, zugangsdaten-ref}]
-datenpolitik            { extern_erlaubt: bool,
-                          erlaubte_raeume: [EU, CH, …],
-                          ausgeschlossene_anbieter: […] }
-freigabeklassen         [{aktionsklasse, zustand}]
-aufnahme_einwilligung
+organization
+jurisdiction            AT | DE | CH | EU | …   (maßgebliche Rechtsordnung)
+systems                 [{kind, base_url, capability, credentials_ref}]
+data_policy             { external_allowed: bool,
+                          allowed_regions: [EU, CH, …],
+                          excluded_providers: […] }
+approval_classes        [{action_class, state}]
+recording_consent
 ```
 
 **Die Datenpolitik ist strukturiert, nicht dreiwertig.** Eine frühere Fassung
-hatte `cloud_erlaubt | gestuft | nur_lokal` — das kann **"EU ja, USA nein"**
+hatte `cloud_allowed | tiered | local_only` — das kann **"EU ja, USA nein"**
 nicht ausdrücken, und genau das wird die häufigste Auflage sein, nicht
 "nur lokal".
 
@@ -752,7 +756,7 @@ nicht ausdrücken, und genau das wird die häufigste Auflage sein, nicht
 EU-Verarbeitung ist für einen Schweizer Auftraggeber also nicht automatisch die
 Antwort, und Schweizer Verarbeitung für einen EU-Auftraggeber nicht automatisch
 ausreichend — zwei Regime, keine Abstufung einer Skala. Daher ist
-`erlaubte_raeume` eine Liste und kein Rang.
+`allowed_regions` eine Liste und kein Rang.
 
 ### 7.1 Auflösung bei mehreren Beteiligten
 
@@ -762,10 +766,10 @@ Auftraggebers, nicht die zuerst eingetragene.
 
 | Gegenstand | Auflösung |
 |---|---|
-| `datenpolitik` | strengste aller Beteiligten. Sagt eine Organisation `nur_lokal`, gilt das für **alles** in diesem Projekt. |
-| `aufnahme_einwilligung` | eine Besprechung darf nur mitgeschnitten werden, wenn **jede** anwesende Organisation zugestimmt hat **und** die Zustimmung der strengsten beteiligten Rechtsordnung genügt |
-| `rechtsraum` | ein Gespräch mit Beteiligten aus mehreren Rechtsordnungen berührt alle gleichzeitig; praktisch bindet die strengste |
-| `freigabeklassen` | eine Dauerfreigabe gilt nur, wenn keine beteiligte Organisation sie ausschließt |
+| `data_policy` | strengste aller Beteiligten. Sagt eine Organisation `local_only`, gilt das für **alles** in diesem Projekt. |
+| `recording_consent` | eine Besprechung darf nur mitgeschnitten werden, wenn **jede** anwesende Organisation zugestimmt hat **und** die Zustimmung der strengsten beteiligten Rechtsordnung genügt |
+| `jurisdiction` | ein Gespräch mit Beteiligten aus mehreren Rechtsordnungen berührt alle gleichzeitig; praktisch bindet die strengste |
+| `approval_classes` | eine Dauerfreigabe gilt nur, wenn keine beteiligte Organisation sie ausschließt |
 
 Beispiel: Sagt der Auftraggeber "unsere Daten bleiben in der EU" und die
 Designagentur ist entspannt, dann gilt EU — für den gesamten Projektinhalt,
@@ -830,7 +834,7 @@ Entdeckungsproblem in Systemgröße.
 
 Das Gate braucht kein Berechtigungsmodell, keine API, keinen Adapter. Es ist
 eine Aussage: *"diese Gruppe ist durch NDA1 mit der Agentur für Projekt B
-gedeckt"* — eine Feststellung mit `verantwortung: {jens, direkt}`, mit Datum
+gedeckt"* — eine Feststellung mit `responsibility: {jens, direct}`, mit Datum
 und Begründung.
 
 Die Aufzählung ist Komfort, nicht Fundament. **Hätte das Gate sie gebraucht,
@@ -842,10 +846,10 @@ Prüfung aus und das Gate steht weiter.
 
 | Zustand | Bedeutung | Folge beim Rendern |
 |---|---|---|
-| `erklärt` | Deckung ist angegeben | gedeckt → rendern |
-| `bestätigt` | Aufzählung passt zur Deckung | rendern |
-| `abweichend` | Aufzählung zeigt mehr als gedeckt | Warnung in die Queue, Rendern braucht Einzelfreigabe |
-| `unbekannt` | keine Erklärung, keine Aufzählung | **gilt als weiter als erlaubt** → blockiert, bis erklärt |
+| `declared` | Deckung ist angegeben | gedeckt → rendern |
+| `confirmed` | Aufzählung passt zur Deckung | rendern |
+| `divergent` | Aufzählung zeigt mehr als gedeckt | Warnung in die Queue, Rendern braucht Einzelfreigabe |
+| `unknown` | keine Erklärung, keine Aufzählung | **gilt als weiter als erlaubt** → blockiert, bis erklärt |
 
 Die Fehlerrichtung ist bewusst asymmetrisch: für ein **Ja** braucht es
 Vollständigkeit (ein übersehenes Mitglied ist ein Leck), für ein **Nein**
@@ -898,12 +902,12 @@ genau eines übrig, ist es das.
 Discord #general, 10:00–10:45
   anwesend: Jens, Alex, [Ansprechpartner Organisation A]
   → Schnittmenge der Projekt-Beteiligungen: { Projekt A }
-  → Zuordnung: Projekt A · urheber: regel · sicher
+  → assignment: Projekt A · author: rule · confidence: hoch
 
 Discord #general, 11:00–12:00
   anwesend: Jens, Alex, [Ansprechpartner Org. B], [Ansprechpartner Org. B]
   → Schnittmenge: { Projekt B }
-  → Zuordnung: Projekt B · urheber: regel · sicher
+  → assignment: Projekt B · author: rule · confidence: hoch
 ```
 
 Derselbe Raum, dieselbe Person Alex, zwei Projekte. Alex trägt zur
@@ -985,7 +989,7 @@ in Schüben läuft: nach einer Besprechung kommen die Mails zu dieser Besprechun
 
 Verwendbar als eigenständiger Hinweis (eine Mail am Tag nach dem Call zu Thema
 X ist vermutlich zu X) und als **Verstärker**, wenn strukturelle Signale mehrere
-Kandidaten übrig lassen. Die zeitliche Spur zahlt auf `sicherheit` ein, nicht
+Kandidaten übrig lassen. Die zeitliche Spur zahlt auf `confidence` ein, nicht
 auf Gewissheit — sie kann immer irren.
 
 ### 8.3 Inhaltliche Signale: Zerlegung durch das Modell
@@ -1061,12 +1065,12 @@ nie einen Vergleich und die Messbarkeit wäre auf dem Papier schön und praktisc
 leer. Auf Einheitenebene ergibt dieselbe Lage drei Datenpunkte: 3 richtig, 4
 richtig, 5 übersehen. Daraus Genauigkeit und Vollständigkeit, wie üblich.
 
-**Der Filter läuft auf `urheber`, nicht auf `verantwortung`.** Legt ein Agent
-auf Jens' Anweisung etwas an, ist das `verantwortung: {jens, transitiv}`, aber
-`urheber: modell`. Würde die Messung auf `verantwortung` filtern, verglich man
+**Der Filter läuft auf `author`, nicht auf `responsibility`.** Legt ein Agent
+auf Jens' Anweisung etwas an, ist das `responsibility: {jens, transitive}`, aber
+`author: model`. Würde die Messung auf `responsibility` filtern, verglich man
 das Modell mit sich selbst und bekäme eine geschmeichelte Trefferquote.
 
-Ebenso ausgeschlossen: `urheber: unbekannt`. Eine kleinere, ehrliche Messbasis
+Ebenso ausgeschlossen: `author: unknown`. Eine kleinere, ehrliche Messbasis
 ist mehr wert als eine große mit Modelloutput darin.
 
 ## 9. Projektionen
@@ -1085,9 +1089,9 @@ hinweg — nach Rolle filterbar, aber nicht nach Rolle zerschnitten. Der Vorgang
 ORGANISATION <name> — Stand 1. Oktober 2026
 Rollen: Auftraggeber (Projekt X), ARGE-Partner (Projekt Y)
 
-Wir schulden           3 Verpflichtungen, davon 1 überfällig
-Uns wird geschuldet    2 Verpflichtungen, 1 unbeantwortete Frage (4 Monate)
-Beobachtet             1 überfällig zwischen Dritten, blockiert uns
+Wir schulden           3 Verpflichtungen, davon 1 overdue
+Uns wird geschuldet    2 Verpflichtungen, 1 unbeanswerete Frage (4 Monate)
+Beobachtet             1 overdue zwischen Dritten, blockiert uns
 Letzte Entscheidungen  3
 
 ── Chronik (Ereigniszeit) ──────────────────────────────
@@ -1104,12 +1108,12 @@ nachprüfbar, klickbar.
 Originalsprache.** Ergibt eine englische Mail eine Verpflichtung, ist deren
 Text deutsch; der zitierte Wortlaut bleibt unübersetzt. Sonst wird das
 Protokoll ein Sprachsalat und als Dokument wertlos. Es braucht dafür nichts
-Neues: die `quellen` zeigen auf die englischen Einheiten, und ein Klick führt
+Neues: die `sources` zeigen auf die englischen Einheiten, und ein Klick führt
 zum Originalsatz.
 
 **Das Protokoll ist keine gepflegte Datei.** Es wird nie nachgeführt und ist
 deshalb nie veraltet. Eine Korrektur daran ist eine Feststellung mit
-`verantwortung: {jens, direkt}`: sie überschreibt die Quelle nicht, tritt
+`responsibility: {jens, direct}`: sie überschreibt die Quelle nicht, tritt
 daneben und
 gewinnt in der Projektion.
 
@@ -1144,7 +1148,7 @@ Beide schreiben in dasselbe Audit-Log. "Was hat Claude je über Kunde X
 gesehen?" wird aus dem **MCP-Zugriffsprotokoll** beantwortet, nicht aus dem
 Gate-Log.
 
-**Konsequenz:** Steht eine beteiligte Organisation auf `nur_lokal`, verweigert
+**Konsequenz:** Steht eine beteiligte Organisation auf `local_only`, verweigert
 der MCP-Server die Inhalte des betroffenen Projekts an Claude Code — das
 Cockpit wird für dieses Projekt stumpfer
 (strukturierte Abfragen ja, KI-Unterstützung nur mit lokalem Client). Das ist
@@ -1152,14 +1156,14 @@ kein Konstruktionsfehler, sondern der Preis der Datenpolitik, und er trifft
 die interaktive Seite härter als die Pipeline.
 
 ```
-llm(aufgabe, nutzlast, kontext{projekt, vertraulichkeit}) → ergebnis
+call(task, payload, context{project, confidentiality}) → result
 ```
 
-**`vertraulichkeit` ist nicht dasselbe wie Zuordnung** und hat deshalb einen
+**`confidentiality` ist nicht dasselbe wie Zuordnung** und hat deshalb einen
 eigenen Namen. Sie kommt aus zwei Quellen, in dieser Reihenfolge: der
-aufgelösten `datenpolitik` des Projekts (§7.1) als Vorgabe, und optional einer
+aufgelösten `data_policy` des Projekts (§7.1) als Vorgabe, und optional einer
 Feststellung
-`art: vertraulichkeit` über einzelne Einheiten, wenn ein Abschnitt sensibler
+`kind: confidentiality` über einzelne Einheiten, wenn ein Abschnitt sensibler
 ist als die Projektvorgabe (Gehaltsdaten, Vertragsentwurf, Personensache).
 Die strengere der beiden gewinnt.
 
@@ -1179,7 +1183,7 @@ Antwort meldet zurück, wo tatsächlich gerechnet wurde** (`usage.inference_geo`
 Welche Räume wählbar sind, ist beim Bau nachzusehen.
 
 Damit wird aus einer Vertragszusage ein Audit-Eintrag: das Gate setzt den Raum
-aus der aufgelösten `datenpolitik`, liest aus der Antwort, wo gerechnet wurde,
+aus der aufgelösten `data_policy`, liest aus der Antwort, wo gerechnet wurde,
 und schreibt es mit. Einem Auftraggeber gegenüber lässt sich dann nicht nur
 sagen "wir verarbeiten in der EU", sondern es **pro Aufruf belegen** — und eine
 Abweichung zwischen gesetztem und gemeldetem Raum ist ein Alarm, kein
@@ -1245,7 +1249,7 @@ leidet beides: die Freigaben werden überflogen, die Rückfragen liegen.
 ### 10.4 Ablehnung wird festgehalten, nicht nur Annahme
 
 Lehnt Jens einen Vorschlag ab, ist **das Nein selbst eine Feststellung** mit
-`verantwortung: {jens, direkt}` — etwa *"diese zwei Vorgänge sind absichtlich
+`responsibility: {jens, direct}` — etwa *"diese zwei Vorgänge sind absichtlich
 getrennt"* oder *"diese Aussage ist keine Verpflichtung"*. Der nächste Durchlauf
 sieht sie und schlägt dasselbe nicht erneut vor.
 
@@ -1287,7 +1291,7 @@ Ein Konnektor ist nichts Besonderes: **Renderer** in die eine Richtung,
 Work Item ist eine Projektion, gerendert als Work Item.
 
 Dadurch verschwindet das Sync-Problem: eine Änderung direkt im Fremdsystem
-kommt als Feststellung mit `verantwortung: <person>` herein, die Wahrheit im Kern
+kommt als Feststellung mit `responsibility: <person>` herein, die Wahrheit im Kern
 aktualisiert sich, und das nächste Rendern ist ein No-Op. **Die Idempotenz des
 Renderns ist dabei eine Konvergenzbedingung, keine Bequemlichkeit** — siehe
 §5.5. Kein Konfliktdialog,
@@ -1309,7 +1313,7 @@ Kundenlandschaft überlebbar.
 **Zielorte statt Systeme.** Die Rendern-Richtung zeigt nie auf ein System,
 sondern auf einen **Zielort** darin — ein GitLab-Projekt, eine Gruppe, einen
 Ordner. Jeder Zielort trägt seine **Deckung** (welche Vereinbarung ihn deckt)
-und seinen **Publikumszustand** (`erklärt | bestätigt | abweichend | unbekannt`).
+und seinen **Publikumszustand** (`declared | confirmed | divergent | unknown`).
 Siehe §7.2 — Berechtigungsmodelle der Zielsysteme werden ausdrücklich **nicht**
 nachgebildet.
 
@@ -1331,7 +1335,7 @@ entsprechend gut sein.**
 |---|---|---|
 | **IMAP** | geraten | automatisch, kontinuierlich |
 | **Drop-Ordner** | Unterordner = Organisation | ein Nextcloud-Ordner: funktioniert auch vom Telefon |
-| **Einwurf per Prompt** | Jens sagt sie | `belegart: erinnerung`. Hier landet später die Spracheingabe — derselbe Pfad, anderes Eingabegerät |
+| **Einwurf per Prompt** | Jens sagt sie | `evidence: recollection`. Hier landet später die Spracheingabe — derselbe Pfad, anderes Eingabegerät |
 | **Quelle verlinken** | Jens sagt sie | GitLab-/GitHub-Issue-URL; wird geholt und nachgehalten |
 
 **Der Prompt-Pfad ist der qualitativ beste, nicht der Notausgang.** Er kann
@@ -1342,8 +1346,8 @@ Telefonaten ist er auch dauerhaft der einzige Weg: ein Handy-Anruf läuft nie
 durch die PipeWire-Pipeline, Teil 2 deckt das nie ab.
 
 Suboptimal ist er nur dort, wo ein Konnektor dasselbe holen könnte — nicht
-wegen des Aufwands, sondern weil die Quelle dann `wortlaut` wäre und die
-Zusammenfassung davon `erinnerung`.
+wegen des Aufwands, sondern weil die Quelle dann `verbatim` wäre und die
+Zusammenfassung davon `recollection`.
 
 Diese Pfade decken ab Tag eins jede Quelle ab, ohne Token, Kundenfreigabe
 oder Wartezyklus. **Deshalb sind sie zuerst zu bauen:** jeder automatische
@@ -1622,16 +1626,16 @@ Testbare Kriterien, keine Absichtserklärungen.
    berechnet und ergibt dasselbe Ergebnis.
 3. **Kettenintegrität.** Eine Prüfung läuft über das gesamte Log und findet
    jede Manipulation.
-4. **Quellenpflicht.** Keine Feststellung ohne `quellen`. Durch Schema
+4. **Quellenpflicht.** Keine Feststellung ohne `sources`. Durch Schema
    erzwungen, durch Test belegt.
 5. **Stichtagsabfrage.** "Stand am Datum X" ist in beiden Zeitordnungen
    beantwortbar.
-6. **Zuordnungsgüte.** Die Trefferquote von `urheber: regel` und
-   `urheber: modell` gegen `urheber: mensch` ist pro Abschnitt abfragbar — und
-   die Abfrage schließt `unbekannt` sowie modellformulierte Einträge mit
+6. **Zuordnungsgüte.** Die Trefferquote von `author: rule` und
+   `author: model` gegen `author: human` ist pro Abschnitt abfragbar — und
+   die Abfrage schließt `unknown` sowie modellformulierte Einträge mit
    menschlicher Verantwortung aus.
 7. **Gate-Dichte.** Kein Modellaufruf außerhalb des Gates. Statisch geprüft.
-8. **Befugnis.** Keine Handlung ohne `auftrag`, `einmal` oder `klasse:<id>`.
+8. **Befugnis.** Keine Handlung ohne `instructed`, `once` oder `class:<id>`.
 9. **Konvergenz.** Rendern, abfragen, erneut rendern erreicht einen Festpunkt
    innerhalb eines Umlaufs: die eigene Handlung erzeugt **keine** neue
    Wahrnehmung. Und die Gegenprobe, die genauso wichtig ist: eine *fremde*
@@ -1729,15 +1733,15 @@ Daten messen, danach entscheiden.
 | Identitätsgraph als erste Bauphase | Naheliegend und falsch: er ist ein Ergebnis der ersten Phasen, nicht deren Voraussetzung. |
 | Berechtigungsmodelle der Zielsysteme nachbilden | GitLab-Gruppen und -Rollen, JIRA Permission Schemes und Issue Security Levels, Nextcloud-Freigaben: N Berechtigungssysteme als Nebenprodukt, dauerhaft synchron zu halten. Stattdessen erklärte Zielorte mit erklärter Deckung. |
 | Aufzählung als Gate | Hätte die gesamte Offenlegungsprüfung am schwächsten Adapter aufgehängt. Aufzählung ist Prüfung, Deklaration ist Gate. |
-| Dreiwertige Datenpolitik | `cloud_erlaubt \| gestuft \| nur_lokal` kann "EU ja, USA nein" nicht ausdrücken — und das wird die häufigste Auflage sein, nicht "nur lokal". Ersetzt durch erlaubte Räume als Liste. |
+| Dreiwertige Datenpolitik | `cloud_allowed \| tiered \| local_only` kann "EU ja, USA nein" nicht ausdrücken — und das wird die häufigste Auflage sein, nicht "nur lokal". Ersetzt durch erlaubte Räume als Liste. |
 | Rechtsräume als Rangfolge | Die Schweiz ist nicht "EU minus etwas", sondern ein eigenes Regime. Liste statt Skala. |
 | Offenlegung am Eingang filtern | Hätte verhindert, dass Jens sein eigenes projektübergreifendes Wissen nutzen kann — "was wissen wir über diese Agentur?" wäre unbeantwortbar. Die Prüfung sitzt am Ausgang. |
 | Datenpolitik und Offenlegung als ein Feld | Zwei verschiedene Fragen: wo darf verarbeitet werden, und wer darf sehen. Dieselbe Agentur ist in einem Projekt befugt und im nächsten nicht — begrenzend ist die Vereinbarung, nicht die Organisation. |
-| Einzelnes `herkunft`-Feld | Vermischte "wer hat formuliert" mit "wer steht dafür ein". Hätte die Mail eines Auftraggebers mit Jens' eigener Korrektur gleichgestellt und die Messung der Modellgüte still korrumpiert. Ersetzt durch `urheber` + `verantwortung`. |
-| Entität "Kunde" | "Kunde" ist eine Rolle in einem Projekt, keine Art von Organisation. Dieselbe Organisation ist mal Auftraggeber, mal ARGE-Partner, mal Allianzpartner. Ersetzt durch `Organisation` + `Beteiligung`. |
+| Einzelnes `origin`-Feld | Vermischte "wer hat formuliert" mit "wer steht dafür ein". Hätte die Mail eines Auftraggebers mit Jens' eigener Korrektur gleichgestellt und die Messung der Modellgüte still korrumpiert. Ersetzt durch `author` + `responsibility`. |
+| Entität "Kunde" | "Kunde" ist eine Rolle in einem Projekt, keine Art von Organisation. Dieselbe Organisation ist mal Auftraggeber, mal ARGE-Partner, mal Allianzpartner. Ersetzt durch `Organisation` + `involvement`. |
 | Binäre Richtung an der Verpflichtung | "wir / die anderen" kann den Fall nicht ausdrücken, dass zwei Dritte sich etwas schulden und uns das blockiert. Ersetzt durch Schuldner und Gläubiger als Akteure. |
 | Getrennte Relationen für Personen- und Organisationsbeteiligung | Strukturell dieselbe Relation. Ein Ort für Rollen, damit Leitsatz 7 nicht wieder vergessen wird. |
-| Eigene Entität "Frage" | Eine adressierte Frage *ist* eine Verpflichtung. Gelöst als `art: antwort` mit optionalem Schuldner. |
+| Eigene Entität "Frage" | Eine adressierte Frage *ist* eine Verpflichtung. Gelöst als `kind: answer` mit optionalem Schuldner. |
 | Zwei Speicher-Backends | Führt zum kleinsten gemeinsamen Nenner. |
 | Token-Abgriff aus Claude Code als API | Verstoß gegen Nutzungsbedingungen, technisch brüchig. |
 | Claude über OpenRouter für Mandantendaten | Kostet den direkten DPA und ZDR, macht Prompt Caching unvorhersagbar. |
@@ -1778,7 +1782,7 @@ Feststellung ablegen — danach ist die Abfrage eine Datenbankabfrage.
 | Weltmodell | keines — nur Text und Ähnlichkeit | neun Entitäten mit Bedeutung |
 | "alle offenen Punkte" | die k ähnlichsten Abschnitte | **vollständig**, per Abfrage |
 | Kosten pro Frage | immer ein Modellaufruf | meist keiner |
-| Belegbarkeit | "aus diesem Abschnitt" | Feststellung mit Pflicht-`quellen` bis zur Einheit |
+| Belegbarkeit | "aus diesem Abschnitt" | Feststellung mit Pflicht-`sources` bis zur Einheit |
 | Zeit | nur der aktuelle Index | zwei Zeitstempel, Stichtagsabfragen |
 | Schreibt zurück | nein | ja, mit Freigabeklassen und Audit |
 
