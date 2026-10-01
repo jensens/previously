@@ -35,7 +35,7 @@ ist auf ihre Quelle zurückführbar.
 | 3 | Motoren | Vier, alle hinter *einem* Gate: Max-Plan (interaktiv), Anthropic-API direkt (Masse, ZDR), OpenRouter (Experimente, unkritische Masse), lokal (Whisper, Embeddings). |
 | 4 | Audit | Freigabepflicht **und** Nachvollziehbarkeit **und** revisionssicheres Protokoll. Dauerfreigaben pro Aktionsklasse möglich. |
 | 5 | Wahrheit | Der Kern. Fremdsysteme sind Inbox *und* Artefakt, nie Wahrheitsquelle. |
-| 6 | Sprache | Python, strikt typisiert. PyO3 als benannte Notausstiegstür. Maximal zwei Sprachen. |
+| 6 | Sprache | Python, strikt typisiert. PyO3 als benannter Notausgang. Maximal zwei Sprachen. |
 | 7 | Datenbank | Bewusst offen, hinter schmalem Speicher-Adapter. Kriterien in §12. |
 | 8 | MVP | Teile 1, 3, 4 plus MCP-Server. Voice und eigene Oberfläche verschoben. |
 
@@ -812,7 +812,7 @@ hänge die gesamte Offenlegungsprüfung am schwächsten Adapter.** Wo GitLab die
 Mitgliederliste hergibt, wird nachgeprüft; wo JIRA zickt, fällt nur die
 Prüfung aus und das Gate steht weiter.
 
-#### Vier Zustände, mit fail-safe-Richtung
+#### Vier Zustände, mit sicherer Fehlerrichtung
 
 | Zustand | Bedeutung | Folge beim Rendern |
 |---|---|---|
@@ -1258,16 +1258,16 @@ und seinen **Publikumszustand** (`erklärt | bestätigt | abweichend | unbekannt
 Siehe §7.2 — Berechtigungsmodelle der Zielsysteme werden ausdrücklich **nicht**
 nachgebildet.
 
-### 11.3 IMAP ist der Auffangboden
+### 11.3 IMAP ist das Auffangbecken
 
 Fast jedes System der Welt schickt Benachrichtigungsmails. Ein Kundensystem
 ohne API-Zugriff redet trotzdem mit uns: seine Ereignisse kommen als Mail und
 sind damit im Kern. Nicht elegant, aber vollständig genug für Verlauf und
 Protokoll.
 
-Das verschiebt den Langschwanz-Aufwand von "N Integrationen" auf "N
-Mail-Parser". **Folge: Der Mail-Konnektor ist nicht eine Inbox von vielen,
-sondern der Auffangboden für alles Nicht-Integrierbare — und muss
+Das verschiebt den Aufwand für die vielen Einzelsysteme von "N Integrationen"
+auf "N Mail-Parser". **Folge: Der Mail-Konnektor ist nicht eine Inbox von vielen,
+sondern das Auffangbecken für alles Nicht-Integrierbare — und muss
 entsprechend gut sein.**
 
 ### 11.4 Der manuelle Einwurf ist der Referenz-Konnektor

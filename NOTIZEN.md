@@ -19,7 +19,7 @@ entwerfen, Work Item anlegen, Protokoll ablegen).
 | 1 | Nutzerkreis | Single-User (Jens) zuerst, Team-Fähigkeit architektonisch offenhalten. Kunden-Zugang raus. FOSS-Release als Option, kein Hauptziel. |
 | 2 | Datenabfluss | **A mit Naht**: Cloud-API okay (ZDR + DPA), aber nichts verbauen, falls später B (gestuft) oder C (alles lokal). |
 | — | Motoren | Vier, alle hinter *einem* Gate: Max-Plan (interaktiv/Cockpit), Anthropic-API direkt (sensible Masse, ZDR), OpenRouter (Experimente + unkritische Masse), lokal (Whisper, Embeddings). |
-| 6 | Stack | **Python**, strikt typisiert (pyright strict, nicht als Deko). **PyO3 als benannte Notausstiegstür** für Rust, falls etwas schnell werden muss. **Maximal zwei Sprachen.** Später reevaluieren. Begründung nicht "Jens kann es", sondern: `pyannote` (Diarisation) und das Dokumenten-/OCR-Ökosystem haben keinen gleichwertigen Weg daneben. Datenbank **bewusst offen** — hinter schmalem Speicher-Adapter. |
+| 6 | Stack | **Python**, strikt typisiert (pyright strict, nicht als Deko). **PyO3 als benannter Notausgang** für Rust, falls etwas schnell werden muss. **Maximal zwei Sprachen.** Später reevaluieren. Begründung nicht "Jens kann es", sondern: `pyannote` (Diarisation) und das Dokumenten-/OCR-Ökosystem haben keinen gleichwertigen Weg daneben. Datenbank **bewusst offen** — hinter schmalem Speicher-Adapter. |
 | 5 | MVP-Schnitt | **A + manueller Einwurf.** IMAP breit über alle Kunden, plus drei manuelle Pfade (Drop-Ordner für PDFs, Einwurf per Prompt für Chat-Texte, Quelle verlinken für GitLab-/GitHub-Issues). Oberfläche = Claude Code über MCP. Voice und eigene UI verschoben. Pilotkunde: Auftraggeber A oder Auftraggeber B — **Bestandsimport nötig**. |
 | 4 | System of Record | **B — der Kern hält die Wahrheit.** OpenProject/GitLab/Nextcloud sind *Inbox und Artefakt* gleichzeitig. Begründung: keine Technologiebindung; wenn etwas Besseres als OpenProject kommt, muss es austauschbar sein. |
 | 3 | "auditiert" | **Alle drei** — A (Freigabe-Pflicht, aber Dauerfreigaben pro Klasse möglich), B (Nachvollziehbarkeit), C (revisionssicher). Plus: Template-gebundene Aktionen dürfen raus. GitLab Issues als erstes Beispiel. |
@@ -358,12 +358,13 @@ System kann Mail. Ein Kundensystem ohne API-Zugriff redet trotzdem mit uns —
 seine Events kommen als Mail und sind damit im Kern. Nicht schön, aber
 vollständig genug für Verlauf und Protokoll.
 
-Verschiebt den Langschwanz-Aufwand von "N Integrationen" auf "N Mail-Parser",
+Verschiebt den Aufwand für die vielen Einzelsysteme von "N Integrationen"
+auf "N Mail-Parser",
 und einen Mail-Parser kann die KI schreiben. Für Stufe 3 der Unterschied
 zwischen unmöglich und mühsam.
 
 **Folge: der Mail-Konnektor muss sehr gut sein.** Er ist nicht eine Inbox von
-vielen, er ist der Auffangboden für alles Nicht-Integrierbare.
+vielen, er ist das Auffangbecken für alles Nicht-Integrierbare.
 
 ### JIRA konkret
 
