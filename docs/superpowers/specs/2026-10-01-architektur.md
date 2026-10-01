@@ -333,10 +333,19 @@ Zwei Dinge, die leicht vermischt werden und verschiedene Kosten haben:
 | **(b) Schlüssel pro Betroffenem** | Schreddern | ja |
 
 **(a) wird jetzt gebaut und braucht (b) nicht.** Client-seitig verschlüsselt
-heißt: gestohlene Bucket-Zugangsdaten liefern nur Chiffretext. Für Mandantendaten
-unter NDA ist das ein belegbares Argument gegenüber Auftraggebern — und
-deutlich stärker als serverseitige Verschlüsselung mit Anbieterschlüsseln, die
-vor Plattendiebstahl schützt und vor nichts anderem.
+heißt: gestohlene Bucket-Zugangsdaten liefern nur Chiffretext. Für
+Mandantendaten unter NDA ist das ein belegbares Argument gegenüber
+Auftraggebern.
+
+**Und beim gewählten Anbieter gibt es keine Alternative.** Hetzner Object
+Storage (Ceph-basiert) unterstützt **nur SSE-C** — Schlüssel vom Kunden, pro
+Anfrage mitgesendet — und **kein SSE-S3, kein SSE-KMS**. Anbieterverwaltete
+Verschlüsselung steht also gar nicht zur Wahl. Dazu eine Ceph-Einschränkung:
+mit SSE-C funktioniert **CopyObject nicht**.
+
+Client-seitig ist damit nicht nur gleichwertig, sondern besser als SSE-C: kein
+CopyObject-Problem, der Anbieter sieht den Schlüssel nie, und der lokale
+Dateisystem-Adapter verhält sich identisch.
 
 **Keine Verwechslung:** (a) macht die heute geschriebenen Blobs **nicht**
 schredderbar. Deren Entfernungsweg bleibt Löschen — was genügt, solange keine
@@ -1069,11 +1078,33 @@ nur noch Arbeit — und ein Spec dafür wäre die Fiktion aus §1.
 | Versionsstände der Postgres-Erweiterungen | beim Bau |
 | Fähigkeit von Claude Code bezüglich MRTR und der Tasks-Erweiterung | vor Teilprojekt 3 zu prüfen |
 | Zeitpunkt für den Bau der Tilgung | §4.6 hält sie offen; wann sie gebaut wird, ist offen |
+| **Verschlüsselung der Datenbanksicherung** | **ungelöst** — siehe unten |
 | Trace-Verknüpfung MCP-Aufruf ↔ Gate-Einträge über OpenTelemetry | Komfort, Teilprojekt 4 |
 
 Der dritte ist der einzige, der einen Umbau auslösen könnte: unterstützt der
 Client MRTR nicht, müssen blockierende Rückfragen vorerst als gewöhnliche
 Werkzeuge laufen — unschön, aber nicht strukturell.
+
+**Zur Verschlüsselung der Datenbanksicherung — ein offenes Loch:** Die Blobs
+sind client-seitig verschlüsselt (§4.6). Die **Datenbanksicherung** ist es
+nicht: das barman-cloud-Plugin von CloudNativePG unterstützt SSE-C nicht (es
+gibt eine offene Feature-Anfrage dafür), und Hetzner bietet nichts anderes an.
+
+Damit liegt die vollständige Datenbank unverschlüsselt im Backup-Bucket —
+schwerer als die Blob-Frage, mit der die Überlegung begann, denn das Backup
+enthält alles: Einheiten, Feststellungen, Zuordnungen, Protokolle.
+
+Drei Wege, zu entscheiden:
+
+| Weg | Anmerkung |
+|---|---|
+| **pgBackRest** statt barman-cloud | bringt eigene Verschlüsselung mit; andere Operator-Einbindung zu prüfen |
+| Verschlüsselung auf anderer Ebene | etwa ein verschlüsselter Zwischenspeicher vor dem Upload |
+| bewusst hinnehmen | Bucket privat, Zugangsdaten getrennt — und schriftlich festhalten, dass es so ist |
+
+Der letzte Weg ist zulässig, aber nur **bewusst und dokumentiert**. Einem
+Auftraggeber gegenüber ist "die Blobs sind verschlüsselt" ohne diesen Zusatz
+eine irreführende Aussage.
 
 **Zur Tilgung:** Entschieden ist, dass Tombstoning und Krypto-Schreddern
 **gebaut werden sollen, aber nicht jetzt** — und dass heute nichts verbaut wird.
@@ -1086,3 +1117,6 @@ Offen ist nur der Zeitpunkt des Baus.
 
 - [MCP Änderungsbericht 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/changelog) · [Ankündigung](https://blog.modelcontextprotocol.io/posts/2026-07-28/)
 - [MRTR-Muster](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr)
+- [Hetzner Object Storage — unterstützte Aktionen](https://docs.hetzner.com/storage/object-storage/supported-actions/) · [FAQ](https://docs.hetzner.com/storage/object-storage/faq/general/)
+- [barman-cloud-Plugin: Feature-Anfrage SSE-C](https://github.com/cloudnative-pg/plugin-barman-cloud/issues/646)
+- [Vergleich S3-kompatibler Anbieter](https://blog.n0p.me/2025/10/2025-10-25-s3-compatible-storage-comparsion/)
