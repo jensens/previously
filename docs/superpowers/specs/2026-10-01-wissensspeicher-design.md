@@ -85,6 +85,10 @@ Datenpolitik, Aufnahme-Einwilligung, Freigabeklassen: ein Projekt hat mehrere
 beteiligte Organisationen, und es gilt die restriktivste. Nicht die des
 Auftraggebers, nicht die zuerst eingetragene — die strengste.
 
+Das gilt für **Politiken**. Bei **Befugnissen** (§7.2) ist die Logik eine andere:
+dort geht es um die *Existenz* einer deckenden Vereinbarung, nicht um ein
+Minimum. Wer das verwechselt, baut entweder zu viel oder zu wenig.
+
 **9. Unentschiedenheit muss darstellbar sein, nicht erzwungen entschieden.**
 Wo das System es nicht wissen kann, gibt es einen Zustand für "noch offen" —
 keinen Vorgabewert, der eine Vermutung als Tatsache ausgibt. Dieser Grundsatz
@@ -465,7 +469,7 @@ dieser Abschnitt zu einem eigenen Teilprojekt.
 
 ---
 
-## 6. Kern, Schicht 2: Neun Entitäten
+## 6. Kern, Schicht 2: Zehn Entitäten
 
 Alle sind Projektionen über das Event-Log, keine Wahrheitstabellen. Alle
 überleben den Wegfall jedes Fremdsystems.
@@ -481,6 +485,7 @@ Alle sind Projektionen über das Event-Log, keine Wahrheitstabellen. Alle
 | 7 | **Verpflichtung** | Wer schuldet wem was, bis wann, in welchem Zustand. **Schuldner und Gläubiger**, beide Akteure. |
 | 8 | **Aufgabe** | Ausführbare Arbeit. Trägt die PM-Verknüpfung. |
 | 9 | **Entscheidung** | Was wurde entschieden, von wem, wann, auf welcher Grundlage. |
+| 10 | **Vereinbarung** | NDA, AVV, Rahmen- oder ARGE-Vertrag. Begrenzt, **wer was sehen darf** — und das hängt an der Beziehung, nicht an der Organisation. |
 
 ### 6.1 Organisation und Beteiligung
 
@@ -684,6 +689,33 @@ Aufteilung mit Belegstellen vorschlagen, aber die Queue füllt sich nur, wenn es
 beisst. Das ist der Unterschied zwischen einer Queue, die man anschaut, und
 einer, die man wegklickt — vgl. §10.4.
 
+### 6.5 Vereinbarung
+
+Eine Organisation ist nicht pauschal vertrauenswürdig oder nicht. Eine Agentur
+hat mit Auftraggeber A ein NDA unterschrieben und darf dessen Projektinhalte
+sehen; mit Auftraggeber B hat sie keines, und derselbe Partner darf dort nichts
+sehen. **Gleiche Organisation, unterschiedliche Befugnis je Projekt — begrenzend
+ist die Vereinbarung, nicht die Organisation.**
+
+```
+Vereinbarung
+  art         nda | avv | rahmenvertrag | arge-vertrag
+  parteien    [Organisation]
+  umfang      Projekt | Organisation | global
+  gültig_von / gültig_bis
+  quellen     ← der unterschriebene Vertrag
+```
+
+Die Entität passt in die vorhandene Mechanik, ohne etwas Neues zu brauchen: der
+Vertrag liegt als PDF im Drop-Ordner, ist damit eine Wahrnehmung mit
+`belegart: wortlaut`, und die Vereinbarung ist eine Feststellung mit genau
+diesem Beleg. Die Frage "warum durfte die Agentur das sehen?" endet damit beim
+unterschriebenen Dokument.
+
+**Offenlegungsbefugnis wird nicht gespeichert, sondern abgefragt** — eine
+Projektion: *gibt es eine gültige Vereinbarung, die diesen Umfang abdeckt und
+diesen Empfänger einschließt?*
+
 ## 7. Kern, Schicht 3: Organisationsprofil
 
 Alles, was pro **Organisation** variiert, an einer Stelle. Gelesen vom
@@ -715,6 +747,53 @@ auch für die Mails der Designagentur.
 
 **Zugangsdaten** hängen dagegen an der einzelnen Organisation und werden nicht
 aufgelöst: das GitLab der einen öffnet man nicht mit dem Schlüssel der anderen.
+
+### 7.2 Verarbeitungspolitik ist nicht Offenlegungsbefugnis
+
+Zwei verschiedene Fragen, die leicht verwechselt werden:
+
+| | Frage | Gegenstand |
+|---|---|---|
+| **Verarbeitungspolitik** | Wo darf dieser Inhalt *verarbeitet* werden? | Maschinen, Anbieter, Rechtsräume |
+| **Offenlegungsbefugnis** | Wer darf diesen Inhalt *sehen*? | Organisationen, Personen, Vereinbarungen (§6.5) |
+
+**Die Befugnis gilt am Ausgang, nicht am Eingang.** Das ist die entscheidende
+Festlegung. Fragt Jens *"was wissen wir über die Leistungsfähigkeit dieser
+Agentur?"*, speist sich die Antwort legitim aus **allen** Projekten — das ist
+sein Wissen, keine Offenlegung. Griffe die Befugnis beim Abrufen, könnte er
+seine eigene Erfahrung nicht nutzen.
+
+Geprüft wird, wenn Inhalt **an eine Partei hinausgeht**: Mail, Issue in deren
+Tracker, geteiltes Protokoll.
+
+> **Verarbeitungspolitik gilt am Eingang. Offenlegungsbefugnis gilt am Ausgang.**
+
+Daraus folgen drei Prüfpunkte:
+
+| Prüfpunkt | prüft |
+|---|---|
+| **Gate** (§10.1) | Verarbeitung — darf das in die Cloud? (Pipeline) |
+| **MCP-Server** (§10.1) | Verarbeitung — darf Claude Code das sehen? (interaktiv) |
+| **Renderer / Aktionsschicht** | **Offenlegung** — darf dieser Empfänger das sehen? |
+
+#### Rendern offenbart gegenüber dem gesamten Publikum eines Systems
+
+Ein Work Item im GitLab der Agentur sieht **jeder dort**, nicht nur der
+Ansprechpartner. Die Fähigkeitsstufen (§11.2) brauchen deshalb die Angabe
+**Publikum**: wer hat Zugriff auf dieses System? Ohne sie ist die
+Offenlegungsprüfung Theater.
+
+#### Was das System nicht kann — und was es stattdessen tut
+
+Sitzt jemand von der Agentur in einer Besprechung zu einem Projekt, für das
+keine Vereinbarung vorliegt, dann *findet* die Offenlegung statt, in der
+Wirklichkeit, außerhalb des Systems. Kein Programm verhindert das.
+
+Aber es kann es **bemerken**: eine Projektion über Beteiligung × Vereinbarung
+meldet *"diese Besprechung hatte Teilnehmer ohne deckende Vereinbarung"*. Kostet
+nichts, weil beide Seiten ohnehin im Modell sind — und ist für ein
+Beratungsunternehmen vermutlich eine der nützlicheren Warnungen überhaupt. Es
+verhindert die Lücke nicht, es zeigt sie.
 
 ## 8. Zuordnung: zweistufig
 
@@ -986,11 +1065,15 @@ Kundenlandschaft überlebbar.
 
 ### 11.2 Fähigkeitsstufen
 
-| Stufe | Beispiel | Was geht |
-|---|---|---|
-| beidseitig | eigenes OpenProject, Kunden-GitLab mit API-Key | Events rein, Rendern raus |
-| nur lesend | API-Key ohne Schreibrechte | Events rein |
-| keine API | Kunde will nicht, Altsystem, Freigabe dauert | siehe 11.3 |
+| Stufe | Beispiel | Was geht | Publikum |
+|---|---|---|---|
+| beidseitig | eigenes OpenProject, Kunden-GitLab mit API-Key | Events rein, Rendern raus | zu erfassen |
+| nur lesend | API-Key ohne Schreibrechte | Events rein | — |
+| keine API | Kunde will nicht, Altsystem, Freigabe dauert | siehe 11.3 | — |
+
+**`publikum`** je System: wer hat dort Zugriff? Pflichtangabe für jedes System
+mit Rendern-Richtung, weil die Offenlegungsprüfung (§7.2) daran hängt — nicht
+am nominellen Empfänger.
 
 ### 11.3 IMAP ist der Auffangboden
 
@@ -1166,6 +1249,12 @@ Testbare Kriterien, keine Absichtserklärungen.
 14. **Dach nach Teilung.** Nach einem Split löst ein Verweis auf das Ursprüngliche
    weiter auf, sein Zustand ist aus den Teilen berechnet, und keine Abhängigkeit
    wurde geraten zugewiesen.
+15. **Offenlegung am Ausgang.** Eine Frage, die Wissen aus mehreren Projekten
+   verbindet, wird beantwortet; ein Rendern in ein System ohne deckende
+   Vereinbarung wird verweigert. Beides im selben Durchlauf geprüft.
+16. **Vereinbarungslücke sichtbar.** Eine Besprechung mit einem Teilnehmer ohne
+   deckende Vereinbarung erzeugt eine Meldung.
+
 
 ---
 
@@ -1209,6 +1298,8 @@ Daten messen, danach entscheiden.
 | Standard-Nachfolger beim Splitten | War in einer früheren Fassung vorgesehen. Eine Vermutung, die als Tatsache auftritt — verstößt gegen Leitsatz 9. Ersetzt durch das Dach. |
 | Nur Annahmen festhalten | Ohne festgehaltene Ablehnung nagt das System bei jedem Durchlauf, und die Queue wird nach drei Wochen ignoriert. |
 | Verantwortung als Ja/Nein | Agentenarbeit unter einem abgenommenen Spec ist transitiv abgesegnet, nicht unverantwortet. Ohne die Abstufung wäre entweder Delegation unmöglich oder "selbst geprüft" nicht mehr von "unter Verfahren entstanden" unterscheidbar. |
+| Offenlegung am Eingang filtern | Hätte verhindert, dass Jens sein eigenes projektübergreifendes Wissen nutzen kann — "was wissen wir über diese Agentur?" wäre unbeantwortbar. Die Prüfung sitzt am Ausgang. |
+| Datenpolitik und Offenlegung als ein Feld | Zwei verschiedene Fragen: wo darf verarbeitet werden, und wer darf sehen. Dieselbe Agentur ist in einem Projekt befugt und im nächsten nicht — begrenzend ist die Vereinbarung, nicht die Organisation. |
 | Einzelnes `herkunft`-Feld | Vermischte "wer hat formuliert" mit "wer steht dafür ein". Hätte die Mail eines Auftraggebers mit Jens' eigener Korrektur gleichgestellt und die Messung der Modellgüte still korrumpiert. Ersetzt durch `urheber` + `verantwortung`. |
 | Entität "Kunde" | "Kunde" ist eine Rolle in einem Projekt, keine Art von Organisation. Dieselbe Organisation ist mal Auftraggeber, mal ARGE-Partner, mal Allianzpartner. Ersetzt durch `Organisation` + `Beteiligung`. |
 | Binäre Richtung an der Verpflichtung | "wir / die anderen" kann den Fall nicht ausdrücken, dass zwei Dritte sich etwas schulden und uns das blockiert. Ersetzt durch Schuldner und Gläubiger als Akteure. |
