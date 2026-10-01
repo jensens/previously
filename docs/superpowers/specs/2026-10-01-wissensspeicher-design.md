@@ -737,3 +737,71 @@ Daten messen, danach entscheiden.
 | Claude über OpenRouter für Mandantendaten | Kostet den direkten DPA und ZDR, macht Prompt Caching unvorhersagbar. |
 | Mandantenfähigkeit im MVP | Ein Benutzer. Die Architektur hält sie offen (Kundenprofil, MCP-Kontext), gebaut wird sie nicht. |
 | Konfigurationsoberfläche für Freigaben | Benutzt niemand. Freigaben entstehen in der Queue. |
+
+---
+
+## 18. Verhältnis zu RAG
+
+Diese Frage stellt jeder, der den Entwurf liest. Kurz: **RAG ist eine
+Komponente hierin, nicht die Architektur** — und der Unterschied erklärt die
+meisten Entscheidungen oben.
+
+### Der entscheidende Satz
+
+**"Überfällig" steht in keinem Dokument.**
+
+Kein Textabschnitt im Postfach enthält die Information, dass eine
+Verpflichtung überfällig ist. Das ist eine Rechnung aus einer extrahierten
+Frist und dem heutigen Datum. Retrieval findet Stellen, die *über* Fristen
+reden; es findet nicht, welche gerissen sind.
+
+Dasselbe gilt für fast alles, was gefragt werden soll: "Was schuldet der
+Kunde uns?", "Was haben wir im März entschieden?", "Welche Frage ist seit vier
+Monaten unbeantwortet?" Keine davon ist eine Suchfrage.
+
+### Der architektonische Unterschied
+
+RAG verschiebt das Verstehen auf die **Abfragezeit**: Frage einbetten, k
+ähnlichste Abschnitte holen, in den Prompt stopfen, Modell antworten lassen.
+Dieser Entwurf verschiebt es auf die **Aufnahmezeit**: einmal verstehen, als
+Feststellung ablegen — danach ist die Abfrage eine Datenbankabfrage.
+
+| | klassisches RAG | dieser Entwurf |
+|---|---|---|
+| Verstehen passiert | bei jeder Frage neu | einmal, bei der Aufnahme |
+| Weltmodell | keines — nur Text und Ähnlichkeit | neun Entitäten mit Bedeutung |
+| "alle offenen Punkte" | die k ähnlichsten Abschnitte | **vollständig**, per Abfrage |
+| Kosten pro Frage | immer ein Modellaufruf | meist keiner |
+| Belegbarkeit | "aus diesem Abschnitt" | Feststellung mit Pflicht-`quellen` bis zur Einheit |
+| Zeit | nur der aktuelle Index | zwei Zeitstempel, Stichtagsabfragen |
+| Schreibt zurück | nein | ja, mit Freigabeklassen und Audit |
+
+Die dritte Zeile wiegt am meisten. Eine Vektorsuche liefert die ähnlichsten
+Treffer, und **man erfährt nie, was der (k+1)-te war.** Für "wo stand das
+nochmal?" ist das in Ordnung. Für "was ist alles offen?" ist es falsch, und
+zwar unauffällig falsch: man bekommt eine plausible Liste und hält sie für
+vollständig.
+
+Dazu: das schwierigste Problem dieses Systems ist kein Retrieval-Problem,
+sondern **Zuordnung und Zerlegung** (§8). RAG hat keine Meinung dazu, zu
+welchem Kunden eine Mail gehört. Der stärkste Hebel dafür — die
+Teilnehmerregel in §8.1 — ist eine Mengenoperation, gar keine KI-Technik.
+
+### Wo RAG tatsächlich steckt
+
+In §10, als **Rückfallpfad für Fragen, bei denen Struktur nicht hilft**: "Wo
+haben wir mal über Georeferenzierung geredet?" Das ist semantische Suche, das
+sind Embeddings, das ist RAGs Heimspiel. Die Embedding-Entscheidung in §10.2
+(lokal, immer) *ist* eine RAG-Komponentenentscheidung.
+
+Suchmaschine angebaut — nicht Suchmaschine als Fundament.
+
+### Ehrliche Einordnung
+
+RAG ist das, wonach man zuerst greift, weil es in zwei Tagen steht, und es
+hätte einen Teil des Problems gelöst: die "wo stand das nochmal"-Fragen, grob
+ein Drittel. Der Rest — der Teil, der durch den Inbox-Dschungel führt —
+braucht Extraktion vorab.
+
+Preis: mehr Arbeit vorne. Gewinn: billiger pro Frage, vollständige Antworten,
+und ein Audit-Trail, der kein Zusatzprojekt ist.
