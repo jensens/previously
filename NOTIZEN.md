@@ -849,3 +849,73 @@ Frist von der Vorgangsgrenze abhängig zu machen.
 3. **Frage** aufgelöst in `Verpflichtung{art: antwort}` — ja
 4. **Vorgang** vorgeschlagen/korrigierbar — ja, **und** Dreh- und Angelpunkt
    für den Zugang
+
+## KORREKTUR: "Kunde" ist keine Entität, sondern eine Rolle
+
+Jens: "Der Kunde kommt ja von mir. Aber brauchen wir ihn überhaupt als
+Entität? Als 'Beteiligte Organisationen'. Weil darum geht es oft. Ein Projekt
+hat eine Designagentur mit Personen, einen Auftraggeber (aka Kunde), eine
+Hostingfirma und dann Projektpartner unserer BlueDynamics Alliance. Eine Person
+kann auch einmal Kunde sein (z.B. Mirko bekommt einen Auftrag und wir arbeiten
+als Subunternehmer) — Mirko ist aber Partner in der BlueDynamics Alliance wie
+wir. Nächstes Mal arbeite ich mit ihm als ARGE an einem grossen Projekt. **Das
+ist nicht hypothetisch, sondern durchaus was wir die letzten 20 Jahre gelebt
+haben.**"
+
+### Derselbe Fehler zum zweiten Mal
+
+Rolle als Eigenschaft statt als Beziehung — erst bei Person (von Jens
+korrigiert), dann bei "Kunde" als Entitätsart. Zweimal ist ein Muster, nicht
+ein Versehen. Daher **Leitsatz 7: Rollen sind immer Beziehungen, nie
+Eigenschaften.** Prüffrage: *Könnte das im nächsten Projekt anders sein?*
+
+### Änderungen
+
+- `Kunde` → **`Organisation`** mit `art: firma | einzelperson | verein |
+  behörde`. Die eigene trägt `eigene`. `einzelperson` darf auf eine `Person`
+  verweisen, ohne den Menschen mit seiner Gesellschaft zu verwechseln.
+- **`Beteiligung` wird über Akteure verallgemeinert**: Akteur (Person *oder*
+  Organisation) × Ziel × Rolle × Zeitraum. Eine Relation, nicht zwei — damit
+  es *einen* Ort für Rollen gibt. Preis: Organisationsbeteiligung geht
+  praktisch nie auf Aufgabenebene, die Relation wird ungleichmäßig genutzt.
+- Rollenvokabular **erweiterbar, nicht abgeschlossen**. Organisation:
+  `auftraggeber`, `auftragnehmer`, `subunternehmer`, `arge-partner`,
+  `allianzpartner`, `dienstleister`. Person: `mitarbeiter`, `partner`,
+  `freelancer`, `ansprechpartner`.
+
+### Der eigentliche Gewinn: drei Fälle statt zwei
+
+Verpflichtung bekommt **Schuldner und Gläubiger als Akteure** statt einer
+binären Richtung:
+
+| Schuldner | Folge |
+|---|---|
+| eigene Organisation | erzeugt Aufgaben |
+| ein anderer, Gläubiger sind wir | keine Aufgabe, wird überfällig, sichtbar |
+| **zwei andere, uns betreffend** | **beobachtet** — wir treiben es, ohne Partei zu sein |
+
+> "Die Hostingfirma schuldet der Designagentur die DNS-Umstellung — und das
+> blockiert uns."
+
+Der dritte Fall ist kooperatives Projektmanagement in Reinform und war vorher
+nicht ausdrückbar. Ketten ebenso: `wir → Subunternehmer-Auftraggeber →
+Endauftraggeber`.
+
+### Drei Folgewirkungen
+
+**Teilnehmerregel wird besser.** Alt: "Kundenpersonen diskriminieren stark,
+eigene Leute kaum." Das war ein Behelf. Neu: **Unterscheidungskraft ist
+umgekehrt proportional zur Zahl der Projekte, in denen ein Akteur beteiligt
+ist.** Gilt für Personen *und* Organisationen. Eigene Leute sind nur deshalb
+schwach, weil sie in vielen Projekten stecken — nicht weil sie eigene sind.
+
+**Kundenprofil → Organisationsprofil, mit Auflösung.** Ein Projekt hat mehrere
+beteiligte Organisationen, jede bringt ein Profil mit. Es gilt **die strengste
+Festlegung** — daher **Leitsatz 8**. Datenpolitik: sagt eine `nur_lokal`, gilt
+das für alles im Projekt. Aufnahme: nur wenn *jede* anwesende Organisation
+zugestimmt hat. Zugangsdaten werden **nicht** aufgelöst — das GitLab der einen
+öffnet man nicht mit dem Schlüssel der anderen.
+
+**Organisationsprotokoll statt Kundenprotokoll.** "Alles mit Mirko" über alle
+Projekte und Rollen — nach Rolle filterbar, nicht nach Rolle zerschnitten.
+Nach 20 Jahren vermutlich die häufiger gebrauchte Ansicht.

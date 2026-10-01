@@ -13,8 +13,9 @@ verworfenen Varianten liegt in `../../../NOTIZEN.md`.
 Nicht mehr in N Inboxen nachsehen müssen, um zu wissen, wo ein Kundenprojekt
 steht.
 
-Alles, was zu einem Kunden hereinkommt — Mail, Chat, Besprechung, Dokument,
-Issue — fließt in einen Speicher, wird Kunde, Projekt und Vorgang zugeordnet,
+Alles, was zu einem Projekt hereinkommt — Mail, Chat, Besprechung, Dokument,
+Issue — fließt in einen Speicher, wird Organisation, Projekt und Vorgang
+zugeordnet,
 und ist von dort als Verlauf, offene Verpflichtung und getroffene Entscheidung
 jederzeit abrufbar. Von derselben Stelle aus wird gehandelt: Antwort
 entwerfen, Aufgabe anlegen, Protokoll bereitstellen.
@@ -42,7 +43,7 @@ ist auf ihre Quelle zurückführbar.
 
 ## 3. Leitsätze
 
-Diese fünf Sätze entscheiden im Zweifelsfall. Wenn eine Implementierung mit
+Diese Sätze entscheiden im Zweifelsfall. Wenn eine Implementierung mit
 einem von ihnen bricht, ist die Implementierung falsch.
 
 **1. Autonomie entsteht durch Einschränkung, nicht durch Vertrauen.**
@@ -72,6 +73,17 @@ scharf.
 **6. Im Zweifel mehr aufnehmen, weniger interpretieren.**
 Volle Rohinhalte, alle Kopfzeilen, alle Beteiligten — auch Felder, die heute
 niemand liest. Die Aufnahme ist der einzige unwiederbringliche Schritt.
+
+**7. Rollen sind immer Beziehungen, nie Eigenschaften.**
+Prüffrage für jedes Feld: *Könnte das im nächsten Projekt anders sein?* Wenn
+ja, ist es eine Beziehung mit Zeitraum. Dieser Entwurf hat den Fehler zweimal
+gemacht — erst "Rolle" an der Person, dann "Kunde" als Entitätsart — und beide
+Male war die Antwort offensichtlich ja, sobald jemand hingesehen hat.
+
+**8. Bei mehreren Beteiligten gewinnt die strengste Festlegung.**
+Datenpolitik, Aufnahme-Einwilligung, Freigabeklassen: ein Projekt hat mehrere
+beteiligte Organisationen, und es gilt die restriktivste. Nicht die des
+Auftraggebers, nicht die zuerst eingetragene — die strengste.
 
 ### Warum das zusammen die Revisionsfähigkeit trägt
 
@@ -103,7 +115,7 @@ Punkte berührt. Wenn nicht, ist sie harmlos. Wenn ja, ist sie keine Abkürzung.
   Link ─────────►   │                        │           ├─► Claude Code
   OpenProject ◄──►   │  Projektionen          │           │   (Max-Plan)
   GitLab ◄───────►   │  Entitäten              │           │
-  Nextcloud ◄────►   │  Kundenprofil          │           └─► später: eigene
+  Nextcloud ◄────►   │  Organisationsprofil   │           └─► später: eigene
                      └───────────┬────────────┘               UI, Spracheingabe
                                  │
                                  ▼
@@ -129,10 +141,10 @@ er vom Eingang, nicht vom Benutzer.
 
 | lesend | schreibend |
 |---|---|
-| `protokoll(kunde\|projekt\|vorgang, stichtag?)` | `einwerfen(inhalt, kunde?, projekt?, vorgang?)` |
-| `offene_verpflichtungen(kunde?, richtung?)` | `feststellen(…)` — Korrektur, `herkunft: mensch` |
-| `entscheidungen(kunde, zeitraum?)` | `queue()` / `abnehmen(id, einmal\|klasse)` |
-| `suche(frage, kunde?, vor?)` — der RAG-Pfad (§18) | |
+| `protokoll(organisation\|projekt\|vorgang, stichtag?)` | `einwerfen(inhalt, organisation?, projekt?, vorgang?)` |
+| `offene_verpflichtungen(projekt?, rolle_eigene?)` | `feststellen(…)` — Korrektur, `herkunft: mensch` |
+| `entscheidungen(projekt\|organisation, zeitraum?)` | `queue()` / `abnehmen(id, einmal\|klasse)` |
+| `suche(frage, projekt?, vor?)` — der RAG-Pfad (§18) | |
 | `event(id)` / `einheiten(event_id)` — Zitaten folgen | |
 
 **Fünf Teile.** Ingest und Write-back sind *eine* Schicht, weil jedes
@@ -376,46 +388,85 @@ Alle sind Projektionen über das Event-Log, keine Wahrheitstabellen. Alle
 
 | # | Entität | Zweck |
 |---|---|---|
-| 1 | **Kunde** | Lebt im Kern, weil kein Fremdsystem ihn kennt. |
-| 2 | **Projekt** | Arbeit für einen Kunden. Muss verschobene Grenzen und Umbenennungen aushalten. |
+| 1 | **Organisation** | Firma, Einzelperson, Verein, Behörde. **Keine Rolle im Namen** — "Kunde" ist eine Beteiligung, keine Art von Organisation. Die eigene ist mit `eigene` markiert. |
+| 2 | **Projekt** | Ein Vorhaben mit mehreren beteiligten Organisationen. Muss verschobene Grenzen und Umbenennungen aushalten. |
 | 3 | **Person** | Ein Mensch. |
 | 4 | **Kanalidentität** | Mailadresse, Signal-Nummer, Discord-Handle, Sprecherkennung, Fremdsystem-Benutzer. Eigenständig, weil eine unbekannte Adresse eine Identität **ohne** Person ist — das ist der Zustand "unsortiert". |
-| 5 | **Beteiligung** | Person × (Projekt oder Aufgabe) × Rolle × Zeitraum. |
+| 5 | **Beteiligung** | Akteur (Person **oder** Organisation) × Ziel (Projekt oder Aufgabe) × Rolle × Zeitraum. |
 | 6 | **Vorgang** | Die inhaltliche Klammer. Primäre Zugangsebene. |
-| 7 | **Verpflichtung** | Wer schuldet wem was, bis wann, in welchem Zustand. **Mit Richtung.** |
+| 7 | **Verpflichtung** | Wer schuldet wem was, bis wann, in welchem Zustand. **Schuldner und Gläubiger**, beide Akteure. |
 | 8 | **Aufgabe** | Ausführbare Arbeit. Trägt die PM-Verknüpfung. |
 | 9 | **Entscheidung** | Was wurde entschieden, von wem, wann, auf welcher Grundlage. |
 
-### 6.1 Beteiligung
+### 6.1 Organisation und Beteiligung
 
-Rolle ist eine Beziehung, keine Eigenschaft der Person. Alex ist
-*Freelancer bei Projekt A* **und** *Freelancer bei Projekt B* — zwei
-Beteiligungen, nicht zwei Rollen an einer Person.
+**"Kunde" ist keine Entitätsart, sondern eine Rolle in einem Projekt.** Die
+gelebte Wirklichkeit der letzten zwanzig Jahre: ein Projekt hat eine
+Designagentur mit eigenen Leuten, einen Auftraggeber, eine Hostingfirma und
+Projektpartner aus der BlueDynamics Alliance. Dieselbe Organisation ist in
+einem Projekt Auftraggeber (wir als Subunternehmer), im nächsten ARGE-Partner
+auf Augenhöhe, daneben dauerhaft Allianzpartner.
 
-Rollen: `mitarbeiter`, `partner`, `freelancer`, `kundenperson`.
+`Organisation.art`: `firma | einzelperson | verein | behörde`. Der Fall
+`einzelperson` deckt ab, dass wirklich eine natürliche Person Auftraggeber
+ist, und darf auf eine `Person` verweisen — ohne den Menschen mit seiner
+Gesellschaft zu verwechseln. Die eigene Organisation trägt `eigene`.
 
-Das Ziel ist Projekt **oder** Aufgabe. Grobe und feine Beteiligung sind kein
-Modellunterschied, nur ein Zielunterschied.
+**Beteiligung ist eine Relation über Akteure**, nicht zwei getrennte
+Relationen. Akteur ist Person oder Organisation; das Rollenvokabular ist nach
+Akteursart getrennt, die Relation ist dieselbe. Der Grund ist nicht Sparsamkeit,
+sondern Leitsatz 7: wenn es **einen** Ort für Rollen gibt, kann man beim
+nächsten Mal nicht vergessen, eine Rolle relational zu machen.
 
-Der Zeitraum fällt gratis an, weil Beteiligung eine Projektion über
-Feststellungen mit Ereigniszeit ist. "Wer war im März 2024 beteiligt?" ist
-dieselbe Abfrage mit anderem Stichtag.
+| Akteursart | Rollen (erweiterbar) |
+|---|---|
+| Organisation | `auftraggeber`, `auftragnehmer`, `subunternehmer`, `arge-partner`, `allianzpartner`, `dienstleister` |
+| Person | `mitarbeiter`, `partner`, `freelancer`, `ansprechpartner` |
+
+Das Vokabular ist **erweiterbar, nicht abgeschlossen.** Ein fester Satz wäre
+nach zwanzig Jahren wechselnder Konstellationen innerhalb eines Jahres falsch.
+
+Weitere Eigenschaften, unverändert aus der vorigen Fassung:
+
+- Alex ist *Freelancer bei Projekt A* **und** *Freelancer bei Projekt B* —
+  zwei Beteiligungen, nicht zwei Rollen an einer Person.
+- Das Ziel ist Projekt **oder** Aufgabe. Grobe und feine Beteiligung sind kein
+  Modellunterschied, nur ein Zielunterschied. (Organisationsbeteiligung geht
+  praktisch nie auf Aufgabenebene — die Relation wird ungleichmäßig genutzt,
+  das ist in Kauf genommen.)
+- Der Zeitraum fällt gratis an, weil Beteiligung eine Projektion über
+  Feststellungen mit Ereigniszeit ist. "Wer war im März 2024 beteiligt?" ist
+  dieselbe Abfrage mit anderem Stichtag.
 
 ### 6.2 Verpflichtung und Aufgabe sind zwei Dinge
 
 | | |
 |---|---|
-| **Verpflichtung** | Der Sachverhalt: "Wir schulden dem Kunden den Bericht bis 30.4." |
+| **Verpflichtung** | Der Sachverhalt: "Wir schulden dem Auftraggeber den Bericht bis 30.4." |
 | **Aufgabe** | Die Arbeit: "Kapitel 3 schreiben", "Review mit Anna". |
 
 Eine Verpflichtung erzeugt null bis mehrere Aufgaben. Eine Aufgabe kann ohne
 Verpflichtung existieren (interne Arbeit).
 
-**Eine Verpflichtung des Kunden erzeugt bei uns keine Aufgabe** — muss aber im
-Protokoll stehen und überfällig werden können. Bei einer zusammengelegten
-Entität wäre genau das kaputt, und es ist die Hälfte der Wahrheit in
-kooperativem Projektmanagement: was der Kunde *uns* schuldet, steht heute in
-keinem Werkzeug und liegt nur in Mails herum.
+**Schuldner und Gläubiger sind beide Akteure**, nicht eine binäre Richtung
+"wir / die anderen". Daraus ergeben sich **drei** Fälle, nicht zwei:
+
+| Schuldner | Folge |
+|---|---|
+| die eigene Organisation | erzeugt Aufgaben |
+| ein anderer, Gläubiger sind wir | erzeugt **keine** Aufgabe, wird überfällig, muss sichtbar sein |
+| zwei andere, uns betreffend | **beobachtet** — wir treiben es, ohne Partei zu sein |
+
+Der dritte Fall ist kooperatives Projektmanagement in Reinform:
+
+> *"Die Hostingfirma schuldet der Designagentur die DNS-Umstellung — und das
+> blockiert uns."*
+
+Eine Verpflichtung, bei der wir weder Schuldner noch Gläubiger sind, die aber
+überfällig werden kann und im Protokoll stehen muss. In keinem Werkzeug
+abbildbar, das nur "meine Aufgaben" kennt. Dasselbe gilt für Ketten:
+`wir → Subunternehmer-Auftraggeber → Endauftraggeber` ist eine Kette, nicht
+zwei unverbundene Zweiparteien-Sachen.
 
 Arten: `lieferung`, `antwort`, `entscheidung`, `zahlung`.
 
@@ -436,7 +487,8 @@ dieselbe Verknüpfung, einmal vorhanden und einmal erzeugt.
 **Eine zusammenhängende Klärung oder Abwicklung mit erkennbarem Anlass und
 erkennbarem Abschluss.** Beispiele: "Change Request Datenmodell", "Angebot
 Phase 2", "Exportfehler vom 14.3." Feiner als ein Projekt, grober als ein
-Event. Hängt an einem Kunden, kann mehrere Projekte berühren.
+Event. Hängt an einem Projekt — oder, wenn er projektübergreifend ist, an
+einer Organisation.
 
 Technisch ein Bündel von Einheiten aus mehreren Events, angesetzt an harten
 Signalen (Mail-Thread-Header, Issue-Referenzen, Nummernverweise), vom Modell
@@ -453,20 +505,37 @@ Vorgangsgrenze abhängt, wäre falsch.
 
 ---
 
-## 7. Kern, Schicht 3: Kundenprofil
+## 7. Kern, Schicht 3: Organisationsprofil
 
-Alles, was pro Kunde variiert, an einer Stelle. Gelesen vom Policy-Gate, vom
-Konnektor-Lader und von der Freigabe-Queue.
+Alles, was pro **Organisation** variiert, an einer Stelle. Gelesen vom
+Policy-Gate, vom Konnektor-Lader und von der Freigabe-Queue.
 
 ```
-kunde
-systeme             [{art, basis_url, fähigkeitsstufe, zugangsdaten-ref}]
-datenpolitik        cloud_erlaubt | gestuft | nur_lokal
-freigabeklassen     [{aktionsklasse, zustand}]
+organisation
+systeme                 [{art, basis_url, fähigkeitsstufe, zugangsdaten-ref}]
+datenpolitik            cloud_erlaubt | gestuft | nur_lokal
+freigabeklassen         [{aktionsklasse, zustand}]
 aufnahme_einwilligung
 ```
 
----
+### 7.1 Auflösung bei mehreren Beteiligten
+
+Ein Projekt hat mehrere beteiligte Organisationen, und jede bringt ihr Profil
+mit. **Es gilt die strengste Festlegung** (Leitsatz 8) — nicht die des
+Auftraggebers, nicht die zuerst eingetragene.
+
+| Gegenstand | Auflösung |
+|---|---|
+| `datenpolitik` | strengste aller Beteiligten. Sagt eine Organisation `nur_lokal`, gilt das für **alles** in diesem Projekt. |
+| `aufnahme_einwilligung` | eine Besprechung darf nur mitgeschnitten werden, wenn **jede** anwesende Organisation zugestimmt hat |
+| `freigabeklassen` | eine Dauerfreigabe gilt nur, wenn keine beteiligte Organisation sie ausschließt |
+
+Beispiel: Sagt der Auftraggeber "unsere Daten bleiben in der EU" und die
+Designagentur ist entspannt, dann gilt EU — für den gesamten Projektinhalt,
+auch für die Mails der Designagentur.
+
+**Zugangsdaten** hängen dagegen an der einzelnen Organisation und werden nicht
+aufgelöst: das GitLab der einen öffnet man nicht mit dem Schlüssel der anderen.
 
 ## 8. Zuordnung: zweistufig
 
@@ -477,20 +546,29 @@ Projekt übrig, ist es das.**
 
 ```
 Discord #general, 10:00–10:45
-  anwesend: Jens, Alex, [Kundenperson A]
+  anwesend: Jens, Alex, [Ansprechpartner Organisation A]
   → Schnittmenge der Beteiligungen: { Projekt A }
   → Zuordnung: Projekt A · herkunft: regel · sicher
 
 Discord #general, 11:00–12:00
-  anwesend: Jens, Alex, [Kundenperson B], [Kundenperson C]
+  anwesend: Jens, Alex, [Ansprechpartner Org. B], [Ansprechpartner Org. B]
   → Schnittmenge: { Projekt B }
   → Zuordnung: Projekt B · herkunft: regel · sicher
 ```
 
 Derselbe Raum, dieselbe Person Alex, zwei Projekte. Alex trägt zur
-Unterscheidung nichts bei; die Kundenpersonen tragen alles. Rollen sind
-deshalb nicht Dekoration: **Kundenpersonen diskriminieren stark, eigene Leute
-kaum.**
+Unterscheidung nichts bei; die projektspezifisch Beteiligten tragen alles.
+
+Der allgemeine Satz dahinter: **Unterscheidungskraft ist umgekehrt proportional
+zur Zahl der Projekte, in denen ein Akteur beteiligt ist.** Wer in genau einem
+Projekt steckt, identifiziert es eindeutig; wer in zehn steckt, trägt fast
+nichts bei. Das gilt für Personen **und Organisationen** — die Absenderdomäne
+einer Hostingfirma, die nur in einem Projekt vorkommt, identifiziert es sofort.
+
+(Eine frühere Fassung formulierte das als "Kundenpersonen diskriminieren stark,
+eigene Leute kaum". Das war ein Behelf für denselben Gedanken — eigene Leute
+sind nur deshalb schwach, weil sie in vielen Projekten stecken, nicht weil sie
+eigene Leute sind.)
 
 Deterministisch, auditierbar, kostet keinen Token, und kein Modell kann es
 falsch machen. Gilt überall: bei Mail der Empfängerkreis einschließlich CC —
@@ -541,14 +619,18 @@ berechenbar — auf jeden Stichtag, in beiden Zeitordnungen.
 
 ### 9.1 Die Protokollfamilie
 
-**Eine Maschine, drei Zuschnitte:** Kundenprotokoll, Projektprotokoll,
-Vorgangsprotokoll. Der Vorgang bekommt seine Ansicht dadurch gratis.
+**Eine Maschine, drei Zuschnitte:** Organisationsprotokoll, Projektprotokoll,
+Vorgangsprotokoll. Das Organisationsprotokoll ist dabei nützlicher als ein
+"Kundenprotokoll" wäre: "alles mit Mirko" über alle Projekte und alle Rollen
+hinweg — nach Rolle filterbar, aber nicht nach Rolle zerschnitten. Der Vorgang bekommt seine Ansicht dadurch gratis.
 
 ```
-KUNDE <name> — Stand 1. Oktober 2026
+ORGANISATION <name> — Stand 1. Oktober 2026
+Rollen: Auftraggeber (Projekt X), ARGE-Partner (Projekt Y)
 
-Offen von uns          3 Verpflichtungen, davon 1 überfällig
-Offen vom Kunden       2 Verpflichtungen, 1 unbeantwortete Frage (4 Monate)
+Wir schulden           3 Verpflichtungen, davon 1 überfällig
+Uns wird geschuldet    2 Verpflichtungen, 1 unbeantwortete Frage (4 Monate)
+Beobachtet             1 überfällig zwischen Dritten, blockiert uns
 Letzte Entscheidungen  3
 
 ── Chronik (Ereigniszeit) ──────────────────────────────
@@ -597,25 +679,28 @@ Beide schreiben in dasselbe Audit-Log. "Was hat Claude je über Kunde X
 gesehen?" wird aus dem **MCP-Zugriffsprotokoll** beantwortet, nicht aus dem
 Gate-Log.
 
-**Konsequenz:** Steht ein Kunde auf `nur_lokal`, verweigert der MCP-Server
-dessen Inhalte an Claude Code — das Cockpit wird für diesen Kunden stumpfer
+**Konsequenz:** Steht eine beteiligte Organisation auf `nur_lokal`, verweigert
+der MCP-Server die Inhalte des betroffenen Projekts an Claude Code — das
+Cockpit wird für dieses Projekt stumpfer
 (strukturierte Abfragen ja, KI-Unterstützung nur mit lokalem Client). Das ist
 kein Konstruktionsfehler, sondern der Preis der Datenpolitik, und er trifft
 die interaktive Seite härter als die Pipeline.
 
 ```
-llm(aufgabe, nutzlast, kontext{kunde, projekt, vertraulichkeit}) → ergebnis
+llm(aufgabe, nutzlast, kontext{projekt, vertraulichkeit}) → ergebnis
 ```
 
 **`vertraulichkeit` ist nicht dasselbe wie Zuordnung** und hat deshalb einen
 eigenen Namen. Sie kommt aus zwei Quellen, in dieser Reihenfolge: der
-`datenpolitik` des Kundenprofils als Vorgabe, und optional einer Feststellung
+aufgelösten `datenpolitik` des Projekts (§7.1) als Vorgabe, und optional einer
+Feststellung
 `art: vertraulichkeit` über einzelne Einheiten, wenn ein Abschnitt sensibler
-ist als der Kundenstandard (Gehaltsdaten, Vertragsentwurf, Personensache).
+ist als die Projektvorgabe (Gehaltsdaten, Vertragsentwurf, Personensache).
 Die strengere der beiden gewinnt.
 
-Das Gate entscheidet Anbieter und Modell für diese Nutzlast daraus. Heute gibt es für alle Kunden "Cloud erlaubt"
-zurück; später steht dort eine Regel pro Kunde. Ein Modul, keine
+Das Gate entscheidet Anbieter und Modell für diese Nutzlast daraus. Heute gibt
+es für alle Projekte "Cloud erlaubt" zurück; später steht dort die aufgelöste
+Regel des Projekts. Ein Modul, keine
 Umbaumaßnahme.
 
 **Damit zu rechnen:** Die Policy-Schicht enthält im ersten Jahr echte Regeln.
@@ -719,7 +804,7 @@ entsprechend gut sein.**
 | Pfad | Zuordnung | Anmerkung |
 |---|---|---|
 | **IMAP** | geraten | automatisch, kontinuierlich |
-| **Drop-Ordner** | Unterordner = Kunde | ein Nextcloud-Ordner: funktioniert auch vom Telefon |
+| **Drop-Ordner** | Unterordner = Organisation | ein Nextcloud-Ordner: funktioniert auch vom Telefon |
 | **Einwurf per Prompt** | Jens sagt sie | `belegart: erinnerung`. Hier landet später die Spracheingabe — derselbe Pfad, anderes Eingabegerät |
 | **Quelle verlinken** | Jens sagt sie | GitLab-/GitHub-Issue-URL; wird geholt und nachgehalten |
 
@@ -770,13 +855,13 @@ Kriterien für die Entscheidung. Vorweg: **das Datenvolumen ist klein** — bei
 Chats einstellige Millionen Events und zweistellige Gigabytes Text. Eine
 Maschine. Deshalb entscheiden nicht Durchsatzfragen, sondern:
 
-1. **Vektorsuche mit Vorfilter.** "Ähnliche Passagen, aber nur Kunde X, nur
+1. **Vektorsuche mit Vorfilter.** "Ähnliche Passagen, aber nur Projekt X, nur
    vor dem 14. März." Manche Engines filtern erst nach der Suche nach und
    liefern dann zu wenige Treffer.
 2. **Deutsche Volltextsuche.** Snowball-Stemming kommt mit Komposita nicht
    zurecht — wer "Vergaberecht" sucht, findet "Recht der Vergabe" nicht.
    Bei diesen Inhalten keine Randnotiz.
-3. **Reprojektion als Stream.** Alle Events eines Kunden lesen und neu
+3. **Reprojektion als Stream.** Alle Events eines Projekts lesen und neu
    rechnen, ohne alles in den Speicher zu ziehen.
 
 ---
@@ -883,10 +968,11 @@ Testbare Kriterien, keine Absichtserklärungen.
 Österreich nicht ohne Weiteres zulässig — einschlägig dürfte § 120 StGB sein,
 datenschutzrechtlich braucht es Rechtsgrundlage und Transparenz gegenüber
 allen Beteiligten. Dies ist keine Rechtsauskunft. Praktisch zu erwarten:
-Ansage zu Gesprächsbeginn, Einwilligung pro Kunde im Kundenprofil, und ohne
+Ansage zu Gesprächsbeginn, Einwilligung pro Organisation im
+Organisationsprofil, und ohne
 Einwilligung läuft der Abgriff nicht. Zwei Entwurfsfolgen stehen schon fest:
 **transkribieren, Audio nicht aufbewahren**, und **Einwilligung gehört ins
-Kundenprofil**.
+Organisationsprofil**.
 
 **Hardware:** Der vorhandene Rechner (4 Kerne, 62 GB RAM, keine dedizierte
 GPU) trägt Whisper-Transkription und lokale Embeddings, aber kein
@@ -902,11 +988,14 @@ Daten messen, danach entscheiden.
 | Verworfen | Grund |
 |---|---|
 | "Aussage" / "Zusage" als eigene Entität | Überlappt mit Verpflichtung und Entscheidung, wird zur Resterampe. Kommt, wenn im Betrieb etwas fehlt, das nirgends passt. |
+| Entität "Kunde" | "Kunde" ist eine Rolle in einem Projekt, keine Art von Organisation. Dieselbe Organisation ist mal Auftraggeber, mal ARGE-Partner, mal Allianzpartner. Ersetzt durch `Organisation` + `Beteiligung`. |
+| Binäre Richtung an der Verpflichtung | "wir / die anderen" kann den Fall nicht ausdrücken, dass zwei Dritte sich etwas schulden und uns das blockiert. Ersetzt durch Schuldner und Gläubiger als Akteure. |
+| Getrennte Relationen für Personen- und Organisationsbeteiligung | Strukturell dieselbe Relation. Ein Ort für Rollen, damit Leitsatz 7 nicht wieder vergessen wird. |
 | Eigene Entität "Frage" | Eine adressierte Frage *ist* eine Verpflichtung. Gelöst als `art: antwort` mit optionalem Schuldner. |
 | Zwei Speicher-Backends | Führt zum kleinsten gemeinsamen Nenner. |
 | Token-Abgriff aus Claude Code als API | Verstoß gegen Nutzungsbedingungen, technisch brüchig. |
 | Claude über OpenRouter für Mandantendaten | Kostet den direkten DPA und ZDR, macht Prompt Caching unvorhersagbar. |
-| Mandantenfähigkeit im MVP | Ein Benutzer. Die Architektur hält sie offen (Kundenprofil, MCP-Kontext), gebaut wird sie nicht. |
+| Mandantenfähigkeit im MVP | Ein Benutzer. Die Architektur hält sie offen (Organisationsprofil, MCP-Kontext), gebaut wird sie nicht. |
 | Konfigurationsoberfläche für Freigaben | Benutzt niemand. Freigaben entstehen in der Queue. |
 
 ---
@@ -955,7 +1044,7 @@ vollständig.
 
 Dazu: das schwierigste Problem dieses Systems ist kein Retrieval-Problem,
 sondern **Zuordnung und Zerlegung** (§8). RAG hat keine Meinung dazu, zu
-welchem Kunden eine Mail gehört. Der stärkste Hebel dafür — die
+welcher Organisation oder welchem Projekt eine Mail gehört. Der stärkste Hebel dafür — die
 Teilnehmerregel in §8.1 — ist eine Mengenoperation, gar keine KI-Technik.
 
 ### Wo RAG tatsächlich steckt
