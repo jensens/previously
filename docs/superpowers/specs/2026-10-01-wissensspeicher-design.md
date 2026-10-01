@@ -81,8 +81,8 @@ gemacht — erst "Rolle" an der Person, dann "Kunde" als Entitätsart — und be
 Male war die Antwort offensichtlich ja, sobald jemand hingesehen hat.
 
 **8. Bei mehreren Beteiligten gewinnt die strengste Festlegung.**
-Datenpolitik, Aufnahme-Einwilligung, Freigabeklassen: ein Projekt hat mehrere
-beteiligte Organisationen, und es gilt die restriktivste. Nicht die des
+Datenpolitik, Aufnahme-Einwilligung, Freigabeklassen, **Rechtsraum**: ein
+Projekt hat mehrere beteiligte Organisationen, und es gilt die restriktivste. Nicht die des
 Auftraggebers, nicht die zuerst eingetragene — die strengste.
 
 Das gilt für **Politiken**. Bei **Befugnissen** (§7.2) ist die Logik eine andere:
@@ -723,11 +723,25 @@ Policy-Gate, vom Konnektor-Lader und von der Freigabe-Queue.
 
 ```
 organisation
+rechtsraum              AT | DE | CH | EU | …   (maßgebliche Rechtsordnung)
 systeme                 [{art, basis_url, fähigkeitsstufe, zugangsdaten-ref}]
-datenpolitik            cloud_erlaubt | gestuft | nur_lokal
+datenpolitik            { extern_erlaubt: bool,
+                          erlaubte_raeume: [EU, CH, …],
+                          ausgeschlossene_anbieter: […] }
 freigabeklassen         [{aktionsklasse, zustand}]
 aufnahme_einwilligung
 ```
+
+**Die Datenpolitik ist strukturiert, nicht dreiwertig.** Eine frühere Fassung
+hatte `cloud_erlaubt | gestuft | nur_lokal` — das kann **"EU ja, USA nein"**
+nicht ausdrücken, und genau das wird die häufigste Auflage sein, nicht
+"nur lokal".
+
+**Die Schweiz ist nicht EU.** Dort gilt das revidierte DSG, nicht die DSGVO.
+EU-Verarbeitung ist für einen Schweizer Auftraggeber also nicht automatisch die
+Antwort, und Schweizer Verarbeitung für einen EU-Auftraggeber nicht automatisch
+ausreichend — zwei Regime, keine Abstufung einer Skala. Daher ist
+`erlaubte_raeume` eine Liste und kein Rang.
 
 ### 7.1 Auflösung bei mehreren Beteiligten
 
@@ -738,7 +752,8 @@ Auftraggebers, nicht die zuerst eingetragene.
 | Gegenstand | Auflösung |
 |---|---|
 | `datenpolitik` | strengste aller Beteiligten. Sagt eine Organisation `nur_lokal`, gilt das für **alles** in diesem Projekt. |
-| `aufnahme_einwilligung` | eine Besprechung darf nur mitgeschnitten werden, wenn **jede** anwesende Organisation zugestimmt hat |
+| `aufnahme_einwilligung` | eine Besprechung darf nur mitgeschnitten werden, wenn **jede** anwesende Organisation zugestimmt hat **und** die Zustimmung der strengsten beteiligten Rechtsordnung genügt |
+| `rechtsraum` | ein Gespräch mit Beteiligten aus mehreren Rechtsordnungen berührt alle gleichzeitig; praktisch bindet die strengste |
 | `freigabeklassen` | eine Dauerfreigabe gilt nur, wenn keine beteiligte Organisation sie ausschließt |
 
 Beispiel: Sagt der Auftraggeber "unsere Daten bleiben in der EU" und die
@@ -1139,8 +1154,22 @@ Umbaumaßnahme.
 Ein Kunde, der seine Entwicklungsumgebung selbst hostet, hat das aus einem
 Grund getan.
 
+#### Der Verarbeitungsraum ist belegbar, nicht nur versprochen
+
+Die Claude-API nimmt einen Parameter für den Verarbeitungsraum, und **die
+Antwort meldet zurück, wo tatsächlich gerechnet wurde** (`usage.inference_geo`).
+Welche Räume wählbar sind, ist beim Bau nachzusehen.
+
+Damit wird aus einer Vertragszusage ein Audit-Eintrag: das Gate setzt den Raum
+aus der aufgelösten `datenpolitik`, liest aus der Antwort, wo gerechnet wurde,
+und schreibt es mit. Einem Auftraggeber gegenüber lässt sich dann nicht nur
+sagen "wir verarbeiten in der EU", sondern es **pro Aufruf belegen** — und eine
+Abweichung zwischen gesetztem und gemeldetem Raum ist ein Alarm, kein
+Schulterzucken.
+
 Dasselbe Gate protokolliert: Zeitpunkt, Aufgabe, Datenreferenzen (keine
-Kopien), Modell, Prompt-Version, Ergebnis, Kosten. **Das Audit-Log ist ein
+Kopien), Modell, Prompt-Version, **gesetzter und gemeldeter Verarbeitungsraum**,
+Ergebnis, Kosten. **Das Audit-Log ist ein
 Nebenprodukt der Policy-Schicht, kein Extra-Projekt.**
 
 Zwei Adapter genügen: Anthropic-SDK und OpenAI-kompatibel. Letzteres deckt
@@ -1462,7 +1491,10 @@ Testbare Kriterien, keine Absichtserklärungen.
    gleichzeitig die Vereinbarungslücken-Meldung.
 20. **Hebelwirkung.** Rückfragen sind nach Zahl der auflösbaren offenen Posten
    sortiert, und diese Zahl ist pro Frage abfragbar.
-21. **Messung pro Einheit.** Eine Zuordnung des Modells über Einheiten 3–4 und
+21. **Verarbeitungsraum belegt.** Zu jedem Modellaufruf steht im Log der
+   gesetzte *und* der gemeldete Verarbeitungsraum, und eine Abweichung löst
+   einen Alarm aus.
+22. **Messung pro Einheit.** Eine Zuordnung des Modells über Einheiten 3–4 und
    eine menschliche über 3–5 ergeben drei Datenpunkte, nicht null.
 
 
@@ -1474,12 +1506,19 @@ Testbare Kriterien, keine Absichtserklärungen.
 |---|---|---|
 | Datenbankwahl | Recherche nach §12 | nein — Adapter-Schnittstelle genügt |
 | Voxtral und Diarisation: aktueller Stand | Recherche | nein — Teil 2 ist verschoben |
-| Gesprächsaufnahme in Österreich | **Rechtsfrage, vor Teil 2 zu klären** | ja, für Teil 2 |
+| Gesprächsaufnahme: Österreich, **Deutschland, Schweiz, EU** | **Rechtsfrage, vor Teil 2 zu klären** — nicht sofort nötig, aber vor dem Bau des Abgriffs | ja, für Teil 2 |
+| Wählbare Verarbeitungsräume der Anbieter | Recherche — welche Werte nimmt `inference_geo`, was bieten andere Anbieter | nein |
 | Call-Plattformen (Jitsi, Teams, Signal, Telefon) | Erhebung | ja, für Teil 2 |
 | Pilotkunde endgültig | Entscheidung, Vertrag prüfen | nein |
 | Externer Compliance-Anlass | Annahme in §5.5, zu bestätigen | nein |
 
-**Zur Rechtsfrage:** Der Mitschnitt nicht öffentlicher Gespräche ist in
+**Zur Rechtsfrage:** Sie betrifft Österreich, Deutschland, die Schweiz und die
+EU — Mandate verteilen sich über diese Räume, und die Vorschriften zum
+Mitschnitt unterscheiden sich. Die Schweiz steht dabei unter eigenem Recht
+(revidiertes DSG, nicht DSGVO). Geklärt werden muss das nicht sofort, aber vor
+dem Bau des Abgriffs.
+
+Der Mitschnitt nicht öffentlicher Gespräche ist in
 Österreich nicht ohne Weiteres zulässig — einschlägig dürfte § 120 StGB sein,
 datenschutzrechtlich braucht es Rechtsgrundlage und Transparenz gegenüber
 allen Beteiligten. Dies ist keine Rechtsauskunft. Praktisch zu erwarten:
@@ -1515,6 +1554,8 @@ Daten messen, danach entscheiden.
 | Identitätsgraph als erste Bauphase | Naheliegend und falsch: er ist ein Ergebnis der ersten Phasen, nicht deren Voraussetzung. |
 | Berechtigungsmodelle der Zielsysteme nachbilden | GitLab-Gruppen und -Rollen, JIRA Permission Schemes und Issue Security Levels, Nextcloud-Freigaben: N Berechtigungssysteme als Nebenprodukt, dauerhaft synchron zu halten. Stattdessen erklärte Zielorte mit erklärter Deckung. |
 | Aufzählung als Gate | Hätte die gesamte Offenlegungsprüfung am schwächsten Adapter aufgehängt. Aufzählung ist Prüfung, Deklaration ist Gate. |
+| Dreiwertige Datenpolitik | `cloud_erlaubt \| gestuft \| nur_lokal` kann "EU ja, USA nein" nicht ausdrücken — und das wird die häufigste Auflage sein, nicht "nur lokal". Ersetzt durch erlaubte Räume als Liste. |
+| Rechtsräume als Rangfolge | Die Schweiz ist nicht "EU minus etwas", sondern ein eigenes Regime. Liste statt Skala. |
 | Offenlegung am Eingang filtern | Hätte verhindert, dass Jens sein eigenes projektübergreifendes Wissen nutzen kann — "was wissen wir über diese Agentur?" wäre unbeantwortbar. Die Prüfung sitzt am Ausgang. |
 | Datenpolitik und Offenlegung als ein Feld | Zwei verschiedene Fragen: wo darf verarbeitet werden, und wer darf sehen. Dieselbe Agentur ist in einem Projekt befugt und im nächsten nicht — begrenzend ist die Vereinbarung, nicht die Organisation. |
 | Einzelnes `herkunft`-Feld | Vermischte "wer hat formuliert" mit "wer steht dafür ein". Hätte die Mail eines Auftraggebers mit Jens' eigener Korrektur gleichgestellt und die Messung der Modellgüte still korrumpiert. Ersetzt durch `urheber` + `verantwortung`. |
