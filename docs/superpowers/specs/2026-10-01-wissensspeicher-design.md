@@ -36,7 +36,7 @@ ist auf ihre Quelle zurückführbar.
 | 4 | Audit | Freigabepflicht **und** Nachvollziehbarkeit **und** revisionssicheres Protokoll. Dauerfreigaben pro Aktionsklasse möglich. |
 | 5 | Wahrheit | Der Kern. Fremdsysteme sind Inbox *und* Artefakt, nie Wahrheitsquelle. |
 | 6 | Sprache | Python, strikt typisiert. PyO3 als benannter Notausgang. Maximal zwei Sprachen. |
-| 7 | Datenbank | Bewusst offen, hinter schmalem Speicher-Adapter. Kriterien in §12. |
+| 7 | Datenbank | **PostgreSQL mit pgvector**, hinter schmalem Speicher-Adapter. Recherche und Begründung in §12. Suchindex bleibt austauschbar, weil er eine Projektion ist. |
 | 8 | MVP | Teile 1, 3, 4 plus MCP-Server. Voice und eigene Oberfläche verschoben. |
 
 ---
@@ -247,6 +247,17 @@ Mechanisch, nicht interpretierend — deshalb Teil der Wahrnehmung.
 | Mail, PDF | Absatz |
 | Transkript | Redebeitrag (liefert die Diarisation) |
 | Issue | Beschreibung, dann je Kommentar |
+
+**Die Sprache hängt an der Einheit, nicht am Dokument.** Projekte enthalten
+regelmäßig deutsche und englische Texte — eine deutsche Mail, die eine englische
+Spezifikation zitiert; ein Transkript, in dem gewechselt wird, weil ein Partner
+dazukommt. Die Einheit ist die richtige Körnung dafür und schon vorhanden.
+
+Die Sprachbestimmung ist eine **Feststellung, keine Eigenschaft der
+Wahrnehmung**: Spracherkennung ist ein Klassifikator und kann irren, besonders
+bei kurzen Einheiten. Nach Leitsatz 4 gehört sie damit ins Fehlbare — und eine
+Neubestimmung mit besserem Erkenner ist später eine neue Feststellung, keine
+Migration.
 
 Eine Neutranskription mit besserem Modell ist eine **neue** Wahrnehmung, keine
 Änderung der alten.
@@ -1089,6 +1100,13 @@ Der Kopf ist keine Zusammenfassung, sondern eine Abfrage über Verpflichtungen
 und Fragen. Jede Zeile trägt Event-IDs und Einheitennummern — stabil,
 nachprüfbar, klickbar.
 
+**Feststellungen stehen in einer Arbeitssprache (Deutsch), Quellen in
+Originalsprache.** Ergibt eine englische Mail eine Verpflichtung, ist deren
+Text deutsch; der zitierte Wortlaut bleibt unübersetzt. Sonst wird das
+Protokoll ein Sprachsalat und als Dokument wertlos. Es braucht dafür nichts
+Neues: die `quellen` zeigen auf die englischen Einheiten, und ein Klick führt
+zum Originalsatz.
+
 **Das Protokoll ist keine gepflegte Datei.** Es wird nie nachgeführt und ist
 deshalb nie veraltet. Eine Korrektur daran ist eine Feststellung mit
 `verantwortung: {jens, direkt}`: sie überschreibt die Quelle nicht, tritt
@@ -1184,6 +1202,14 @@ OpenRouter, Ollama und llama.cpp ab.
 | Interaktive Arbeit, Entwürfe | Claude Code über Max-Plan | deckt den teuren Teil ab |
 | Embeddings | **lokal, immer** | siehe unten |
 | Open-Weight-Vergleiche | OpenRouter | messen statt Hardware kaufen |
+
+**Das Embedding-Modell muss mehrsprachig sein.** Harte Auswahlbedingung, nicht
+Komfort: ein mehrsprachiges Modell bettet "fishing rights" und "Vergaberecht"
+in dieselbe Nachbarschaft ein, ein einsprachig deutsches nicht — und dann
+findet eine deutsche Suche die englische Spezifikation nicht. **Im gemischten
+Fall verdienen die Embeddings ihr Geld am meisten**, weil die Volltextsuche
+dort sprachgetrennt und spröde ist, während Embeddings von Bauart her
+sprachübergreifend arbeiten (§12).
 
 **Embeddings bleiben lokal, ohne Ausnahme.** Nicht aus Kostengründen:
 Embedding ist der einzige Schritt, bei dem *jeder einzelne Inhalt
@@ -1350,21 +1376,93 @@ neu berechenbar, dann ist ein Engine-Wechsel ein Re-Import.
 gemeinsamen Nenner. Ein Backend, hinter einer schmalen Schnittstelle, und die
 Schmalheit wird verteidigt.
 
-Kriterien für die Entscheidung. Vorweg: **das Datenvolumen ist klein** — bei
-150 Mails pro Tag über fünf Jahre rund 275.000 Mails, mit Transkripten und
+### 12.1 Vorbemerkung: das Datenvolumen ist klein
+
+Bei 150 Mails pro Tag über fünf Jahre rund 275.000 Mails; mit Transkripten und
 Chats einstellige Millionen Events und zweistellige Gigabytes Text. Eine
-Maschine. Deshalb entscheiden nicht Durchsatzfragen, sondern:
+Maschine. Deshalb entscheiden nicht Durchsatzfragen, sondern die drei Kriterien
+unten.
 
-1. **Vektorsuche mit Vorfilter.** "Ähnliche Passagen, aber nur Projekt X, nur
-   vor dem 14. März." Manche Engines filtern erst nach der Suche nach und
-   liefern dann zu wenige Treffer.
-2. **Deutsche Volltextsuche.** Snowball-Stemming kommt mit Komposita nicht
-   zurecht — wer "Vergaberecht" sucht, findet "Recht der Vergabe" nicht.
-   Bei diesen Inhalten keine Randnotiz.
-3. **Reprojektion als Stream.** Alle Events eines Projekts lesen und neu
-   rechnen, ohne alles in den Speicher zu ziehen.
+### 12.2 Rechercheergebnis (Oktober 2026)
 
----
+**Empfehlung: PostgreSQL mit pgvector** — eine Datenbank für Event-Log,
+Projektionen und Vektoren.
+
+#### Vektorsuche mit Vorfilter — gelöst
+
+Das alte Problem: der Vektorindex holt k nächste Nachbarn, *danach* filtert die
+`WHERE`-Klausel — verwirft der Filter die meisten, bekommt man drei Treffer statt
+dreißig und merkt es nicht.
+
+**pgvector 0.8 hat iterative Indexscans**: der Index wird weitergescannt, bis
+genug Treffer übrig sind. Und für **stark selektive Filter** (unter etwa 10.000
+Zeilen) gibt es den besseren Weg: ein B-Tree-Index auf der Filterspalte, dann
+filtert Postgres *vor* der Vektorsuche. "Nur Projekt X, nur vor dem 14. März"
+ist genau das — ein Projekt hat tausende, nicht Millionen Events. Also der
+günstige Fall, nicht der Problemfall.
+
+#### Deutsche Volltextsuche — gemischter Befund
+
+| Option | Komposita |
+|---|---|
+| Postgres, Snowball (`german`) | **nein** — "Vergaberecht" findet "Recht der Vergabe" nicht |
+| Postgres, Hunspell-Wörterbuch | **teilweise** — Postgres setzt nur die Grundfunktionen der Hunspell-Kompositalogik um |
+| ParadeDB / `pg_search` (BM25, Tantivy) | deutsches Stemming ja, **kein Hinweis auf Zerlegung** gefunden — für dieses Problem nicht besser als Postgres nativ |
+| Elasticsearch / OpenSearch | **ja** — `hyphenation_decompounder` (empfohlen) und `dictionary_decompounder`, mit fertigen deutschen Datensätzen |
+
+Richtig gut ist nur die Lucene-Welt — und das heißt zweites System.
+
+#### Warum das trotzdem kein Grund ist, Postgres zu verwerfen
+
+**Erstens: die Embeddings tragen den Paraphrasen-Fall.** Lokale Embeddings sind
+ohnehin Pflicht (§10.2), und "Vergaberecht" ≈ "Recht der Vergabe" ist genau,
+was semantische Suche kann. Die Volltextsuche muss die Umschreibung nicht
+leisten — sie muss **wörtliche** Treffer sicher liefern: Namen, Rechnungsnummern,
+Zitate. Dafür genügt Snowball.
+
+**Zweitens, und wichtiger: der Suchindex ist kein Speicher-Entscheid.** Nach
+Leitsatz 3 ist jeder Zustand eine Projektion — ein Suchindex ist ein Zustand und
+damit **jederzeit aus dem Event-Log in eine beliebige Engine neu aufbaubar**.
+
+> Die Wahl der Datenbank legt die Suche nicht fest. Zeigt sich später, dass die
+> Kompositazerlegung wirklich weh tut, kommt ein OpenSearch-Index als
+> **Zweitindex** daneben — ohne den Speicher anzufassen.
+
+Das Kriterium, das am schwerwiegendsten aussah, hat damit die niedrigste
+Bindungswirkung. Umgekehrt als erwartet.
+
+#### Mehrsprachigkeit
+
+Projekte enthalten deutsche **und** englische Texte. Volltextsuche ist in
+Postgres sprachabhängig konfiguriert: `sprache` an der Einheit (§5.1), Index mit
+der passenden Konfiguration, bei der Abfrage beide befragen und zusammenführen.
+Billig und Standard.
+
+Die `simple`-Konfiguration für alles ist **keine** Lösung — ohne Stemming
+verliert man gerade bei deutschen Flexionsformen die halbe Trefferquote.
+
+Englisch macht **beide** Optionen gleichermaßen aufwendiger (Postgres braucht
+`german` und `english`, Lucene braucht zwei Analyzer) und verschiebt den
+Vergleich daher nicht.
+
+#### Reprojektion als Stream — unkritisch
+
+Serverseitige Cursor, Standard. Die Schnittstelle muss es als Stream anbieten,
+damit niemand alles in eine Liste lädt — eine Disziplinfrage, keine Engine-Frage.
+
+### 12.3 Offener Messversuch
+
+Die Kompositafrage wird mit Daten entschieden, nicht mit Meinung: tausend echte
+Mails, zwanzig Suchanfragen, die Jens wirklich tippen würde, Trefferquote bei
+Snowball / Hunspell / Embeddings vergleichen. Ein Tag Arbeit, und es steht fest,
+ob der Zweitindex je nötig wird.
+
+### 12.4 Quellen
+
+- [pgvector](https://github.com/pgvector/pgvector) · [Skalierung und Filterung](https://clickhouse.com/resources/engineering/scale-vector-search-postgres)
+- [Postgres-Diskussion zu deutschen Komposita](https://www.postgresql.org/message-id/556C1411.4010608@tbz-pariv.de) · [Hunspell-Wörterbuch mit Kompositaunterstützung](https://github.com/vpikulik/hunspell_de_compounds)
+- [ParadeDB Tokenizer](https://www.paradedb.com/docs/reference/tokenizers/overview) · [ParadeDB Stemmer](https://www.paradedb.com/docs/documentation/token-filters/stemming)
+- [Elastic `dictionary_decompounder`](https://www.elastic.co/docs/reference/text-analysis/analysis-dict-decomp-tokenfilter) · [Kompositasuche](https://www.elastic.co/search-labs/blog/compound-word-search) · [deutsche Datensätze](https://github.com/uschindler/german-decompounder)
 
 ## 13. Bestandsimport
 
@@ -1504,7 +1602,9 @@ Testbare Kriterien, keine Absichtserklärungen.
 
 | Punkt | Art | Blockiert |
 |---|---|---|
-| Datenbankwahl | Recherche nach §12 | nein — Adapter-Schnittstelle genügt |
+| ~~Datenbankwahl~~ | **entschieden**: PostgreSQL + pgvector (§12.2) | — |
+| Messversuch deutsche Komposita | §12.3 — entscheidet nur, ob ein Zweitindex nötig wird | nein |
+| Auswahl des mehrsprachigen Embedding-Modells | §10.2 | nein |
 | Voxtral und Diarisation: aktueller Stand | Recherche | nein — Teil 2 ist verschoben |
 | Gesprächsaufnahme: Österreich, **Deutschland, Schweiz, EU** | **Rechtsfrage, vor Teil 2 zu klären** — nicht sofort nötig, aber vor dem Bau des Abgriffs | ja, für Teil 2 |
 | Wählbare Verarbeitungsräume der Anbieter | Recherche — welche Werte nimmt `inference_geo`, was bieten andere Anbieter | nein |
