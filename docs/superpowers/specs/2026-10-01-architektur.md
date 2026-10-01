@@ -788,6 +788,116 @@ unterschiedliche Verantwortung:
 Beide brauchen **keine Netzschnittstelle zum Rest** — sie brauchen Zugriff auf
 das Log. Das ist ein Datenbankzugang, kein Dienstvertrag.
 
+### 10.3 Blob-Speicher: inhaltsadressiert, privat
+
+Binär fällt an: Mail-Anhänge, PDFs aus dem Drop-Ordner, Bilder in Issues.
+Größenordnung über fünf Jahre etwa 50 GB — vergleichbar mit oder größer als
+der Text. **Audio fällt nicht an**: transkribieren, nicht aufbewahren (§10.2 im
+Entwurf).
+
+**Nicht in Postgres.** Technisch ginge `bytea`, aber jedes Base-Backup kopiert
+alle Blobs, die WAL-Menge steigt mit jedem Anhang, Point-in-Time-Recovery wird
+teuer, und `stream` müsste die Blobs sorgfältig aussparen, sonst zieht die
+Reprojektion 50 GB durch den Speicher.
+
+**S3-kompatibel ist keine neue Abhängigkeit:** CNPG archiviert Base-Backups und
+WAL ohnehin gegen Objektspeicher.
+
+#### Inhaltsadressiert — die Form, die zum Log passt
+
+Liegt ein Blob außerhalb und das Log hält nur eine URL, ist das Log nicht mehr
+selbsttragend und die Hash-Kette deckt den Inhalt nicht ab. **Daher steht der
+Blob-Hash im Log, und der Hash ist der Schlüssel:**
+
+```
+observation
+  …
+  blob: { hash: sha256, media_type, size, ref }
+```
+
+| Eigenschaft | Folge |
+|---|---|
+| Die Kette deckt den Blob mit | nicht die Bytes, aber ihre Identität — Austausch nachweisbar, Fehlen erkennbar |
+| Deduplizierung gratis | derselbe Anhang fünfmal weitergeleitet ist ein Objekt |
+| **Append-only von Bauart** | ein Objekt unter seinem Hash lässt sich nicht ändern, nur neu schreiben |
+
+**Aufteilungsregel: Postgres hält, was durchsucht und projiziert wird — der
+Objektspeicher hält, was belegt.** Das deckt sich mit `evidence: verbatim`: der
+Blob *ist* der Wortlaut.
+
+Dateien aus dem Nextcloud-Drop-Ordner werden **kopiert, nicht verlinkt**.
+Nextcloud ist Konnektor, kein Wahrheitsspeicher (§11.1 im Entwurf) — löscht
+dort jemand die Datei, muss der Beleg überleben.
+
+Ein Adapter, S3-kompatibel; lokaler Dateisystem-Adapter für die
+Entwicklungsmaschine, damit dort kein MinIO nötig ist.
+
+#### Private Buckets, keine öffentlichen
+
+Das kostet heute **nichts**, weil kein Pfad eine URL nach außen gibt:
+
+| Zugriff | Weg | URL nach außen? |
+|---|---|---|
+| Pipeline liest Blob zur Textextraktion | im Cluster, Dienst-Zugangsdaten | nein |
+| Jens schaut ein Dokument an | MCP-Server holt es und legt es lokal ab, oder liefert den Text | nein |
+| Anhang in ein Fremdsystem rendern | die Anwendung lädt die Bytes hoch | nein |
+
+Presigned URLs werden erst mit Teil 5 zur Frage. Die Regel steht jetzt hier,
+solange sie gratis ist.
+
+**Drei Regeln:**
+
+1. **Zwei Buckets, zwei Zugangsdaten — die Anwendung erreicht den
+   CNPG-Backup-Bucket nicht, auch nicht lesend.** Der Backup-Bucket enthält die
+   ganze Datenbank, dauerhaft und vollständig; ein kompromittierter
+   Anwendungsprozess darf daraus keinen Totalverlust machen.
+2. **Gerenderte Artefakte verlinken nie in den eigenen Bucket.** Ein Link wäre
+   entweder öffentlich (verboten) oder für den Empfänger kaputt (nutzlos). Also
+   Kopie hochladen oder nur benennen — verlustbehaftetes Rendern ist erlaubt
+   (§11.1 im Entwurf).
+3. **Wenn Presigning kommt: kurze Laufzeit, Ausgabe protokolliert.** Eine
+   ausgegebene signierte URL wirkt für jeden, der sie hat, bis sie abläuft — sie
+   **umgeht die Offenlegungsprüfung nach der Ausgabe**. Für alles, was das Haus
+   verlässt, lieber durch die Anwendung proxyen als signieren.
+
+### 10.4 Deployment und Datenpolitik im Ruhezustand
+
+**cdk8s-Charts, ArgoCD, CNPG-Operator. Hetzner, EU — Standorte DE und FI.**
+
+Damit ist die Speicherseite der Datenpolitik (§7.1 im Entwurf) **einmalig und
+durch das Deployment** erfüllt, nicht pro Aufruf.
+
+Das ist keine Nebenbemerkung: ein Modellaufruf ist flüchtig, der Bucket hält
+alles dauerhaft. Läge er außerhalb des erlaubten Raums, wäre die Politik **im
+Ruhezustand** verletzt — deutlich schwerer als ein einzelner Inferenzaufruf.
+
+> **Ruhezustand durch Deployment, Verarbeitung durch das Gate.** Zwei Fragen,
+> zwei Orte.
+
+**Zum Schweiz-Fall:** Soweit bekannt erkennen EU und Schweiz einander
+gegenseitig als angemessenes Datenschutzniveau an. Daten eines Schweizer
+Auftraggebers in DE oder FI zu verarbeiten ist damit normalerweise
+unproblematisch; der Unterschied zwischen revDSG und DSGVO betrifft das
+**anwendbare Recht** für unsere Pflichten, nicht den **Hostingort**. Keine
+Rechtsauskunft — im konkreten Vertrag zu prüfen.
+
+**Grenze der Ein-Instanz-Bauweise:** Eine Datenbank hält alle Projekte, also
+lässt sich der Speicherort nicht pro Projekt auflösen. Nach Leitsatz 8 gilt die
+strengste Auflage — das Deployment ist so eingeschränkt wie der restriktivste
+Auftraggeber. Verlangt einer einmal Verarbeitung ausschließlich in einem Raum,
+den dieses Deployment nicht abdeckt, braucht er eine getrennte Instanz oder
+bleibt lokal.
+
+**Die zwei Standorte gegeneinander ausgespielt:**
+
+| Bucket | Standort | Grund |
+|---|---|---|
+| Blob-Speicher der Anwendung | **beim Cluster** | sonst zahlt jeder Blob-Zugriff die Laufzeit zwischen den Standorten |
+| CNPG-Backup | **im anderen Standort** | Cluster und Backup fallen nicht gemeinsam aus |
+
+Das verstärkt Regel 1 oben aus einem **zweiten, unabhängigen Grund**: die
+Trennung ist sicherheitsseitig richtig *und* betrieblich.
+
 ## 11. Was bewusst offen bleibt
 
 Nach dem Aufnahmekriterium aus §1 gehört nichts davon hierher.
@@ -836,11 +946,27 @@ nur noch Arbeit — und ein Spec dafür wäre die Fiktion aus §1.
 | Verifizieren, dass `pg_dict` in `pg_tokenizer` ein Hunspell-Wörterbuch einbinden kann | §12.2 im Entwurf, beim Bau |
 | Versionsstände der Postgres-Erweiterungen | beim Bau |
 | Fähigkeit von Claude Code bezüglich MRTR und der Tasks-Erweiterung | vor Teilprojekt 3 zu prüfen |
+| **Append-only gegen Löschpflicht** (DSGVO Art. 17) | **vor großem Datenbestand zu entscheiden** — siehe unten |
 | Trace-Verknüpfung MCP-Aufruf ↔ Gate-Einträge über OpenTelemetry | Komfort, Teilprojekt 4 |
 
 Der dritte ist der einzige, der einen Umbau auslösen könnte: unterstützt der
 Client MRTR nicht, müssen blockierende Rückfragen vorerst als gewöhnliche
 Werkzeuge laufen — unschön, aber nicht strukturell.
+
+**Zur Löschpflicht:** Append-only verträgt sich nicht von selbst mit einem
+Löschverlangen. Das ist lösbar, aber nur wenn man es **vor** zwei Jahren
+Datenbestand entscheidet — derselbe Fall wie die Hash-Kette selbst. Zwei
+benannte Mechanismen, hier **nicht gebaut, nur reserviert**:
+
+- **Blobs: Krypto-Schreddern.** Jeder Blob wird mit einem Schlüssel pro
+  Betroffenem verschlüsselt; gelöscht wird der Schlüssel. Der Chiffretext
+  bleibt, die Kette bleibt intakt, der Inhalt ist unwiederbringlich.
+- **Log: Tilgungs-Event.** Einheiten werden durch einen Grabstein ersetzt, dessen
+  Hash mitprotokolliert ist. Die Kette bricht nicht, die Tilgung ist belegt.
+
+Zu entscheiden ist nur, **ob die Verschlüsselung pro Betroffenem von Anfang an
+eingebaut wird** — nachträglich lässt sie sich auf Bestandsblobs nicht mehr
+anwenden, ohne sie neu zu schreiben.
 
 ---
 
