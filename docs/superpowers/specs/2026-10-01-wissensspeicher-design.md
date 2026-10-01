@@ -94,29 +94,46 @@ Punkte berührt. Wenn nicht, ist sie harmlos. Wenn ja, ist sie keine Abkürzung.
 ## 4. Architektur
 
 ```
-                   ┌──────────────────────────────┐
-                   │   KERN                       │
-                   │   Event-Log (append-only)    │  ← die Wahrheit
-                   │   Kernmodell · Projektionen  │
-                   └───┬──────────────────────┬───┘
-         Projektion    │                      │   Events
-         (rendern)     ▼                      ▲   (aufnehmen)
-                   ┌──────────────────────────────┐
-                   │   KONNEKTOREN                │
-                   │   IMAP · Drop · Prompt · Link │
-                   │   OpenProject · GitLab · …    │
-                   └──────────────────────────────┘
+  KONNEKTOREN                   KERN                      ZUGANG
+  (bidirektional)
 
-                   ┌──────────────────────────────┐
-                   │   KI-LAYER                   │
-                   │   Gate · Retrieval · Templates│
-                   └──────────────────────────────┘
-                                 │ MCP
-          ┌──────────────────────┼──────────────────────┐
-     Claude Code           Pipeline-Worker        später: UI,
-     (Max-Plan,            (Haiku/Batch           Spracheingabe,
-     interaktiv)           oder lokal)            Kolleg:innen
+  IMAP ─────────►   ┌────────────────────────┐
+  Drop ─────────►   │  Event-Log             │ ◄──►  MCP-Server
+  Prompt ───────►   │  (append-only)         │           │
+  Link ─────────►   │                        │           ├─► Claude Code
+  OpenProject ◄──►   │  Projektionen          │           │   (Max-Plan)
+  GitLab ◄───────►   │  Entitäten              │           │
+  Nextcloud ◄────►   │  Kundenprofil          │           └─► später: eigene
+                     └───────────┬────────────┘               UI, Spracheingabe
+                                 │
+                                 ▼
+                     ┌────────────────────────┐
+                     │  KI-LAYER              │   unbeaufsichtigt:
+                     │  Gate · Policy · Audit  │   Wahrnehmung
+                     │  Zuordnung · Zerlegung  │   → Feststellung
+                     │  Templates             │
+                     └────────────────────────┘
 ```
+
+**Der KI-Layer liegt neben dem Kern, nicht zwischen Kern und Zugang.**
+Interaktive Arbeit geht über den MCP-Server **direkt** auf den Kern: "Was ist
+bei Kunde X offen?" ist eine Abfrage über Projektionen und braucht kein
+Modell — der Mensch (bzw. Claude Code) *ist* in dem Moment die Intelligenz.
+Ein Weg durch den KI-Layer wäre ein Modell, das ein Modell aufruft.
+
+Der KI-Layer ist der **Arbeiter an der Pipeline**: er macht aus Wahrnehmungen
+Feststellungen, unbeaufsichtigt, mit Haiku über die Batch API. Ausgelöst wird
+er vom Eingang, nicht vom Benutzer.
+
+### MCP-Werkzeuge (im MVP die gesamte Oberfläche)
+
+| lesend | schreibend |
+|---|---|
+| `protokoll(kunde\|projekt\|vorgang, stichtag?)` | `einwerfen(inhalt, kunde?, projekt?, vorgang?)` |
+| `offene_verpflichtungen(kunde?, richtung?)` | `feststellen(…)` — Korrektur, `herkunft: mensch` |
+| `entscheidungen(kunde, zeitraum?)` | `queue()` / `abnehmen(id, einmal\|klasse)` |
+| `suche(frage, kunde?, vor?)` — der RAG-Pfad (§18) | |
+| `event(id)` / `einheiten(event_id)` — Zitaten folgen | |
 
 **Fünf Teile.** Ingest und Write-back sind *eine* Schicht, weil jedes
 Fremdsystem beides ist.
@@ -449,9 +466,30 @@ auseinanderlaufen können.
 
 ## 10. KI-Layer
 
-### 10.1 Das Gate
+### 10.1 Das Gate — und der zweite Durchsetzungspunkt
 
-Eine Stelle, durch die jeder Modellaufruf geht. Kein SDK-Aufruf in der Fläche.
+Eine Stelle, durch die jeder Modellaufruf **des Systems** geht. Kein
+SDK-Aufruf in der Fläche.
+
+**Wichtige Einschränkung:** Das Gate kann Claude Code nicht kontrollieren.
+Wenn Jens interaktiv arbeitet, ruft Claude Code Anthropic mit *seinen*
+Zugangsdaten auf — das Gate sieht davon nichts. Es gibt daher **zwei**
+Durchsetzungspunkte:
+
+| | Gate | MCP-Server |
+|---|---|---|
+| kontrolliert | Aufrufe, die *das System* macht | welche Daten die interaktive Seite überhaupt bekommt |
+| Mechanismus | Anbieter/Modell wählen oder ablehnen | Herausgabe verweigern oder auf Metadaten reduzieren |
+
+Beide schreiben in dasselbe Audit-Log. "Was hat Claude je über Kunde X
+gesehen?" wird aus dem **MCP-Zugriffsprotokoll** beantwortet, nicht aus dem
+Gate-Log.
+
+**Konsequenz:** Steht ein Kunde auf `nur_lokal`, verweigert der MCP-Server
+dessen Inhalte an Claude Code — das Cockpit wird für diesen Kunden stumpfer
+(strukturierte Abfragen ja, KI-Unterstützung nur mit lokalem Client). Das ist
+kein Konstruktionsfehler, sondern der Preis der Datenpolitik, und er trifft
+die interaktive Seite härter als die Pipeline.
 
 ```
 llm(aufgabe, nutzlast, kontext{kunde, projekt, vertraulichkeit}) → ergebnis
