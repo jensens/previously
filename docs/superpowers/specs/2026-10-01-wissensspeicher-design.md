@@ -269,12 +269,62 @@ Inhalt **nicht abdecken**.
 id, hash, vorgaenger_hash, erfasst_am
 art                 aufgabe_angelegt | mail_versendet | …
 ziel                Entität, auf die sie wirkt
-freigabe            einmal | klasse:<id> | nie_gefragt
+freigabe            auftrag | einmal | klasse:<id>
 begruendung         Feststellungs-IDs
-ergebnis            externe Referenz, Fehler
+ergebnis            externe Referenz, gerenderter Zustand, Fehler
 ```
 
-### 5.5 Hash-Kette
+**Handlung ist die Spur delegierter Handlungsmacht** — sie beantwortet "was hat
+das System getan, und mit welcher Befugnis?".
+
+Daraus folgt eine beabsichtigte Asymmetrie: **Was Jens selbst tut, ist keine
+Handlung, sondern Eingang.** Legt er ein Issue direkt in GitLab an, sieht der
+Konnektor die Änderung, sie wird Wahrnehmung, daraus eine Feststellung mit
+`herkunft: mensch`. Ein Befugnisnachweis ist dafür sinnlos — er ist der
+Auftraggeber, nicht der Beauftragte.
+
+Die drei Befugnisse:
+
+| Wert | Bedeutung |
+|---|---|
+| `auftrag` | direkt angewiesen (z. B. in Claude Code), es gab keinen Vorschlag |
+| `einmal` | ein Vorschlag wurde abgenommen, dieses eine Mal |
+| `klasse:<id>` | eine Dauerfreigabe deckte es |
+
+**Eine Handlung ohne einen dieser Werte ist ein Defekt, kein Zustand.** Einen
+Wert wie "nie gefragt" als zulässig zu führen würde unautorisiertes Handeln
+normalisieren; die Integritätsprüfung (§15) schlägt darauf an.
+
+### 5.5 Echo-Unterdrückung
+
+Legt das System Issue #42 an, taucht #42 beim nächsten Abfragen des Konnektors
+auf. Ohne Gegenmaßnahme beobachtet das System seine eigene Handlung als
+Neuigkeit — und kann daraus eine Verpflichtung ableiten, die es selbst gerade
+erzeugt hat. Eine Rückkopplung, die unbemerkt bleibt, weil jeder einzelne
+Schritt plausibel aussieht.
+
+"Alles zu #42 ignorieren" ist keine Lösung: ändert *Jens* daran etwas, ist das
+echte Neuigkeit.
+
+> **Vergleichen, nicht annehmen.** Der Konnektor vergleicht den eingehenden
+> Zustand mit dem Zustand, den er zuletzt dorthin gerendert hat (Feld
+> `ergebnis.gerenderter_zustand` der Handlung). Unterschied → Wahrnehmung.
+> Gleichheit → Echo, verworfen.
+
+Dieselbe Mechanik wie "das nächste Rendern ist ein No-Op" (§11.1), von der
+Eingangsseite betrachtet. Eine Regel, beide Richtungen.
+
+### 5.6 Erfüllung wird beobachtet, nicht gemeldet
+
+Ein Commit, der ein Issue schließt, ist Beleg dafür, dass eine Verpflichtung
+erfüllt wurde. Niemand hakt etwas ab: Jens arbeitet, der Konnektor sieht es,
+und die Verpflichtung wechselt den Zustand mit Quellenangabe auf den Commit.
+
+Umgekehrt zu jedem Ticketsystem, in dem doppelt gearbeitet wird — erst tun,
+dann eintragen, dass man es getan hat. Gilt überall, wo die Fähigkeitsstufe
+mindestens "nur lesend" erreicht ist.
+
+### 5.7 Hash-Kette
 
 Jeder Eintrag hasht seinen Vorgänger. Rund zwanzig Zeilen Code, heute fast
 kostenlos, nachträglich unmöglich. Sie belegt, dass nichts nachträglich
@@ -774,6 +824,10 @@ Testbare Kriterien, keine Absichtserklärungen.
 6. **Zuordnungsgüte.** Die Trefferquote von `regel` und `modell` gegen
    `mensch` ist pro Abschnitt abfragbar.
 7. **Gate-Dichte.** Kein Modellaufruf außerhalb des Gates. Statisch geprüft.
+8. **Befugnis.** Keine Handlung ohne `auftrag`, `einmal` oder `klasse:<id>`.
+9. **Kein Echo.** Eine Handlung, die in ein Fremdsystem rendert, erzeugt beim
+   nächsten Abfragen **keine** neue Wahrnehmung. Als Test: rendern, abfragen,
+   prüfen dass das Log unverändert ist.
 
 ---
 
