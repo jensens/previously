@@ -172,7 +172,19 @@ CREATE TABLE event (
 CREATE INDEX event_occurred_idx ON event (occurred_at);
 CREATE INDEX event_kind_occurred_idx ON event (kind, occurred_at);
 CREATE UNIQUE INDEX event_hash_idx ON event (hash);
+
+-- Serialisiert nebenläufige Anfügungen und beweist die Linearität der Kette
+CREATE UNIQUE INDEX event_prev_hash_idx ON event (prev_hash);
 ```
+
+**Der Unique-Index auf `prev_hash` ist die gesamte Nebenläufigkeitssteuerung
+des Logs.** Zwei nebenläufige Anfügungen lesen denselben letzten Hash und
+versuchen beide, mit demselben `prev_hash` einzufügen — eine verletzt den Index
+und wiederholt. Keine Vorab-Sperre, kein Advisory Lock, keine Koordination.
+
+Als Nebeneffekt **beweist** der Index die Linearität: eine Verzweigung ist
+unmöglich, weil kein Vorgänger zweimal vorkommen darf. Strukturelle Garantie
+statt Prüfroutine.
 
 - **`id` ist monoton und die Kettenreihenfolge.** `recorded_at` ist Anzeige,
   nicht Ordnung — zwei Einfügungen in derselben Mikrosekunde brauchen eine
@@ -466,9 +478,9 @@ mitten im Lauf verliert nichts.
 
 Vier Regeln, und sie reichen:
 
-1. **`append` ist die einzige Schreiboperation am Log** und serialisiert über
-   die Hash-Kette: `prev_hash` muss der aktuell letzte Hash sein, sonst Konflikt
-   und Wiederholung. Ein Schreiber pro Anfügung, mehrere Prozesse erlaubt.
+1. **`append` ist die einzige Schreiboperation am Log**, serialisiert durch den
+   Unique-Index auf `prev_hash` (§4.1) — nicht durch eine Sperre. Mehrere
+   Prozesse dürfen gleichzeitig anfügen; der Verlierer wiederholt.
 2. **Projektionen sind pro Name einfädig.** Zwei Arbeiter an derselben
    Projektion sind ein Fehler, kein Durchsatzgewinn — der Vorschub `up_to_id`
    ist die Sperre.
@@ -622,7 +634,52 @@ validiert dagegen, bevor es zurückgibt.
 
 ---
 
-## 10. Was bewusst offen bleibt
+## 10. Technische Festlegungen
+
+Python, strikt typisiert (`pyright` im strict-Modus), PyO3 als benannter
+Notausgang für Rust, maximal zwei Sprachen — siehe §2 im Entwurf.
+
+### 10.1 SQLModel und Alembic
+
+**SQLModel** für Modelle und gewöhnlichen Zugriff, **Alembic** für Migrationen.
+
+SQLModel passt zu einer Entscheidung, die schon getroffen ist: `payload` ist
+`jsonb` und wird in `core` validiert, nicht als Spaltenzwang (§4.1, Leitsatz 9).
+Pydantic validiert die Nutzlast, die Spalte bleibt `jsonb` — ein Werkzeug für
+die stabile äußere Form und die veränderliche innere Vielfalt.
+
+#### Die Zuständigkeitsgrenze, die Leitsatz 3 schützt
+
+SQLModel legt nahe, **jede** Domänenentität zur Tabelle zu machen. Das wäre hier
+falsch: `obligation`, `matter`, `involvement` sind **Projektionen** und
+wegwerfbar. Treten sie als migrierte Tabellen auf, hat jemand sie versehentlich
+schemabehaftet gemacht — und wird sie beim nächsten Logikwechsel *migrieren*
+statt neu zu bauen. Leitsatz 3 wäre beschädigt, und zwar lautlos.
+
+> **Alembic migriert `event`, `source_key`, `unit`, `job` und
+> `projection_state`. Projektionstabellen (`p_*`) werden von Code erzeugt und
+> verworfen, nicht migriert.**
+
+Beim Versionssprung einer Projektion: `DROP` und neu bauen (§4.4). Keine
+Migration, kein Handgriff.
+
+Die erste Migration richtet die Erweiterungen ein (`CREATE EXTENSION`) —
+`vector` und, je nach Ergebnis des Messversuchs, `vchord_bm25` und
+`pg_tokenizer`.
+
+#### Wo SQLModel nicht reicht
+
+Drei Pfade sind nicht einfach und gehen über SQLAlchemy Core oder direktes SQL:
+
+| Pfad | Grund |
+|---|---|
+| Vektorsuche mit Vorfilter | Indexsteuerung, `vector`-Operatoren (`pgvector.sqlalchemy`) |
+| Auflösung von `involvement` | mengen- und zeitraumbasiert, teils rekursiv |
+| `stream` als Iterator | serverseitiger Cursor, darf nichts materialisieren |
+
+Das ist normal; es steht hier, damit niemand sich das ORM zurechtbiegt.
+
+## 11. Was bewusst offen bleibt
 
 Nach dem Aufnahmekriterium aus §1 gehört nichts davon hierher.
 
@@ -630,6 +687,7 @@ Nach dem Aufnahmekriterium aus §1 gehört nichts davon hierher.
 |---|---|
 | Textsuchvariante (Hunspell / Subword / BM25) | Messversuch §12.3 im Entwurf |
 | Konkretes Embedding-Modell (mehrsprachig, lokal) und damit `N` | Teilprojekt 1 |
+| ORM-Detailabbildung der Projektionen | je Teilprojekt, innerhalb der Grenze aus §10.1 |
 | Interne Abgleichlogik je Konnektor | je Konnektor |
 | Prompt- und Templatetexte | Teilprojekt 5 |
 | Rangfunktion der Triage-Hebelwirkung | Teilprojekt 5, messbar nachjustierbar |
@@ -638,7 +696,7 @@ Nach dem Aufnahmekriterium aus §1 gehört nichts davon hierher.
 
 ---
 
-## 11. Zerlegung in Teilprojekte
+## 12. Zerlegung in Teilprojekte
 
 Reihenfolge aus §14 im Entwurf, mit der Kaltstart-Vorgabe aus §8.1.
 
@@ -662,7 +720,7 @@ nur noch Arbeit — und ein Spec dafür wäre die Fiktion aus §1.
 
 ---
 
-## 12. Offene Punkte
+## 13. Offene Punkte
 
 | Punkt | Art |
 |---|---|
@@ -677,7 +735,7 @@ Werkzeuge laufen — unschön, aber nicht strukturell.
 
 ---
 
-## 13. Quellen
+## 14. Quellen
 
 - [MCP Änderungsbericht 2026-07-28](https://modelcontextprotocol.io/specification/2026-07-28/changelog) · [Ankündigung](https://blog.modelcontextprotocol.io/posts/2026-07-28/)
 - [MRTR-Muster](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/mrtr)
