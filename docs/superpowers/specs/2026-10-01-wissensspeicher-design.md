@@ -776,12 +776,65 @@ Daraus folgen drei Prüfpunkte:
 | **MCP-Server** (§10.1) | Verarbeitung — darf Claude Code das sehen? (interaktiv) |
 | **Renderer / Aktionsschicht** | **Offenlegung** — darf dieser Empfänger das sehen? |
 
-#### Rendern offenbart gegenüber dem gesamten Publikum eines Systems
+#### Das Publikum: Zielorte werden erklärt, nicht entdeckt
 
-Ein Work Item im GitLab der Agentur sieht **jeder dort**, nicht nur der
-Ansprechpartner. Die Fähigkeitsstufen (§11.2) brauchen deshalb die Angabe
-**Publikum**: wer hat Zugriff auf dieses System? Ohne sie ist die
-Offenlegungsprüfung Theater.
+Ein Work Item im GitLab eines Partners sieht **jeder dort**, nicht nur der
+Ansprechpartner. Und "dort" ist nicht das System, sondern der Container darin:
+ein GitLab-Projekt, eine Gruppe, ein Nextcloud-Ordner, ein Confluence-Space mit
+Page Restrictions. Jedes System hat ein eigenes Berechtigungsmodell — GitLab
+Instanz/Gruppe/Untergruppe/Projekt mit Rollen, JIRA Permission Schemes und
+Issue Security Levels, Nextcloud Freigaben und Links.
+
+**Diese Modelle werden nicht nachgebildet.** Sie nachzubauen und synchron zu
+halten wäre N Berechtigungssysteme als Nebenprodukt — das Projekt würde daran
+sterben. Zwei Umkehrungen vermeiden es.
+
+**Erste Umkehrung: nicht "welches Publikum hat ein beliebiger Container?",
+sondern "wohin rendert dieses Projekt?"** Das ist eine kurze, endliche Liste,
+die beim Projektaufsetzen ohnehin festgelegt wird — typisch zwei bis fünf
+Zielorte. Ein Konfigurationsproblem in Menschengröße statt ein
+Entdeckungsproblem in Systemgröße.
+
+**Zweite Umkehrung: Deklaration ist das Gate, Aufzählung nur die Prüfung.**
+
+| | Mechanik | verfügbar |
+|---|---|---|
+| **Gate** | Jeder Zielort **erklärt**, welche Vereinbarung ihn deckt. Rendern erlaubt, wenn der Inhaltsumfang gedeckt ist. Ein Nachschlagen. | **immer** |
+| **Prüfung** | Wo die API es hergibt: Mitglieder aufzählen, gegen die Deckung vergleichen. Abweichung → **Warnung, keine Sperre**. | je Adapter |
+
+Das Gate braucht kein Berechtigungsmodell, keine API, keinen Adapter. Es ist
+eine Aussage: *"diese Gruppe ist durch NDA1 mit der Agentur für Projekt B
+gedeckt"* — eine Feststellung mit `verantwortung: {jens, direkt}`, mit Datum
+und Begründung.
+
+Die Aufzählung ist Komfort, nicht Fundament. **Hätte das Gate sie gebraucht,
+hänge die gesamte Offenlegungsprüfung am schwächsten Adapter.** Wo GitLab die
+Mitgliederliste hergibt, wird nachgeprüft; wo JIRA zickt, fällt nur die
+Prüfung aus und das Gate steht weiter.
+
+#### Vier Zustände, mit fail-safe-Richtung
+
+| Zustand | Bedeutung | Folge beim Rendern |
+|---|---|---|
+| `erklärt` | Deckung ist angegeben | gedeckt → rendern |
+| `bestätigt` | Aufzählung passt zur Deckung | rendern |
+| `abweichend` | Aufzählung zeigt mehr als gedeckt | Warnung in die Queue, Rendern braucht Einzelfreigabe |
+| `unbekannt` | keine Erklärung, keine Aufzählung | **gilt als weiter als erlaubt** → blockiert, bis erklärt |
+
+Die Fehlerrichtung ist bewusst asymmetrisch: für ein **Ja** braucht es
+Vollständigkeit (ein übersehenes Mitglied ist ein Leck), für ein **Nein**
+genügt ein einziger Ungedeckter. Unwissen kippt daher immer auf Nein — das ist
+Leitsatz 9 mit Vorzeichen.
+
+#### Rendern in ein fremdes System ist unumkehrbar
+
+Mitgliedschaften wachsen. Tritt später jemand der Partnergruppe bei, sieht die
+Person Inhalte, die vorher dort hinterlassen wurden. Das fremde System wird
+nicht kontrolliert, und kein Gate fängt das nachträglich ein.
+
+Verhindern geht nicht. Bemerken geht: periodisch neu aufzählen und melden, wenn
+das Publikum **gewachsen** ist und der Zuwachs nicht gedeckt ist — dasselbe
+Muster wie die Vereinbarungslücken-Meldung unten.
 
 #### Was das System nicht kann — und was es stattdessen tut
 
@@ -1038,8 +1091,17 @@ Risiko-Ordnung, die bestimmt, was wann automatisierbar wird:
 
 | | strukturiert | freie Prosa |
 |---|---|---|
-| **intern** | Aufgabe anlegen, Dokument ablegen → früh automatisierbar | Protokoll-Entwurf → Freigabe |
-| **extern** | Empfangsbestätigung, Terminvorschlag → enge Automatisierung | Kundenmail → **immer Freigabe** |
+| **intern** | Aufgabe im eigenen System, Dokument in eigener Ablage → früh automatisierbar | Protokoll-Entwurf → Freigabe |
+| **extern** | Empfangsbestätigung, Terminvorschlag, **Issue im Partner-System** → enge Automatisierung, Deckung vorausgesetzt | Mail nach außen → **immer Freigabe** |
+
+> **`intern` und `extern` heißt nicht "unser Werkzeug" gegen "Mail", sondern
+> unser Publikum gegen fremdes Publikum.**
+
+Das ist eine Korrektur gegenüber einer früheren Fassung, die "GitLab Issue" als
+besten Automatisierungskandidaten nannte — im Blick war dabei das *eigene*
+GitLab. Ein Issue im GitLab eines Partners ist eine externe, unumkehrbare
+Offenlegung an ein fremdes Publikum (§7.2). Strukturiert ja, aber die Struktur
+schützt hier nichts: sie begrenzt, *was* gesagt wird, nicht *wer es liest*.
 
 ---
 
@@ -1071,9 +1133,12 @@ Kundenlandschaft überlebbar.
 | nur lesend | API-Key ohne Schreibrechte | Events rein | — |
 | keine API | Kunde will nicht, Altsystem, Freigabe dauert | siehe 11.3 | — |
 
-**`publikum`** je System: wer hat dort Zugriff? Pflichtangabe für jedes System
-mit Rendern-Richtung, weil die Offenlegungsprüfung (§7.2) daran hängt — nicht
-am nominellen Empfänger.
+**Zielorte statt Systeme.** Die Rendern-Richtung zeigt nie auf ein System,
+sondern auf einen **Zielort** darin — ein GitLab-Projekt, eine Gruppe, einen
+Ordner. Jeder Zielort trägt seine **Deckung** (welche Vereinbarung ihn deckt)
+und seinen **Publikumszustand** (`erklärt | bestätigt | abweichend | unbekannt`).
+Siehe §7.2 — Berechtigungsmodelle der Zielsysteme werden ausdrücklich **nicht**
+nachgebildet.
 
 ### 11.3 IMAP ist der Auffangboden
 
@@ -1254,6 +1319,11 @@ Testbare Kriterien, keine Absichtserklärungen.
    Vereinbarung wird verweigert. Beides im selben Durchlauf geprüft.
 16. **Vereinbarungslücke sichtbar.** Eine Besprechung mit einem Teilnehmer ohne
    deckende Vereinbarung erzeugt eine Meldung.
+17. **Gate ohne Adapter.** Die Offenlegungsprüfung funktioniert für einen
+   Zielort, dessen System keine Mitgliederliste hergibt — allein aus der
+   erklärten Deckung.
+18. **Unbekannt blockiert.** Ein Zielort ohne Erklärung und ohne Aufzählung
+   lässt sich nicht berendern.
 
 
 ---
@@ -1298,6 +1368,8 @@ Daten messen, danach entscheiden.
 | Standard-Nachfolger beim Splitten | War in einer früheren Fassung vorgesehen. Eine Vermutung, die als Tatsache auftritt — verstößt gegen Leitsatz 9. Ersetzt durch das Dach. |
 | Nur Annahmen festhalten | Ohne festgehaltene Ablehnung nagt das System bei jedem Durchlauf, und die Queue wird nach drei Wochen ignoriert. |
 | Verantwortung als Ja/Nein | Agentenarbeit unter einem abgenommenen Spec ist transitiv abgesegnet, nicht unverantwortet. Ohne die Abstufung wäre entweder Delegation unmöglich oder "selbst geprüft" nicht mehr von "unter Verfahren entstanden" unterscheidbar. |
+| Berechtigungsmodelle der Zielsysteme nachbilden | GitLab-Gruppen und -Rollen, JIRA Permission Schemes und Issue Security Levels, Nextcloud-Freigaben: N Berechtigungssysteme als Nebenprodukt, dauerhaft synchron zu halten. Stattdessen erklärte Zielorte mit erklärter Deckung. |
+| Aufzählung als Gate | Hätte die gesamte Offenlegungsprüfung am schwächsten Adapter aufgehängt. Aufzählung ist Prüfung, Deklaration ist Gate. |
 | Offenlegung am Eingang filtern | Hätte verhindert, dass Jens sein eigenes projektübergreifendes Wissen nutzen kann — "was wissen wir über diese Agentur?" wäre unbeantwortbar. Die Prüfung sitzt am Ausgang. |
 | Datenpolitik und Offenlegung als ein Feld | Zwei verschiedene Fragen: wo darf verarbeitet werden, und wer darf sehen. Dieselbe Agentur ist in einem Projekt befugt und im nächsten nicht — begrenzend ist die Vereinbarung, nicht die Organisation. |
 | Einzelnes `herkunft`-Feld | Vermischte "wer hat formuliert" mit "wer steht dafür ein". Hätte die Mail eines Auftraggebers mit Jens' eigener Korrektur gleichgestellt und die Messung der Modellgüte still korrumpiert. Ersetzt durch `urheber` + `verantwortung`. |
