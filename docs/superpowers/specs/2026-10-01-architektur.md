@@ -323,16 +323,66 @@ Altdaten falsch würde.
 Eine Tilgung ist selbst ein Event (`action`, `kind: redaction`) mit Ziel,
 Umfang und Begründung. Kein neuer Mechanismus.
 
-#### 2. Schlüssel-Platzhalter beim Blob
+#### 2. Blobs werden von Anfang an verschlüsselt — aus eigenem Recht
 
-Für Krypto-Schreddern genügt die offene **Naht**, nicht heutige Verschlüsselung:
+Zwei Dinge, die leicht vermischt werden und verschiedene Kosten haben:
 
-- die Blob-Referenz trägt `key_id`, heute `null`
-- der Blob-Adapter hat einen Ver-/Entschlüsselungshaken, der heute nichts tut
+| | Zweck | ermöglicht Schreddern? |
+|---|---|---|
+| **(a) Verschlüsselung, ein Schlüssel** | Schutz bei Bucket-Kompromittierung, gestohlenen Zugangsdaten, Anbieterzugriff | **nein** — ein Schlüssel weg heißt alles weg |
+| **(b) Schlüssel pro Betroffenem** | Schreddern | ja |
 
-Damit lassen sich **neue** Blobs später verschlüsseln, ohne Bestand anzufassen.
-Rückwirkend wäre es aussichtslos — man wüsste nicht mehr zuverlässig, welcher
-Blob wen betrifft.
+**(a) wird jetzt gebaut und braucht (b) nicht.** Client-seitig verschlüsselt
+heißt: gestohlene Bucket-Zugangsdaten liefern nur Chiffretext. Für Mandantendaten
+unter NDA ist das ein belegbares Argument gegenüber Auftraggebern — und
+deutlich stärker als serverseitige Verschlüsselung mit Anbieterschlüsseln, die
+vor Plattendiebstahl schützt und vor nichts anderem.
+
+**Keine Verwechslung:** (a) macht die heute geschriebenen Blobs **nicht**
+schredderbar. Deren Entfernungsweg bleibt Löschen — was genügt, solange keine
+Versionierung läuft (Punkt 3). (b) gilt erst für Blobs, die nach Einführung der
+Schlüssel pro Betroffenem geschrieben werden; `key_id` hält diesen Weg offen.
+
+#### Verschränkung mit der Inhaltsadressierung
+
+Verschlüsselt man mit frischem Nonce, ist der Chiffretext jedes Mal anders —
+wäre der Bucket-Schlüssel der Chiffretext-Hash, wäre die Deduplizierung weg.
+
+> **Bucket-Schlüssel ist der Klartext-Hash** (er steht ohnehin im Log), und beim
+> Schreiben gilt **erster gewinnt**: existiert das Objekt, wird nicht neu
+> hochgeladen.
+
+Damit bleiben Dedup und Unveränderlichkeit erhalten, und die Nonce-Frage
+erledigt sich. AES-GCM, Nonce im Objekt-Header, `key_id` in der Blob-Referenz —
+der tatsächlich verwendete Schlüssel, nicht `null`.
+
+#### Der Schlüssel darf nicht im selben Backup liegen wie die Daten
+
+Steckt er als Kubernetes-Secret in etcd, und etcd wird dorthin gesichert, wo
+auch die Blobs liegen, hat ein Angreifer mit Zugriff auf diesen Ort beides. Also
+Schlüssel über External Secrets aus einem separaten Tresor, und die
+Tresor-Sicherung getrennt von der Datensicherung.
+
+Das ist die dritte Anwendung desselben Grundsatzes:
+
+| Trennung | Grund |
+|---|---|
+| Blob-Bucket ↔ Backup-Bucket | Anwendungs-Kompromittierung darf nicht an die Backups |
+| Cluster-Standort ↔ Backup-Standort | nicht gemeinsam ausfallen |
+| **Schlüssel ↔ Daten** | nicht gemeinsam erbeutet werden |
+
+> **Trenne, was nicht gemeinsam fallen darf.**
+
+#### Der ehrliche Preis
+
+**Schlüsselverlust ist Totalverlust** — das echte Risiko, nicht die Komplexität.
+Der Schlüssel ist winzig und damit gut sicherbar, aber er *muss* gesichert
+werden, und zwar getrennt. Dazu eine Unannehmlichkeit im Betrieb: ein Dokument
+lässt sich nicht mehr per `s3 cp` herausziehen und anschauen, es braucht immer
+den Entschlüsselungsweg.
+
+Keine Leistungsbedenken: die Pipeline liest jeden Blob einmal zur
+Textextraktion, der MCP-Server selten.
 
 #### 3. Keine Versionierung auf dem Blob-Bucket
 
@@ -880,7 +930,7 @@ Blob-Hash im Log, und der Hash ist der Schlüssel:**
 ```
 observation
   …
-  blob: { hash: sha256, media_type, size, ref, key_id }   # key_id heute null
+  blob: { hash: sha256, media_type, size, ref, key_id }   # hash = Klartext-Hash
 ```
 
 | Eigenschaft | Folge |
@@ -899,6 +949,10 @@ dort jemand die Datei, muss der Beleg überleben.
 
 Ein Adapter, S3-kompatibel; lokaler Dateisystem-Adapter für die
 Entwicklungsmaschine, damit dort kein MinIO nötig ist.
+
+**Blobs werden client-seitig verschlüsselt** (AES-GCM, `key_id` in der
+Referenz) — Begründung und die Verschränkung mit der Inhaltsadressierung in
+§4.6.
 
 #### Private Buckets, keine öffentlichen
 
@@ -989,7 +1043,7 @@ Reihenfolge aus §14 im Entwurf, mit der Kaltstart-Vorgabe aus §8.1.
 
 | # | Teilprojekt | Umfang | eigenes Detail-Spec? |
 |---|---|---|---|
-| 1 | **`core` und `storage`** | Log, Hash-Kette, Idempotenz, Units, Projektionsgerüst, Storage-Schnittstelle, **die drei Tilgungs-Vorkehrungen (§4.6)** | **ja** — Hash-Kette und Reprojektion verdienen es |
+| 1 | **`core` und `storage`** | Log, Hash-Kette, Idempotenz, Units, Projektionsgerüst, Storage-Schnittstelle, **Verschlüsselung und die Tilgungs-Vorkehrungen (§4.6)** | **ja** — Hash-Kette und Reprojektion verdienen es |
 | 2 | **`contract` und manueller Einwurf** | `contract`, Drop-Ordner, Einwurf per Prompt, Quelle verlinken | nein |
 | 3 | **`mcp_server`** | Protokoll 2026-07-28, Werkzeuge, Handles, Offenlegungsprüfung | nein |
 | 4 | **`gate`** | Policy, Adapter, Audit, `processing_region` | nein |
