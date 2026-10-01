@@ -85,6 +85,14 @@ Datenpolitik, Aufnahme-Einwilligung, Freigabeklassen: ein Projekt hat mehrere
 beteiligte Organisationen, und es gilt die restriktivste. Nicht die des
 Auftraggebers, nicht die zuerst eingetragene — die strengste.
 
+**9. Unentschiedenheit muss darstellbar sein, nicht erzwungen entschieden.**
+Wo das System es nicht wissen kann, gibt es einen Zustand für "noch offen" —
+keinen Vorgabewert, der eine Vermutung als Tatsache ausgibt. Dieser Grundsatz
+wirkt schon an sechs Stellen: `zuordnung.sicherheit`, `schuldner: null`,
+erlaubte Lücken bei der Zerlegung, "der Import darf unsicher sein" (§13),
+`urheber: unbekannt` und das Dach beim Teilen (§6.3, §6.2). Wer hier
+"aufräumt" und Vorgabewerte einsetzt, macht das System still kaputt.
+
 ### Warum das zusammen die Revisionsfähigkeit trägt
 
 Dieser Entwurf wird sich ändern. Entscheidend ist, dass die beiden Arten von
@@ -109,22 +117,22 @@ Punkte berührt. Wenn nicht, ist sie harmlos. Wenn ja, ist sie keine Abkürzung.
   KONNEKTOREN                   KERN                      ZUGANG
   (bidirektional)
 
-  IMAP ─────────►   ┌────────────────────────┐
-  Drop ─────────►   │  Event-Log             │ ◄──►  MCP-Server
-  Prompt ───────►   │  (append-only)         │           │
-  Link ─────────►   │                        │           ├─► Claude Code
-  OpenProject ◄──►   │  Projektionen          │           │   (Max-Plan)
-  GitLab ◄───────►   │  Entitäten              │           │
-  Nextcloud ◄────►   │  Organisationsprofil   │           └─► später: eigene
-                     └───────────┬────────────┘               UI, Spracheingabe
-                                 │
-                                 ▼
-                     ┌────────────────────────┐
-                     │  KI-LAYER              │   unbeaufsichtigt:
-                     │  Gate · Policy · Audit  │   Wahrnehmung
-                     │  Zuordnung · Zerlegung  │   → Feststellung
-                     │  Templates             │
-                     └────────────────────────┘
+  IMAP        ──────────►  ┌────────────────────────┐
+  Drop        ──────────►  │  Event-Log             │ ◄──►  MCP-Server
+  Prompt      ──────────►  │  (append-only)         │           │
+  Link        ──────────►  │                        │           ├─► Claude Code
+  OpenProject ◄─────────►  │  Projektionen          │           │   (Max-Plan)
+  GitLab      ◄─────────►  │  Entitäten             │           │
+  Nextcloud   ◄─────────►  │  Organisationsprofil   │           └─► später: eigene
+                           └───────────┬────────────┘               UI, Spracheingabe
+                                       │
+                                       ▼
+                           ┌────────────────────────┐
+                           │  KI-LAYER              │   unbeaufsichtigt:
+                           │  Gate · Policy · Audit │   Wahrnehmung
+                           │  Zuordnung · Zerlegung │   → Feststellung
+                           │  Templates             │
+                           └────────────────────────┘
 ```
 
 **Der KI-Layer liegt neben dem Kern, nicht zwischen Kern und Zugang.**
@@ -533,6 +541,30 @@ Verpflichtung existieren (interne Arbeit).
 | ein anderer, Gläubiger sind wir | erzeugt **keine** Aufgabe, wird überfällig, muss sichtbar sein |
 | zwei andere, uns betreffend | **beobachtet** — wir treiben es, ohne Partei zu sein |
 
+#### Eine Verpflichtung kann selbst geteilt werden
+
+"Wir liefern den Bericht **und** die Datenmigration bis 30.4." ist eine
+Verpflichtung, die zwei Sachen bündelt. Solange sie eine ist, ist ihr Zustand
+**unehrlich**: Bericht geliefert, Migration nicht — "halb erfüllt" ist keine
+Information. Nach dem Teilen gibt es eine `erfüllt` und eine `offen`, und die
+ist überfällig. **Das Teilen ist, was den Zustand wahr macht.**
+
+Darum ist es eine eigenständige Operation und kein Nebeneffekt eines
+Vorgangs-Splits — auch wenn ein Vorgangs-Split sie oft auslöst.
+
+Mechanik wie beim Vorgang: `verpflichtung_teilung { von: V, nach: [V1, V2] }`,
+V bleibt als **Dach** mit `aufgeteilt_in`, und sein Zustand wird aus den Teilen
+berechnet:
+
+| Teile | Dach |
+|---|---|
+| alle erfüllt | `erfüllt` |
+| irgendeiner überfällig | `überfällig` |
+| gemischt | `teilweise erfüllt` |
+
+Frist, Schuldner und Gläubiger können sich pro Teil unterscheiden — das ist
+häufig der eigentliche Grund zu teilen.
+
 Der dritte Fall ist kooperatives Projektmanagement in Reinform:
 
 > *"Die Hostingfirma schuldet der Designagentur die DNS-Umstellung — und das
@@ -596,17 +628,24 @@ einem Protokoll beim Auftraggeber. Und Verpflichtungen und Entscheidungen, die
 auf B zeigten, werden **nicht umgeschrieben** — die Auflösung folgt dem Zeiger.
 Keine Historienänderung.
 
-**Splitten braucht einen Standard-Nachfolger.** Die Einheiten brauchen keinen
-neuen Mechanismus: das sind Zuordnungs-Feststellungen mit anderem `vorgang`,
-genau wie jede menschliche Korrektur. Das Problem ist, **was an A hing**: eine
-Verpflichtung, die auf A zeigte, gehört zu A1 oder A2, und das kann das System
-nicht wissen. Offenlassen erzeugt verwaiste Verpflichtungen; pro Abhängigkeit
-fragen erzeugt einen Fragebogen, den niemand beendet.
+**Splitten lässt das Ursprüngliche als Dach stehen.** Die Einheiten brauchen
+keinen neuen Mechanismus: das sind Zuordnungs-Feststellungen mit anderem
+`vorgang`, genau wie jede menschliche Korrektur. Das Problem ist, **was an A
+hing**: eine Verpflichtung, die auf A zeigte, gehört zu A1 oder A2, und das kann
+das System nicht wissen.
 
-Daher `vorgang_teilung { von: A, nach: [A1, A2], standard_nachfolger: A1 }` —
-alles nicht ausdrücklich Zugewiesene landet beim Standard-Nachfolger und wird
-danach einzeln korrigiert. Kein Spezialwerkzeug, nur eine Vorgabe, damit nichts
-in der Luft hängt.
+Beim Mergen zeigt die Umleitung auf *ein* Ziel; beim Splitten auf mehrere, also
+ist "löse A auf" nicht beantwortbar. Ein Standard-Nachfolger wäre eine
+Vermutung, die als Tatsache auftritt — Leitsatz 9 verbietet das. Stattdessen:
+
+`vorgang_teilung { von: A, nach: [A1, A2], begründung, quellen }`. A bleibt und
+bekommt `aufgeteilt_in: [A1, A2]`.
+
+- **Alte Verweise auf A bleiben sinnvoll** — sie meinen "die Sache als Ganzes".
+- **Abhängigkeiten bleiben am Dach, bis jemand es besser weiß.** Eine
+  Verpflichtung, die an A hing, hängt danach an "A als Ganzes" — eine *wahre*
+  Aussage, während "A1" eine Vermutung wäre. Keine Waisen, keine Falschzuweisung.
+- **Die Entscheidung ist aufschiebbar, ohne Schaden** — siehe §6.4.
 
 **Beides bleibt dauerhaft freigabepflichtig — benannte Ausnahme von der
 Risiko-Ordnung in §10.3.** Ein Merge ist strukturiert und intern, wäre nach jener
@@ -624,6 +663,26 @@ zusammengelegte Inhalt bis März. Beide Antworten sind sinnvoll, und die zwei
 Zeitstempel liefern beide.
 
 ---
+
+### 6.4 Faule Auflösung: nie blockierend fragen
+
+Weil das Dach nichts blockiert, muss niemand im Moment des Teilens entscheiden.
+"Im Zweifel den Menschen fragen" würde sonst wieder den Fragebogen erzeugen,
+den §6.3 verwirft.
+
+> **Nicht fragen, weil die Daten unvollständig sind — fragen, wenn eine Antwort
+> gebraucht wird.**
+
+| Auslöser | Queue-Eintrag |
+|---|---|
+| Eine Frist nähert sich, unklar für welchen Teil sie gilt | "Welcher Teil ist am 30.4. fällig?" |
+| Das Protokoll würde irreführend | "V1 oder V2 — sonst steht da 'teilweise erfüllt' ohne Aussage" |
+| Jemand fragt nach dem Zustand eines Teils | direkt im Moment der Frage |
+
+Dazwischen liegt es am Dach und stört niemanden. Das Modell darf jederzeit eine
+Aufteilung mit Belegstellen vorschlagen, aber die Queue füllt sich nur, wenn es
+beisst. Das ist der Unterschied zwischen einer Queue, die man anschaut, und
+einer, die man wegklickt — vgl. §10.4.
 
 ## 7. Kern, Schicht 3: Organisationsprofil
 
@@ -1104,6 +1163,9 @@ Testbare Kriterien, keine Absichtserklärungen.
    nicht wieder, solange die Eingangsmenge unverändert ist.
 13. **Verantwortungsgrad.** "Was hat Jens selbst geprüft?" und "was entstand
    unter einem abgenommenen Plan?" sind getrennt abfragbar.
+14. **Dach nach Teilung.** Nach einem Split löst ein Verweis auf das Ursprüngliche
+   weiter auf, sein Zustand ist aus den Teilen berechnet, und keine Abhängigkeit
+   wurde geraten zugewiesen.
 
 ---
 
@@ -1143,7 +1205,8 @@ Daten messen, danach entscheiden.
 |---|---|
 | "Aussage" / "Zusage" als eigene Entität | Überlappt mit Verpflichtung und Entscheidung, wird zur Resterampe. Kommt, wenn im Betrieb etwas fehlt, das nirgends passt. |
 | Löschen beim Mergen von Vorgängen | Alte Verweise auf die Kennung stehen in Work Items, Mails und Protokollen beim Auftraggeber. Statt Löschen eine Umleitung. |
-| Pro-Abhängigkeit-Fragebogen beim Splitten | Niemand beendet ihn. Stattdessen ein Standard-Nachfolger und Einzelkorrektur danach. |
+| Pro-Abhängigkeit-Fragebogen beim Splitten | Niemand beendet ihn. Stattdessen bleibt alles am Dach, und gefragt wird erst, wenn eine Antwort gebraucht wird (§6.4). |
+| Standard-Nachfolger beim Splitten | War in einer früheren Fassung vorgesehen. Eine Vermutung, die als Tatsache auftritt — verstößt gegen Leitsatz 9. Ersetzt durch das Dach. |
 | Nur Annahmen festhalten | Ohne festgehaltene Ablehnung nagt das System bei jedem Durchlauf, und die Queue wird nach drei Wochen ignoriert. |
 | Verantwortung als Ja/Nein | Agentenarbeit unter einem abgenommenen Spec ist transitiv abgesegnet, nicht unverantwortet. Ohne die Abstufung wäre entweder Delegation unmöglich oder "selbst geprüft" nicht mehr von "unter Verfahren entstanden" unterscheidbar. |
 | Einzelnes `herkunft`-Feld | Vermischte "wer hat formuliert" mit "wer steht dafür ein". Hätte die Mail eines Auftraggebers mit Jens' eigener Korrektur gleichgestellt und die Messung der Modellgüte still korrumpiert. Ersetzt durch `urheber` + `verantwortung`. |
