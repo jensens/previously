@@ -338,7 +338,7 @@ aber nicht flächendeckend — deshalb bleibt `unbekannt` ein eigener Wert und
 keine Annahme.)
 
 **Wo kein Marker ist: `urheber: unbekannt`, nicht `mensch` angenommen.**
-Unbekannt wird aus der Grundwahrheitsmenge ausgeschlossen (§8.3). Lieber eine
+Unbekannt wird aus der Grundwahrheitsmenge ausgeschlossen (§8.5). Lieber eine
 kleinere, ehrliche Messbasis als eine große, in der Modelloutput als
 menschliches Urteil mitläuft.
 
@@ -400,7 +400,7 @@ Dieses System **ist** eine Rückkopplungsschleife, und das ist Absicht. Das
 System schlägt ein Issue vor, Jens ändert es in GitLab, die Änderung fließt
 zurück und verbessert das Verständnis im Kern. Diese Schleife ist der
 **Lernmechanismus**: eine Korrektur an einem vom System erzeugten Artefakt ist
-Grundwahrheit nach §8.3 — der wertvollste Eingang überhaupt.
+Grundwahrheit nach §8.5 — der wertvollste Eingang überhaupt.
 
 Eine Regel wie "ignoriere alles zu Issue #42" würde genau dieses Signal
 wegwerfen. Zu verhindern ist nicht die Schleife, sondern die **selbsterhaltende
@@ -848,17 +848,30 @@ nichts, weil beide Seiten ohnehin im Modell sind — und ist für ein
 Beratungsunternehmen vermutlich eine der nützlicheren Warnungen überhaupt. Es
 verhindert die Lücke nicht, es zeigt sie.
 
-## 8. Zuordnung: zweistufig
+## 8. Zuordnung: drei Signalklassen, Modell zuletzt
 
-### 8.1 Stufe eins — die Teilnehmerregel
+Welcher Organisation, welchem Projekt und welchem Vorgang ein Abschnitt
+gehört, wird aus drei Signalklassen bestimmt — in dieser Reihenfolge, weil sie
+nach Kosten und Verlässlichkeit geordnet ist:
 
-**Schneide die Projekt-Beteiligungen aller Anwesenden. Bleibt genau ein
-Projekt übrig, ist es das.**
+| Signal | Kosten | Beispiel |
+|---|---|---|
+| **strukturell** | keine | Beteiligte, Thread-Header, Referenzen |
+| **zeitlich** | keine | eine Mail am Tag nach der Besprechung zu Thema X |
+| **inhaltlich** | Modellaufruf | das Modell liest den Abschnitt |
+
+Reicht keine der drei, geht es in die **Triage** (§8.4) — nicht als Fehlerfall,
+sondern als vorgesehene Betriebsart.
+
+### 8.1 Strukturelle Signale: die Beteiligtenregel
+
+Die Grundidee: **schneide die Projekt-Beteiligungen der Anwesenden.** Bleibt
+genau eines übrig, ist es das.
 
 ```
 Discord #general, 10:00–10:45
   anwesend: Jens, Alex, [Ansprechpartner Organisation A]
-  → Schnittmenge der Beteiligungen: { Projekt A }
+  → Schnittmenge der Projekt-Beteiligungen: { Projekt A }
   → Zuordnung: Projekt A · urheber: regel · sicher
 
 Discord #general, 11:00–12:00
@@ -876,56 +889,156 @@ Projekt steckt, identifiziert es eindeutig; wer in zehn steckt, trägt fast
 nichts bei. Das gilt für Personen **und Organisationen** — die Absenderdomäne
 einer Hostingfirma, die nur in einem Projekt vorkommt, identifiziert es sofort.
 
-(Eine frühere Fassung formulierte das als "Kundenpersonen diskriminieren stark,
-eigene Leute kaum". Das war ein Behelf für denselben Gedanken — eigene Leute
-sind nur deshalb schwach, weil sie in vielen Projekten stecken, nicht weil sie
-eigene Leute sind.)
-
-Deterministisch, auditierbar, kostet keinen Token, und kein Modell kann es
-falsch machen. Gilt überall: bei Mail der Empfängerkreis einschließlich CC —
-oft ein besserer Hinweis als der Betreff; bei Voice die erkannten Sprecher;
-bei Discord die Anwesenden im Zeitfenster.
+Deterministisch, auditierbar, kostenlos, und kein Modell kann es falsch machen.
+Gilt überall: bei Mail der Empfängerkreis einschließlich CC (oft ein besserer
+Hinweis als der Betreff), bei Voice die erkannten Sprecher, bei Chat die
+Anwesenden im Zeitfenster.
 
 **Folge: Der Identitätsgraph ist nicht Hausarbeit, er ist der Klassifikator.**
-Er wird im MVP zuerst richtig gemacht.
 
-*Einschränkung:* Für Discord-**Voice**-Räume ist Anwesenheit pro Zeitfenster
-exakt (Join/Leave). Für Text-Kanäle gibt es keine Anwesenheit — dort gilt
-"wer hat im Zeitfenster geschrieben", schwächer aber brauchbar.
+#### Die Schnittmenge muss Ausreißer überleben
 
-### 8.2 Stufe zwei — Zerlegung durch das Modell
+Eine naive Schnittmenge ist zu zerbrechlich. Zwei Fälle, die beide eintreten
+werden:
 
-Nur wenn Stufe eins mehr als ein Projekt übrig lässt, oder wenn ein Event
-mehrere Vorgänge betrifft.
+- Jemand kommt **zu spät** — die Beteiligtenmenge ändert sich innerhalb des Events.
+- Jemand **platzt herein**, gehört nicht dazu und verabschiedet sich wieder. Dessen
+  Beteiligungen sind zu allen anderen disjunkt, und eine strenge Schnittmenge
+  wäre **leer** — die Regel fällt durch eine Person aus, die neunzig Sekunden im
+  Raum war.
 
-Eine Kundenmail enthält selten genau ein Thema; ein zweistündiges Transkript
-enthält viele. Das Modell gibt Zuordnungs-Feststellungen über Einheitenmengen
-aus, verteilt und überlappend erlaubt.
+Daher gilt nicht die rohe Schnittmenge, sondern: **Schnittmenge über die
+verlässlich Beteiligten, nach Anwesenheitsdauer gewichtet.** Wer zwei von
+neunzig Minuten anwesend war, ist kein Teilnehmer des Themas. Und ein Akteur
+ohne bekannte Beteiligungen trägt **nichts** bei, statt alles zu zerstören —
+das ist der entscheidende Unterschied.
+
+**Die Regel läuft pro Zeitfenster beziehungsweise pro Einheit, nicht pro
+Event**, und ist damit mit der Zerlegung (§5.3) verschränkt: ein Themenwechsel
+und ein Teilnehmerwechsel sind oft dasselbe Ereignis.
+
+#### Dasselbe Vorkommnis: Rauschen hier, Signal dort
+
+Der Reinplatzer, der nicht dazugehört, ist für die Zuordnung Störung — und
+genau der Fall, den die Vereinbarungslücken-Meldung aus §7.2 finden soll. Für
+die eine Frage wird er ignoriert, für die andere ist er das Interessanteste am
+ganzen Gespräch. Beides aus derselben Datenlage.
+
+#### Leere Schnittmenge ist eine eigene Aussage
+
+Null übrige Projekte heißt **nicht** "keine Antwort", sondern **"unsere
+Beteiligungsdaten sind unvollständig"**. Das ist ein anderer Befund mit anderer
+Folge: er erzeugt eine Triage-Rückfrage über die *Beteiligung*, nicht über die
+Zuordnung — und deren Antwort hat große Hebelwirkung (§8.4).
+
+#### Kaltstart — die Regel ist kein Tag-eins-Mechanismus
+
+Die Beteiligtenregel braucht Beteiligungen, und die entstehen erst, nachdem
+Zuordnung eine Weile gelaufen ist. **Beim Bestandsimport ist die Schnittmenge
+meist leer oder nutzlos.**
+
+Das ist keine Schwäche der Regel, aber eine harte Vorgabe für die Phasierung:
+
+- Am Anfang tragen **zeitliche und inhaltliche Signale plus Triage** die Last.
+- Beteiligungen werden anfangs selbst vorgeschlagen — aus Mail-Kopfzeilen, aus
+  dem gemeinsamen Vorkommen in Verteilern, aus den manuellen Einwürfen, bei denen
+  Jens die Zuordnung ohnehin mitgibt.
+- Die Regel wird **stärker, je länger das System läuft**, und ist nach dem
+  Bestandsimport eines Projekts für dieses Projekt brauchbar.
+
+*Einschränkung bei Chat:* Für Voice-Räume ist Anwesenheit pro Zeitfenster exakt
+(Join/Leave). Für Text-Kanäle gibt es keine Anwesenheit — dort gilt "wer hat im
+Zeitfenster geschrieben", schwächer aber brauchbar, und stille Mitleser sind
+unsichtbar (für die Offenlegungsprüfung relevant, nicht für die Zuordnung).
+
+### 8.2 Zeitliche Signale
+
+Zeitliche Nähe zu bereits zugeordneten Events ist eine reine Datenbankabfrage
+und kostet keinen Token — und sie trägt mehr, als sie klingt, weil Projektarbeit
+in Schüben läuft: nach einer Besprechung kommen die Mails zu dieser Besprechung.
+
+Verwendbar als eigenständiger Hinweis (eine Mail am Tag nach dem Call zu Thema
+X ist vermutlich zu X) und als **Verstärker**, wenn strukturelle Signale mehrere
+Kandidaten übrig lassen. Die zeitliche Spur zahlt auf `sicherheit` ein, nicht
+auf Gewissheit — sie kann immer irren.
+
+### 8.3 Inhaltliche Signale: Zerlegung durch das Modell
+
+Erst wenn Struktur und Zeit nicht entscheiden, oder wenn ein Event mehrere
+Vorgänge betrifft.
+
+Eine Mail enthält selten genau ein Thema; ein zweistündiges Transkript enthält
+viele. Das Modell gibt Zuordnungs-Feststellungen über Einheitenmengen aus,
+verteilt und überlappend erlaubt (§5.3).
 
 **Das ist die wertvollste Modelloperation im System.** Ein Transkript ist als
-Klumpen wertlos und als zwölf Abschnitte auf fünf Vorgänge verteilt
-brauchbar. Dort wird der Dschungel gelichtet — nicht beim Einsortieren von
-Mails.
+Klumpen wertlos und als zwölf Abschnitte auf fünf Vorgänge verteilt brauchbar.
+Dort wird der Dschungel gelichtet.
 
 Kosten: ein 2-Stunden-Transkript sind ~30.000 Tokens, ein Aufruf pro
-Besprechung. Bei Mails läuft ein billiger Vorlauf, der "ein Thema" erkennt
-und die Zerlegung überspringt; das dürfte die Mehrheit sein.
+Besprechung. Bei Mails ist ein billiger Vorlauf denkbar, der "ein Thema"
+erkennt und die Zerlegung überspringt — **ob das die Mehrheit ist, ist eine
+unbelegte Annahme und am Bestand zu messen, bevor darauf optimiert wird.**
 
-### 8.3 Messbarkeit fällt gratis an — aber nur bei sauberem Filter
+### 8.4 Triage: wenn alle drei Signalklassen nicht reichen
+
+Mail sauber zu kategorisieren ist schwierig, und eine vollständige
+Automatisierung ist nicht in Sicht. Daraus folgt nicht ein Fehlerpfad, sondern
+eine **eigene Betriebsart**: das System fragt, und zwar konkret.
+
+#### Zwei Arten von Queue-Einträgen, zwei Oberflächen
+
+| | Freigabe (§10.3) | Rückfrage (Triage) |
+|---|---|---|
+| Frage | "Darf ich X tun?" | "Ich kann Y nicht entscheiden — was ist es?" |
+| geht um | Befugnis | **Wissen** |
+| Antworten heißt | autorisieren | die Lücke füllen |
+| braucht | sorgfältiges Lesen | **einen Tastendruck** |
+
+Beides in eine Liste zu werfen schadet beidem: eine Freigabe will gelesen
+werden, eine Rückfrage will in drei Sekunden beantwortet sein.
+
+#### Der Hebel liegt im Wert der Antwort, nicht in der Zahl der Fragen
+
+**Rückfragen werden nach Hebelwirkung sortiert, nicht nach Alter.** Zuerst
+gefragt wird, was am meisten auflöst.
+
+Beantwortet jemand *"Alex in diesem Gespräch ist Alex Berger von der
+Agentur"*, ist nicht ein Gespräch zugeordnet — es ist eine Kanalidentität an
+eine Person gebunden, und daran können vierzig unentschiedene Events hängen.
+Eine einzelne Mail zuzuordnen löst eine Mail.
+
+Die Hebelwirkung ist abschätzbar: wie viele offene Zuordnungen hängen an dieser
+einen Antwort? Und sie ist messbar — **beantwortete Fragen pro Woche ×
+durchschnittlich aufgelöste Posten pro Antwort.** Damit gibt es eine Zahl dafür,
+ob die Triage besser wird oder nur fleissiger.
+
+#### Was eine gute Rückfrage ausmacht
+
+- **Kandidaten statt leerem Feld.** "Alex Berger (Agentur) oder Alex Winter
+  (Auftraggeber)?" — nicht "wer ist Alex?"
+- **Aus einer Vermutung abgeleitet, mit Beleg.** Einheitenverweis dabei, damit
+  im Zweifel nachgelesen werden kann.
+- **Aufschiebbar** (§6.4) — eine Rückfrage blockiert nichts.
+- **Vorzugsweise über Struktur, nicht über Inhalt.** Eine Frage nach einer
+  Identität oder einer Beteiligung wirkt dauerhaft; eine Frage nach der
+  Zuordnung eines einzelnen Abschnitts wirkt einmal.
+
+### 8.5 Messbarkeit fällt gratis an — bei sauberem Filter und pro Einheit
 
 Beim manuellen Einwurf gibt Jens die Zuordnung mit, also entsteht
-**Grundwahrheit**. Die Güte der automatischen Zuordnung wird damit eine
-Abfrage: vergleiche Feststellungen mit `urheber: regel` oder `modell` gegen
-spätere mit `urheber: mensch:<person>` **über derselben Einheitenmenge**.
+**Grundwahrheit**. Ebenso bei jeder beantworteten Rückfrage.
 
-Treffergenauigkeit pro Abschnitt, aus normaler Arbeit erzeugt, ohne
-Evaluierungsprojekt.
+**Verglichen wird pro Einheit, nicht pro Feststellung.** Das Modell sagt
+Einheiten 3–4, Jens sagt 3–5 — bei Mengengleichheit als Bedingung gäbe es fast
+nie einen Vergleich und die Messbarkeit wäre auf dem Papier schön und praktisch
+leer. Auf Einheitenebene ergibt dieselbe Lage drei Datenpunkte: 3 richtig, 4
+richtig, 5 übersehen. Daraus Genauigkeit und Vollständigkeit, wie üblich.
 
-**Der Filter läuft auf `urheber`, nicht auf `verantwortung`** — und das ist
-nicht gleichgültig. Legt ein Agent auf Jens' Anweisung etwas an, ist das
-`verantwortung: {jens, transitiv}`, aber `urheber: modell`. Würde die Messung auf
-`verantwortung` filtern, verglich man das Modell mit sich selbst und bekäme
-eine geschmeichelte Trefferquote.
+**Der Filter läuft auf `urheber`, nicht auf `verantwortung`.** Legt ein Agent
+auf Jens' Anweisung etwas an, ist das `verantwortung: {jens, transitiv}`, aber
+`urheber: modell`. Würde die Messung auf `verantwortung` filtern, verglich man
+das Modell mit sich selbst und bekäme eine geschmeichelte Trefferquote.
 
 Ebenso ausgeschlossen: `urheber: unbekannt`. Eine kleinere, ehrliche Messbasis
 ist mehr wert als eine große mit Modelloutput darin.
@@ -1068,6 +1181,11 @@ welchem Template. Pro Klasse ein Zustand: `fragen` (Vorgabe für alles Neue),
 Abnehmen stehen "einmal" und "diese Klasse ab jetzt" nebeneinander. Der
 Regelsatz lagert sich aus echten Entscheidungen ab; niemand setzt sich hin,
 um Berechtigungen zu konfigurieren.
+
+**Die Queue hat zwei Arten von Einträgen** — Freigaben und Rückfragen (§8.4) —
+und sie gehören in **getrennte Oberflächen**. Eine Freigabe will gelesen werden,
+eine Rückfrage will in drei Sekunden beantwortet sein. In einer Liste vermischt
+leidet beides: die Freigaben werden überflogen, die Rückfragen liegen.
 
 ### 10.4 Ablehnung wird festgehalten, nicht nur Annahme
 
@@ -1271,9 +1389,24 @@ Es braucht keine neue Maschinerie.
   dazukommen.
 - Weitere Konnektoren (Signal, Discord, Nextcloud, Kunden-JIRA).
 
-Der MVP ist auch nach dieser Abgrenzung groß. Der Implementierungsplan wird
-in Phasen zu schneiden sein; der Identitätsgraph gehört in die erste, weil er
-der Klassifikator ist.
+Der MVP ist auch nach dieser Abgrenzung groß. Der Implementierungsplan wird in
+Phasen zu schneiden sein, und §8.1 gibt dafür eine harte Vorgabe:
+
+**Die Beteiligtenregel ist kein Tag-eins-Mechanismus.** Sie braucht
+Beteiligungen, die erst entstehen, wenn Zuordnung schon läuft. Daraus folgt die
+Reihenfolge:
+
+1. **Kern, Einwurfpfade, Triage.** Ohne Triage ist am Anfang nichts zuzuordnen —
+   sie ist die erste Betriebsart, nicht die letzte Ausbaustufe.
+2. **Zeitliche und inhaltliche Signale.** Tragen die Last, solange der
+   Identitätsgraph leer ist.
+3. **Identitätsgraph und Beteiligtenregel.** Wächst aus (1) und (2) und wird
+   rückwirkend auf die Historie angewandt — was dank Leitsatz 3 eine
+   Neuberechnung ist und keine Migration.
+
+Der Identitätsgraph bleibt das wertvollste Bauteil, aber er ist ein **Ergebnis**
+der ersten Phasen, nicht deren Voraussetzung. Ihn zuerst bauen zu wollen wäre
+der naheliegende und falsche Schnitt.
 
 ---
 
@@ -1324,6 +1457,13 @@ Testbare Kriterien, keine Absichtserklärungen.
    erklärten Deckung.
 18. **Unbekannt blockiert.** Ein Zielort ohne Erklärung und ohne Aufzählung
    lässt sich nicht berendern.
+19. **Ausreißer-Robustheit.** Ein kurz anwesender Akteur ohne bekannte
+   Beteiligungen lässt die Beteiligtenregel nicht ausfallen — und erzeugt
+   gleichzeitig die Vereinbarungslücken-Meldung.
+20. **Hebelwirkung.** Rückfragen sind nach Zahl der auflösbaren offenen Posten
+   sortiert, und diese Zahl ist pro Frage abfragbar.
+21. **Messung pro Einheit.** Eine Zuordnung des Modells über Einheiten 3–4 und
+   eine menschliche über 3–5 ergeben drei Datenpunkte, nicht null.
 
 
 ---
@@ -1368,6 +1508,11 @@ Daten messen, danach entscheiden.
 | Standard-Nachfolger beim Splitten | War in einer früheren Fassung vorgesehen. Eine Vermutung, die als Tatsache auftritt — verstößt gegen Leitsatz 9. Ersetzt durch das Dach. |
 | Nur Annahmen festhalten | Ohne festgehaltene Ablehnung nagt das System bei jedem Durchlauf, und die Queue wird nach drei Wochen ignoriert. |
 | Verantwortung als Ja/Nein | Agentenarbeit unter einem abgenommenen Spec ist transitiv abgesegnet, nicht unverantwortet. Ohne die Abstufung wäre entweder Delegation unmöglich oder "selbst geprüft" nicht mehr von "unter Verfahren entstanden" unterscheidbar. |
+| Rohe Schnittmenge bei der Beteiligtenregel | Ein Reinplatzer, neunzig Sekunden im Raum, hätte die Regel ausfallen lassen. Gewichtung nach Anwesenheitsdauer, und unbekannte Akteure tragen nichts bei statt alles zu zerstören. |
+| Triage als Fehlerpfad | Vollständige Automatisierung der Zuordnung ist nicht in Sicht. Triage ist eine vorgesehene Betriebsart und in der ersten Phase die *primäre*. |
+| Freigaben und Rückfragen in einer Liste | Eine Freigabe will gelesen werden, eine Rückfrage in drei Sekunden beantwortet. Vermischt leidet beides. |
+| Messung auf Mengengleichheit | "Modell sagt 3–4, Mensch sagt 3–5" hätte als Nichtvergleich gezählt; die Messbarkeit wäre auf dem Papier schön und praktisch leer. Verglichen wird pro Einheit. |
+| Identitätsgraph als erste Bauphase | Naheliegend und falsch: er ist ein Ergebnis der ersten Phasen, nicht deren Voraussetzung. |
 | Berechtigungsmodelle der Zielsysteme nachbilden | GitLab-Gruppen und -Rollen, JIRA Permission Schemes und Issue Security Levels, Nextcloud-Freigaben: N Berechtigungssysteme als Nebenprodukt, dauerhaft synchron zu halten. Stattdessen erklärte Zielorte mit erklärter Deckung. |
 | Aufzählung als Gate | Hätte die gesamte Offenlegungsprüfung am schwächsten Adapter aufgehängt. Aufzählung ist Prüfung, Deklaration ist Gate. |
 | Offenlegung am Eingang filtern | Hätte verhindert, dass Jens sein eigenes projektübergreifendes Wissen nutzen kann — "was wissen wir über diese Agentur?" wäre unbeantwortbar. Die Prüfung sitzt am Ausgang. |
@@ -1430,7 +1575,7 @@ vollständig.
 Dazu: das schwierigste Problem dieses Systems ist kein Retrieval-Problem,
 sondern **Zuordnung und Zerlegung** (§8). RAG hat keine Meinung dazu, zu
 welcher Organisation oder welchem Projekt eine Mail gehört. Der stärkste Hebel dafür — die
-Teilnehmerregel in §8.1 — ist eine Mengenoperation, gar keine KI-Technik.
+Beteiligtenregel in §8.1 — ist eine Mengenoperation, gar keine KI-Technik.
 
 ### Wo RAG tatsächlich steckt
 
