@@ -919,7 +919,7 @@ und ein Teilnehmerwechsel sind oft dasselbe Ereignis.
 
 #### Dasselbe Vorkommnis: Rauschen hier, Signal dort
 
-Der Reinplatzer, der nicht dazugehört, ist für die Zuordnung Störung — und
+Wer kurz hereinplatzt und nicht dazugehört, ist für die Zuordnung Störung — und
 genau der Fall, den die Vereinbarungslücken-Meldung aus §7.2 finden soll. Für
 die eine Frage wird er ignoriert, für die andere ist er das Interessanteste am
 ganzen Gespräch. Beides aus derselben Datenlage.
@@ -1194,7 +1194,7 @@ Lehnt Jens einen Vorschlag ab, ist **das Nein selbst eine Feststellung** mit
 getrennt"* oder *"diese Aussage ist keine Verpflichtung"*. Der nächste Durchlauf
 sieht sie und schlägt dasselbe nicht erneut vor.
 
-**Ohne das nagt das System.** Die Vorrangordnung (§5.2) verhindert, dass ein
+**Ohne das fragt das System endlos nach.** Die Vorrangordnung (§5.2) verhindert, dass ein
 Modell gegen eine menschliche Entscheidung *gewinnt* — aber nicht, dass es
 dieselbe Frage bei jedem Durchlauf neu stellt. Eine Queue, in der immer die
 gleichen abgelehnten Vorschläge liegen, schaut sich nach drei Wochen niemand
@@ -1440,7 +1440,7 @@ Testbare Kriterien, keine Absichtserklärungen.
    vom Wächter angehalten und landet in der Queue, statt unbemerkt zu laufen.
 11. **Umleitung nach Merge.** Ein Verweis auf einen zusammengelegten Vorgang
    löst weiter auf, und keine Feststellung musste dafür umgeschrieben werden.
-12. **Kein Nagen.** Ein abgelehnter Vorschlag erscheint beim nächsten Durchlauf
+12. **Nicht zweimal fragen.** Ein abgelehnter Vorschlag erscheint beim nächsten Durchlauf
    nicht wieder, solange die Eingangsmenge unverändert ist.
 13. **Verantwortungsgrad.** "Was hat Jens selbst geprüft?" und "was entstand
    unter einem abgenommenen Plan?" sind getrennt abfragbar.
@@ -1506,9 +1506,9 @@ Daten messen, danach entscheiden.
 | Löschen beim Mergen von Vorgängen | Alte Verweise auf die Kennung stehen in Work Items, Mails und Protokollen beim Auftraggeber. Statt Löschen eine Umleitung. |
 | Pro-Abhängigkeit-Fragebogen beim Splitten | Niemand beendet ihn. Stattdessen bleibt alles am Dach, und gefragt wird erst, wenn eine Antwort gebraucht wird (§6.4). |
 | Standard-Nachfolger beim Splitten | War in einer früheren Fassung vorgesehen. Eine Vermutung, die als Tatsache auftritt — verstößt gegen Leitsatz 9. Ersetzt durch das Dach. |
-| Nur Annahmen festhalten | Ohne festgehaltene Ablehnung nagt das System bei jedem Durchlauf, und die Queue wird nach drei Wochen ignoriert. |
+| Nur Annahmen festhalten | Ohne festgehaltene Ablehnung stellt das System bei jedem Durchlauf dieselbe Frage erneut, und die Queue wird nach drei Wochen ignoriert. |
 | Verantwortung als Ja/Nein | Agentenarbeit unter einem abgenommenen Spec ist transitiv abgesegnet, nicht unverantwortet. Ohne die Abstufung wäre entweder Delegation unmöglich oder "selbst geprüft" nicht mehr von "unter Verfahren entstanden" unterscheidbar. |
-| Rohe Schnittmenge bei der Beteiligtenregel | Ein Reinplatzer, neunzig Sekunden im Raum, hätte die Regel ausfallen lassen. Gewichtung nach Anwesenheitsdauer, und unbekannte Akteure tragen nichts bei statt alles zu zerstören. |
+| Rohe Schnittmenge bei der Beteiligtenregel | Jemand, der neunzig Sekunden hereinplatzt, hätte die Regel ausfallen lassen. Gewichtung nach Anwesenheitsdauer, und unbekannte Akteure tragen nichts bei statt alles zu zerstören. |
 | Triage als Fehlerpfad | Vollständige Automatisierung der Zuordnung ist nicht in Sicht. Triage ist eine vorgesehene Betriebsart und in der ersten Phase die *primäre*. |
 | Freigaben und Rückfragen in einer Liste | Eine Freigabe will gelesen werden, eine Rückfrage in drei Sekunden beantwortet. Vermischt leidet beides. |
 | Messung auf Mengengleichheit | "Modell sagt 3–4, Mensch sagt 3–5" hätte als Nichtvergleich gezählt; die Messbarkeit wäre auf dem Papier schön und praktisch leer. Verglichen wird pro Einheit. |
