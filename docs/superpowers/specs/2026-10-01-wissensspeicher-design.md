@@ -295,24 +295,55 @@ Die drei Befugnisse:
 Wert wie "nie gefragt" als zulässig zu führen würde unautorisiertes Handeln
 normalisieren; die Integritätsprüfung (§15) schlägt darauf an.
 
-### 5.5 Echo-Unterdrückung
+### 5.5 Rückkopplung ist gewollt, Schwingung nicht
 
-Legt das System Issue #42 an, taucht #42 beim nächsten Abfragen des Konnektors
-auf. Ohne Gegenmaßnahme beobachtet das System seine eigene Handlung als
-Neuigkeit — und kann daraus eine Verpflichtung ableiten, die es selbst gerade
-erzeugt hat. Eine Rückkopplung, die unbemerkt bleibt, weil jeder einzelne
-Schritt plausibel aussieht.
+Dieses System **ist** eine Rückkopplungsschleife, und das ist Absicht. Das
+System schlägt ein Issue vor, Jens ändert es in GitLab, die Änderung fließt
+zurück und verbessert das Verständnis im Kern. Diese Schleife ist der
+**Lernmechanismus**: eine Korrektur an einem vom System erzeugten Artefakt ist
+Grundwahrheit nach §8.3 — der wertvollste Eingang überhaupt.
 
-"Alles zu #42 ignorieren" ist keine Lösung: ändert *Jens* daran etwas, ist das
-echte Neuigkeit.
+Eine Regel wie "ignoriere alles zu Issue #42" würde genau dieses Signal
+wegwerfen. Zu verhindern ist nicht die Schleife, sondern die **selbsterhaltende
+Schwingung**: ein Umlauf, der Zustand ändert, ohne Information hinzuzufügen.
 
-> **Vergleichen, nicht annehmen.** Der Konnektor vergleicht den eingehenden
-> Zustand mit dem Zustand, den er zuletzt dorthin gerendert hat (Feld
-> `ergebnis.gerenderter_zustand` der Handlung). Unterschied → Wahrnehmung.
-> Gleichheit → Echo, verworfen.
+Vier Bedingungen sichern Konvergenz. Drei folgen schon aus Entscheidungen
+anderswo im Entwurf — das ist kein Zufall, sondern der Grund, warum sie
+getroffen wurden.
 
-Dieselbe Mechanik wie "das nächste Rendern ist ein No-Op" (§11.1), von der
-Eingangsseite betrachtet. Eine Regel, beide Richtungen.
+**1. Idempotentes Rendern.** Dieselbe Projektion zweimal gerendert ergibt
+denselben Zielzustand; der zweite Durchlauf ist ein No-Op (§11.1). Keine
+Bequemlichkeit, sondern eine Konvergenzbedingung.
+
+**2. Keine Wahrnehmung ohne neue Information.** Der Konnektor meldet nur, wenn
+der eingehende Zustand von dem abweicht, was er zuletzt dorthin gerendert hat
+(`ergebnis.gerenderter_zustand` der Handlung). Abweichung heißt: jemand
+anders hat etwas geändert. Der Vergleich dient der **Informationsprüfung**,
+nicht der Abwehr.
+
+**3. Strikte Vorrangordnung.** Mensch schlägt Regel schlägt Modell, strikt
+(§5.2). Damit ist die wahrscheinlichste Schwingung konstruktiv unmöglich —
+Modell behauptet A, Mensch korrigiert auf B, Modell behauptet wieder A — weil
+ein Modell eine menschliche Feststellung nie überschreiben darf.
+
+Für Modell gegen Modell gilt zusätzlich: **nur bei sachlicher Änderung
+schreiben.** Eine neue Feststellung entsteht nur, wenn sich die Eingangsmenge
+oder die Prompt-Version geändert hat; eine bloß anders formulierte Aussage
+über dieselben Einheiten wird verworfen.
+
+**4. Ein Schwingungswächter statt eines Verbots.** Weil Rückkopplung gewollt
+ist, ist Detektion das richtige Werkzeug: ändert eine Entität ihren Zustand
+mehr als k-mal in einem Zeitfenster, **ohne dass in der Ursachenkette eine
+externe Wahrnehmung oder ein Mensch vorkommt**, wird die Kette angehalten und
+landet in der Queue — nicht als Fehler, sondern als Beobachtung. Das erlaubt
+beliebig tiefe legitime Rückkopplung und fängt nur den unbedachten Fall.
+
+**Das Log diagnostiziert sich selbst.** Weil alles append-only mit
+Ursachenangabe vorliegt, ist eine Schwingung im Log *sichtbar*: als Kette von
+Feststellungen, deren Ursachen zirkulär auf eigene Handlungen zurückführen,
+ohne externen Eintritt. Nachträglich auffindbar, nicht nur zur Laufzeit
+abfangbar. Ein weiteres Argument für Leitsatz 3: wer Projektionen mutiert
+statt sie zu berechnen, hat diese Diagnose nicht.
 
 ### 5.6 Erfüllung wird beobachtet, nicht gemeldet
 
@@ -653,7 +684,9 @@ Work Item ist eine Projektion, gerendert als Work Item.
 
 Dadurch verschwindet das Sync-Problem: eine Änderung direkt im Fremdsystem
 kommt als Feststellung mit `herkunft: mensch` herein, die Wahrheit im Kern
-aktualisiert sich, und das nächste Rendern ist ein No-Op. Kein Konfliktdialog,
+aktualisiert sich, und das nächste Rendern ist ein No-Op. **Die Idempotenz des
+Renderns ist dabei eine Konvergenzbedingung, keine Bequemlichkeit** — siehe
+§5.5. Kein Konfliktdialog,
 keine Sync-Richtung.
 
 **Weil der Kern die Wahrheit hält, darf Rendern verlustbehaftet sein.** Eine
@@ -825,9 +858,13 @@ Testbare Kriterien, keine Absichtserklärungen.
    `mensch` ist pro Abschnitt abfragbar.
 7. **Gate-Dichte.** Kein Modellaufruf außerhalb des Gates. Statisch geprüft.
 8. **Befugnis.** Keine Handlung ohne `auftrag`, `einmal` oder `klasse:<id>`.
-9. **Kein Echo.** Eine Handlung, die in ein Fremdsystem rendert, erzeugt beim
-   nächsten Abfragen **keine** neue Wahrnehmung. Als Test: rendern, abfragen,
-   prüfen dass das Log unverändert ist.
+9. **Konvergenz.** Rendern, abfragen, erneut rendern erreicht einen Festpunkt
+   innerhalb eines Umlaufs: die eigene Handlung erzeugt **keine** neue
+   Wahrnehmung. Und die Gegenprobe, die genauso wichtig ist: eine *fremde*
+   Änderung am Ziel erzeugt **genau eine** Wahrnehmung — die Schleife darf
+   nicht so dicht gemacht werden, dass sie das Lernen mit abwürgt.
+10. **Schwingungserkennung.** Eine künstlich konstruierte Zirkularität wird
+   vom Wächter angehalten und landet in der Queue, statt unbemerkt zu laufen.
 
 ---
 
