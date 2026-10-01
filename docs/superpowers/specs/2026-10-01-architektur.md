@@ -639,45 +639,99 @@ validiert dagegen, bevor es zurückgibt.
 Python, strikt typisiert (`pyright` im strict-Modus), PyO3 als benannter
 Notausgang für Rust, maximal zwei Sprachen — siehe §2 im Entwurf.
 
-### 10.1 SQLModel und Alembic
+### 10.1 SQLAlchemy Core, Pydantic, Alembic — kein ORM
 
-**SQLModel** für Modelle und gewöhnlichen Zugriff, **Alembic** für Migrationen.
+| Schicht | Werkzeug |
+|---|---|
+| Schema und Abfragen | **SQLAlchemy Core** |
+| Nutzlastvalidierung, MCP-Schemata | **Pydantic** |
+| Migrationen | **Alembic** (arbeitet gegen Core-Metadaten) |
 
-SQLModel passt zu einer Entscheidung, die schon getroffen ist: `payload` ist
-`jsonb` und wird in `core` validiert, nicht als Spaltenzwang (§4.1, Leitsatz 9).
-Pydantic validiert die Nutzlast, die Spalte bleibt `jsonb` — ein Werkzeug für
-die stabile äußere Form und die veränderliche innere Vielfalt.
+#### Begründung: ein append-only Speicher hat keine Verwendung für ein ORM
+
+Der Wert eines ORM ist **Änderungsverfolgung** — Identity Map, Dirty Tracking,
+Unit of Work, Lazy Loading, veränderliche Objektgraphen zusammenhalten. Hier
+wird nie etwas geändert: es gibt `append` und Lesen, kein `UPDATE`, kein
+`DELETE`, keine Beziehungsnavigation über Entitäten (§5).
+
+Die Lesewege wollen auch keine Entitäten: Projektionen sind Zeilen, `stream` ist
+ein Cursor, die Suche gibt Einheitenverweise. §5 verlangt "keine Rückgabe von
+Datenbankobjekten" — ein ORM wäre die dauerhafte Versuchung, genau das zu tun.
+
+#### Was `storage` zurückgibt
+
+Die Frage fällt erst ohne ORM auf, und sie ist wichtig: `storage` kennt laut §2
+**nichts** und kann daher keine Domänentypen zurückgeben.
+
+Also liefert es **Zeilen ohne Domänenbedeutung** — `kind` als Text, `payload` als
+rohes JSON, Zeitstempel, Hashes. Der Typ heißt deshalb `EventRow`, nicht
+`Event`: `core` deutet die Zeile, `storage` transportiert sie nur.
+
+```python
+@dataclass(frozen=True)
+class EventRow:
+    id: int
+    kind: str
+    recorded_at: datetime
+    occurred_at: datetime
+    hash: bytes
+    prev_hash: bytes | None
+    payload: Mapping[str, object]      # rohes JSON, ungedeutet
+```
+
+Mit einem ORM wären hier stillschweigend Entitäten über die Modulgrenze
+gereicht worden.
+
+#### Verworfen: SQLModel
+
+War als Vorgabe im Gespräch und wurde nach Prüfung verworfen. Die Begründung
+steht hier, damit später nachvollziehbar ist, warum es so ist und nicht anders:
+
+- **Sein Verkaufsargument löst unser Problem nicht.** SQLModel koppelt Tabelle
+  und Validierungsmodell in einer Klasse. Diese Architektur **trennt** sie
+  absichtlich: stabile äußere Tabelle, veränderliche validierte Nutzlast (§4.1,
+  Leitsatz 9). Die Pydantic-Modelle, die wirklich gebraucht werden, sind die der
+  `assertion`-Arten — und die sind **keine Tabellen**.
+- **Fünf Tabellen, fast keine Beziehungen.** Die gesparte Boilerplate liegt in
+  der Größenordnung von dreißig Zeilen.
+- **Alle harten Pfade liegen außerhalb**: Vektorsuche mit Vorfilter,
+  serverseitige Cursor, `FOR UPDATE SKIP LOCKED`, partielle Unique-Indizes,
+  `tsvector`-Operatoren.
+- **Projektionen werden in Massen geschrieben**, nicht zeilenweise — das will
+  `COPY` oder `executemany`. Bei Reprojektion über Jahre Historie ist der
+  Identity-Map-Aufwand kein akademisches Thema.
+- **`pyright` im strict-Modus** ist Auflage (§2 im Entwurf). SQLModel hat dort
+  historisch Reibung erzeugt; ein Werkzeug, das `# type: ignore` erzwingt,
+  kollidiert mit einer bereits getroffenen Entscheidung.
+
+**Wann das neu zu bewerten ist:** kommt Teil 5 als FastAPI-Oberfläche, zahlt
+sich SQLModels Kopplung von API- und DB-Modell genau dort aus. Teil 5 ist
+verschoben (§14 im Entwurf); die Frage wird dann erneut gestellt, nicht früher.
 
 #### Die Zuständigkeitsgrenze, die Leitsatz 3 schützt
 
-SQLModel legt nahe, **jede** Domänenentität zur Tabelle zu machen. Das wäre hier
-falsch: `obligation`, `matter`, `involvement` sind **Projektionen** und
-wegwerfbar. Treten sie als migrierte Tabellen auf, hat jemand sie versehentlich
-schemabehaftet gemacht — und wird sie beim nächsten Logikwechsel *migrieren*
-statt neu zu bauen. Leitsatz 3 wäre beschädigt, und zwar lautlos.
+Unabhängig vom ORM gilt für Alembic:
 
 > **Alembic migriert `event`, `source_key`, `unit`, `job` und
 > `projection_state`. Projektionstabellen (`p_*`) werden von Code erzeugt und
 > verworfen, nicht migriert.**
 
-Beim Versionssprung einer Projektion: `DROP` und neu bauen (§4.4). Keine
-Migration, kein Handgriff.
+Treten Projektionen als migrierte Tabellen auf, hat jemand sie versehentlich
+schemabehaftet gemacht — und wird sie beim nächsten Logikwechsel *migrieren*
+statt neu zu bauen. Leitsatz 3 wäre beschädigt, und zwar lautlos. Beim
+Versionssprung einer Projektion: `DROP` und neu bauen (§4.4).
 
 Die erste Migration richtet die Erweiterungen ein (`CREATE EXTENSION`) —
 `vector` und, je nach Ergebnis des Messversuchs, `vchord_bm25` und
 `pg_tokenizer`.
 
-#### Wo SQLModel nicht reicht
+#### Drei Pfade mit besonderem Zugriff
 
-Drei Pfade sind nicht einfach und gehen über SQLAlchemy Core oder direktes SQL:
-
-| Pfad | Grund |
+| Pfad | Umsetzung |
 |---|---|
-| Vektorsuche mit Vorfilter | Indexsteuerung, `vector`-Operatoren (`pgvector.sqlalchemy`) |
-| Auflösung von `involvement` | mengen- und zeitraumbasiert, teils rekursiv |
-| `stream` als Iterator | serverseitiger Cursor, darf nichts materialisieren |
-
-Das ist normal; es steht hier, damit niemand sich das ORM zurechtbiegt.
+| `stream` als Iterator | serverseitiger Cursor (`stream_results`), darf nichts materialisieren |
+| Projektionen schreiben | `COPY` oder `executemany`, nicht zeilenweise |
+| Vektorsuche mit Vorfilter | `pgvector.sqlalchemy` für den `vector`-Typ, Indexsteuerung in rohem SQL |
 
 ## 11. Was bewusst offen bleibt
 
