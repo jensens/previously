@@ -1403,14 +1403,43 @@ günstige Fall, nicht der Problemfall.
 
 #### Deutsche Volltextsuche — gemischter Befund
 
-| Option | Komposita |
-|---|---|
-| Postgres, Snowball (`german`) | **nein** — "Vergaberecht" findet "Recht der Vergabe" nicht |
-| Postgres, Hunspell-Wörterbuch | **teilweise** — Postgres setzt nur die Grundfunktionen der Hunspell-Kompositalogik um |
-| ParadeDB / `pg_search` (BM25, Tantivy) | deutsches Stemming ja, **kein Hinweis auf Zerlegung** gefunden — für dieses Problem nicht besser als Postgres nativ |
-| Elasticsearch / OpenSearch | **ja** — `hyphenation_decompounder` (empfohlen) und `dictionary_decompounder`, mit fertigen deutschen Datensätzen |
+| Option | Komposita | zweites System? |
+|---|---|---|
+| Postgres, Snowball (`german`) | **nein** — "Vergaberecht" findet "Recht der Vergabe" nicht | nein |
+| Postgres, Hunspell-Wörterbuch | **teilweise** — Postgres setzt nur die Grundfunktionen der Hunspell-Kompositalogik um | nein |
+| **VectorChord-BM25** + `pg_tokenizer.rs` | **umgeht sie** — Subword-Tokenisierung statt Wörterbuch-Zerlegung | nein |
+| ParadeDB / `pg_search` (BM25, Tantivy) | deutsches Stemming ja, **kein Hinweis auf Zerlegung** gefunden | nein |
+| Elasticsearch / OpenSearch | **ja** — `hyphenation_decompounder` (empfohlen) und `dictionary_decompounder`, mit fertigen deutschen Datensätzen | **ja** |
 
-Richtig gut ist nur die Lucene-Welt — und das heißt zweites System.
+#### VectorChord-BM25: Komposita umgehen statt zerlegen
+
+Der interessanteste Weg, weil er das Problem von einer anderen Seite angeht.
+Die Erweiterung nutzt **BPE/WordPiece-Tokenisierung aus HuggingFace-Modellen**;
+Version 0.2 hat Mehrsprachigkeit nachgelegt (deutsche Stoppwörter,
+konfigurierbare Stemmer), und `pg_tokenizer.rs` erlaubt eigene Tokenizer.
+
+Ein Subword-Tokenizer zerlegt "Vergaberecht" in Teilstücke, und "Recht der
+Fischerei" wird in überlappende Teilstücke zerlegt — **die Komposita werden
+umgangen, ohne deutsches Wörterbuch.** Und sprachunabhängig, womit der
+Deutsch/Englisch-Mix in *einem* Mechanismus erledigt ist statt mit zwei
+getrennten Volltextkonfigurationen.
+
+**Falle: der dokumentierte Standard ist `bert-base-uncased` — ein englisches
+Modell.** Dessen Vokabular zerhackt deutsche Wörter nach englischer
+Häufigkeitsstatistik; die Teilstücke sind dann linguistisch bedeutungslos und
+jede Überlappung Zufall statt Regel. Ein **mehrsprachiger** Tokenizer ist
+zwingend — dieselbe Bedingung wie beim Embedding-Modell (§10.2).
+
+Ehrliche Einordnung: ein anderer Kompromiss, keine strikte Verbesserung.
+
+| | Teilstücke | Stärke | Schwäche |
+|---|---|---|---|
+| Hunspell-Zerlegung | linguistisch korrekt | hohe Genauigkeit | nur teilweise umgesetzt, pro Sprache |
+| Subword (BM25) | statistisch gelernt | sprachunabhängig, hohe Trefferquote | kurze Teilstücke erzeugen Falschtreffer; IDF dämpft das, hebt es nicht auf |
+
+Richtig gut im linguistischen Sinn ist nur die Lucene-Welt — aber das ist der
+einzige Weg, der ein zweites System bedeutet, und VectorChord-BM25 greift
+dasselbe Problem innerhalb von Postgres an.
 
 #### Warum das trotzdem kein Grund ist, Postgres zu verwerfen
 
@@ -1453,9 +1482,24 @@ damit niemand alles in eine Liste lädt — eine Disziplinfrage, keine Engine-Fr
 ### 12.3 Offener Messversuch
 
 Die Kompositafrage wird mit Daten entschieden, nicht mit Meinung: tausend echte
-Mails, zwanzig Suchanfragen, die Jens wirklich tippen würde, Trefferquote bei
-Snowball / Hunspell / Embeddings vergleichen. Ein Tag Arbeit, und es steht fest,
-ob der Zweitindex je nötig wird.
+Mails und Transkriptabschnitte, zwanzig Suchanfragen, die Jens wirklich tippen
+würde — deutsche und englische — und dann Trefferquote **und Genauigkeit**
+vergleichen über:
+
+1. **Postgres FTS mit deutschem Hunspell**
+2. **VectorChord-BM25 mit mehrsprachigem Subword-Tokenizer**
+3. nur **Embeddings**, als Untergrenze
+4. die Kombination aus dem besten Textweg und Embeddings
+
+Zwei der Kandidaten bleiben in Postgres; OpenSearch als Zweitindex ist damit
+deutlich unwahrscheinlicher geworden und steht nur noch als Ausweichoption.
+
+**Vektoren bleiben pgvector** — bei einstelligen Millionen Events rechtfertigt
+das Volumen nichts Exotisches, und pgvector ist in jedem Managed-Postgres
+vorhanden. (VectorChord bietet auch einen Vektorindex an; der Messversuch
+betrifft nur den Textteil.)
+
+Ein Tag Arbeit, und es steht fest, welcher Weg gilt.
 
 ### 12.4 Quellen
 
@@ -1463,6 +1507,7 @@ ob der Zweitindex je nötig wird.
 - [Postgres-Diskussion zu deutschen Komposita](https://www.postgresql.org/message-id/556C1411.4010608@tbz-pariv.de) · [Hunspell-Wörterbuch mit Kompositaunterstützung](https://github.com/vpikulik/hunspell_de_compounds)
 - [ParadeDB Tokenizer](https://www.paradedb.com/docs/reference/tokenizers/overview) · [ParadeDB Stemmer](https://www.paradedb.com/docs/documentation/token-filters/stemming)
 - [Elastic `dictionary_decompounder`](https://www.elastic.co/docs/reference/text-analysis/analysis-dict-decomp-tokenfilter) · [Kompositasuche](https://www.elastic.co/search-labs/blog/compound-word-search) · [deutsche Datensätze](https://github.com/uschindler/german-decompounder)
+- [VectorChord-BM25](https://github.com/supervc-stack/VectorChord-bm25/blob/main/README.md) · [Hybridsuche mit BM25](https://blog.vectorchord.ai/hybrid-search-with-postgres-native-bm25-and-vectorchord) · [`pg_tokenizer.rs`](https://github.com/tensorchord/pg_tokenizer.rs) · [vchord_bm25 Übersicht](https://pigsty.io/ext/e/vchord_bm25/)
 
 ## 13. Bestandsimport
 
@@ -1603,7 +1648,8 @@ Testbare Kriterien, keine Absichtserklärungen.
 | Punkt | Art | Blockiert |
 |---|---|---|
 | ~~Datenbankwahl~~ | **entschieden**: PostgreSQL + pgvector (§12.2) | — |
-| Messversuch deutsche Komposita | §12.3 — entscheidet nur, ob ein Zweitindex nötig wird | nein |
+| Messversuch Textsuche | §12.3 — Hunspell vs. VectorChord-BM25 vs. Embeddings | nein |
+| Auswahl des mehrsprachigen Tokenizers (falls VectorChord-BM25) | §12.2 — **nicht** `bert-base-uncased` | nein |
 | Auswahl des mehrsprachigen Embedding-Modells | §10.2 | nein |
 | Voxtral und Diarisation: aktueller Stand | Recherche | nein — Teil 2 ist verschoben |
 | Gesprächsaufnahme: Österreich, **Deutschland, Schweiz, EU** | **Rechtsfrage, vor Teil 2 zu klären** — nicht sofort nötig, aber vor dem Bau des Abgriffs | ja, für Teil 2 |
