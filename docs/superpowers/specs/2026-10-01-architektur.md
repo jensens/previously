@@ -611,8 +611,9 @@ Vier Regeln, und sie reichen:
 2. **Projektionen sind pro Name einfädig.** Zwei Arbeiter an derselben
    Projektion sind ein Fehler, kein Durchsatzgewinn — der Vorschub `up_to_id`
    ist die Sperre.
-3. **Reprojektion läuft neben dem Eingang**, in eine Schattentabelle, und wird
-   am Ende umgeschaltet. Kein Stillstand.
+3. **Reprojektion blockiert den Eingang nicht**: sie baut in eine
+   Schattentabelle und schaltet am Ende um. Währenddessen wird weiter
+   aufgenommen.
 4. **Lesen sieht nie halbe Projektionen**, weil die Umschaltung in einer
    Transaktion passiert.
 
@@ -1051,6 +1052,10 @@ solange sie gratis ist.
 
 **cdk8s-Charts, ArgoCD, CNPG-Operator. Hetzner, EU — Standorte DE und FI.**
 
+**Backup über das pgBackRest-CNPG-I-Plugin, mit clientseitiger
+Verschlüsselung** (`encryption: aes-256-cbc`, Schlüssel aus einem Secret) —
+Begründung in §10.5.
+
 Damit ist die Speicherseite der Datenpolitik (§7.1 im Entwurf) **einmalig und
 durch das Deployment** erfüllt, nicht pro Aufruf.
 
@@ -1084,6 +1089,53 @@ bleibt lokal.
 
 Das verstärkt Regel 1 oben aus einem **zweiten, unabhängigen Grund**: die
 Trennung ist sicherheitsseitig richtig *und* betrieblich.
+
+### 10.5 Backup-Verschlüsselung: pgBackRest statt barman-cloud
+
+**Problem.** Hetzner Object Storage bietet nur SSE-C (§4.6), und
+`barman-cloud-backup` sowie `barman-cloud-wal-archive` unterstützen **nur
+serverseitige** Verschlüsselung (AES256, aws:kms). Barman klassisch kann
+GPG-Verschlüsselung, die Cloud-Werkzeuge nicht — es gibt dazu eine offene
+Anfrage. Die vollständige Datenbank würde damit unverschlüsselt im Bucket
+liegen.
+
+**Lösung.** Das **pgBackRest-CNPG-I-Plugin** kann clientseitige
+Verschlüsselung von Backups **und** WAL-Archiven (`encryption: aes-256-cbc`,
+Schlüssel aus einem Secret), dazu Datenverzeichnis-Backup und -Restore,
+WAL-Archivierung, PITR und Replica-Cluster. Hetzners fehlendes SSE-S3 ist
+damit irrelevant: die Daten sind verschlüsselt, bevor sie den Cluster verlassen.
+
+Implementierungen von Dalibo und Opera Software (letztere ausdrücklich
+experimentell). **Welche zur Bauzeit die bestgepflegte ist, ist nachzusehen.**
+
+#### Warum das keine Abwägung ist
+
+Es sieht aus wie *bewährtes barman gegen junges Plugin*. Ist es nicht:
+`barmanObjectStore` ist in CNPG seit 1.26 **abgekündigt** und soll mit 1.30
+entfernt werden; Nachfolger ist das **Barman-Cloud-Plugin** — also ebenfalls ein
+CNPG-I-Plugin, ebenfalls neu.
+
+> **Zwei neue Plugins, und nur eines verschlüsselt.**
+
+#### Was es architektonisch aufräumt
+
+Die Backup-Verschlüsselung folgt damit derselben Linie wie die Blobs (§4.6):
+**clientseitig, Schlüssel außerhalb des Datenpfads.** Ein Grundsatz, zwei
+Stellen — statt verschlüsselter Blobs neben einer unverschlüsselten Datenbank.
+
+**Getrennte Schlüssel für Blobs und Backups, gleicher Tresor.** Unterschiedliche
+Schadensreichweite, also nicht derselbe Schlüssel.
+
+#### Der verbleibende Einwand und seine Antwort
+
+Plugin-Reife. Ein Backup-System ist die schlechteste Stelle für junge Software —
+aber die Antwort darauf ist von der Pluginwahl unabhängig:
+
+> **Ein ungeprüfter Restore ist kein Backup.**
+
+Siehe Abnahmebedingung 23. Bei uns ist die Prüfung besonders aussagekräftig,
+weil die Hash-Kette den **wiederhergestellten Bestand** verifiziert und nicht
+nur, dass Postgres startet.
 
 ## 11. Was bewusst offen bleibt
 
@@ -1134,33 +1186,12 @@ nur noch Arbeit — und ein Spec dafür wäre die Fiktion aus §1.
 | Versionsstände der Postgres-Erweiterungen | beim Bau |
 | Fähigkeit von Claude Code bezüglich MRTR und der Tasks-Erweiterung | vor Teilprojekt 3 zu prüfen |
 | Zeitpunkt für den Bau der Tilgung | §4.6 hält sie offen; wann sie gebaut wird, ist offen |
-| **Verschlüsselung der Datenbanksicherung** | **ungelöst** — siehe unten |
+| Welche pgBackRest-Plugin-Implementierung | §10.5 — zur Bauzeit nachsehen |
 | Trace-Verknüpfung MCP-Aufruf ↔ Gate-Einträge über OpenTelemetry | Komfort, Teilprojekt 4 |
 
 Der dritte ist der einzige, der einen Umbau auslösen könnte: unterstützt der
 Client MRTR nicht, müssen blockierende Rückfragen vorerst als gewöhnliche
 Werkzeuge laufen — unschön, aber nicht strukturell.
-
-**Zur Verschlüsselung der Datenbanksicherung — ein offenes Loch:** Die Blobs
-sind client-seitig verschlüsselt (§4.6). Die **Datenbanksicherung** ist es
-nicht: das barman-cloud-Plugin von CloudNativePG unterstützt SSE-C nicht (es
-gibt eine offene Feature-Anfrage dafür), und Hetzner bietet nichts anderes an.
-
-Damit liegt die vollständige Datenbank unverschlüsselt im Backup-Bucket —
-schwerer als die Blob-Frage, mit der die Überlegung begann, denn das Backup
-enthält alles: Einheiten, Feststellungen, Zuordnungen, Protokolle.
-
-Drei Wege, zu entscheiden:
-
-| Weg | Anmerkung |
-|---|---|
-| **pgBackRest** statt barman-cloud | bringt eigene Verschlüsselung mit; andere Operator-Einbindung zu prüfen |
-| Verschlüsselung auf anderer Ebene | etwa ein verschlüsselter Zwischenspeicher vor dem Upload |
-| bewusst hinnehmen | Bucket privat, Zugangsdaten getrennt — und schriftlich festhalten, dass es so ist |
-
-Der letzte Weg ist zulässig, aber nur **bewusst und dokumentiert**. Einem
-Auftraggeber gegenüber ist "die Blobs sind verschlüsselt" ohne diesen Zusatz
-eine irreführende Aussage.
 
 **Zur Tilgung:** Entschieden ist, dass Tombstoning und Krypto-Schreddern
 **gebaut werden sollen, aber nicht jetzt** — und dass heute nichts verbaut wird.
