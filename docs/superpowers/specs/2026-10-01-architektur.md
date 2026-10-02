@@ -1158,25 +1158,65 @@ Nach dem Aufnahmekriterium aus §1 gehört nichts davon hierher.
 
 Reihenfolge aus §14 im Entwurf, mit der Kaltstart-Vorgabe aus §8.1.
 
-| # | Teilprojekt | Umfang | eigenes Detail-Spec? |
-|---|---|---|---|
-| 1 | **`core` und `storage`** | Log, Hash-Kette, Idempotenz, Units, Projektionsgerüst, Storage-Schnittstelle, **Verschlüsselung und die Tilgungs-Vorkehrungen (§4.6)** | **ja** — Hash-Kette und Reprojektion verdienen es |
-| 2 | **`contract` und manueller Einwurf** | `contract`, Drop-Ordner, Einwurf per Prompt, Quelle verlinken | nein |
-| 3 | **`mcp_server`** | Protokoll 2026-07-28, Werkzeuge, Handles, Offenlegungsprüfung | nein |
-| 4 | **`gate`** | Policy, Adapter, Audit, `processing_region` | nein |
-| 5 | **`ai_layer` und Triage** | Zeitliche und inhaltliche Signale, Zerlegung, Triage | nein |
-| 6 | **IMAP** | Konnektor nach Vertrag | nein |
-| 7 | **Identitätsgraph und Beteiligtenregel** | strukturelle Signale, rückwirkend auf die Historie | nein |
-| 8 | **Bestandsimport** | Pilotprojekt, Batch-Läufe | nein |
+| # | Teilprojekt | Umfang |
+|---|---|---|
+| **1** | **`core` und `storage`** | in drei Stufen, siehe §12.1 |
+| 2 | **`contract` und manueller Einwurf** | `contract`, Drop-Ordner, Einwurf per Prompt, Quelle verlinken |
+| 3 | **`mcp_server`** | Protokoll 2026-07-28, Werkzeuge, Handles, Offenlegungsprüfung |
+| 4 | **`gate`** | Policy, Adapter, Audit, `processing_region` |
+| 5 | **`ai_layer` und Triage** | Zeitliche und inhaltliche Signale, Zerlegung, Triage |
+| 6 | **IMAP** | Konnektor nach Vertrag |
+| 7 | **Identitätsgraph und Beteiligtenregel** | strukturelle Signale, rückwirkend auf die Historie |
+| 8 | **Bestandsimport** | Pilotprojekt, Batch-Läufe |
 
 **Teilprojekt 1 ist der einzige echte Flaschenhals** — alles andere hängt daran.
 Teilprojekte 3, 4 und 6 sind danach voneinander unabhängig.
 
-Nur Teilprojekt 1 bekommt ein eigenes Detail-Spec. Bei allem anderen ist nach
-diesem Dokument nichts Offenes mehr, das eine Spezifikation bräuchte, sondern
-nur noch Arbeit — und ein Spec dafür wäre die Fiktion aus §1.
+### 12.1 Teilprojekt 1 in drei Stufen
 
----
+Drei unabhängig prüfbare Mechanismen, nicht ein Block.
+
+| Stufe | Inhalt | Nachweis |
+|---|---|---|
+| **1a Der Log** | `event`, `payload_hash`, Hash-Kette, `append` mit Unique-Index auf `prev_hash`, Kettenprüfung, `unit`, `source_key` | Events schreiben, Kette verifizieren, Idempotenz belegen, Verzweigung als unmöglich zeigen |
+| **1b Projektionen** | `projection_state`, Versionssprung, Schattentabelle mit Umschaltung, Reprojektion als Stream | Projektion bauen, Version erhöhen, neu bauen, identisches Ergebnis zeigen, Eingang läuft weiter |
+| **1c Blobs** | inhaltsadressiert, clientseitige Verschlüsselung, Schlüsselbehandlung, lokaler Dateisystem-Adapter, Tilgungs-Vorkehrungen (§4.6) | Blob ablegen, Dedup zeigen, Verschlüsselung zeigen, Löschen zeigen |
+
+**1a** ist das irreduzible Fundament und vollständig ohne Projektionen testbar.
+**1b** hängt an 1a, ist aber ein eigener Mechanismus mit eigenen Tests.
+**1c** hängt nur an der Event-Form und bringt die externen Abhängigkeiten mit
+(Objektspeicher, Secrets).
+
+### 12.2 Jedes Teilprojekt bekommt seinen Plan, wenn es anfängt
+
+Eine frühere Fassung behauptete, nur Teilprojekt 1 brauche ein eigenes Spec,
+weil danach „nichts Offenes mehr übrig" sei. **Das war falsch** und widersprach
+Leitsatz 6: Teilprojekt 1 zu bauen wird Annahmen in diesem Dokument widerlegen.
+
+Der Fehler war, *jetzt nicht planen* mit *braucht keinen Plan* zu verwechseln.
+
+> **Die Fiktion wäre, die Teilprojekte 2–8 heute zu planen — nicht, sie zu
+> planen.**
+
+Das ist auch konsistent mit dem Aufnahmekriterium aus §1: ein Plan für den
+IMAP-Konnektor hängt an nichts anderem, wird also später entschieden — aber er
+wird entschieden.
+
+### 12.3 Der Prüfpunkt nach Teilprojekt 1
+
+Nach 1a, 1b und 1c, **vor** der Planung von 2–8. Mit Agenda, sonst wird er ein
+Ritual:
+
+1. **Hat das Kernmodell den Kontakt überlebt?** Sind von den zehn Entitäten
+   welche falsch, zusammenzulegen oder zu ergänzen?
+2. **Ist die Storage-Schnittstelle noch schmal**, oder ist SQL durchgesickert?
+3. **Was hat die Projektionsmechanik wirklich gekostet** — Reprojektionsdauer
+   über echte Datenmengen?
+4. **Steht jeder Leitsatz noch**, oder wurde einer unter Druck gebogen?
+5. **Was aus §11 war doch tragend?**
+
+Die fünfte ist die wichtigste. §11 ist die Sammlung dessen, was dieses Dokument
+für unkritisch erklärt hat — genau dort werden die Überraschungen liegen.
 
 ## 13. Offene Punkte
 
