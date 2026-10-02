@@ -1208,3 +1208,5 @@ Offen ist nur der Zeitpunkt des Baus.
 - [barman-cloud-Plugin: Feature-Anfrage SSE-C](https://github.com/cloudnative-pg/plugin-barman-cloud/issues/646)
 - [Vergleich S3-kompatibler Anbieter](https://blog.n0p.me/2025/10/2025-10-25-s3-compatible-storage-comparsion/)
 - [Pi Coding Agent](https://pi.dev/)
+- [pgBackRest-Plugin für CloudNativePG (Dalibo)](https://blog.dalibo.com/2026/06/25/plugin-pgbackrest.html) · [Implementierung Opera Software](https://github.com/operasoftware/cnpg-plugin-pgbackrest)
+- [Barman: clientseitige Verschlüsselung fehlt in den Cloud-Werkzeugen](https://github.com/EnterpriseDB/barman/issues/1155) · [pgBackRest-Repository-Verschlüsselung](https://www.percona.com/blog/enhancing-postgresql-security-how-to-encrypt-the-pgbackrest-repository/)

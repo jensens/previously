@@ -1696,6 +1696,10 @@ Testbare Kriterien, keine Absichtserklärungen.
    einen Alarm aus.
 22. **Messung pro Einheit.** Eine Zuordnung des Modells über Einheiten 3–4 und
    eine menschliche über 3–5 ergeben drei Datenpunkte, nicht null.
+23. **Geprüfter Restore.** Regelmäßig und automatisiert: Restore in eine
+   Wegwerf-Instanz, danach **Kettenprüfung auf dem wiederhergestellten
+   Bestand**. Ein ungeprüfter Restore ist kein Backup — und die Hash-Kette
+   prüft mehr als nur, dass Postgres startet.
 
 
 ---
