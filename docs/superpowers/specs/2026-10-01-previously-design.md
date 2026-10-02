@@ -1,9 +1,30 @@
-# Wissensspeicher für Kundenprojekte — Entwurf
+# Previously — Entwurf
 
 Stand: 2026-10-01 · Status: zur Abnahme
 
 Geschrieben für Jens als Reviewer und als Grundlage für den
 Implementierungsplan.
+
+## Zum Namen
+
+**Previously.** Weil die Hauptansicht des Systems wörtlich das ist: *previously,
+on Projekt Auftraggeber A…* — der Protokollkopf plus Chronik aus §9.1. Der Name
+benennt die Funktion, nicht eine Figur, die sie bedient, und er braucht keine
+Erklärung.
+
+Geprüft und verworfen: **`Memex`** (DARPA-Programm für Strafverfolgung
+dominiert die Suche, dazu ein lebendes Open-Source-Werkzeug mit demselben
+Pitch), **`Moneypenny`** (ein deutscher Sekretariatsdienst führt den Namen —
+gleiche Funktion, gleicher Markt; das Bond-IP war laut OLG Hamburg nicht das
+Problem), **`Seshat`**, **`Nisaba`**, **`Thoth`**, **`Nabu`** (Schreiber- und
+Gedächtnisgottheiten sind systematisch vergeben, oft mehrfach, teils im
+MCP-Umfeld), **`Herodot`** (sauber und gemeinfrei, aber international landet man
+bei `Herodotus` in einer Blockchain-Organisation).
+
+Ausgeschlossen als Familie: alles mit Überwachungsgeruch — `Argus`, `Heimdall`,
+`Panoptes`, `Palantir`. Sie passen sachlich und verkaufen genau das Gegenteil
+dessen, was das System ist. Ebenso alles mit `AI`, `Mind` oder `Brain`: die KI
+ist hier austauschbares Beiwerk, der Kern ist ein Event-Log mit Projektionen.
 
 **Sprachregelung: Prosa deutsch, alles Technische englisch.** Bezeichner,
 Feldnamen, Werkzeugnamen und Aufzählungswerte sind englisch; das Glossar steht

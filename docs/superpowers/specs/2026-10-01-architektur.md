@@ -1,9 +1,9 @@
-# Architektur — Wissensspeicher für Kundenprojekte
+# Previously — Architektur
 
 Stand: 2026-10-01 · Status: zur Abnahme
 
 Geschrieben für Jens als Reviewer und als Vorlage für die Zerlegung in
-Teilprojekte. Setzt den Entwurf in `2026-10-01-wissensspeicher-design.md`
+Teilprojekte. Setzt den Entwurf in `2026-10-01-previously-design.md`
 voraus; Paragraphenverweise ohne Dokumentangabe beziehen sich darauf.
 
 **Sprachregelung: Prosa und Begründungen deutsch, alles Technische englisch.**

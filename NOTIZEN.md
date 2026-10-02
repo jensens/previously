@@ -1,5 +1,9 @@
 # Arbeitsnotizen — Brainstorming
 
+**Projektname seit 2026-10-02: Previously.** Im Text unten steht noch der
+Arbeitstitel „Wissensspeicher“ — die Notizen bleiben als Gesprächsprotokoll
+unverändert, Begründung des Namens im Entwurfs-Spec.
+
 Laufendes Protokoll der Entscheidungen. **Kein Spec.** Das Spec entsteht,
 wenn das Bild steht, unter `docs/superpowers/specs/`.
 
