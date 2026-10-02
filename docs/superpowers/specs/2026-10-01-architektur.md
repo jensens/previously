@@ -711,7 +711,7 @@ Zustandslos, idempotent wo schreibend, strukturierte Ausgabe mit Schema.
 
 | Werkzeug | Art | Anmerkung |
 |---|---|---|
-| `get_dossier` | lesend | Zuschnitt `organization` \| `project` \| `matter`, optional Stichtag und Zeitordnung |
+| **`previously`** | lesend | Zuschnitt `organization` \| `project` \| `matter`, optional Stichtag und Zeitordnung. Das Leitwerkzeug — siehe Anmerkung unten |
 | `list_open_obligations` | lesend | Filter: Projekt, eigene/fremde/beobachtet |
 | `list_decisions` | lesend | |
 | `search` | lesend | der Rückfallpfad aus §18 im Entwurf |
@@ -723,6 +723,17 @@ Zustandslos, idempotent wo schreibend, strukturierte Ausgabe mit Schema.
 | `list_approvals` | lesend | getrennt von der Triage (§10.3 im Entwurf) |
 | `approve` / `reject` | schreibend | Ablehnung wird festgehalten (§10.4) |
 | `start_import` | schreibend | gibt Task-Handle zurück |
+
+**Zum Namen `previously`:** Der Aufruf liest sich wie der Satz, den er
+beantwortet — `previously(project="auftraggeber-a")`. Damit ist er als einziges
+Werkzeug **nicht verbgeführt**, während alle anderen es sind
+(`list_…`, `get_…`, `record_…`). Das ist Absicht und soll nicht
+„vereinheitlicht“ werden: es ist das Leitwerkzeug, und der Name ist
+selbsterklärend.
+
+Die vorige Fassung hieß `get_dossier`. Das war aus demselben Grund falsch, aus
+dem `Dossier` bei der Namenssuche ausgeschlossen wurde — überwachungsnaher
+Begriff für eine Ansicht, die schlicht eine Chronik mit Quellenangaben ist.
 
 **Die Offenlegungsprüfung sitzt im `mcp_server`**, nicht im Kern: er ist der
 zweite Durchsetzungspunkt aus §10.1 und entscheidet, was die interaktive Seite

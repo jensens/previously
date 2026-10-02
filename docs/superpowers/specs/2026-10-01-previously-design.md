@@ -178,7 +178,7 @@ er vom Eingang, nicht vom Benutzer.
 
 | lesend | schreibend |
 |---|---|
-| `get_dossier(organization\|project\|matter, as_of?)` | `submit(content, organization?, project?, matter?)` |
+| `previously(organization\|project\|matter, as_of?)` | `submit(content, organization?, project?, matter?)` |
 | `list_open_obligations(project?, own_role?)` | `record_assertion(…)` — Korrektur, `responsibility: {jens, direct}` |
 | `list_decisions(project\|organization, period?)` | `list_approvals()` / `approve(id, once\|class)` |
 | `search(query, project?, before?)` — der RAG-Pfad (§18) | |
