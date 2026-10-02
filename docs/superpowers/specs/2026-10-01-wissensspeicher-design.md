@@ -1149,11 +1149,14 @@ gesehen?" wird aus dem **MCP-Zugriffsprotokoll** beantwortet, nicht aus dem
 Gate-Log.
 
 **Konsequenz:** Steht eine beteiligte Organisation auf `local_only`, verweigert
-der MCP-Server die Inhalte des betroffenen Projekts an Claude Code — das
-Cockpit wird für dieses Projekt stumpfer
-(strukturierte Abfragen ja, KI-Unterstützung nur mit lokalem Client). Das ist
-kein Konstruktionsfehler, sondern der Preis der Datenpolitik, und er trifft
-die interaktive Seite härter als die Pipeline.
+der MCP-Server die Inhalte des betroffenen Projekts an Claude Code — das Cockpit
+würde für dieses Projekt stumpf (strukturierte Abfragen ja, KI-Unterstützung
+nein).
+
+**Das ist lösbar, nicht hinzunehmen.** Weil das Cockpit nur ein MCP-Client ist
+(§4), genügt für solche Projekte ein **anbieterneutraler Client gegen ein
+lokales Modell** — der Weg ist in §8.8 des Architektur-Specs benannt. Die
+Datenpolitik kostet dann Modellstärke, nicht die Arbeitsweise.
 
 ```
 call(task, payload, context{project, confidentiality}) → result

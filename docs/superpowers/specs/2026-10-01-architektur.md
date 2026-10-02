@@ -730,6 +730,51 @@ zweite Durchsetzungspunkt aus §10.1 und entscheidet, was die interaktive Seite
 
 ---
 
+### 8.8 Das Cockpit ist austauschbar — und das ist der Zweck
+
+Das Cockpit ist **ein MCP-Client, nichts weiter**. Claude Code heute (§14 im
+Entwurf), eine eigene Oberfläche später, ein anderer Harness dazwischen — der
+Kern merkt davon nichts. Das war der Grund, MCP als einzige Schnittstelle zu
+wählen, und es heißt: **es gibt hier nichts zu entscheiden und nichts zu
+bereuen.**
+
+#### Zwei Fälle, in denen Claude Code nicht reicht
+
+| Fall | Bedarf |
+|---|---|
+| Ein Projekt mit `local_only`-Auflage (§10.1 im Entwurf) | Ein Client, der gegen ein **lokales Modell** läuft |
+| FOSS-Release (§2 im Entwurf) | "Du brauchst Claude Code" ist eine Abhängigkeit von einem kommerziellen Produkt |
+
+#### Benannte Alternative: Pi (`pi.dev`)
+
+Minimalistischer Terminal-Harness, MIT-Lizenz, kein Cloud-Backend, 15+
+Modellanbieter einschließlich lokaler, **MCP eingebaut**, Betriebsarten
+interaktiv / print-JSON / RPC / SDK. Erfüllt damit beide Fälle oben.
+
+**Nicht heute einsetzen.** Claude Code bleibt das Cockpit, solange keiner der
+beiden Fälle eintritt — Reifegrad gegen eine Abstraktion zu tauschen, die man
+noch nicht braucht, wäre ein schlechter Handel. Die Alternative ist festgehalten,
+damit sie im Bedarfsfall nicht erst gesucht werden muss.
+
+**Zu klären, bevor es ein Argument wird:** Pi authentifiziert per API-Key *oder
+OAuth*. Für API-Keys unproblematisch. Soll damit ein **Abo-Zugang** genutzt
+werden, ist das dieselbe Frage wie in §8.2 — Abobedingungen decken die Produkte
+des Anbieters, nicht Drittclients.
+
+#### Wo ein Agent-Harness ausdrücklich **nicht** hingehört
+
+Nicht in den `ai_layer`. Zwei Gründe, beide aus diesem Dokument:
+
+1. **Wir wollen keine Agentenschleife.** Zuordnung, Zerlegung und Extraktion sind
+   strukturierte Einzelaufrufe mit Ausgabeschema (§9). Eine Werkzeugschleife
+   löst dort kein Problem und kostet Kontrolle über die Ausgabeform.
+2. **Es würde das Gate umgehen** (§2, Regel 2). Ein Harness mit eigenen
+   Anbieterverbindungen trägt weder Policy noch Audit noch den
+   Verarbeitungsraum-Nachweis.
+
+Ein Harness ist ein **Client**, kein Baustein der Pipeline. Diese Trennung sollte
+beim nächsten interessanten Harness nicht neu diskutiert werden müssen.
+
 ## 9. Die Gate-Schnittstelle
 
 ```python
@@ -1120,3 +1165,4 @@ Offen ist nur der Zeitpunkt des Baus.
 - [Hetzner Object Storage — unterstützte Aktionen](https://docs.hetzner.com/storage/object-storage/supported-actions/) · [FAQ](https://docs.hetzner.com/storage/object-storage/faq/general/)
 - [barman-cloud-Plugin: Feature-Anfrage SSE-C](https://github.com/cloudnative-pg/plugin-barman-cloud/issues/646)
 - [Vergleich S3-kompatibler Anbieter](https://blog.n0p.me/2025/10/2025-10-25-s3-compatible-storage-comparsion/)
+- [Pi Coding Agent](https://pi.dev/)
