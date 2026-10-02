@@ -1137,6 +1137,113 @@ Siehe Abnahmebedingung 23. Bei uns ist die Prüfung besonders aussagekräftig,
 weil die Hash-Kette den **wiederhergestellten Bestand** verifiziert und nicht
 nur, dass Postgres startet.
 
+### 10.6 Werkzeuge
+
+Grundlage ist die bestehende Praxis in `zodb-pgjsonb` — übernommen, nicht neu
+erfunden. Ergänzt um das, was dieses Projekt zusätzlich braucht.
+
+| Zweck | Werkzeug |
+|---|---|
+| Abhängigkeiten | **uv**, Lockfile committet |
+| Build und Version | **hatchling** + **hatch-vcs** (Version aus Git-Tags) |
+| Lint und Format | **ruff** |
+| Typprüfung | **pyright**, strict |
+| Architekturgrenzen | **import-linter** |
+| Tests | **pytest**, **pytest-cov**, **coverage** (`fail_under = 90`) |
+| Datenbank im Test | **testcontainers[postgres]** — echtes Postgres, kein Mock |
+| Invarianten | **hypothesis** |
+| Testreihenfolge | **pytest-randomly** |
+| Hooks | **pre-commit** |
+| Schwachstellen | **pip-audit** in CI |
+
+Python **3.14**, `requires-python = ">=3.14"`, `target-version = "py314"`.
+
+#### Typprüfung: pyright, und der Grund ist unspektakulär
+
+Stand Oktober 2026 liegen **Pyrefly** (Meta, Rust, stabil 1.0 seit Mai 2026,
+~98 % Konformität zur Typing-Spezifikation) und **pyright** (~97 %) sachlich
+gleichauf. Pyrefly ist 10–50× schneller als mypy — **bei dieser Projektgröße
+ist das theoretisch.**
+
+Also entscheidet ein praktischer Punkt: **pyright läuft über Pylance schon im
+Editor.** Derselbe Prüfer in Editor und CI vermeidet „läuft bei mir, scheitert
+in CI". **Pyrefly ist die benannte Alternative**; der Wechsel ist billig, weil
+beide normale Annotationen lesen.
+
+**`ty` (Astral) fällt raus**, und nicht weil es unreif ist (Beta), sondern aus
+einem schärferen Grund: strikte Typisierung setzt hier **Architekturgrenzen**
+durch (§2). Ein Prüfer mit ~53 % Spezifikationsabdeckung liefert *falsche
+Sicherheit*, und die ist schlechter als keine. Für den Editor interessant, für
+CI nicht.
+
+#### import-linter macht §2 wahr
+
+§2 behauptet drei **statisch prüfbare** Grenzregeln. Ruff kann das nicht
+ausdrücken — „`core` darf nicht aus `connectors` importieren" ist eine
+Schichtenregel, keine Stilregel. `import-linter` kann es mit `layers`- und
+`forbidden`-Verträgen.
+
+**Damit wird aus einer Spec-Zusage ein Test.** Die drei Regeln aus §2 werden als
+Verträge hinterlegt und in CI geprüft.
+
+#### Ruff: vier Gruppen über die bestehende Auswahl hinaus
+
+| Gruppe | Warum **hier** |
+|---|---|
+| **`DTZ`** | verbietet naive `datetime`. `recorded_at` und `occurred_at` sind `timestamptz` — ein naiver Zeitstempel in der Chronik bleibt jahrelang unentdeckt |
+| **`S`** | fest eingebaute Geheimnisse, schwache Krypto, SQL-Verkettung. Wir verschlüsseln Blobs und verwalten Schlüssel |
+| **`TID`** | verbietet relative Importe — hält die Modulgrenzen für import-linter lesbar |
+| **`TC`** | Typ-nur-Importe nach `TYPE_CHECKING` — trennt Laufzeit- von Typabhängigkeiten |
+
+Dazu eine Unstimmigkeit aus der Vorlage beheben: `max-line-length = 120` bei
+ignoriertem `E501`, während `[tool.ruff] line-length` ungesetzt (also 88) ist —
+der Formatter bricht bei 88, der Linter schweigt. **`line-length` einmal oben
+setzen.**
+
+#### Synchron, nicht async
+
+Eigene Entscheidung, nicht Bequemlichkeit: das Nebenläufigkeitsmodell aus §7.3
+sind **mehrere Arbeiterprozesse mit `SKIP LOCKED`**, nicht viele Koroutinen in
+einem Prozess. Bei sechs Prozessen und einem Benutzer kauft async Komplexität
+ohne Gegenwert. Damit entfällt auch die Ruff-Gruppe `ASYNC`.
+
+#### hypothesis für die Invarianten
+
+„Neu gebaut ergibt dasselbe Ergebnis" (Abnahmebedingung 2) und „keine
+Verzweigung der Kette möglich" (§4.1) sind **Invarianten über zufällige
+Event-Folgen**, keine Beispieltests. Eine der wenigen Stellen, an denen
+eigenschaftsbasiertes Testen klar überlegen ist.
+
+`pytest-randomly` dazu: bei Tests mit Datenbankzustand findet zufällige
+Reihenfolge Abhängigkeiten zwischen Tests, die sonst erst in CI auffallen.
+
+### 10.7 Abhängigkeiten: keine Zombies, und zwar prüfbar
+
+**Methode.** Der Pflegezustand wird nicht geschätzt, sondern am
+Veröffentlichungsdatum gemessen — die PyPI-JSON-Schnittstelle
+(`https://pypi.org/pypi/<paket>/json`) liefert Version und Datum der letzten
+Veröffentlichung. Das ist ein Einzeiler und gilt für jede neue Abhängigkeit.
+
+**Ein Datum allein entscheidet aber nichts.** Ein triviales, stabiles Paket darf
+alt sein; eine komplexe Bibliothek nicht. Deshalb gehört zum Datum ein Urteil,
+und das Urteil gehört aufgeschrieben — sonst wird es beim nächsten Mal neu
+gefällt.
+
+**Abhängigkeits-Register** (`DEPENDENCIES.md`), je Eintrag:
+
+- **wofür** — welcher Zweck, welches Modul
+- **Alternative verworfen weil** — damit die Frage nicht wiederkehrt
+- **zuletzt geprüft am** — mit Urteil, nicht nur Datum
+
+Worked example aus der ersten Prüfung: **`hatch-vcs`, letzte Veröffentlichung
+vor über einem Jahr** — bewertet als **fertig, nicht verlassen**, weil es ein
+paar Zeilen Klebstoff um `setuptools-scm` ist. Genau dieses Urteil ist der Grund
+für das Register: die Zahl allein hätte einen Fehlalarm ausgelöst.
+
+Dazu **`pip-audit`** in CI für Schwachstellen und **Renovate** für
+Aktualisierungen. Beides deckt etwas anderes ab als der Pflegezustand: CVEs und
+Versionsstand sind nicht dasselbe wie „lebt das Projekt noch".
+
 ## 11. Was bewusst offen bleibt
 
 Nach dem Aufnahmekriterium aus §1 gehört nichts davon hierher.
@@ -1181,6 +1288,12 @@ Drei unabhängig prüfbare Mechanismen, nicht ein Block.
 | **1a Der Log** | `event`, `payload_hash`, Hash-Kette, `append` mit Unique-Index auf `prev_hash`, Kettenprüfung, `unit`, `source_key` | Events schreiben, Kette verifizieren, Idempotenz belegen, Verzweigung als unmöglich zeigen |
 | **1b Projektionen** | `projection_state`, Versionssprung, Schattentabelle mit Umschaltung, Reprojektion als Stream | Projektion bauen, Version erhöhen, neu bauen, identisches Ergebnis zeigen, Eingang läuft weiter |
 | **1c Blobs** | inhaltsadressiert, clientseitige Verschlüsselung, Schlüsselbehandlung, lokaler Dateisystem-Adapter, Tilgungs-Vorkehrungen (§4.6) | Blob ablegen, Dedup zeigen, Verschlüsselung zeigen, Löschen zeigen |
+
+**Jede Stufe muss lauffähig sein**, einschließlich Migrationen und Testaufbau —
+nicht weil es nützlich ist, sondern weil **Lauffähigkeit Dinge hervortreibt, die
+man sonst vergisst.** Eine Stufe, die nur als Spezifikation existiert, hat ihre
+Annahmen nicht geprüft. Das zieht Alembic und Testinfrastruktur in 1a hinein,
+und das ist beabsichtigt.
 
 **1a** ist das irreduzible Fundament und vollständig ohne Projektionen testbar.
 **1b** hängt an 1a, ist aber ein eigener Mechanismus mit eigenen Tests.
