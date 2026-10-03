@@ -9,23 +9,34 @@ database objects.
 """
 
 from contextlib import contextmanager
+from previously.storage.errors import ChainPositionTaken
+from previously.storage.errors import InvalidDsn
+from previously.storage.errors import MigrationPending
+from previously.storage.errors import ServerUnreachable
+from previously.storage.errors import SourceKeyTaken
+from previously.storage.rows import EventRow
+from previously.storage.rows import Tip
+from previously.storage.rows import UnitRow
+from previously.storage.schema import event
+from previously.storage.schema import source_key
+from previously.storage.schema import unit
+from sqlalchemy import Connection
+from sqlalchemy import create_engine
+from sqlalchemy import Engine
+from sqlalchemy import func
+from sqlalchemy import insert
+from sqlalchemy import select
+from sqlalchemy.exc import ArgumentError
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import OperationalError
+from sqlalchemy.exc import ProgrammingError
 from typing import TYPE_CHECKING
 
-from sqlalchemy import Connection, Engine, create_engine, func, insert, select
-from sqlalchemy.exc import ArgumentError, IntegrityError, OperationalError, ProgrammingError
-
-from previously.storage.errors import (
-    ChainPositionTaken,
-    InvalidDsn,
-    MigrationPending,
-    ServerUnreachable,
-    SourceKeyTaken,
-)
-from previously.storage.rows import EventRow, Tip, UnitRow
-from previously.storage.schema import event, source_key, unit
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Iterator, Sequence
+    from collections.abc import Generator
+    from collections.abc import Iterator
+    from collections.abc import Sequence
 
 # Three indexes mark the same class of conflict. Ruling T6-b had excluded
 # event_hash_idx here, on the grounds that a duplicate `hash` means "the same

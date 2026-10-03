@@ -3,13 +3,16 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Test setup: real PostgreSQL in a container, migrations run against the container."""
 
+from alembic import command
+from alembic.config import Config
+from sqlalchemy import create_engine
+from sqlalchemy import Engine
+from sqlalchemy import text
+from testcontainers.community.postgres import PostgresContainer
 from typing import TYPE_CHECKING
 
 import pytest
-from alembic import command
-from alembic.config import Config
-from sqlalchemy import Engine, create_engine, text
-from testcontainers.community.postgres import PostgresContainer
+
 
 if TYPE_CHECKING:
     from collections.abc import Iterator

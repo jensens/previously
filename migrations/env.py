@@ -1,13 +1,13 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-from logging.config import fileConfig
-
 from alembic import context
-from sqlalchemy import engine_from_config, pool
-
+from logging.config import fileConfig
 from migrations.dsn import resolve_dsn
 from previously.storage.schema import metadata
+from sqlalchemy import engine_from_config
+from sqlalchemy import pool
+
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.

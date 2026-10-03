@@ -1,15 +1,22 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-import hashlib
-from datetime import UTC, datetime, timedelta, timezone, tzinfo
-
-import pytest
-
+from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
+from datetime import tzinfo
+from datetime import UTC
 from previously.contract.types import RawUnit
 from previously.core.errors import InvalidPayload
-from previously.core.hashing import event_hash, iso_utc, payload_hash, units_hash
+from previously.core.hashing import event_hash
+from previously.core.hashing import iso_utc
+from previously.core.hashing import payload_hash
+from previously.core.hashing import units_hash
 from previously.storage.rows import UnitRow
+
+import hashlib
+import pytest
+
 
 RECORDED = datetime(2026, 10, 2, 14, 0, 0, tzinfo=UTC)
 OCCURRED = datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC)

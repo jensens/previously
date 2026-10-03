@@ -12,10 +12,11 @@ isolation outside a running migration (see the docstring of
 of its own.
 """
 
-import pytest
 from alembic.config import Config
+from migrations.dsn import ENV_VAR
+from migrations.dsn import resolve_dsn
 
-from migrations.dsn import ENV_VAR, resolve_dsn
+import pytest
 
 
 def test_with_neither_it_raises_a_clear_error(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -27,9 +27,11 @@ it would suggest a migration path for a tree that has none, and would make
 From the first real write on, this would have to be a `0002`.
 """
 
-import sqlalchemy as sa
 from alembic import op
 from sqlalchemy.dialects.postgresql import JSONB
+
+import sqlalchemy as sa
+
 
 revision = "0001_log"
 down_revision = None

@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Rows, not domain objects — the field contract out of §7 of the 1a spec."""
 
-from datetime import UTC, datetime
-
-from previously.storage.rows import EventRow, Tip, UnitRow
+from datetime import datetime
+from datetime import UTC
+from previously.storage.rows import EventRow
+from previously.storage.rows import Tip
+from previously.storage.rows import UnitRow
 
 
 def test_tip_carries_id_and_hash() -> None:

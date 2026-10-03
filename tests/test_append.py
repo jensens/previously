@@ -1,20 +1,28 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-import threading
-from datetime import UTC, datetime
+from datetime import datetime
+from datetime import UTC
 from itertools import pairwise
-from typing import cast
-
-import pytest
-from sqlalchemy import Engine, text
-
-from previously.contract.types import Evidence, RawEvent, RawUnit
-from previously.core.append import BACKOFF_CAP, MAX_BATCH, append, backoff_delay
-from previously.core.errors import BatchTooLarge, InvalidPayload
+from previously.contract.types import Evidence
+from previously.contract.types import RawEvent
+from previously.contract.types import RawUnit
+from previously.core.append import append
+from previously.core.append import BACKOFF_CAP
+from previously.core.append import backoff_delay
+from previously.core.append import MAX_BATCH
+from previously.core.errors import BatchTooLarge
+from previously.core.errors import InvalidPayload
 from previously.core.hashing import payload_hash
 from previously.core.units import split_plaintext
 from previously.storage.postgres import PostgresStorage
+from sqlalchemy import Engine
+from sqlalchemy import text
+from typing import cast
+
+import pytest
+import threading
+
 
 NOW = datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC)
 OCCURRED = datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC)

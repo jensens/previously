@@ -1,13 +1,13 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-import json
-from collections.abc import Iterator, Mapping
-
-import pytest
-
+from collections.abc import Iterator
+from collections.abc import Mapping
 from previously.core.canonical import canonical
 from previously.core.errors import InvalidPayload
+
+import json
+import pytest
 
 
 def test_key_order_does_not_matter() -> None:

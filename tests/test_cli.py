@@ -1,12 +1,14 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-from datetime import UTC, datetime
+from datetime import datetime
+from datetime import UTC
+from previously.cli import main
+from previously.cli import MAX_TEXT_BYTES
+from previously.cli import parse_moment
+from previously.core.errors import InvalidPayload
 
 import pytest
-
-from previously.cli import MAX_TEXT_BYTES, main, parse_moment
-from previously.core.errors import InvalidPayload
 
 
 def test_parse_moment_with_a_zone() -> None:
@@ -131,7 +133,8 @@ def test_show_says_so_when_the_payload_is_erased(
     architecture). `show` has to say that rather than print an empty line —
     and it must not crash on `None`, which is the branch a plain
     `payload.get(...)` would have fallen into."""
-    from sqlalchemy import Engine, text
+    from sqlalchemy import Engine
+    from sqlalchemy import text
 
     assert isinstance(db, Engine)
     monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
@@ -229,7 +232,8 @@ def test_the_evidence_default_is_recollection(
     """Without `--evidence` the cautious assumption stays: reported from
     memory. That was the only behaviour before G3 already — this test holds it
     down as a default, no longer as a pinning."""
-    from sqlalchemy import Engine, select
+    from sqlalchemy import Engine
+    from sqlalchemy import select
 
     assert isinstance(db, Engine)
     monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
@@ -249,7 +253,8 @@ def test_evidence_verbatim_can_be_chosen(
     """Finding G3: whoever submits the verbatim wording via the CLI has to be
     able to hold that down as `verbatim` — after the fact it is no longer
     possible, the kind of evidence goes into the hash."""
-    from sqlalchemy import Engine, select
+    from sqlalchemy import Engine
+    from sqlalchemy import select
 
     assert isinstance(db, Engine)
     monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
@@ -340,7 +345,8 @@ def test_verify_prints_the_finding_and_returns_1(
     chain, where `verify` prints "chain intact" and returns 0, so the
     assurance stood in the code and in no test.
     """
-    from sqlalchemy import Engine, text
+    from sqlalchemy import Engine
+    from sqlalchemy import text
 
     assert isinstance(db, Engine)
     monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))

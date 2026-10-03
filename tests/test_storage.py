@@ -1,23 +1,25 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-from datetime import UTC, datetime
+from datetime import datetime
+from datetime import UTC
+from previously.storage.errors import ChainPositionTaken
+from previously.storage.errors import InvalidDsn
+from previously.storage.errors import MigrationPending
+from previously.storage.errors import ServerUnreachable
+from previously.storage.errors import SourceKeyTaken
+from previously.storage.errors import StorageError
+from previously.storage.postgres import from_dsn
+from previously.storage.postgres import PostgresStorage
+from previously.storage.rows import EventRow
+from previously.storage.rows import UnitRow
+from sqlalchemy import create_engine
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from typing import TYPE_CHECKING
 
 import pytest
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import IntegrityError
 
-from previously.storage.errors import (
-    ChainPositionTaken,
-    InvalidDsn,
-    MigrationPending,
-    ServerUnreachable,
-    SourceKeyTaken,
-    StorageError,
-)
-from previously.storage.postgres import PostgresStorage, from_dsn
-from previously.storage.rows import EventRow, UnitRow
 
 if TYPE_CHECKING:
     from sqlalchemy import Engine

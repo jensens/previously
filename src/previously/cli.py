@@ -8,20 +8,25 @@ that is useful, but because being runnable drives out things one otherwise
 forgets.
 """
 
+from datetime import datetime
+from datetime import UTC
+from previously.contract.types import Evidence
+from previously.contract.types import RawEvent
+from previously.core.append import append
+from previously.core.errors import InvalidPayload
+from previously.core.errors import PreviouslyError
+from previously.core.units import split_plaintext
+from previously.core.verify import verify
+from previously.storage.errors import StorageError
+from previously.storage.postgres import from_dsn
+from previously.storage.postgres import PostgresStorage
+from typing import TYPE_CHECKING
+
 import argparse
 import json
 import os
 import sys
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING
 
-from previously.contract.types import Evidence, RawEvent
-from previously.core.append import append
-from previously.core.errors import InvalidPayload, PreviouslyError
-from previously.core.units import split_plaintext
-from previously.core.verify import verify
-from previously.storage.errors import StorageError
-from previously.storage.postgres import PostgresStorage, from_dsn
 
 if TYPE_CHECKING:
     from collections.abc import Sequence

@@ -1,16 +1,19 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-from datetime import UTC, datetime
-
-import pytest
-from sqlalchemy import Engine, text
-
-from previously.contract.types import Evidence, RawEvent
+from datetime import datetime
+from datetime import UTC
+from previously.contract.types import Evidence
+from previously.contract.types import RawEvent
 from previously.core.append import append
 from previously.core.units import split_plaintext
 from previously.core.verify import verify
 from previously.storage.postgres import PostgresStorage
+from sqlalchemy import Engine
+from sqlalchemy import text
+
+import pytest
+
 
 NOW = datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC)
 

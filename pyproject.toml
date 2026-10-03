@@ -48,6 +48,25 @@ extend-exclude = ["docs"]
 select = ["A", "B", "C4", "C901", "DTZ", "E", "F", "I", "RUF", "S", "SIM", "T20", "TC", "TID", "UP", "W"]
 ignore = ["RUF001", "RUF002", "RUF003"]
 
+[tool.ruff.lint.isort]
+# The import style used across this maintainer's other projects. Consistency
+# between the projects is the reason; the settings are not argued from this
+# codebase.
+#
+# `no-sections` is the one with a price here, and it is worth knowing about:
+# standard library, third-party and `previously.*` imports end up in a single
+# alphabetical list, so a module no longer shows at a glance which layer it
+# depends on — in a project whose central property is the separation of
+# `cli` → `core` → `storage` → `contract`. That separation is enforced
+# mechanically by import-linter (see `.importlinter`), so this costs
+# readability at that one spot and nothing else.
+force-single-line = true
+from-first = true
+lines-after-imports = 2
+lines-between-types = 1
+no-sections = true
+order-by-type = false
+
 [tool.ruff.lint.flake8-tidy-imports]
 ban-relative-imports = "all"
 

@@ -9,10 +9,11 @@ attribution, no classification. Those are assertions and come later.
 Further media bring their own documented rule along.
 """
 
-import re
-
 from previously.contract.types import RawUnit
 from previously.core.errors import InvalidPayload
+
+import re
+
 
 _SEPARATOR = re.compile(r"\n[ \t]*\n[\s]*")
 

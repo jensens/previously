@@ -1,11 +1,12 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-import pytest
-from sqlalchemy import Engine, text
+from previously.storage.schema import metadata
+from sqlalchemy import Engine
+from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from previously.storage.schema import metadata
+import pytest
 
 
 @pytest.mark.db
@@ -157,9 +158,10 @@ def test_a_real_tombstone_stays_permitted_and_passes_verification(db: Engine) ->
     Goes through `append` and `verify` rather than through raw DDL, because
     that is the path the acceptance condition is about.
     """
-    from datetime import UTC, datetime
-
-    from previously.contract.types import Evidence, RawEvent
+    from datetime import datetime
+    from datetime import UTC
+    from previously.contract.types import Evidence
+    from previously.contract.types import RawEvent
     from previously.core.append import append
     from previously.core.units import split_plaintext
     from previously.core.verify import verify

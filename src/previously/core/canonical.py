@@ -23,11 +23,13 @@ serialisable. That is why it checks against the **concrete** types that
 serialisable, and a foreign `Mapping` is not a `dict`.
 """
 
+from previously.core.errors import InvalidPayload
+from typing import cast
+from typing import TYPE_CHECKING
+
 import json
 import re
-from typing import TYPE_CHECKING, cast
 
-from previously.core.errors import InvalidPayload
 
 if TYPE_CHECKING:
     from collections.abc import Mapping

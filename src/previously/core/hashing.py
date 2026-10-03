@@ -18,15 +18,19 @@ permanent forgeries — the content of a unit rewritten, a unit deleted, the
 source faked — ran, as measured, silently through `verify`.
 """
 
-import hashlib
-from datetime import UTC, datetime
-from typing import TYPE_CHECKING, Protocol
-
+from datetime import datetime
+from datetime import UTC
 from previously.core.canonical import canonical
 from previously.core.errors import InvalidPayload
+from typing import Protocol
+from typing import TYPE_CHECKING
+
+import hashlib
+
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Mapping
+    from collections.abc import Sequence
 
 HASH_VERSION = 1
 HASH_DOMAIN = "previously/event"

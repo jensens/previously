@@ -25,16 +25,18 @@ forge one row could have hidden every further forgery behind it.
 """
 
 from dataclasses import dataclass
+from previously.core.errors import InvalidPayload
+from previously.core.hashing import event_hash
+from previously.core.hashing import payload_hash
+from previously.core.hashing import units_hash
 from typing import TYPE_CHECKING
 
-from previously.core.errors import InvalidPayload
-from previously.core.hashing import event_hash, payload_hash, units_hash
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-
     from previously.storage.postgres import PostgresStorage
-    from previously.storage.rows import EventRow, UnitRow
+    from previously.storage.rows import EventRow
+    from previously.storage.rows import UnitRow
 
 
 @dataclass(frozen=True)

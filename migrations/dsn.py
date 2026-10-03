@@ -14,8 +14,10 @@ independently of any change to this file. This resolution depends only on
 therefore testable without a container or a running migration.
 """
 
-import os
 from typing import TYPE_CHECKING
+
+import os
+
 
 if TYPE_CHECKING:
     from alembic.config import Config

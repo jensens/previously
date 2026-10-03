@@ -9,19 +9,20 @@ so much machinery: it lands **inside the package**, because that is what
 everybody who works in this tree afterwards — with a violation nobody wrote.
 """
 
-import subprocess
-import sys
-import warnings
 from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-import pytest
-
 import previously.core
+import pytest
+import subprocess
+import sys
+import warnings
+
 
 if TYPE_CHECKING:
-    from collections.abc import Generator, Iterator
+    from collections.abc import Generator
+    from collections.abc import Iterator
 
 
 # Where `previously.core` really lies, read off the imported package instead

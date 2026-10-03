@@ -1,10 +1,10 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-import pytest
-
 from previously.core.errors import InvalidPayload
 from previously.core.units import split_plaintext
+
+import pytest
 
 
 def test_a_single_paragraph() -> None:

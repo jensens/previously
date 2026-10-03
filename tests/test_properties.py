@@ -8,23 +8,29 @@ Property-based testing is clearly superior here: "rebuilt yields the same" and
 example tests.
 """
 
-import json
-import threading
-from datetime import UTC, datetime
-from itertools import pairwise
-
-import pytest
-from hypothesis import HealthCheck, given, settings
+from datetime import datetime
+from datetime import UTC
+from hypothesis import given
+from hypothesis import HealthCheck
+from hypothesis import settings
 from hypothesis import strategies as st
-from sqlalchemy import Engine, text
-
-from previously.contract.types import Evidence, RawEvent
+from itertools import pairwise
+from previously.contract.types import Evidence
+from previously.contract.types import RawEvent
 from previously.core.append import append
-from previously.core.canonical import MAX_SAFE_INT, canonical
+from previously.core.canonical import canonical
+from previously.core.canonical import MAX_SAFE_INT
 from previously.core.errors import InvalidPayload
 from previously.core.units import split_plaintext
 from previously.core.verify import verify
 from previously.storage.postgres import PostgresStorage
+from sqlalchemy import Engine
+from sqlalchemy import text
+
+import json
+import pytest
+import threading
+
 
 NOW = datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC)
 

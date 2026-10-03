@@ -3,21 +3,21 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The tables as SQLAlchemy Core. No ORM (§10.1 of the architecture)."""
 
-from sqlalchemy import (
-    BigInteger,
-    CheckConstraint,
-    Column,
-    ForeignKey,
-    Index,
-    Integer,
-    LargeBinary,
-    MetaData,
-    PrimaryKeyConstraint,
-    Table,
-    Text,
-    UniqueConstraint,
-)
-from sqlalchemy.dialects.postgresql import JSONB, TIMESTAMP
+from sqlalchemy import BigInteger
+from sqlalchemy import CheckConstraint
+from sqlalchemy import Column
+from sqlalchemy import ForeignKey
+from sqlalchemy import Index
+from sqlalchemy import Integer
+from sqlalchemy import LargeBinary
+from sqlalchemy import MetaData
+from sqlalchemy import PrimaryKeyConstraint
+from sqlalchemy import Table
+from sqlalchemy import Text
+from sqlalchemy import UniqueConstraint
+from sqlalchemy.dialects.postgresql import JSONB
+from sqlalchemy.dialects.postgresql import TIMESTAMP
+
 
 metadata = MetaData()
 
