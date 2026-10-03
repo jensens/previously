@@ -1,0 +1,106 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "previously"
+dynamic = ["version"]
+description = "An append-only knowledge store for project histories"
+readme = "README.md"
+license = "AGPL-3.0-or-later"
+requires-python = ">=3.14"
+dependencies = [
+    "sqlalchemy>=2.1",
+    "psycopg[binary]>=3.3",
+    "alembic>=1.20",
+]
+
+[project.scripts]
+previously = "previously.cli:main"
+
+[project.optional-dependencies]
+test = [
+    "pytest>=9.1",
+    "pytest-cov>=7.1",
+    "pytest-randomly>=5.0",
+    "coverage[toml]>=7.16",
+    "testcontainers[postgres]>=4.15",
+    "hypothesis>=6.168",
+]
+dev = ["ruff>=0.16", "pyright>=1.1.414", "import-linter>=2.15", "pre-commit>=4.6"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/previously"]
+
+[tool.hatch.version]
+source = "vcs"
+raw-options = { local_scheme = "no-local-version" }
+
+[tool.ruff]
+target-version = "py314"
+line-length = 100
+# docs/ holds the specification and the plans, not source code. ruff>=0.16
+# formats Python code blocks inside Markdown by default — there, those blocks
+# are illustrative fragments rather than project code, hence the exclusion.
+extend-exclude = ["docs"]
+
+[tool.ruff.lint]
+select = ["A", "B", "C4", "C901", "DTZ", "E", "F", "I", "RUF", "S", "SIM", "T20", "TC", "TID", "UP", "W"]
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.flake8-tidy-imports]
+ban-relative-imports = "all"
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S101", "T201"]
+# Printing to stdout is what this module is for (§9 of the stage 1a spec) —
+# a `# noqa: T201` on each of the nine `print` calls would be the same
+# justification repeated nine times (ruling T9-c).
+"src/previously/cli.py" = ["T201"]
+
+[tool.ruff.lint.flake8-type-checking]
+# The members of `contract/types.py` are dataclasses: their annotations are
+# evaluated at runtime as soon as anything applies `typing.get_type_hints()`
+# to them — and that is precisely what the connector contract exists for. A
+# TYPE_CHECKING block would break that with a NameError, so the imports there
+# are real imports.
+runtime-evaluated-decorators = ["dataclasses.dataclass"]
+# The counterpart for pydantic, for when it comes back (ruling T2-e). It is
+# not a dependency any more — stage 1a validates by hand in
+# `core/canonical.py`, and nothing imported pydantic — but as soon as the
+# first `BaseModel` arises, this entry is needed here:
+#
+#     runtime-evaluated-base-classes = ["pydantic.BaseModel"]
+#
+# Without it ruff moves the `BaseModel` imports under `TYPE_CHECKING`, and
+# pydantic then fails at runtime, because it resolves the annotations of a
+# model while the class is being built. The countermeasure is written here and
+# not only in the ledger, so that it does not vanish along with it.
+
+[tool.pyright]
+# `migrations` is not an accessory: `migrations/versions/0001_log.py` creates
+# the schema and `migrations/dsn.py` carries the DSN resolution — both real
+# logic, which without this entry slips past the strict check unnoticed, as it
+# did until the fix round that added it.
+include = ["src", "tests", "migrations"]
+typeCheckingMode = "strict"
+pythonVersion = "3.14"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["db: needs PostgreSQL (testcontainer)"]
+# `migrations` is not an installed package (no entry in [project], and no
+# `__init__.py` needed thanks to implicit namespace packages), so without this
+# it is not on sys.path — `tests/test_migrations_dsn.py` could not import
+# `migrations.dsn` otherwise. Measured: without this line the import fails
+# with `ModuleNotFoundError: No module named 'migrations'`.
+pythonpath = ["."]
+
+[tool.coverage.run]
+source = ["previously"]
+relative_files = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 90
+exclude_lines = ["pragma: no cover", "if TYPE_CHECKING:"]

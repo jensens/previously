@@ -450,6 +450,19 @@ weil `payload_hash` einheitlich gilt.
 
 Schmal, damit sie hält (§12). Alles, was darüber hinausgeht, gehört in `core`.
 
+> **Das `Protocol` ist Zielform, nicht Bestand** (Prüfbefund W-4 der zweiten
+> Endprüfung von Stufe 1a). Im Baum gibt es kein `class Storage(Protocol)`:
+> `core` ist gegen den konkreten `storage.postgres.PostgresStorage`
+> typisiert. Daran hängen die zwei benannten import-linter-Ausnahmen und der
+> Riegel, der ihre `TYPE_CHECKING`-Eigenschaft sichert. §7 der 1a-Spezifikation
+> begründet, warum das für 1a genügt; §12 dort führt die saubere Form — ein
+> über den Verbindungstyp generisches `class LogStore[Conn](Protocol)` in
+> `contract` — als offenen Punkt für die Neuplanung nach Teilprojekt 1.
+>
+> Die Signaturen unten sind außerdem die der **Endfassung** über alle Stufen
+> (`stream`, Projektionen, `search`); die Teilmenge, die 1a wirklich hat,
+> steht in §7 der 1a-Spezifikation und nimmt überall die `Connection` entgegen.
+
 ```python
 class Storage(Protocol):
     def append(self, events: Sequence[NewEvent]) -> list[int]: ...

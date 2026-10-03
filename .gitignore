@@ -18,3 +18,7 @@ htmlcov/
 .idea/
 .vscode/
 .DS_Store
+
+# Worktrees und Agenten-Arbeitsbereiche
+.claude/
+.superpowers/

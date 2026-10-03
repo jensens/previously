@@ -1,0 +1,80 @@
+[importlinter]
+root_package = previously
+# Three of the four contracts forbid external packages (sqlalchemy, psycopg,
+# alembic, anthropic, openai). import-linter requires this setting for that,
+# otherwise it aborts with a configuration error — it is not a loosening of
+# the contracts themselves.
+include_external_packages = True
+
+[importlinter:contract:layers]
+name = Layers: core above storage, contract below both
+type = layers
+layers =
+    previously.cli
+    previously.core
+    previously.storage
+    previously.contract
+
+[importlinter:contract:core-is-clean]
+name = core knows no foreign system and no model
+type = forbidden
+source_modules =
+    previously.core
+forbidden_modules =
+    sqlalchemy
+    psycopg
+    alembic
+# Ruling T7-a (task 7, fix round 1): `core.append` takes `PostgresStorage` as
+# a parameter and imports the type only under `TYPE_CHECKING`, because the
+# signature has to carry it while `append` itself never calls a sqlalchemy
+# function. import-linter counts TYPE_CHECKING imports towards `forbidden`
+# contracts regardless — it only parses the source, it does not observe the
+# runtime. Task 8 (`core.verify`) reproduces the same situation for a second
+# module.
+#
+# Ruling T8-c (task 8, fix round 1): the exemption enumerates the affected
+# edges one by one (`core.append`, `core.verify`) instead of matching them
+# with a wildcard (`previously.core.*`). A wildcard would be the same move as
+# the global `exclude_type_checking_imports` release already rejected in
+# ruling T7-a, just one level smaller: both widen the *importer* side, and the
+# importer side is exactly the side that decides which modules may reach
+# sqlalchemy transitively — the very question this contract asks. Measured
+# with a throwaway module `core/zz_probe.py` that also imports
+# `PostgresStorage` only under `TYPE_CHECKING`: with `previously.core.*` the
+# contract stayed KEPT and the new edge slipped through silently (`3 ignored
+# imports`, without anyone having decided that); with two named edges the
+# contract went BROKEN and named the new edge explicitly. Having to touch this
+# file for every new `core` module that follows the same pattern is not the
+# drawback of enumerating, it is the point: the number of exemptions in the
+# log (`N ignored imports`) rises only when someone changed this file
+# deliberately — never through a module that merely happens to follow the same
+# naming pattern.
+ignore_imports =
+    previously.core.append -> previously.storage.postgres
+    previously.core.verify -> previously.storage.postgres
+
+[importlinter:contract:only-storage-knows-sql]
+name = Only storage imports sqlalchemy
+type = forbidden
+source_modules =
+    previously.core
+    previously.contract
+forbidden_modules =
+    sqlalchemy
+    psycopg
+# The same exemption as in `core-is-clean` (see there for the reasoning,
+# ruling T8-c): edges enumerated one by one, no wildcard across `core` — a new
+# `core` module with the same `TYPE_CHECKING` pattern is meant to break this
+# contract until someone deliberately extends this file with its edge.
+ignore_imports =
+    previously.core.append -> previously.storage.postgres
+    previously.core.verify -> previously.storage.postgres
+
+[importlinter:contract:no-vendor-sdk]
+name = No vendor SDK in stage 1a
+type = forbidden
+source_modules =
+    previously
+forbidden_modules =
+    anthropic
+    openai

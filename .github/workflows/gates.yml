@@ -1,0 +1,86 @@
+# The five gates out of CLAUDE.md, run on a machine that is not the author's.
+#
+# Acceptance condition 4 in §11 of the stage 1a spec reads "a deliberately
+# wrong import lets CI fail". Until this file there was no CI, so the
+# condition was asserted rather than met: `tests/test_contracts.py` ran only
+# when somebody started `pytest` by hand, and `.pre-commit-config.yaml` runs
+# ruff and five hygiene hooks — no pyright, no lint-imports, no pytest.
+#
+# Deliberately nothing beyond the gates: no publishing, no uploading of
+# reports, no secrets, no access to anything outside the repository. The
+# repository is public (AGPL-3.0-or-later) and compute minutes are free, but a
+# workflow with write permissions would be attack surface without a use.
+name: Gates
+
+on:
+  push:
+  pull_request:
+
+# The minimum, stated explicitly instead of inherited from the repository's
+# default. Nothing here writes: the gates read the tree and report their exit
+# code.
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    # Docker is needed, because `tests/conftest.py` raises a real PostgreSQL
+    # 17 via testcontainers — no mock stands in for the database (CLAUDE.md).
+    # Checked, not assumed: the runner image for ubuntu-24.04, which
+    # `ubuntu-latest` currently resolves to, lists "Docker Client 28.0.4",
+    # "Docker Server 28.0.4" and "Docker Compose 2.38.2"
+    # (actions/runner-images, images/ubuntu/Ubuntu2404-Readme.md). So no
+    # service container: `conftest.py` brings its own container up, and a
+    # second PostgreSQL route beside it would be a trap for the next reader.
+    runs-on: ubuntu-latest
+
+    steps:
+      # Both actions are pinned by commit, not by tag: a tag can be moved, a
+      # commit cannot. The version stands beside it so that the pin is
+      # legible.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up uv and Python 3.14
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          # Python 3.14 is not a preference: the annotations in `canonical.py`
+          # and `hashing.py` work only thanks to PEP 649, and an older version
+          # fails there. `requires-python = ">=3.14"` says the same thing, but
+          # saying it here as well makes the log name the version.
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install the locked dependencies
+        # `--locked`, not `--frozen` and not a free resolution: the run fails
+        # if `uv.lock` does not match `pyproject.toml`, instead of quietly
+        # resolving something else and testing a different project than the
+        # development tree. `--all-extras` brings [test] and [dev], which is
+        # where pytest, pyright, ruff and import-linter live.
+        run: uv sync --locked --all-extras
+
+      - name: Name the versions
+        # So that the log says what was tested, instead of this file claiming
+        # it. Two lines, no gate — but the version is part of every result
+        # underneath.
+        run: |
+          uv --version
+          uv run python -VV
+
+      # The five gates, each as its own step: that way the log names which
+      # one failed instead of one block going red.
+      - name: Gate 1 — ruff check
+        run: uv run ruff check .
+
+      - name: Gate 2 — ruff format
+        run: uv run ruff format --check .
+
+      - name: Gate 3 — pyright
+        run: uv run pyright
+
+      - name: Gate 4 — lint-imports
+        run: uv run lint-imports
+
+      - name: Gate 5 — pytest
+        run: uv run pytest --cov --cov-report=term-missing
