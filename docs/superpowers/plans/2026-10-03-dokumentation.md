@@ -24,6 +24,34 @@
 - **Attribution:** Commit-Botschaften englisch, `Assisted-By:`, **nie** `Co-Authored-By:`.
 - **Keine neuen import-linter-Ausnahmen, kein `# type: ignore`.** Eine Unterdrückung kommt nur mit Regelnamen und Grund daneben und wird in die Liste in `CLAUDE.md` eingetragen.
 - **Der festgenagelte Hash-Vektor in `tests/test_hashing.py` bleibt unangetastet**, samt seiner drei deutschen Zeichenketten. Schlägt er an, hat die Aufgabe etwas kaputt gemacht.
+- **Direktiven mit Prosa darin bekommen Doppelpunkt-Fences** (`:::{note}`), nicht Backticks. Backticks bleiben für Code. Begründung unten — das ist keine Stilfrage, sondern die Bedingung dafür, dass das Vale-Tor überhaupt greift.
+
+### Warum Doppelpunkt-Fences, und nicht Backticks
+
+Ein Befund der Prüfung von Aufgabe 1, mittlere Schwere, und er betrifft jede
+folgende Aufgabe: **Vale prüft keinen Text innerhalb einer Backtick-Fence.** Es
+hält sie für einen Codeblock und überspringt sie — und zwar auch dann, wenn
+eine MyST-Direktive darin steht und der Inhalt reine Prosa ist.
+
+Nachgemessen in einer Datei mit drei Stellen:
+
+```
+Zeile  3  (reine Prosa)             ->  beanstandet
+Zeile  6  (in ```{note} …)          ->  NICHT beanstandet
+Zeile 10  (in :::{note} …)          ->  beanstandet
+```
+
+Das heißt: Admonitions, Karten, Tabs — genau die Stellen, an denen in einer
+Dokumentation gern wichtige Sätze stehen — lägen außerhalb des Stil-Tors. Ein
+Tor mit einem blinden Fleck an der interessantesten Stelle ist schlechter als
+eines, dessen Grenzen man kennt.
+
+`colon_fence` ist in `docs/conf.py` bereits eingeschaltet, die Lösung kostet
+also nichts: **`:::{note}` statt ```` ```{note} ````.** Beim Verschachteln
+zählt die Zahl der Doppelpunkte, wie bei Backticks — außen `::::`, innen
+`:::`.
+
+Code**blöcke** bleiben bei Backticks; dort ist das Überspringen richtig.
 
 ## Diagramme
 
@@ -47,12 +75,42 @@ der Doku-Skill für Admonitions aufstellt.
 - Die Tutorials — ein Tutorial will sichtbare Ergebnisse nach jedem Schritt, nicht ein Bild vom Ganzen.
 - Die How-tos — Schrittfolgen, die der Leser abarbeitet; ein Ablaufdiagramm daneben wäre dieselbe Information zweimal.
 
-Jedes Diagramm braucht `:alt:` (Barrierefreiheit, der Skill verlangt es bei
-Bildern) und eine `:caption:`. Syntax:
+### `:alt:` wirkt hier nicht — ein Satz Prosa statt eines Attributs
+
+In Aufgabe 2 gemessen und bestätigt: mit `mermaid_output_format = "raw"` —
+der Vorgabe dieses Projekts — nimmt `sphinxcontrib-mermaid` einen Pfad, der
+die `:alt:`-Option **nie liest**. Das gerenderte Diagramm trägt kein `alt`
+und kein `aria-label`; die Attribute im HTML stammen alle vom Theme (Suche,
+Navigation, Farbmodus).
+
+Die naheliegende Lösung wäre `svg`-Ausgabe mit dem `mmdc`-Werkzeug — und
+damit eine Node.js-Werkzeugkette in einem Python-Projekt, für vier
+Diagramme, gegen die Regel „`uv.lock` ist der einzige Ort, an dem eine
+Werkzeugfassung gepinnt wird". **Abgelehnt.**
+
+Stattdessen gilt für jedes Diagramm:
+
+- **kein `:alt:`.** Eine Option, die aussieht, als erledigte sie
+  Barrierefreiheit, aber nichts tut, ist schlimmer als keine — irgendwann
+  glaubt jemand, das Häkchen sei gesetzt.
+- **eine `:caption:`** — die rendert, nachgemessen.
+- **ein Satz Prosa davor**, der sagt, was das Diagramm zeigt. Dann steht die
+  Information als Text da, unabhängig davon, ob das Diagramm rendert, und bei
+  einem Diagramm ist ein beschreibender Satz ohnehin mehr wert als ein
+  Attribut.
+
+**Mermaid-Blöcke bleiben bei Backticks**, anders als Direktiven mit Prosa.
+In Aufgabe 5 gemessen: eine `:::{mermaid}`-Fence baut sauber und rendert ein
+**byteidentisches** `<figure>`, zieht aber den Diagrammtext in den
+Geltungsbereich von Vale, das dann über `payload_hash`, `units_hash` und
+`event_hash` stolpert (drei `Vale.Spelling`-Treffer). Der Diagrammtext ist
+Code, nicht Prosa — das Überspringen ist dort richtig. Der Satz davor und die
+`:caption:` stehen ohnehin außerhalb der Fence und werden geprüft.
+
+Syntax:
 
 ````markdown
 ```{mermaid}
-:alt: Three events linked by their predecessor hash
 :caption: The chain holds a digest of the payload, not the payload
 
 graph LR
@@ -72,7 +130,7 @@ Fünf Fehlerarten, die dieser Plan erzeugt und die keine Standardprüfung fängt
 
 ---
 
-## Aufgabe 1: Werkzeugkette, Makefile und das sechste Tor
+## Task 1: Werkzeugkette, Makefile und das sechste Tor
 
 **Files:**
 - Create: `docs/conf.py`, `docs/index.md`, `docs/Makefile`, `.vale.ini`, `tests/test_docs_build.py`
@@ -399,7 +457,7 @@ Botschaft: `docs: a Sphinx toolchain and a sixth gate`, englisch, mit `Assisted-
 
 ---
 
-## Aufgabe 2: Reference
+## Task 2: Reference
 
 **Files:**
 - Create: `docs/reference/cli.md`, `docs/reference/configuration.md`, `docs/reference/database-schema.md`, `docs/reference/hash-format.md`
@@ -465,7 +523,7 @@ Geh jede Tabelle und jede Liste einmal gegen die Quelle durch und notiere im Ber
 
 ---
 
-## Aufgabe 3: Tutorial, und die README schrumpft
+## Task 3: Tutorial, und die README schrumpft
 
 **Files:**
 - Create: `docs/tutorials/record-your-first-event.md`, `tests/test_docs_typed_output.py`
@@ -561,7 +619,7 @@ uv run pytest
 
 ---
 
-## Aufgabe 4: How-to guides
+## Task 4: How-to guides
 
 **Files:**
 - Create: `docs/how-to/verify-the-chain.md`, `docs/how-to/restore-from-a-backup.md`, `docs/how-to/add-a-migration.md`
@@ -585,13 +643,19 @@ Die Passphrase: ohne sie ist der Restore unmöglich. Verweise auf die Reference 
 
 Inhalt: `uv run alembic revision -m …`, die Revision schreiben, `uv run alembic upgrade head`, und der Test, der jeden in `metadata` erklärten Index gegen `pg_indexes` hält. Nenne ausdrücklich, dass `postgresql_nulls_not_distinct=True` in **beiden** Orten stehen muss (Schema und Migration), weil ein `autogenerate` den Index sonst still fallen lässt.
 
-- [ ] **Schritt 4: Tore und Commit**
+- [ ] **Schritt 4: Die drei Seiten in den Toctree von `docs/how-to/index.md` eintragen**
+
+Nicht vergessen: das Tor fährt `sphinx-build -W`, und eine Seite, die in
+keinem Toctree steht, erzeugt „document isn't included in any toctree" — unter
+`-W` also einen Fehlschlag.
+
+- [ ] **Schritt 5: Tore und Commit**
 
 `docs: how-to guides for verification, restore and migrations`
 
 ---
 
-## Aufgabe 5: Explanation, Teil 1 — die Kette
+## Task 5: Explanation, Teil 1 — die Kette
 
 **Files:**
 - Create: `docs/explanation/hash-chain.md`, `docs/explanation/canonicalization.md`
@@ -600,7 +664,17 @@ Inhalt: `uv run alembic revision -m …`, die Revision schreiben, `uv run alembi
 **Interfaces:**
 - Produces: Label `(hash-chain)=`, `(hash-domain)=`, `(tombstone-seam)=`, `(canonicalization)=`, `(timestamps)=`. Aufgabe 7 bildet Paragraphen darauf ab.
 
-**Quelle:** `docs/superpowers/specs/2026-10-02-stufe-1a-log.md` §3.1–§3.4, und `docs/superpowers/specs/2026-10-01-architektur.md` §4.6.
+**Quelle:** `docs/superpowers/specs/2026-10-02-stufe-1a-log.md` §3.1–§3.4 und
+**§6**, und `docs/superpowers/specs/2026-10-01-architektur.md` §4.6.
+
+§6 (die Zerlegung in Einheiten) war in keiner Aufgabe dieses Plans
+untergebracht — eine Lücke, die beim Vorbereiten der Überlebensliste
+auffiel. Sie gehört hierher und nicht auf eine eigene Seite: wer liest,
+**warum** die Einheiten im Hash stecken, will im selben Atemzug wissen, was
+eine Einheit überhaupt ist. Dazu gehört der CRLF-Fund, einer der fünf stillen
+Datenverluste dieses Projekts — ohne Normalisierung von `\r\n` käme ein
+E-Mail-Text als **eine** Einheit an und hebelte damit die Zerlegung aus, auf
+der das ganze Zuordnungsmodell beruht.
 
 - [ ] **Schritt 1: `hash-chain.md` übersetzen**
 
@@ -620,13 +694,28 @@ Diese Begründungen müssen hinüberkommen, jede mit ihrer Zahl und ihrer Messun
 
 Aus §3.2: JCS nach RFC 8785, und warum der Nutzlastbereich absichtlich eng ist — keine Gleitkommazahlen, Schlüssel auf `^[a-z][a-z0-9_]*$`, ganze Zahlen in ±(2⁵³−1), keine Nullbytes, keine einsamen Surrogate. Je Einschränkung der Grund, nicht nur die Regel.
 
-- [ ] **Schritt 3: Tore und Commit**
+- [ ] **Schritt 3: Den Querverweis nachrüsten, den Aufgabe 2 weglassen musste**
+
+`docs/reference/configuration.md` sollte laut meinem Brief auf
+`{ref}`concurrency`` verweisen. Aufgabe 2 hat die Zeile zu Recht weggelassen
+und das gemessen: `WARNING: undefined label: 'concurrency' [ref.ref]`, unter
+`-W` ein Fehlschlag — das Label entsteht erst hier. Jetzt existiert es, also
+trag den Verweis dort ein, wo er hingehört: bei der Angabe, dass PostgreSQL 15
+die Untergrenze ist und `NULLS NOT DISTINCT` nicht optional.
+
+- [ ] **Schritt 4: Beide Seiten in den Toctree von `docs/explanation/index.md` eintragen**
+
+Das Tor fährt `sphinx-build -W`; eine Seite ohne Toctree-Eintrag lässt den Bau
+scheitern. Aufgabe 6 trägt später **weitere** Seiten in dieselbe Datei ein —
+schreib deinen Eintrag so, dass ein Anfügen daneben keine Konflikte macht.
+
+- [ ] **Schritt 5: Tore und Commit**
 
 `docs: explain the hash chain and the canonicalization`
 
 ---
 
-## Aufgabe 6: Explanation, Teil 2 — Nebenläufigkeit, Grenzen, Backups
+## Task 6: Explanation, Teil 2 — Nebenläufigkeit, Grenzen, Backups
 
 **Files:**
 - Create: `docs/explanation/concurrency.md`, `docs/explanation/module-boundaries.md`, `docs/explanation/backup-encryption.md`
@@ -649,24 +738,150 @@ Die beiden Unique-Indexe als **gesamte** Nebenläufigkeitssteuerung — kein Adv
 
 Aus Architektur §10.5, das die vollständige Abwägung schon trägt: dass Hetzner **gar keine** Verschlüsselung im Ruhezustand hat, dass SSE-C bei Kopien bricht (Ceph), dass barman-cloud clientseitig nicht kann, der Preis der Passphrase, und die drei Wege A/B/C samt dem, was A umstoßen würde.
 
-- [ ] **Schritt 4: Tore und Commit**
+- [ ] **Schritt 4: Dem Nutzlastbereich eine Heimat in der Reference geben**
+
+Befund mittlerer Schwere aus der Prüfung von Aufgabe 5, und er muss **vor dem
+Einfrieren** behoben sein: `^[a-z][a-z0-9_]*$` und `±(2**53 − 1)` kommen in
+`docs/reference/`, `docs/how-to/`, `docs/tutorials/` und `docs/index.md`
+**nirgends** vor. Sie stehen allein in der Explanation.
+
+Das ist die falsche Heimat. Der Nutzlastbereich ist eine **Pflichtmenge für
+jeden Aufrufer** — wer einen Konnektor schreibt, schlägt nach, was eine
+Nutzlast enthalten darf, und schlägt es in der Reference nach, nicht in einem
+Aufsatz über Kanonisierung. Ab Aufgabe 7 wäre die einzige maßgebliche Quelle
+dafür eine Explanation-Seite.
+
+Zu tun: einen Abschnitt in `docs/reference/hash-format.md` (dort gehört er hin,
+denn er sagt, was gehasht werden **darf**), mit den fünf Einschränkungen als
+Tatsachen — keine Gleitkommazahlen, Schlüsselmuster, Zahlenbereich, keine
+Nullbytes, keine einsamen Surrogate — und je Zeile die Fehlermeldung, die
+`core/canonical.py` dazu ausgibt. Lies sie dort ab. Dann verweist
+`canonicalization.md` dorthin statt die Werte zu tragen, und behält die
+Begründung.
+
+- [ ] **Schritt 5: Die fünf stillen Datenverluste auflistbar machen**
+
+Zweiter Befund derselben Prüfung: die Explanation sagt zweimal „one of the five
+silent losses of data", und diese Fünf sind aus `docs/` **nicht auflösbar** —
+nirgends steht eine Liste. Der einzige Anker ist die Spezifikation, die „der
+fünfte … **dieser Sitzung**" sagt und in Aufgabe 7 einfriert. Der CRLF-Fund ist
+überhaupt nirgends als einer der fünf verzeichnet.
+
+Zu tun: eine Seite `docs/explanation/silent-losses.md`, Label
+`(silent-losses)=`, die die fünf **nennt**, je in zwei bis drei Sätzen, und
+sagt, was sie verbindet. Es sind:
+
+1. Der reservierte Schlüssel `evidence` — eine Nutzlast, die ihn schon trug,
+   wäre still überschrieben worden, und die Belegart ist in einem append-only
+   Speicher nicht nachtragbar.
+2. CRLF-Text, der als **eine** Einheit angekommen wäre und damit die Zerlegung
+   ausgehebelt hätte, auf der das Zuordnungsmodell beruht.
+3. Einheiten und Quellenangabe waren von der Kette **nicht gedeckt** — drei
+   gemessene Fälschungen gingen durch.
+4. JSON-`null` galt als Grabstein, war aber für die Grabstein-Abfrage
+   unsichtbar.
+5. Derselbe Quellschlüssel zweimal in einem Stapel verwarf den Inhalt des
+   zweiten Eintrags und gab dem Aufrufer trotzdem zwei `id`s zurück.
+
+Das Verbindende gehört dazu, denn es ist die Lehre des Projekts: **keiner war
+ein Programmierfehler.** Jeder war eine Lücke zwischen einer Zusage und der
+Wirklichkeit, und jeder wurde durch Messen gefunden, nicht durch Lesen. In
+einem append-only Speicher ist jeder davon unwiederbringlich gewesen.
+
+Danach lösen die zwei Verweise in `hash-chain.md` und `canonicalization.md`
+auf — setz dort `{ref}`silent-losses``.
+
+- [ ] **Schritt 6: Die drei Seiten in den Toctree von `docs/explanation/index.md` eintragen**
+
+Aufgabe 5 hat dort schon zwei Einträge; füge deine an, ohne die bestehenden
+anzufassen. Das Tor fährt `sphinx-build -W`, eine Seite ohne Eintrag lässt den
+Bau scheitern.
+
+- [ ] **Schritt 7: Tore und Commit**
 
 `docs: explain concurrency, the module boundaries and the backup encryption`
 
 ---
 
-## Aufgabe 7: Die 72 Verweise umstellen — und ein Tor, das sie hält
+## Task 7: Die Specs einfrieren, die 72 Verweise umstellen — und ein Tor, das sie hält
 
 **Files:**
 - Create: `tests/test_docs_references.py`, `docs/explanation/design-records.md`
-- Modify: 21 Dateien unter `src/`, `tests/`, `migrations/` (Liste unten)
+- Modify: 21 Dateien unter `src/`, `tests/`, `migrations/` (Liste unten), dazu `docs/superpowers/specs/2026-10-01-architektur.md`, `docs/superpowers/specs/2026-10-02-stufe-1a-log.md`, `docs/superpowers/specs/2026-10-01-previously-design.md`
 
 **Interfaces:**
 - Consumes: alle Label aus den Aufgaben 2, 5 und 6.
 
 **Gemessener Ist-Stand (2026-10-03):** 72 Vorkommen von `§x.y` in `src/` (39), `tests/` und `migrations/`, über 21 Dateien, auf **20** verschiedene Paragraphen. Häufigste: §3.2 (12×), §3.1 (9×), §5.1 (8×), §5 (5×), §4.2 (5×), §3.4 (5×).
 
-- [ ] **Schritt 1: Die Abbildungstabelle festlegen**
+### Das Einfrieren ist ein Vorgang, kein Ereignis
+
+Hier hatte ich den Plan zunächst falsch gefasst, und die Korrektur kommt vom
+Auftraggeber: **Deutsch ist seine Autorensprache für Absicht**, nicht ein
+Altbestand, den man abarbeitet. „Mit Deutsch kann ich mich besser ausdrücken,
+was ich will."
+
+Daraus folgt: jede künftige Stufe wird **wieder** mit einem deutschen Spec
+beginnen, und der friert ein, sobald seine Explanation-Seiten stehen. Das
+Einfrieren ist also ein wiederkehrender Schritt im Ablauf und nichts, was
+dieser Plan ein einziges Mal erledigt. Schreib es als Ablauf hin, nicht als
+Zustand — sonst liest die nächste Stufe die eingefrorenen Specs als Verbot,
+einen neuen zu schreiben.
+
+- [ ] **Schritt 1: Die drei Specs einfrieren**
+
+Oben in jedes Dokument, auf Deutsch (die Specs sind und bleiben deutsch):
+
+```markdown
+> **Eingefrorener Entwurfsbericht, Stand 2026-10-03.**
+> Dieses Dokument wird nicht mehr nachgezogen.
+> Es hält fest, **wie und warum** entschieden wurde, und bleibt dafür im
+> Repository. Die lebende Begründung steht in `docs/explanation/`; weicht
+> dieses Dokument davon ab, gilt die Doku.
+>
+> Ein neuer Spec für eine neue Stufe entsteht wieder auf Deutsch — das ist
+> die Sprache, in der die Absicht formuliert wird. Er friert ein, sobald
+> seine Explanation-Seiten stehen.
+```
+
+Dieser Schritt kommt **zuerst**, und zwar aus einem Grund, der die
+Aufgabenteilung erklärt: die Verweise, die du unten umstellst, bezeichnen die
+Specs als „frozen design record". Frierst du erst danach ein, behauptet jeder
+dieser Verweise beim Schreiben etwas Unwahres — genau der Fehler, den diese
+Umstellung beheben soll (Ruling P2 der Vorab-Durchsicht).
+
+- [ ] **Schritt 2: Die Verweise aus der README mitnehmen**
+
+Nicht nur der Code verweist auf die Specs. `README.md` sagt „§11 of the stage
+1a specification states which forgeries are covered and which are not", und
+die Dokumententabelle darunter verlinkt alle drei Specs mit einer Zeile
+Inhaltsangabe.
+
+Nach dem Einfrieren zeigen diese Verweise auf eingefrorene Berichte. Für die
+Tabelle ist das richtig — sie beschreibt Provenienz. Für den §11-Satz nicht:
+er beantwortet eine **heutige** Frage („welche Fälschungen sind gedeckt?") und
+gehört damit auf `{ref}`hash-chain`` bzw. die Explanation-Seite, die die
+Grenzen trägt. Zieh ihn dorthin und kennzeichne die Tabellenzeilen als
+eingefrorene Berichte.
+
+- [ ] **Schritt 3: Die zwei Prosa-Verweise aus den How-tos in `{ref}` umwandeln**
+
+Aufgabe 4 durfte noch keine `{ref}` auf Explanation-Label setzen — die gab es
+nicht, und ein Vorwärtsverweis bricht das Tor. Sie hat die Sätze darum als
+reine Prosa formuliert, **ohne** Marker, weil ein sichtbares TODO Vale
+beanstandet hätte. Damit du sie nicht suchen musst, hier ihre Fundstellen:
+
+| Datei | Zeile | Satz |
+|---|---|---|
+| `docs/how-to/verify-the-chain.md` | 29 | „For what the chain guarantees and where that stops, see the explanation of the hash chain." |
+| `docs/how-to/restore-from-a-backup.md` | 29 | „For why losing the passphrase means losing the backups for good, see the explanation of backup encryption." |
+
+Wandle beide in `{ref}`-Verweise auf die jetzt existierenden Label um
+(`hash-chain` und `backup-encryption`). Prüfe danach mit `grep`, ob in den
+Quadranten weitere Sätze dieser Form stehen — die Zeilennummern oben
+verschieben sich, sobald jemand die Seiten anfasst, der Wortlaut nicht.
+
+- [ ] **Schritt 4: Die Abbildungstabelle festlegen**
 
 Nicht 72 Entscheidungen, sondern 20 — je Paragraph ein Ziel. Schreib die Tabelle nach `docs/explanation/design-records.md`, zusammen mit dem Hinweis, dass die Specs eingefroren sind und wofür sie noch gut sind (Provenienz: „so wurde es damals entschieden").
 
@@ -674,7 +889,79 @@ Beispiele: §3.1 → `{ref}`hash-domain``, §3.2 → `{ref}`canonicalization``, 
 
 Für Paragraphen, deren Begründung **nicht** in die Doku wandert, bleibt der Verweis auf den eingefrorenen Bericht — aber ausdrücklich als solcher gekennzeichnet, etwa „architecture §10.2 (frozen design record)". Ein Verweis, der nicht sagt, dass sein Ziel eingefroren ist, lügt über seine Aktualität.
 
-- [ ] **Schritt 2: Den Test zuerst schreiben**
+### Drei Klassen von Verweis, nicht eine — nachgemessen am 2026-10-03
+
+Der Plan hat diese Aufgabe zunaechst als *eine* Umstellung gefasst: 72
+Kommentarverweise auf Doku-Label. Nachgemessen sind es drei Klassen, und die
+dritte haette der Test aus Schritt 5 **durchgewinkt**.
+
+**Klasse 1 — lebende Begruendung in Kommentar oder Docstring.** Sie erklaert,
+warum der Code heute so ist. Sie muss auf die Doku zeigen, denn sie wird mit
+dem Code gepflegt. Das sind die 70 Faelle, die die Tabelle aus Schritt 4
+abbildet.
+
+**Klasse 2 — datierte Entscheidung.** Sie zitiert, *wie damals entschieden
+wurde*. Fuer sie ist der eingefrorene Bericht die **richtige** Quelle: das
+Einfrieren ist gerade das, was ihn zitierfaehig macht. Hierher gehoeren die
+Verweise auf Pruefbefunde und Rulings (die der Plan schon ausnimmt) und das
+`DEPENDENCIES.md`, dessen 13 Verweise je eine Zeile eines datierten
+Entscheidungsregisters begruenden. Sie bleiben — aber mit `(frozen design
+record)` gekennzeichnet, denn die Regel aus Schritt 4 gilt fuer jede
+englischsprachige Datei, nicht nur fuer `.py`.
+
+**Klasse 3 — Programmausgabe.** Zwei Verweise stehen nicht in einem Kommentar,
+sondern in einer Fehlermeldung, die der Nutzer auf dem Terminal liest:
+
+| Datei | Zeile | Was gedruckt wird |
+|---|---|---|
+| `src/previously/core/canonical.py` | 53 | `…floating point number not allowed — state a scale as an integer (§3.2)` |
+| `src/previously/core/append.py` | 301 | `…kind of evidence (§5.1), so that it is not silently overwritten` |
+
+Fuer diese beiden ist **keine** der zwei Behandlungen richtig. Ein
+`{ref}`-Label in einer Programmausgabe erscheint dem Nutzer als wortwoertlicher
+Unsinn, und `(§3.2, frozen design record)` in einer Fehlermeldung ist schlimmer
+als der heutige Zustand: wer `previously append` aufruft, hat
+`docs/superpowers/specs/` nicht und wird es auch nicht bekommen.
+
+**Zu tun: die Zitierung aus der Meldung entfernen, nicht umschreiben.** Die
+Meldungen tragen ihre Handlungsanweisung schon selbst — „state a scale as an
+integer" sagt dem Aufrufer alles, was er tun kann; „(§3.2)" sagt ihm nichts.
+Die Begruendung wandert in den Kommentar darueber, und der zeigt dann nach
+Klasse 1 auf `{ref}`payload-range``.
+
+Der Test aus Schritt 5 muss das erzwingen koennen, sonst schreibt der naechste
+Umsetzer `(frozen design record)` in die Fehlermeldung und der Test ist gruen.
+Siehe die Ergaenzung in Schritt 5.
+
+### Was an dieser Aufgabe haengt und nicht in ihrer Dateiliste steht
+
+`docs/reference/hash-format.md` zitiert seit Aufgabe 6 **fuenf** Fehlermeldungen
+aus `core/canonical.py` woertlich, darunter die mit dem `§3.2`. Nachgemessen am
+2026-10-03: alle fuenf stimmen heute buchstabengenau mit dem Code. Es haelt sie
+aber **nichts** — `tests/test_docs_typed_output.py` deckt nur die Testzahlen im
+Tutorial.
+
+Daraus folgen zwei Dinge fuer diese Aufgabe:
+
+1. Die Zeile `docs/reference/hash-format.md:22` aendert sich **im selben
+   Commit** wie die Meldung in `canonical.py`. Der Plan sagte „diese Aufgabe
+   fasst nur Kommentare an" — das war falsch, sie fasst eine Reference-Seite
+   mit an. Die drei Vektortests bleiben als Riegel richtig, sie reichen aber
+   nicht: sie sehen eine geaenderte Fehlermeldung nicht.
+2. Der Test aus Schritt 5 bekommt die Aufgabe, die Zitate festzunageln — und
+   zwar indem er die Meldungen **vom Code erzeugen laesst**, nicht indem er
+   Zeichenketten in zwei Dateien vergleicht. Eine Zeichenkettensuche findet
+   eine geaenderte Meldung nicht wieder; ein Aufruf von `canonical()` mit
+   einem Gleitkommawert liefert sie.
+
+`pyproject.toml:88` traegt den letzten Verweis ausserhalb des Codes
+(`# Printing to stdout is what this module is for (§9 of the stage 1a spec)`).
+Er begruendet eine heutige Lint-Ausnahme, ist also Klasse 1 — aber die
+Begruendung steht schon vollstaendig im Satz davor. Streich die Klammer; ein
+Verweis, der nichts hinzufuegt, ist nach dem Einfrieren nur noch ein toter
+Zeiger.
+
+- [ ] **Schritt 5: Den Test zuerst schreiben**
 
 `tests/test_docs_references.py`:
 
@@ -749,12 +1036,85 @@ def test_no_bare_paragraph_references_remain() -> None:
     )
 ```
 
-- [ ] **Schritt 3: Test laufen lassen — er muss scheitern**
+Dazu zwei Tests, die die zwei oben gemessenen Loecher schliessen. Der erste
+haelt die Programmausgabe frei von Zitierungen, der zweite nagelt die
+Reference-Zitate fest, indem er sie vom Code erzeugen laesst:
+
+```python
+RUNTIME_MESSAGE_FILES = [
+    ROOT / "src" / "previously" / "core" / "canonical.py",
+    ROOT / "src" / "previously" / "core" / "append.py",
+]
+
+
+def test_no_program_output_cites_a_specification() -> None:
+    """A paragraph reference in an error message is a dead pointer.
+
+    Whoever runs `previously append` has no `docs/superpowers/specs/`, so the
+    citation buys them nothing even before the freeze makes it stale. Measured
+    on 2026-10-03: two messages carried one, `canonical.py:53` with `§3.2` and
+    `append.py:301` with `§5.1`. Marking them as a frozen design record would
+    pass `test_no_bare_paragraph_references_remain` while making the output
+    worse, which is why this test exists beside it.
+    """
+    offenders: dict[str, list[int]] = {}
+    for path in RUNTIME_MESSAGE_FILES:
+        for number, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            stripped = line.lstrip()
+            if stripped.startswith("#"):
+                continue
+            if "§" in line and ('f"' in line or '"' in line and "raise" in line):
+                offenders.setdefault(str(path.relative_to(ROOT)), []).append(number)
+    assert not offenders, (
+        f"These lines print a paragraph reference to the user: {offenders}. "
+        "Move the reasoning into the comment above and drop it from the message."
+    )
+
+
+def test_the_reference_quotes_what_the_code_actually_prints() -> None:
+    """The Payload range table quotes five messages verbatim.
+
+    Nothing else holds them: the typed-output gate covers only the test counts
+    in the tutorial. A string search across the two files would not help -- it
+    would follow a changed message into the page. So the messages are produced
+    by calling the code, which is the only form of this check that can fail for
+    the right reason.
+    """
+    from previously.core.canonical import canonical
+    from previously.core.errors import InvalidPayload
+
+    produced = []
+    for payload in (
+        {"amount": 1.5},
+        {"Total": 1},
+        {"amount": 2**53},
+        {"text": "a\x00b"},
+        {"text": "a\ud800b"},
+    ):
+        try:
+            canonical(payload)
+        except InvalidPayload as error:
+            produced.append(str(error))
+        else:  # pragma: no cover - a passing payload would be the bug
+            raise AssertionError(f"{payload!r} was accepted")
+
+    page = (DOCS / "reference" / "hash-format.md").read_text(encoding="utf-8")
+    for message in produced:
+        # The page prefixes no path, the message does: compare the part the
+        # page quotes, which is everything after `$`/`.name`/`[n]` and ": ".
+        quoted = message.split(": ", 1)[1]
+        assert quoted in page, (
+            f"hash-format.md does not quote {quoted!r}. The code's message changed; "
+            "the Payload range table has to change in the same commit."
+        )
+```
+
+- [ ] **Schritt 6: Test laufen lassen — er muss scheitern**
 
 Run: `uv run pytest tests/test_docs_references.py -v`
 Expected: FAIL, `test_no_bare_paragraph_references_remain` listet 21 Dateien.
 
-- [ ] **Schritt 4: Umstellen, Datei für Datei**
+- [ ] **Schritt 7: Umstellen, Datei für Datei**
 
 Die 21 Dateien: `src/previously/cli.py`, `core/{append,canonical,errors,hashing,units,verify}.py`, `storage/{postgres,rows,schema}.py`, `migrations/dsn.py`, `migrations/versions/0001_log.py`, `tests/{test_append,test_canonical,test_cli,test_contracts,test_hashing,test_properties,test_rows,test_schema,test_storage,test_verify}.py`.
 
@@ -762,11 +1122,11 @@ Geh nach der Tabelle aus Schritt 1 vor, nicht nach Gefühl. Ändere **nur** den 
 
 Die Verweise auf Prüfbefunde und Rulings (`review finding B1`, `Ruling T8-c`) **bleiben wie sie sind** — sie bezeichnen Sitzungsgeschichte, nicht lebende Begründung, und für die ist der eingefrorene Bericht der richtige Ort.
 
-- [ ] **Schritt 5: Tests laufen lassen — beide müssen bestehen**
+- [ ] **Schritt 8: Tests laufen lassen — beide müssen bestehen**
 
 Run: `uv run pytest tests/test_docs_references.py -v`
 
-- [ ] **Schritt 6: Alle Tore, und der Vektor**
+- [ ] **Schritt 9: Alle Tore, und der Vektor**
 
 ```shell
 uv run pytest
@@ -775,48 +1135,23 @@ make -C docs html
 
 Erwartet unter anderem: `test_vector_payload_hash`, `test_vector_units_hash`, `test_vector_event_hash` grün. Diese Aufgabe fasst nur Kommentare an; schlägt einer der drei an, hast du mehr geändert als gedacht.
 
-- [ ] **Schritt 7: Commit**
+- [ ] **Schritt 10: Commit**
 
 `docs: point the code at the documentation, and keep it honest with a test`
 
 ---
 
-## Aufgabe 8: Die Specs einfrieren, die Regeln nachziehen
+## Task 8: Die Regeln nachziehen
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-10-01-architektur.md`, `docs/superpowers/specs/2026-10-02-stufe-1a-log.md`, `docs/superpowers/specs/2026-10-01-previously-design.md`, `CLAUDE.md`
+- Modify: `CLAUDE.md`
 
-### Das Einfrieren ist ein Vorgang, kein Ereignis
+Das Einfrieren der Specs ist nach Ruling P2 der Vorab-Durchsicht **Teil von
+Aufgabe 7** — es muss vor der Verweisumstellung passieren, sonst behaupten die
+neuen Code-Verweise einen Zustand, den es noch nicht gibt. Diese Aufgabe
+schreibt nur noch die Regeln.
 
-Hier hatte ich den Plan zunächst falsch gefasst, und die Korrektur kommt vom
-Auftraggeber: **Deutsch ist seine Autorensprache für Absicht**, nicht ein
-Altbestand, den man abarbeitet. „Mit Deutsch kann ich mich besser ausdrücken,
-was ich will."
-
-Daraus folgt: jede künftige Stufe wird **wieder** mit einem deutschen Spec
-beginnen, und der friert ein, sobald seine Explanation-Seiten stehen. Das
-Einfrieren ist also ein wiederkehrender Schritt im Ablauf und nichts, was
-dieser Plan ein einziges Mal erledigt. Schreib es als Ablauf hin, nicht als
-Zustand — sonst liest die nächste Stufe die eingefrorenen Specs als Verbot,
-einen neuen zu schreiben.
-
-- [ ] **Schritt 1: Einfrier-Kopf in die drei Specs**
-
-Oben in jedes Dokument, auf Deutsch (die Specs sind und bleiben deutsch):
-
-```markdown
-> **Eingefrorener Entwurfsbericht, Stand 2026-10-03.**
-> Dieses Dokument wird nicht mehr nachgezogen.
-> Es hält fest, **wie und warum** entschieden wurde, und bleibt dafür im
-> Repository. Die lebende Begründung steht in `docs/explanation/`; weicht
-> dieses Dokument davon ab, gilt die Doku.
->
-> Ein neuer Spec für eine neue Stufe entsteht wieder auf Deutsch — das ist
-> die Sprache, in der die Absicht formuliert wird. Er friert ein, sobald
-> seine Explanation-Seiten stehen.
-```
-
-- [ ] **Schritt 2: Die Sprachregel in `CLAUDE.md` nachziehen**
+- [ ] **Schritt 1: Die Sprachregel in `CLAUDE.md` nachziehen**
 
 Sie sagt heute „German is fine — specifications, plans, …". Das bleibt
 richtig, bekommt aber einen Ablauf dazu, und der ist der Kern dieser Aufgabe:
@@ -834,7 +1169,7 @@ Schreib die Änderung als Änderung hin, nicht als wäre es immer so gewesen —
 Regel ist am 2026-10-03 entstanden und am selben Tag verfeinert worden, und das
 ist für einen Leser nützlicher als eine glatte Fassung.
 
-- [ ] **Schritt 3: Die Doku-Regel in `CLAUDE.md`**
+- [ ] **Schritt 2: Die Doku-Regel in `CLAUDE.md`**
 
 Ein eigener Abschnitt, mit diesen Punkten:
 
@@ -845,6 +1180,22 @@ Ein eigener Abschnitt, mit diesen Punkten:
 - Die Tore: `make -C docs html` (Warnung = Fehler), `make -C docs vale`, `make -C docs linkcheck`.
 - Abgetippte Ausgabe ist eine **Messung mit einem Datum**: sie wird zuletzt abgetippt, und `tests/test_docs_typed_output.py` hält die Testzahl fest.
 - Ein Doku-Label in einem Code-Kommentar prüft Sphinx nicht — das tut `tests/test_docs_references.py`.
+
+- [ ] **Schritt 3: Die Lücke in der Sprachregel schließen**
+
+Die Liste der englisch gebundenen Wurzel-Konfiguration in `CLAUDE.md` nennt
+`pyproject.toml`, `.importlinter`, `alembic.ini` und `.pre-commit-config.yaml`
+— **`.gitignore` fehlt**, und das war eine Auslassung, keine Entscheidung. Der
+Umsetzer von Aufgabe 1 hat die Regel darum korrekt gelesen und die Datei
+unangetastet gelassen; sie trägt weiter deutsche Abschnittskommentare
+(`# Werkzeuge`, `# Editor und System`, `# Worktrees und Agenten-Arbeitsbereiche`).
+
+Zu tun: `.gitignore` in die Liste aufnehmen und seine drei Abschnittskommentare
+übersetzen. Begründung für den Kommentar daneben: die „Programmausgabe"-Hälfte
+der Regel trifft auf `.gitignore` nicht zu — es wird nirgends gedruckt —, aber
+die andere Hälfte schon: wer `pyproject.toml` liest, liest auch `.gitignore`.
+Die zwei Zeilen, die Aufgabe 1 angefügt hat (`docs/_build/`, `.vale-styles/`),
+bekommen dabei ihren Abschnitt.
 
 - [ ] **Schritt 4: Alle Tore**
 
@@ -861,18 +1212,18 @@ uv run lint-imports
 
 - [ ] **Schritt 5: Commit**
 
-`docs: freeze the design records and write down the documentation rule`
+`docs: write down the documentation rule`
 
 ---
 
 ## Selbstprüfung dieses Plans
 
-**1. Spec-Deckung.** Die Explanation-Aufgaben 5 und 6 decken aus dem 1a-Spec §3.1–§3.4 (Kette, Kanonisierung, Zeitstempel, Prüfung), §4.1–§4.4 (Anfügen, Konfliktklassen, keine Vorab-Sperre, Stapeln) und §8 (Modulgrenzen); aus der Architektur §2, §4.6, §10.1, §10.5. **Nicht gedeckt und bewusst so:** Architektur §5–§9 und §12 beschreiben spätere Teilprojekte, über die Stufe 1a nichts zu sagen hat; §10.2 (modularer Monolith), §10.3 (Blob-Speicher), §10.4 (Deployment) und §10.6/§10.7 (Werkzeuge, Abhängigkeiten) betreffen das Ganze und nicht diese Stufe — ihre Verweise im Code bleiben darum nach Aufgabe 7, Schritt 1 als gekennzeichnete Verweise auf den eingefrorenen Bericht stehen. §11 (was offen bleibt) gehört nicht in eine Doku für Benutzer.
+**1. Spec-Deckung.** Die Explanation-Aufgaben 5 und 6 decken aus dem 1a-Spec §3.1–§3.4 (Kette, Kanonisierung, Zeitstempel, Prüfung), §4.1–§4.4 (Anfügen, Konfliktklassen, keine Vorab-Sperre, Stapeln) und §8 (Modulgrenzen); aus der Architektur §2, §4.6, §10.1, §10.5. **Nicht gedeckt und bewusst so:** Architektur §5–§9 und §12 beschreiben spätere Teilprojekte, über die Stufe 1a nichts zu sagen hat; §10.2 (modularer Monolith), §10.3 (Blob-Speicher), §10.4 (Deployment) und §10.6/§10.7 (Werkzeuge, Abhängigkeiten) betreffen das Ganze und nicht diese Stufe — ihre Verweise im Code bleiben darum nach Aufgabe 7, Schritt 2 als gekennzeichnete Verweise auf den eingefrorenen Bericht stehen. §11 (was offen bleibt) gehört nicht in eine Doku für Benutzer.
 
 **2. Platzhalter.** Kein „TBD", kein „analog zu Aufgabe N", keine Schritte ohne Inhalt. Die Doku-Seiten tragen Seitenspezifikationen nach Abschnitt 10c des Doku-Skills — das ist die vorgesehene Planungsform für Dokumentation, kein Platzhalter.
 
 **3. Namenskonsistenz.** Die Label, die Aufgabe 7 abbildet, werden in den Aufgaben 2, 5 und 6 erzeugt: `hash-domain`, `canonicalization`, `hash-chain`, `tombstone-seam`, `timestamps`, `concurrency`, `conflict-classes`, `module-boundaries`, `backup-encryption`, `cli-reference`, `configuration-reference`, `database-schema`, `hash-format`. Aufgabe 7 läuft **nach** 2, 5 und 6 — sonst scheitert ihr Test zu Recht.
 
-**4. Review Focus.** Alle fünf Punkte haben einen Test: 1 → Aufgabe 7, Schritt 2; 2 → Aufgabe 3, Schritt 3; 3 und 4 → Aufgabe 1, Schritt 8; 5 → Aufgabe 1, Schritte 3 und 12 (`linkcheck_ignore` plus der Lauf im Tor).
+**4. Review Focus.** Alle fünf Punkte haben einen Test: 1 → Aufgabe 7, Schritt 3; 2 → Aufgabe 3, Schritt 3; 3 und 4 → Aufgabe 1, Schritt 8; 5 → Aufgabe 1, Schritte 3 und 12 (`linkcheck_ignore` plus der Lauf im Tor).
 
 **Eine Warnung an den Ausführenden.** Die Explanation-Aufgaben sind die eigentliche Arbeit dieses Plans, und sie sind leicht zu unterschätzen: es sind über 2000 Zeilen dichte Begründung mit Messungen, Zahlen und Gegenargumenten. In dieser Sitzung ist dieselbe Gefahr schon einmal benannt und mit einem AST-Vergleich geprüft worden. Hier gibt es dafür keinen mechanischen Prüfstein — nur die Regel, und einen Prüfer, der stichprobenweise gegen das Original liest.

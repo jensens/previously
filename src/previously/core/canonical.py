@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Canonicalisation of payloads after RFC 8785, for a restricted range.
 
-The permitted range is deliberately small (§3.2 of the 1a spec): no floating
+The permitted range is deliberately small ({ref}`payload-range`): no floating
 point numbers, keys in ASCII lower case only, integers only inside the safe
 range. That alone makes `json.dumps` with fixed flags JCS-conformant already,
 and no foreign library is needed:
@@ -49,8 +49,15 @@ def _check(value: object, path: str) -> None:  # noqa: C901 — Recursive valida
             )
         return
     if isinstance(value, float):
+        # The message says what the caller can do instead and nothing about
+        # where that is written down: whoever runs `previously append` has no
+        # specification at hand. Why floating point numbers are out at all —
+        # their rendering is language-dependent, and a hash that comes out
+        # differently per runtime is worthless — is in
+        # {ref}`canonicalization`; {ref}`payload-range` lists the restriction
+        # itself.
         raise InvalidPayload(
-            f"{path}: floating point number not allowed — state a scale as an integer (§3.2)"
+            f"{path}: floating point number not allowed — state a scale as an integer"
         )
     if isinstance(value, str):
         if "\x00" in value:

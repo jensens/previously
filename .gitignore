@@ -6,7 +6,7 @@ __pycache__/
 dist/
 build/
 
-# Werkzeuge
+# Tools
 .ruff_cache/
 .pytest_cache/
 .mypy_cache/
@@ -14,11 +14,15 @@ build/
 .coverage.*
 htmlcov/
 
-# Editor und System
+# Editor and system
 .idea/
 .vscode/
 .DS_Store
 
-# Worktrees und Agenten-Arbeitsbereiche
+# Worktrees and agent workspaces
 .claude/
 .superpowers/
+
+# Documentation
+docs/_build/
+.vale-styles/Microsoft/

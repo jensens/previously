@@ -3,9 +3,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The storage interface against PostgreSQL.
 
-Deliberately narrow (§5 of the architecture): no update, no delete, no
-transaction control to the outside, no SQL passthrough, no returning of
-database objects.
+Deliberately narrow (architecture §5, frozen design record): no update, no
+delete, no transaction control to the outside, no SQL passthrough, no
+returning of database objects. Those five are the interface's own argument and
+have no page in `docs/`; {ref}`module-boundaries` settles which module may
+import which, not which methods this one has.
 """
 
 from contextlib import contextmanager
@@ -281,12 +283,12 @@ class PostgresStorage:
     def count_events(self, conn: Connection) -> int:
         """The number of **all** rows in `event`, without any `id` condition.
 
-        For the count reconciliation of the chain check (§3.4, review finding
-        B1): `read` filters `id >= from_id`, so out of its own reading window
-        the check cannot establish that there are rows outside it. This
-        counter is the view from outside and must therefore carry no
-        condition — an `id` condition here would have exactly the gap it is
-        supposed to close.
+        For the count reconciliation of the chain check ({ref}`hash-chain`,
+        review finding B1): `read` filters `id >= from_id`, so out of its
+        own reading window the check cannot establish that there are rows
+        outside it. This counter is the view from outside and must therefore
+        carry no condition — an `id` condition here would have exactly the gap
+        it is supposed to close.
         """
         return conn.execute(select(func.count()).select_from(event)).scalar_one()
 
@@ -294,7 +296,7 @@ class PostgresStorage:
         """Source attributions **by batch**: one query per batch, not per event.
 
         Events without a row are absent from the return value — `assertion`
-        and `action` carry no `source_key` (§5 of the 1a spec), and an erased
+        and `action` carry no `source_key` ({ref}`hash-chain`), and an erased
         or never-written key is the same case. The caller hashes `null` for
         that.
 

@@ -9,7 +9,7 @@ class PreviouslyError(Exception):
 
 
 class InvalidPayload(PreviouslyError, ValueError):
-    """A payload violates the rules of §3.2 of the 1a spec."""
+    """A payload violates the rules of {ref}`payload-range`."""
 
 
 class ChainConflict(PreviouslyError):
@@ -23,7 +23,7 @@ class ChainConflict(PreviouslyError):
 
 
 class BatchTooLarge(PreviouslyError, ValueError):
-    """Too many events in one transaction (§4.4 of the 1a spec).
+    """Too many events in one transaction ({ref}`concurrency`).
 
     A very large transaction holds for a long time and loses the conflict
     against every small submission that commits meanwhile — starvation.

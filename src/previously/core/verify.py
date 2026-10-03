@@ -1,7 +1,7 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The chain check (§3.4 of the 1a spec).
+"""The chain check ({ref}`hash-chain`).
 
 Checking in `id` order is permissible because the `id` comes from the
 predecessor and not out of a sequence: that makes `id` order equal to chain
@@ -49,7 +49,7 @@ def _payload_finding(row: EventRow) -> Finding | None:
     """`payload_hash` against the stored payload, or `None`.
 
     Skipped on `payload IS NULL`: that is the tombstone, and `payload_hash`
-    stays standing in that case (§4.6 of the architecture).
+    stays standing in that case ({ref}`tombstone-seam`).
     """
     if row.payload is None:
         return None
@@ -164,11 +164,11 @@ def _count_finding(checked: int, total: int) -> Finding | None:
     The `event_id` of the finding is **0**. There is no single row it could
     point at: it says something about the chain as a whole. 0 is the most
     comprehensible value for that, because 0 is no valid chain position — `id`
-    begins at 1 and counts upwards from the predecessor (§4.1), so a 0 can
-    never be an ordinary finding. That `id = 0` is precisely the most obvious
-    place to smuggle something in does not get in the way here but fits: the
-    text of the finding names numbers, no row, and is distinguishable from
-    every row-related finding.
+    begins at 1 and counts upwards from the predecessor
+    ({ref}`hash-chain`), so a 0 can never be an ordinary finding. That
+    `id = 0` is precisely the most obvious place to smuggle something in does
+    not get in the way here but fits: the text of the finding names numbers,
+    no row, and is distinguishable from every row-related finding.
     """
     if checked == total:
         return None

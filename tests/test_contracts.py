@@ -1,7 +1,7 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The module boundaries as contracts (§8 of the 1a spec).
+"""The module boundaries as contracts ({ref}`module-boundaries`).
 
 The probe module that the second test writes is the reason this file carries
 so much machinery: it lands **inside the package**, because that is what
@@ -140,8 +140,9 @@ def test_a_deliberately_wrong_import_breaks_the_named_contracts() -> None:
     different working directory as well: return code 1, `Could not read any
     configuration.` In both cases the former assertion `returncode != 0` was
     green although no contract had been checked at all — and acceptance
-    condition 4 of §11 ("a deliberately wrong import lets CI fail") hung on
-    exactly that assertion.
+    condition 4, "a deliberately wrong import lets CI fail", hung on exactly
+    that assertion. That condition is numbered in the stage 1a specification
+    §11 (frozen design record).
 
     The contract names are checked against the strings in `.importlinter`,
     because those names **are** the gate's output. Renaming one of them turns
@@ -170,8 +171,9 @@ def test_a_deliberately_wrong_import_breaks_the_named_contracts() -> None:
 
 def test_the_exempted_core_modules_load_no_sql_at_runtime() -> None:
     """The bolt behind the two named exemptions in `.importlinter` — **ruling
-    T7-g**, which is the label the specification refers to it by (§12 of the
-    1a spec; finding N-2 of fix round 2 found the label pointing at nothing).
+    T7-g**, which is the label the stage 1a specification refers to it by in
+    §12 (frozen design record; finding N-2 of fix round 2 found the label
+    pointing at nothing).
 
     `core.append` and `core.verify` import `PostgresStorage` only under
     `if TYPE_CHECKING:`, and the two exemptions are granted for exactly that
@@ -179,8 +181,14 @@ def test_the_exempted_core_modules_load_no_sql_at_runtime() -> None:
     TYPE_CHECKING property: were somebody to pull one of the two imports out
     of its `if TYPE_CHECKING:` block, the exemption would keep covering it,
     `core` would load sqlalchemy at runtime, and the separation of layers
-    would be silently broken — without any one of the five gates going off.
-    This test is that missing gate.
+    would be broken — and of the gates, only this one would say so. `ruff`
+    does catch the simplest form with `TC001`, but only for as long as the
+    symbol appears in annotations and nowhere else; add one use of it outside
+    an annotation and ruff falls silent, which is exactly the case that hurts,
+    because that is when `core` really does load the driver. Measured against
+    the project configuration, with the import out of the block **and** an
+    `isinstance` call on the symbol: `lint-imports` 4 kept 0 broken,
+    `ruff check .` all checks passed, this test the only failure.
 
     A **fresh interpreter** is necessary. Inside the test process sqlalchemy
     and psycopg have long been loaded — through `conftest.py`, through
@@ -201,7 +209,8 @@ def test_the_exempted_core_modules_load_no_sql_at_runtime() -> None:
 
     It falls away without replacement once `core` is typed against a generic
     `LogStore[Conn]` protocol in `contract` instead of the concrete
-    `PostgresStorage` — §12 of the 1a spec carries that as an open point.
+    `PostgresStorage` — the stage 1a specification
+    §12 (frozen design record) carries that as an open point.
     """
     result = subprocess.run(  # noqa: S603 — our own interpreter, our own script, no input
         [sys.executable, "-c", _RUNTIME_PROBE],

@@ -28,6 +28,19 @@ test = [
     "hypothesis>=6.168",
 ]
 dev = ["ruff>=0.16", "pyright>=1.1.414", "import-linter>=2.15", "pre-commit>=4.6"]
+docs = [
+    "sphinx>=9.1",
+    "myst-parser>=5.1",
+    "sphinx-book-theme>=1.4",
+    "sphinx-design>=0.7",
+    "sphinx-copybutton>=0.5.2",
+    "sphinxcontrib-mermaid>=2.1",
+    "vale>=3.22",
+    # Not in the brief: conf.py's myst_enable_extensions turns on "linkify",
+    # and markdown-it-py's linkify rule raises ModuleNotFoundError without
+    # its counterpart installed. Measured by running `make -C docs html`.
+    "linkify-it-py>=2.2",
+]
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/previously"]
@@ -72,9 +85,10 @@ ban-relative-imports = "all"
 
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "T201"]
-# Printing to stdout is what this module is for (§9 of the stage 1a spec) —
-# a `# noqa: T201` on each of the nine `print` calls would be the same
-# justification repeated nine times (ruling T9-c).
+# Printing to stdout is what this module is for — a `# noqa: T201` on each of
+# the thirteen `print` calls would be the same justification repeated thirteen
+# times (ruling T9-c). The count said nine until it was measured against this
+# configuration with the entry removed: ruff reports T201 thirteen times.
 "src/previously/cli.py" = ["T201"]
 
 [tool.ruff.lint.flake8-type-checking]

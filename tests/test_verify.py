@@ -265,9 +265,10 @@ def test_k1_a_deleted_source_attribution_fires(db: Engine) -> None:
 @pytest.mark.parametrize(
     ("name", "payload"),
     [
-        # A floating point number: the canonicalisation rejects it (§3.2),
-        # because its rendering is language-dependent. jsonb preserves `1.5` as
-        # a number with decimal places, psycopg returns it as a `float`.
+        # A floating point number: the canonicalisation rejects it, because
+        # its rendering is language-dependent ({ref}`canonicalization`). jsonb
+        # preserves `1.5` as a number with decimal places, psycopg returns it
+        # as a `float`.
         ("float", '{"note":1.5,"evidence":"recollection"}'),
         # An upper-case key: violates `^[a-z][a-z0-9_]*$`.
         ("uppercase", '{"Note":"b","evidence":"recollection"}'),

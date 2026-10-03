@@ -1,7 +1,8 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Properties of the chain and of the canonicalisation (§10.2 of the 1a spec).
+"""Properties of the chain and of the canonicalisation, named P1 to P7 in
+§10.2 of the stage 1a specification (frozen design record).
 
 Property-based testing is clearly superior here: "rebuilt yields the same" and
 "no branching possible" are invariants over random sequences of events, not
@@ -38,11 +39,11 @@ NOW = datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC)
 # integers inside the safe range, no null bytes.
 #
 # The filter excludes the reserved key `evidence`: `append` mixes it into
-# every payload and refuses a payload that already carries it (§5.1). The
-# regex could produce it in theory, but as measured (3000 examples, searched
-# for deliberately as well) not a single hit — the filter is documentation of
-# the restricted payload range here, not protection against an observed error
-# (ruling T10-d).
+# every payload and refuses a payload that already carries it
+# ({ref}`canonicalization`). The regex could produce it in theory, but as
+# measured (3000 examples, searched for deliberately as well) not a single
+# hit — the filter is documentation of the restricted payload range here,
+# not protection against an observed error (ruling T10-d).
 keys = st.from_regex(r"\A[a-z][a-z0-9_]{0,12}\Z").filter(lambda k: k != "evidence")
 # Category Cs (lone UTF-16 surrogates, U+D800–U+DFFF) excluded: without this
 # exclusion `st.characters` produces valid Python str characters that
@@ -189,8 +190,9 @@ def test_p7_id_order_is_chain_order(db: Engine, count: int) -> None:
     """P7: the property that permits checking in id order at all.
 
     Over a **sequential** writer: one `append` with a sub-chain. The
-    concurrent interleavings that §10.2 words P7 over are the business of
-    `test_p3_...` below, which starts real threads for them.
+    concurrent interleavings that §10.2 (frozen design record) words P7 over
+    are the business of `test_p3_...` below, which starts real threads for
+    them.
     """
     with db.begin() as c:
         c.execute(text("TRUNCATE source_key, unit, event"))
@@ -243,11 +245,12 @@ def test_p5_any_single_byte_change_fails_verification(db: Engine, position: int)
         + SAMPLE_TEXT[position + 1 :]
     )
     # Change only the field `text`, do not replace the whole payload: `append`
-    # mixes the reserved key `evidence` into the stored payload (§5.1). An
-    # UPDATE of the whole column would throw it away, and `verify` would then
-    # fire for two reasons — a broken payload_hash *and* a missing key —
-    # instead of for the one the test name claims (ruling T10-b). `jsonb_set`
-    # really changes one field only, `evidence` stays standing untouched.
+    # mixes the reserved key `evidence` into the stored payload
+    # ({ref}`canonicalization`). An UPDATE of the whole column would throw it
+    # away, and `verify` would then fire for two reasons — a broken
+    # payload_hash *and* a missing key — instead of for the one the test
+    # name claims (ruling T10-b). `jsonb_set` really changes one field only,
+    # `evidence` stays standing untouched.
     #
     # `CAST(:new AS jsonb)`, not `:new::jsonb`: SQLAlchemy's `text()` treats a
     # doubled colon sequence directly after a bind parameter as an escape for
@@ -297,7 +300,7 @@ def test_p2_idempotency_across_repeated_appends(db: Engine, repetitions: int) ->
 def test_p3_concurrent_writers_leave_one_gapless_chain_with_each_event_once(
     db: Engine, batch_sizes: list[int]
 ) -> None:
-    """P3, and the concurrent half of P7 (§10.2, finding W4).
+    """P3, and the concurrent half of P7 (§10.2, frozen design record; finding W4).
 
     The whole concurrency control of this stage is "the loser repeats" — no
     advisory lock, no `SELECT … FOR UPDATE`, only the unique indexes
@@ -327,7 +330,8 @@ def test_p3_concurrent_writers_leave_one_gapless_chain_with_each_event_once(
     `{1, 2}` of length 2 to 4 holds 28 combinations, so the ten examples are
     ten real ones — and a writer with two events holds the chain position for
     both, which means the loser repeats a whole **sub-chain** and not just a
-    single insert. That is §4.4's territory, and only this shape reaches it.
+    single insert. That is the territory of {ref}`concurrency`, and only
+    this shape reaches it.
 
     Afterwards four things have to hold; the fourth is the one a count alone
     would not see.
@@ -385,10 +389,10 @@ def test_p3_concurrent_writers_leave_one_gapless_chain_with_each_event_once(
     assert [r.id for r in rows] == list(range(1, len(external_ids) + 1))
 
     # 3. every prev_hash is the hash of the predecessor, and the first event
-    #    is genesis. §10.2 words P3 as "no prev_hash occurs twice"; that
-    #    follows from these two, and the distinctness is asserted alongside
-    #    anyway, because it is the sentence the unique index with
-    #    `NULLS NOT DISTINCT` actually enforces.
+    #    is genesis. §10.2 (frozen design record) words P3 as "no prev_hash
+    #    occurs twice"; that follows from these two, and the distinctness is
+    #    asserted alongside anyway, because it is the sentence the unique
+    #    index with `NULLS NOT DISTINCT` actually enforces.
     assert rows[0].prev_hash is None
     for before, after in pairwise(rows):
         assert after.prev_hash == before.hash

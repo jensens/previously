@@ -1,5 +1,18 @@
 # Previously — Entwurf
 
+> **Eingefrorener Entwurfsbericht, Stand 2026-10-03.**
+> Dieses Dokument wird nicht mehr nachgezogen.
+> Es hält fest, **wie und warum** entschieden wurde, und bleibt dafür im
+> Repository. Die lebende Begründung steht in der Dokumentation unter
+> `docs/` — soweit sie dort steht; wo sie fehlt, ist dieses Dokument die
+> einzige Quelle. Weicht es von der Doku ab, gilt die Doku.
+>
+> Ein neuer Spec für eine neue Stufe entsteht wieder auf Deutsch — das ist
+> die Sprache, in der die Absicht formuliert wird. Er friert ein, sobald
+> seine Explanation-Seiten stehen. Das Einfrieren als **Ablauf**, und die
+> Karte von jedem zitierten Paragraphen zu seiner Seite, stehen in
+> [About the frozen design records](../../explanation/design-records.md).
+
 Stand: 2026-10-01 · Status: zur Abnahme
 
 Geschrieben für Jens als Reviewer und als Grundlage für den

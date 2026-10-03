@@ -33,8 +33,9 @@ def resolve_dsn(config: Config) -> str:
     The order is explicitly this one: an already set `sqlalchemy.url`
     **wins** — `tests/conftest.py` relies on that, setting it
     programmatically to the test container before it migrates.
-    `PREVIOUSLY_DSN` is the fallback for the human at the command line (§9 of
-    the 1a spec) who does not want to touch `alembic.ini`.
+    `PREVIOUSLY_DSN` is the fallback for the human at the command line
+    ({ref}`configuration-reference`) who does not want to touch
+    `alembic.ini`.
     """
     url = config.get_main_option("sqlalchemy.url")
     if url:

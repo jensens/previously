@@ -91,9 +91,9 @@ def test_show_displays_the_evidence_and_the_payload(
     """Finding G-1: the kind of evidence was writable and unreadable.
 
     `--evidence` goes permanently into the hash and cannot be supplied after
-    the fact (§5.1), so a surface that can set it but not read it back is the
-    wrong half. The payload goes with it: `show` was the only command that
-    could display it at all, and it did not.
+    the fact ({ref}`canonicalization`), so a surface that can set it but not
+    read it back is the wrong half. The payload goes with it: `show` was the
+    only command that could display it at all, and it did not.
     """
     from sqlalchemy import Engine
 
@@ -129,9 +129,9 @@ def test_show_displays_the_evidence_and_the_payload(
 def test_show_says_so_when_the_payload_is_erased(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The tombstone has neither payload nor kind of evidence (§4.6 of the
-    architecture). `show` has to say that rather than print an empty line —
-    and it must not crash on `None`, which is the branch a plain
+    """The tombstone has neither payload nor kind of evidence
+    ({ref}`tombstone-seam`). `show` has to say that rather than print an
+    empty line — and it must not crash on `None`, which is the branch a plain
     `payload.get(...)` would have fallen into."""
     from sqlalchemy import Engine
     from sqlalchemy import text
@@ -354,9 +354,9 @@ def test_verify_prints_the_finding_and_returns_1(
     capsys.readouterr()
 
     # Only the field `text`, so that the reserved key `evidence` stays
-    # standing (§5.1) and the finding is the one this test is about — the same
-    # reasoning as in `test_p5`, and `CAST(... AS jsonb)` for the same reason
-    # as well, see the comment there.
+    # standing ({ref}`canonicalization`) and the finding is the one this test
+    # is about — the same reasoning as in `test_p5`, and `CAST(... AS jsonb)`
+    # for the same reason as well, see the comment there.
     with db.begin() as c:
         c.execute(
             text("UPDATE event SET payload = jsonb_set(payload, '{text}', CAST(:new AS jsonb))"),
@@ -451,11 +451,11 @@ def test_an_unrepresentable_character_in_argv_gives_one_sentence(
 
     No database is needed: every case is refused in `append`'s preparation,
     before `storage.begin()` — which is the point of the fix. `source` and
-    `external_id` are checked in `core.append` now, because §3.2's
-    canonicalisation would decide about them only inside `event_hash`, that is
-    **after** `storage.lookup` has carried them into the driver. The text was
-    already covered by `payload_hash`; what crashed for it was `cli.py`'s size
-    check.
+    `external_id` are checked in `core.append` now, because the
+    canonicalisation ({ref}`payload-range`) would decide about them only
+    inside `event_hash`, that is **after** `storage.lookup` has carried them
+    into the driver. The text was already covered by `payload_hash`; what
+    crashed for it was `cli.py`'s size check.
     """
     monkeypatch.setenv("PREVIOUSLY_DSN", "postgresql+psycopg://unused/unused")
     argv = ["append", "--source", "cli", "--external-id", "x1", "--text", "hello"]

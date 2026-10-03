@@ -3,10 +3,17 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from previously.storage.schema import metadata
 from sqlalchemy import Engine
+from sqlalchemy import Index
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
+from typing import cast
+from typing import TYPE_CHECKING
 
 import pytest
+
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping
 
 
 @pytest.mark.db
@@ -101,9 +108,9 @@ def test_a_json_null_payload_is_refused(db: Engine) -> None:
     any bookkeeping that asks the database instead of Python.
 
     The constraint restricts nothing the contract allows: the payload range is
-    a JSON object (§3.2 of the 1a spec). It also makes §3.4's
-    `payload IS NULL` and the code's `row.payload is None` equivalent, which
-    they never were.
+    a JSON object ({ref}`payload-range`). It also makes the `payload IS NULL`
+    of the stage 1a specification §3.4 (frozen design record) and the code's
+    `row.payload is None` equivalent, which they never were.
     """
     with pytest.raises(IntegrityError) as caught, db.begin() as c:
         c.execute(
@@ -150,10 +157,11 @@ def test_a_json_array_or_scalar_payload_is_refused(db: Engine) -> None:
 
 @pytest.mark.db
 def test_a_real_tombstone_stays_permitted_and_passes_verification(db: Engine) -> None:
-    """The counter-test to the constraint, and acceptance condition 3 of §11:
-    setting `payload` to SQL `NULL` must still work and must not break the
-    chain. Without this test the constraint could be tightened until the
-    erasure seam closed, and nothing would say so.
+    """The counter-test to the constraint, and acceptance condition 3 of the
+    stage 1a specification §11 (frozen design record): setting `payload` to
+    SQL `NULL` must still work and must not break the chain. Without this
+    test the constraint could be tightened until the erasure seam closed, and
+    nothing would say so.
 
     Goes through `append` and `verify` rather than through raw DDL, because
     that is the path the acceptance condition is about.
@@ -222,9 +230,10 @@ def test_units_hash_is_mandatory(db: Engine) -> None:
 def test_only_one_source_attribution_per_event(db: Engine) -> None:
     """source_key_event_id_key: without this constraint several
     (source, external_id) could point at the same event, and then it would not
-    be determined *which* source attribution belongs in the event hash (§3.1).
-    Checks at the same time that the constraint really stands in the migrated
-    database and is not merely declared in `metadata`."""
+    be determined *which* source attribution belongs in the event hash
+    ({ref}`hash-chain`). Checks at the same time that the constraint really
+    stands in the migrated database and is not merely declared in
+    `metadata`."""
     with db.begin() as c:
         c.execute(
             text(
@@ -263,3 +272,73 @@ def test_the_declared_indexes_exist_in_the_migrated_database(db: Engine) -> None
             .all()
         )
     assert declared <= present
+
+
+def _declares_nulls_not_distinct(index: Index) -> bool:
+    """Reads the declared flag off an `Index` so that pyright strict accepts it.
+
+    `Index.dialect_options` is a `PopulateDict[str, _DialectArgDict]`, a
+    two-level registry keyed first by dialect name and then by argument name,
+    and SQLAlchemy types it loosely enough that strict mode rejects a bare
+    `.get(...).get(...)` chain on it: the member, the argument and the `{}`
+    default all come back partially unknown. The `cast` names the shape this
+    project relies on, which is what CLAUDE.md prescribes over a
+    `# type: ignore` — an ignore would swallow the next drift here along with
+    this one.
+
+    The type is named from a measurement, because the first version of this
+    comment named the wrong one. `type(index.dialect_options)` is
+    `sqlalchemy.util._collections.PopulateDict`; `_DialectArgView` is what
+    `dialect_kwargs` returns, the flat view over the same data, which spells
+    the key `postgresql_nulls_not_distinct` in one piece instead of two.
+
+    The declaration it reads is `postgresql_nulls_not_distinct=True` in
+    `storage/schema.py`; SQLAlchemy splits such a keyword into the dialect name
+    and the option name, which is why the lookup is two steps rather than one.
+    """
+    options = cast("Mapping[str, Mapping[str, object]]", index.dialect_options)
+    return bool(options.get("postgresql", {}).get("nulls_not_distinct", False))
+
+
+@pytest.mark.db
+def test_the_declared_nulls_not_distinct_reaches_the_database(db: Engine) -> None:
+    """Compares the declared `NULLS NOT DISTINCT` against the database.
+
+    The test above compares index *names*, and a name cannot carry a flag, so
+    it stays green when the migration creates `event_prev_hash_idx` without
+    the flag. That gap is narrower than it looks, and the measurement is worth
+    recording because it corrects the obvious conclusion: dropping the flag in
+    the migration turns **two** tests red, this one and
+    `test_only_one_genesis_is_permitted`, which inserts a second row with
+    `prev_hash IS NULL` and demands an `IntegrityError`. The behaviour is
+    guarded already.
+
+    What was unguarded is the agreement between what `metadata` declares and
+    what the database has, and this test covers it for **every** declared
+    index rather than for the one index whose symptom happens to be tested. It
+    also catches the reverse drift, where `metadata` loses the flag while the
+    database keeps it, which no behavioural test can see.
+
+    Measured on a migrated database, with the flag removed from the migration:
+
+        event_prev_hash_idx.indnullsnotdistinct  True -> False
+        `SELECT indexname` still finds the index  -> the name check stays green
+        two rows with prev_hash IS NULL both commit
+    """
+    declared = {
+        index.name: _declares_nulls_not_distinct(index)
+        for table in metadata.tables.values()
+        for index in table.indexes
+    }
+    with db.connect() as c:
+        rows = c.execute(
+            text("""
+                SELECT c.relname, i.indnullsnotdistinct
+                FROM pg_index i
+                JOIN pg_class c ON c.oid = i.indexrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+            """)
+        ).all()
+    present = {name: flag for name, flag in rows if name in declared}
+    assert present == declared

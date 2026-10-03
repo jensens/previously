@@ -3,9 +3,9 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Rows, not domain objects.
 
-`storage` does not know the domain (§2 of the architecture): `kind` is text,
-`payload` is uninterpreted JSON. That is why the type is called `EventRow` and
-not `Event` — `core` interprets, `storage` transports.
+`storage` does not know the domain ({ref}`module-boundaries`): `kind` is
+text, `payload` is uninterpreted JSON. That is why the type is called
+`EventRow` and not `Event` — `core` interprets, `storage` transports.
 """
 
 from collections.abc import Mapping

@@ -46,10 +46,10 @@ def test_iso_utc_always_has_six_fractional_digits() -> None:
 def test_iso_utc_pads_a_year_below_1000_to_four_digits(year: int, expected: str) -> None:
     """Pins today's behaviour for years under 1000 (finding G-2).
 
-    §3.3 prescribes ISO 8601, and that wants four digits of year. `iso_utc`
-    gets them from `strftime("%Y")`, and whether `%Y` pads is **not**
-    specified by the C standard — measured, CPython itself is of two minds
-    about it:
+    The hashed form is ISO 8601 ({ref}`hash-format`), and that wants four
+    digits of year. `iso_utc` gets them from `strftime("%Y")`, and whether
+    `%Y` pads is **not** specified by the C standard — measured, CPython
+    itself is of two minds about it:
 
         time.strftime("%Y", (5, …))      -> '5'
         datetime(5, …).strftime("%Y")    -> '0005'
@@ -140,10 +140,11 @@ def test_event_hash_depends_on_every_field() -> None:
 
 
 def test_event_hash_without_a_source_attribution_is_its_own_hash() -> None:
-    """`source=None`/`external_id=None` is the keyless case (§3.1) and has to
-    differ from every hash *with* a key — otherwise an erased `source_key` row
-    would not be distinguishable from a key that was never written, and that is
-    exactly what the hash is supposed to deliver."""
+    """`source=None`/`external_id=None` is the keyless case
+    ({ref}`hash-chain`) and has to differ from every hash *with* a key —
+    otherwise an erased `source_key` row would not be distinguishable from a
+    key that was never written, and that is exactly what the hash is supposed
+    to deliver."""
     without = _event_hash(source=None, external_id=None)
     assert without != _event_hash()
     assert without != _event_hash(source=None)
@@ -191,10 +192,10 @@ def test_units_hash_notices_a_missing_unit() -> None:
 
 def test_units_hash_rejects_non_canonicalizable_values() -> None:
     """`units_hash` goes through the same canonicaliser as the payload and
-    therewith inherits its limits (§3.2). Out of the database that is not
-    reachable — `int4` always lies inside the safe range —, but `verify`
-    catches the exception and reports instead of raising (finding W1); this
-    test proves that there is anything to catch there at all."""
+    therewith inherits its limits ({ref}`payload-range`). Out of the database
+    that is not reachable — `int4` always lies inside the safe range —, but
+    `verify` catches the exception and reports instead of raising (finding
+    W1); this test proves that there is anything to catch there at all."""
     with pytest.raises(InvalidPayload, match="safe range"):
         units_hash([RawUnit(seq=1, content="a", start_ms=2**60)])
 

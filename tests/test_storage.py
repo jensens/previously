@@ -222,7 +222,7 @@ def test_source_keys_reads_by_batch(db: Engine) -> None:
     """One query for the whole batch, and events without a row are absent from
     the return value instead of standing in it as `None`. Event 2 is inserted
     without a key, event 3 does not exist — both cases are the same absence,
-    and the caller hashes `null` for it (§3.1 of the 1a spec)."""
+    and the caller hashes `null` for it ({ref}`hash-chain`)."""
     storage = PostgresStorage(db)
     with storage.begin() as c:
         storage.insert_event(c, _row(1, None), [UnitRow(1, 1, "a")], ("cli", "x1"))

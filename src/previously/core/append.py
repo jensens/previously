@@ -1,7 +1,7 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Appending to the log (§4 of the 1a spec).
+"""Appending to the log ({ref}`concurrency`).
 
 The serialisation is done exclusively by the unique indexes on `prev_hash`
 and `id`. No advisory lock, no `SELECT … FOR UPDATE`, no coordination between
@@ -19,9 +19,10 @@ Two classes of conflict, two recoveries:
   already. Re-read `lookup` for the whole batch; are **all** of them found,
   return their identifiers and do not retry. Is only part of them found, the
   rest genuinely does not exist yet and has to be appended, so retry — see
-  the `except SourceKeyTaken` branch, and §4.2, which said "no retry" without
-  that qualification until finding G-7 of the second final review. `storage`
-  translates this conflict into `SourceKeyTaken`.
+  the `except SourceKeyTaken` branch. The stage 1a specification
+  §4.2 (frozen design record) said "no retry" without that qualification
+  until finding G-7 of the second final review. `storage` translates this
+  conflict into `SourceKeyTaken`.
 
 Telling the two classes of conflict apart happens in `storage` already, via
 `diag.constraint_name` of the psycopg diagnosis — measured, dependable,
@@ -58,7 +59,7 @@ if TYPE_CHECKING:
 
 MAX_RETRIES = 8
 
-# A limited batch size against starvation (§4.4 of the 1a spec): a very large
+# A limited batch size against starvation ({ref}`concurrency`): a very large
 # transaction holds for a long time and loses the conflict against every small
 # submission that commits meanwhile.
 MAX_BATCH = 500
@@ -70,11 +71,20 @@ MAX_BATCH = 500
 # is forced into a single place against.
 _KIND = "observation"
 
-# Backing off between the attempts (§4.2 of the 1a spec, review finding W3):
-# eight attempts cost, in the worst case (seven waits between eight attempts,
-# every one of them at the cap), markedly less than a second — noticeable
-# enough to bring two concurrent writers out of lockstep, too small to slow
-# the test suite down.
+# Backing off between the attempts ({ref}`concurrency`, review finding W3):
+# the bounds double until they reach the cap, so they run 0.005, 0.01, 0.02,
+# 0.04, 0.08, 0.16, 0.2, 0.2 — eight of them and not seven, because the loop
+# sleeps after **every** failed attempt, the eighth included, whose wait is
+# spent just before giving up. Summed, the worst case is 0.715 s; and these
+# are bounds rather than waits, since `backoff_delay` draws uniformly from
+# `[0, bound]`, so the average is half of each. Noticeable enough to bring two
+# concurrent writers out of lockstep, too small to slow the test suite down.
+#
+# Counted against the code, not carried over: the figure here read "seven
+# waits between eight attempts, every one of them at the cap, markedly less
+# than a second" until task 6, fix round 1. Only the last two bounds reach the
+# cap, and seven at the cap would have been 1.4 s — the sentence contradicted
+# itself, and the documentation page had copied it.
 BACKOFF_BASIS = 0.005
 BACKOFF_CAP = 0.2
 
@@ -135,10 +145,11 @@ def _is_text(value: object) -> bool:
 def _check_identity(field: str, value: object) -> None:
     """Checks `source` and `external_id` before they leave `core` (finding W-1).
 
-    Both go into the event hash as JSON strings, so §3.2's canonicalisation is
-    what decides about them — but it decides **too late**: `event_hash` is
-    computed only after `storage.lookup`, and `lookup` is the first thing that
-    carries these two values out of `core` and into the driver.
+    Both go into the event hash as JSON strings, so the canonicalisation
+    ({ref}`payload-range`) is what decides about them — but it decides **too
+    late**: `event_hash` is computed only after `storage.lookup`, and `lookup`
+    is the first thing that carries these two values out of `core` and into
+    the driver.
 
     Measured against a real PostgreSQL 17 before this check existed. Counted
     on stderr of the real command (`uv run previously append …`), which is
@@ -239,7 +250,7 @@ def _prepare(
     saving but a requirement for two of the three results: were the kind of
     evidence mixed in at two places (once for the hash, once for the row),
     the two could drift apart — and then one would hash something other than
-    what one stores. The chain check of §3.4 computes
+    what one stores. The chain check ({ref}`hash-chain`) computes
     `payload_hash(row.payload)` against `row.payload_hash` and would uncover
     that, but only there. The units digest is invariant for the same reason:
     the units of an event never change between two attempts.
@@ -292,13 +303,14 @@ def _prepare(
 
         _check_units(event.units)
         if "evidence" in event.payload:
-            # The kind of evidence (§5.1) separates proof from report and
-            # cannot be supplied after the fact in an append-only store once
-            # it has been written. The key is therefore reserved, so that a
-            # payload which already carries it is not silently overwritten.
+            # The kind of evidence ({ref}`canonicalization`) separates proof
+            # from report and cannot be supplied after the fact in an
+            # append-only store once it has been written. The key is therefore
+            # reserved, so that a payload which already carries it is not
+            # silently overwritten.
             raise InvalidPayload(
                 "payload already carries the key 'evidence' — it is reserved for the "
-                "kind of evidence (§5.1), so that it is not silently overwritten"
+                "kind of evidence, so that it is not silently overwritten"
             )
         payload: Mapping[str, object] = {
             **event.payload,
@@ -412,30 +424,33 @@ def append(
             # The fourth one was missing until finding N-1, and it is the one
             # somebody actually walked: the reviewer reached this branch by
             # writing an event **without** a source attribution
-            # (`insert_event(..., key=None)`, which §5 permits) and then
-            # hanging a `source_key` row onto that already committed event by
-            # raw SQL. `append` itself never does either of those two things,
-            # so the `pragma` stays right as it is worded ("out of `append`
-            # itself") — but an unreachability argument that leaves out a path
-            # somebody has taken is not an argument.
+            # (`insert_event(..., key=None)`, which the contract permits,
+            # see {ref}`concurrency`) and then hanging a `source_key` row onto
+            # that already committed event by raw SQL. `append` itself never
+            # does either of those two things, so the `pragma` stays right
+            # as it is worded ("out of `append` itself") — but an
+            # unreachability argument that leaves out a path somebody has
+            # taken is not an argument.
             #
-            # Idempotency struck in the race. Two cases, and §4.2 was wrong
-            # about the second one until finding G-7 of the second final
-            # review — it said "no retry" without qualification:
+            # Idempotency struck in the race. Two cases, and the stage 1a
+            # specification got the second one wrong until finding G-7 of the
+            # second final review: §4.2 (frozen design record) said "no retry"
+            # without qualification.
             #
             # - **all** keys of the batch are taken: there is nothing to
             #   append, so return the existing identifiers and do **not**
-            #   retry. Retrying would be exactly the loop-spinning §4.2 warns
-            #   about.
+            #   retry. Retrying would be exactly the loop-spinning that
+            #   {ref}`conflict-classes` warns about.
             # - only **part** of them: the rest genuinely does not exist yet,
             #   and the transaction is rolled back, so it is written nowhere.
-            #   `append` has to return exactly one `int` per event (§7), so
-            #   without a retry the only options left would be a shorter list,
-            #   a `None` mixed in, or an invented `id` — the first two break
-            #   the signature, the third breaks the chain. The retry resolves
-            #   it completely: on the next attempt `lookup` finds the foreign
-            #   key (the competitor has committed) and skips it, and the
-            #   really new event gets appended. `MAX_RETRIES` bounds the loop.
+            #   `append` has to return exactly one `int` per event
+            #   ({ref}`concurrency`), so without a retry the only options left
+            #   would be a shorter list, a `None` mixed in, or an invented
+            #   `id` — the first two break the signature, the third breaks
+            #   the chain. The retry resolves it completely: on the next
+            #   attempt `lookup` finds the foreign key (the competitor has
+            #   committed) and skips it, and the really new event gets
+            #   appended. `MAX_RETRIES` bounds the loop.
             #
             # **No backing off here, deliberately**, unlike the
             # `ChainPositionTaken` branch below (review finding W3 of the

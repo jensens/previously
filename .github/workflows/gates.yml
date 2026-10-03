@@ -1,4 +1,6 @@
-# The five gates out of CLAUDE.md, run on a machine that is not the author's.
+# The five gates out of CLAUDE.md, plus a sixth for the documentation build
+# (task 1 of the 2026-10-03 documentation plan), run on a machine that is not
+# the author's.
 #
 # Acceptance condition 4 in §11 of the stage 1a spec reads "a deliberately
 # wrong import lets CI fail". Until this file there was no CI, so the
@@ -56,8 +58,9 @@ jobs:
         # `--locked`, not `--frozen` and not a free resolution: the run fails
         # if `uv.lock` does not match `pyproject.toml`, instead of quietly
         # resolving something else and testing a different project than the
-        # development tree. `--all-extras` brings [test] and [dev], which is
-        # where pytest, pyright, ruff and import-linter live.
+        # development tree. `--all-extras` brings [test], [dev] and [docs],
+        # which is where pytest, pyright, ruff, import-linter, sphinx and
+        # vale live. So gate 6 installs nothing of its own.
         run: uv sync --locked --all-extras
 
       - name: Name the versions
@@ -68,7 +71,7 @@ jobs:
           uv --version
           uv run python -VV
 
-      # The five gates, each as its own step: that way the log names which
+      # The six gates, each as its own step: that way the log names which
       # one failed instead of one block going red.
       - name: Gate 1 — ruff check
         run: uv run ruff check .
@@ -84,3 +87,12 @@ jobs:
 
       - name: Gate 5 — pytest
         run: uv run pytest --cov --cov-report=term-missing
+
+      - name: Gate 6 — documentation
+        # Warnings are errors (-W in docs/Makefile). linkcheck runs here too:
+        # the hosts that rate-limit crawlers are listed in conf.py's
+        # linkcheck_ignore, so a failure means a genuinely broken link.
+        run: |
+          make -C docs html
+          make -C docs vale
+          make -C docs linkcheck

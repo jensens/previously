@@ -1,7 +1,7 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Rows, not domain objects — the field contract out of §7 of the 1a spec."""
+"""Rows, not domain objects — the field contract of {ref}`database-schema`."""
 
 from datetime import datetime
 from datetime import UTC
@@ -35,7 +35,7 @@ def test_event_row_carries_every_field() -> None:
 
 
 def test_event_row_payload_may_be_absent_tombstone() -> None:
-    """payload=None is the tombstone (§4.6 of the architecture): payload_hash stays."""
+    """payload=None is the tombstone ({ref}`tombstone-seam`): payload_hash stays."""
     moment = datetime(2026, 10, 2, 14, 0, 0, tzinfo=UTC)
     row = EventRow(
         id=1,

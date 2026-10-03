@@ -177,7 +177,7 @@ def test_idempotency_in_the_race_produces_no_duplicate(db: Engine) -> None:
 
 @pytest.mark.db
 def test_a_too_large_batch_is_rejected(db: Engine) -> None:
-    """§4.4: a limited batch size against starvation."""
+    """A limited batch size against starvation ({ref}`concurrency`)."""
     storage = PostgresStorage(db)
     too_many = [_event(f"e{i}") for i in range(MAX_BATCH + 1)]
     with pytest.raises(BatchTooLarge, match="starve"):
@@ -208,8 +208,9 @@ def test_occurred_at_without_a_time_zone_is_rejected(db: Engine) -> None:
 @pytest.mark.db
 def test_the_kind_of_evidence_lands_in_the_payload(db: Engine) -> None:
     """The kind of evidence is otherwise irretrievably lost after this stage
-    (§5.1): nobody reads `RawEvent.evidence` in `append` before this task
-    mixes it into the payload under the reserved key `evidence`."""
+    ({ref}`canonicalization`): nobody reads `RawEvent.evidence` in `append`
+    before this task mixes it into the payload under the reserved key
+    `evidence`."""
     storage = PostgresStorage(db)
     event = RawEvent(
         source="cli",
@@ -447,8 +448,9 @@ def test_an_unrepresentable_identity_is_refused(
     db: Engine, field: str, probe: str, expected: str
 ) -> None:
     """`source` and `external_id` reach the driver through `lookup` **before**
-    `event_hash` canonicalises them — so §3.2 decided about them too late.
-    Measured through the command line before the fix: 95 lines of
+    `event_hash` canonicalises them — so the canonicalisation
+    ({ref}`payload-range`) decided about them too late. Measured through the
+    command line before the fix: 95 lines of
     `UnicodeEncodeError` out of psycopg for the surrogate, 89 lines of
     `sqlalchemy.exc.DataError` for the null byte.
 
@@ -531,9 +533,9 @@ def test_the_same_key_twice_in_one_batch_is_refused(db: Engine) -> None:
 @pytest.mark.db
 def test_the_same_key_in_two_separate_calls_still_gives_the_same_id(db: Engine) -> None:
     """The counter-test to the refusal above, and the property it must not
-    break: idempotency **between** calls stays, and that is §5's whole point.
-    Without this test the batch check could be widened to span calls, and
-    nothing would notice."""
+    break: idempotency **between** calls stays, which is what the idempotency
+    is for ({ref}`canonicalization`). Without this test the batch check could
+    be widened to span calls, and nothing would notice."""
     storage = PostgresStorage(db)
     assert append(storage, [_event("a")], recorded_at=NOW) == [1]
     assert append(storage, [_event("a")], recorded_at=NOW) == [1]

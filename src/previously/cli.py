@@ -1,7 +1,7 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The minimal submission path (§9 of the 1a spec).
+"""The minimal submission path ({ref}`cli-reference`).
 
 Not meant as a product surface, but so that stage 1a **runs** — not because
 that is useful, but because being runnable drives out things one otherwise
@@ -84,10 +84,10 @@ def _cmd_append(args: argparse.Namespace) -> int:
     # undecodable ones with `surrogateescape` — and strict encoding raised
     # `UnicodeEncodeError` here. Measured on stderr of the real command, 10
     # lines of traceback and the interpreter's exit code 1 instead of this
-    # command line's 2. This line is supposed to measure a
-    # **size**, not decide about encodability; that decision belongs to §3.2's
-    # canonicalisation, which `core.append` reaches via `payload_hash` and
-    # which then reports `InvalidPayload` with a sentence naming the field.
+    # command line's 2. This line is supposed to measure a **size**, not
+    # decide about encodability; that decision belongs to the canonicalisation
+    # ({ref}`payload-range`), which `core.append` reaches via `payload_hash`
+    # and which then reports `InvalidPayload` with a sentence naming the field.
     # For every string without surrogates `surrogatepass` and strict yield the
     # identical byte count, so the bound itself does not move.
     if len(args.text.encode("utf-8", "surrogatepass")) > MAX_TEXT_BYTES:
@@ -145,11 +145,11 @@ def _cmd_show(args: argparse.Namespace) -> int:
             # afterwards, that was the wrong half.
             #
             # `evidence` out of the payload and named separately, because
-            # `append` mixes it in under that reserved key (§5.1): it is not
-            # one payload field among others but the statement that separates
-            # proof from report. The tombstone has neither (§4.6 of the
-            # architecture), and `payload=<erased>` says that instead of
-            # printing an empty line.
+            # `append` mixes it in under that reserved key
+            # ({ref}`canonicalization`): it is not one payload field among
+            # others but the statement that separates proof from report. The
+            # tombstone has neither ({ref}`tombstone-seam`), and
+            # `payload=<erased>` says that instead of printing an empty line.
             if row.payload is None:
                 print("payload=<erased>")
             else:

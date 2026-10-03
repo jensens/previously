@@ -57,8 +57,8 @@ def upgrade() -> None:
         # `verify` would take the forged row for a tombstone and skip its
         # payload, while `WHERE payload IS NULL` would not list it. The
         # constraint restricts nothing the contract allows: the payload range
-        # is a JSON object (§3.2). See `storage/schema.py` for the full
-        # reasoning.
+        # is a JSON object ({ref}`payload-range`). See `storage/schema.py`
+        # for the full reasoning.
         sa.CheckConstraint(
             "payload IS NULL OR jsonb_typeof(payload) = 'object'",
             name="event_payload_object_check",
@@ -98,7 +98,7 @@ def upgrade() -> None:
         sa.Column("event_id", sa.BigInteger, sa.ForeignKey("event.id"), nullable=False),
         sa.PrimaryKeyConstraint("source", "external_id"),
         # At most one source attribution per event: the event hash covers it
-        # and needs uniqueness for that (§3.1).
+        # and needs uniqueness for that ({ref}`hash-chain`).
         sa.UniqueConstraint("event_id", name="source_key_event_id_key"),
     )
 

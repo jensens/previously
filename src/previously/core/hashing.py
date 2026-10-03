@@ -1,7 +1,7 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Hashes for payload, units and event (§3.1 of the 1a spec).
+"""Hashes for payload, units and event ({ref}`hash-format`).
 
 The event hash goes over a **canonicalised object**, not over a concatenation
 of the fields: concatenation is ambiguous, because `"ab"+"c"` and `"a"+"bc"`
@@ -128,14 +128,15 @@ def event_hash(
     source: str | None,
     external_id: str | None,
 ) -> bytes:
-    """The event hash after §3.1.
+    """The event hash as {ref}`hash-format` defines it.
 
     `source` and `external_id` are hashed as `null` when no idempotency key
     exists: `insert_event` permits `key=None`, and `assertion`/`action` carry
-    none at all (§5). That stays unambiguous — an event that was written
-    *with* a key hashes the values; should the row disappear later, `verify`
-    reads `null`, the hash does not match, and there is a finding. An event
-    that was keyless from the start hashes `null` and reads `null`.
+    none at all ({ref}`hash-chain`). That stays unambiguous — an event that
+    was written *with* a key hashes the values; should the row disappear
+    later, `verify` reads `null`, the hash does not match, and there is a
+    finding. An event that was keyless from the start hashes `null` and reads
+    `null`.
     """
     header: Mapping[str, object] = {
         "v": HASH_VERSION,

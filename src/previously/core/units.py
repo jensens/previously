@@ -1,7 +1,7 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Mechanical splitting of content into units (§6 of the 1a spec).
+"""Mechanical splitting of content into units ({ref}`hash-chain`).
 
 Mechanical and deterministic, not interpreting: no language detection, no
 attribution, no classification. Those are assertions and come later.
