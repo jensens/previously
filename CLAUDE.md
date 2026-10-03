@@ -30,8 +30,16 @@ heading there reads as an exception that nobody granted. That is the test for
 any root file added later: it gets read beside the others, so it is English.
 
 **German is fine** — specifications (`docs/superpowers/specs/`), plans
-(`docs/superpowers/plans/`), the brainstorming notes in `NOTIZEN.md`, and
-analyses or working notes under `.superpowers/`.
+(`docs/superpowers/plans/`), execution records (`docs/superpowers/sdd/`), the
+brainstorming notes in `NOTIZEN.md`, and analyses or working notes under
+`.superpowers/`.
+
+`docs/superpowers/sdd/` joined that list on 2026-10-04, when the ledger of a
+plan's execution moved out of the git-ignored scratch directory and into the
+repository so that the rulings cited from code could be looked up. It is German
+for the same reason the specifications are, and it is excluded from the
+documentation build for the same reason the plans are: `conf.py` drops
+`superpowers/**`, and the `vale` target only ever reads the four quadrants.
 
 The dividing line is not "code versus prose" but **"source file,
 documentation or configuration" versus "analysis"**. A comment inside a source
@@ -346,19 +354,26 @@ claim anybody can check.
 A third space exists and nothing here described it until 2026-10-03: `ruling
 T6-b`, `ruling T10-c` and nine more like them, sixteen citations across `src/`,
 `tests/` and `pyproject.toml`. They name decisions taken while a plan was being
-executed, and those decisions live in a ledger under `.superpowers/` — which
-`.gitignore` excludes. **The target does not ship.** That makes a ruling label
-weaker than a `W2` or a frozen `§`: both of those can be looked up by whoever
-has the repository, and a ruling cannot be looked up at all.
+executed. Those live in a ledger, and until 2026-10-04 that ledger sat under
+`.superpowers/`, which `.gitignore` excludes — the target did not ship, which
+made a ruling label weaker than a `W2` or a frozen `§`: both of those can be
+looked up by whoever has the repository, and a ruling could not be looked up at
+all.
 
-So the label carries provenance and nothing else, and **the reason has to stand
-beside it, in the comment**. Measured on 2026-10-03, all sixteen do — the
-comment at `_CHAIN_POSITION_CONSTRAINTS` in `storage/postgres.py` is the model:
-it names the ruling, says what the ruling got wrong, and then argues the
-correction from `id` and `prev_hash` going into the event hash. Read without
-the label, it still holds.
+It ships now, under `docs/superpowers/sdd/<plan date>-<plan name>/`, where
+`progress.md` is the ledger and holds every `Ruling …` of that execution.
+Freezing it is what made it citable, the same move the specifications made a
+day earlier.
+
+The rule it existed to carry does not change: the label carries provenance and
+nothing else, and **the reason has to stand beside it, in the comment**.
+Measured on 2026-10-03, all sixteen do — the comment at
+`_CHAIN_POSITION_CONSTRAINTS` in `storage/postgres.py` is the model: it names
+the ruling, says what the ruling got wrong, and then argues the correction from
+`id` and `prev_hash` going into the event hash. Read without the label, it still
+holds, and that is the test. A comment that collapses without its citation is a
+bad comment even when the citation resolves.
 
 Write them that way, and when a reason outgrows its comment, give it a page and
-point at the page instead. A citation whose target the reader cannot reach is
-the same defect as a `{ref}` to a label that does not exist; only the gate is
-missing.
+point at the page instead. The execution record is where a reason too small for
+a page lives, not the queue for one.

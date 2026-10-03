@@ -62,6 +62,7 @@ specification, which freezes once its explanation pages stand.
 | [Design](docs/superpowers/specs/2026-10-01-previously-design.md) | Frozen design record: goal, guiding principles, core model, attribution, projections, release model, acceptance conditions |
 | [Architecture](docs/superpowers/specs/2026-10-01-architektur.md) | Frozen design record: modules and boundaries, schema, connector contract, process model, MCP, tooling |
 | [Stage 1a](docs/superpowers/specs/2026-10-02-stufe-1a-log.md) | Frozen design record: detailed specification of the append-only log with its hash chain |
+| [Execution records](docs/superpowers/sdd/) | Frozen working records, one directory per executed plan: the ledger of every decision taken while building it, and the target of the `ruling …` citations in the code |
 | [CLAUDE.md](CLAUDE.md) | The working agreements: language, attribution, dependencies, the six gates |
 | [DEPENDENCIES.md](DEPENDENCIES.md) | Every dependency with its purpose, the rejected alternative and the date it was last checked |
 | [NOTIZEN.md](NOTIZEN.md) | The conversation log of how it came about, the discarded routes included |
