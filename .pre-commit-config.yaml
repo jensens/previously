@@ -1,10 +1,50 @@
+# One source of truth for tool versions: uv.lock.
+#
+# These hooks call the project's own tools out of the synced virtualenv
+# instead of letting pre-commit manage a second, independently pinned copy.
+# Before, `rev: v0.16.10` here and ruff 0.16.10 in uv.lock agreed only by
+# coincidence: `uv lock --upgrade` moves one side and not the other, and
+# nothing reports the drift. The gate and the hook would then disagree about
+# the same file, which is the worst kind of disagreement — it shows up as a
+# commit that passes locally and fails in CI, or the reverse.
+#
+# The price, stated so nobody is surprised by it: `language: system` means
+# pre-commit does not build its own environment, so these hooks need `uv` on
+# PATH and a synced venv (`uv sync --all-extras`). That is step 2 of the
+# README anyway, and every gate already runs through `uv run`.
+#
+# `--force-exclude` is not optional, and this is measured rather than assumed.
+# pre-commit hands the hook an explicit list of staged files, and ruff applies
+# `extend-exclude` from pyproject.toml to explicitly named files only when
+# asked to. With a throwaway `docs/_probe.py`:
+#
+#     ruff check docs/_probe.py                  -> Found 1 error
+#     ruff check --force-exclude docs/_probe.py  -> No Python files found
+#
+# So without the flag, a staged file under `docs/` would be linted despite
+# being excluded.
 repos:
-  - repo: https://github.com/astral-sh/ruff-pre-commit
-    rev: v0.16.10
+  - repo: local
     hooks:
       - id: ruff
-        args: [--fix]
+        name: ruff check
+        entry: uv run ruff check --fix --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
       - id: ruff-format
+        name: ruff format
+        entry: uv run ruff format --force-exclude
+        language: system
+        types_or: [python, pyi]
+        require_serial: true
+
+  # These stay an external, pinned repository on purpose: they are small
+  # hygiene scripts with no counterpart among the project's dependencies, so
+  # there is no second version of anything to drift apart from. Keeping them
+  # here also keeps the hooks working in a checkout that has not been synced
+  # yet.
   - repo: https://github.com/pre-commit/pre-commit-hooks
     rev: v5.0.0
     hooks:

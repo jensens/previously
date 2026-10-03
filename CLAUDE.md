@@ -60,6 +60,28 @@ not want zombies.
 A declared dependency that nothing imports is a zombie too. Remove it, and
 note why it may come back later.
 
+### One source of truth for tool versions
+
+`uv.lock` pins the version of every tool, and nothing else may pin one. If a
+second place names a version of the same tool, the two agree only until
+somebody runs `uv lock --upgrade` — and nothing reports the drift. The gate
+and the hook then disagree about the same file, which shows up as a commit
+that passes locally and fails in CI, or the reverse.
+
+So `.pre-commit-config.yaml` runs the project's tools out of the synced venv
+(`repo: local`, `language: system`, `uv run …`) rather than letting pre-commit
+manage its own pinned copy. The same holds for anything added later: a CI step,
+an editor task, a Makefile target — they call `uv run <tool>`, they do not name
+a version.
+
+The one exception, and the reason it is one: `pre-commit-hooks`
+(trailing-whitespace and friends) stays an external pinned repository, because
+those scripts have no counterpart among the dependencies — there is no second
+version of anything to drift apart from.
+
+`pyproject.toml` carries floors (`ruff>=0.16`), not pins. Floors say what the
+code needs; the lock says what was tested.
+
 ## Working method
 
 Work in a git worktree, never directly on `main`.
