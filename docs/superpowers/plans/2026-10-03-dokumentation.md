@@ -8,7 +8,7 @@
 
 **Architecture:** Ein Sphinx/MyST-Baum unter `docs/` mit den vier Diátaxis-Quadranten. Die bestehenden deutschen Specs unter `docs/superpowers/` werden als datierte Entwurfsberichte eingefroren und aus dem Sphinx-Lauf ausgeschlossen; ihre lebende Begründung wandert übersetzt in `docs/explanation/`. Die 72 Paragraphenverweise im Code wechseln von `§x.y` auf MyST-Label, und ein Test hält fest, dass keiner ins Leere zeigt.
 
-**Tech Stack:** Sphinx 9.1, myst-parser 5.1, sphinx-book-theme 1.4, sphinx-design 0.7, sphinx-copybutton 0.5.2, vale 3.22 (PyPI-Hülle um die Go-Binärdatei), GNU make.
+**Tech Stack:** Sphinx 9.1, myst-parser 5.1, sphinx-book-theme 1.4, sphinx-design 0.7, sphinx-copybutton 0.5.2, sphinxcontrib-mermaid 2.1, vale 3.22 (PyPI-Hülle um die Go-Binärdatei), GNU make.
 
 **Spec:** `docs/superpowers/specs/2026-10-01-architektur.md` und `docs/superpowers/specs/2026-10-02-stufe-1a-log.md` — zusammen die Quelle, aus der die Explanation-Seiten übersetzt werden. Lies beide; sie sind deutsch und bleiben es.
 
@@ -19,11 +19,46 @@
 - **`html_meta` wird weggelassen** — Plone-spezifisch (Skill 10e), wie in kup6s.
 - **Theme:** `sphinx-book-theme`. Begründung: `plone-sphinx-theme` wickelt genau dieses ein, also bleibt jedes Markup des Skills gültig und nichts muss umgeschrieben werden.
 - **Sprache:** alles unter `docs/tutorials/`, `docs/how-to/`, `docs/reference/`, `docs/explanation/` ist **englisch**. Deutsch bleiben nur `docs/superpowers/**` (eingefroren), `NOTIZEN.md` und `.superpowers/**`.
-- **Abhängigkeiten:** jede neue Abhängigkeit kommt mit einem Eintrag in `DEPENDENCIES.md`, mit Datum und Beleg (CLAUDE.md). Die Belege für alle sechs stehen in Aufgabe 1, Schritt 2 — abschreiben, nicht neu erheben.
+- **Abhängigkeiten:** jede neue Abhängigkeit kommt mit einem Eintrag in `DEPENDENCIES.md`, mit Datum und Beleg (CLAUDE.md). Die Belege für alle sieben stehen in Aufgabe 1, Schritt 2 — abschreiben, nicht neu erheben.
 - **Eine Quelle der Wahrheit für Werkzeugfassungen:** `uv.lock`. Der Doku-Workflow ruft `uv run`, nennt keine Fassung.
 - **Attribution:** Commit-Botschaften englisch, `Assisted-By:`, **nie** `Co-Authored-By:`.
 - **Keine neuen import-linter-Ausnahmen, kein `# type: ignore`.** Eine Unterdrückung kommt nur mit Regelnamen und Grund daneben und wird in die Liste in `CLAUDE.md` eingetragen.
 - **Der festgenagelte Hash-Vektor in `tests/test_hashing.py` bleibt unangetastet**, samt seiner drei deutschen Zeichenketten. Schlägt er an, hat die Aufgabe etwas kaputt gemacht.
+
+## Diagramme
+
+Der Auftraggeber wünscht Mermaid-Diagramme, **wo sie Sinn machen**. Das ist
+der schwierigere Teil der Vorgabe, denn ein Diagramm, das nur wiederholt, was
+der Absatz daneben sagt, kostet Pflege und bringt nichts — dieselbe Regel, die
+der Doku-Skill für Admonitions aufstellt.
+
+**Vier Stellen, an denen ein Diagramm mehr kann als die Prosa:**
+
+| Seite | Diagramm | Warum es trägt |
+|---|---|---|
+| `explanation/hash-chain.md` | `graph LR`, drei Events mit `prev_hash`-Kanten, und die Digest-Umleitung `payload → payload_hash → event hash` | Die **Umleitung** ist der Kern der Tilgungs-Naht und in Prosa zäh: man muss sehen, dass die Kette den Digest hält und nicht den Inhalt |
+| `explanation/concurrency.md` | `sequenceDiagram`, zwei Schreiber, dieselbe Spitze, einer gewinnt am Unique-Index, der Verlierer liest neu und wiederholt | Ein Rennen ist ein Ablauf über Zeit; genau dafür ist ein Sequenzdiagramm da, und der Text braucht sonst vier Absätze |
+| `explanation/module-boundaries.md` | `graph TD`, `cli → core → storage → contract`, die zwei benannten Ausnahmen gestrichelt | Die Ausnahmen sind der ganze Punkt, und als gestrichelte Kanten sieht man auf einen Blick, dass es genau zwei sind |
+| `reference/database-schema.md` | `erDiagram` mit `event`, `unit`, `source_key` und ihren Beziehungen | Drei Tabellen mit Fremdschlüsseln und einer Eindeutigkeitsbedingung je Event — eine Tabelle sagt die Spalten, das Diagramm sagt die Form |
+
+**Ausdrücklich kein Diagramm:**
+
+- `explanation/canonicalization.md` — eine Liste von Einschränkungen ist eine Liste; ein Diagramm wäre Dekoration.
+- Die Tutorials — ein Tutorial will sichtbare Ergebnisse nach jedem Schritt, nicht ein Bild vom Ganzen.
+- Die How-tos — Schrittfolgen, die der Leser abarbeitet; ein Ablaufdiagramm daneben wäre dieselbe Information zweimal.
+
+Jedes Diagramm braucht `:alt:` (Barrierefreiheit, der Skill verlangt es bei
+Bildern) und eine `:caption:`. Syntax:
+
+````markdown
+```{mermaid}
+:alt: Three events linked by their predecessor hash
+:caption: The chain holds a digest of the payload, not the payload
+
+graph LR
+    e1[event 1] --> e2[event 2] --> e3[event 3]
+```
+````
 
 ## Review Focus
 
@@ -57,6 +92,7 @@ docs = [
     "sphinx-book-theme>=1.4",
     "sphinx-design>=0.7",
     "sphinx-copybutton>=0.5.2",
+    "sphinxcontrib-mermaid>=2.1",
     "vale>=3.22",
 ]
 ```
@@ -74,11 +110,12 @@ Die Pflegeprüfung ist am 2026-10-03 gemacht; schreib diese Belege ab, erheb sie
 | `sphinx-book-theme` | 1.4.0 | 2026-07-19 | aktiv |
 | `sphinx-design` | 0.7.0 | 2026-01-19 | aktiv — Repo gepusht 2026-09-28 |
 | `sphinx-copybutton` | 0.5.2 | **2023-04-14** | **fertig, nicht verlassen** — Repo gepusht 2026-09-28, nicht archiviert; eine Erweiterung, die einen Kopierknopf anfügt, ist irgendwann fertig |
+| `sphinxcontrib-mermaid` | 2.1.1 | 2026-09-01 | aktiv — Repo gepusht 2026-10-01 |
 | `vale` | 3.22.0.0 | 2026-09-18 | aktiv |
 
 Zu `vale` gehört ein Satz dazu, der sonst jemandem fehlt: das PyPI-Paket ist eine **Hülle**, die die Go-Binärdatei holt, und seine Fassung kodiert die Vale-Fassung (3.22.0.0 → Vale 3.22.0). `uv.lock` pinnt damit auch die Binärdatei — die Regel „eine Quelle der Wahrheit" hält.
 
-Zur Spalte „Wofür" je Zeile: Sphinx baut, myst-parser liest Markdown statt reStructuredText, das Theme ist der Unterbau von `plone-sphinx-theme` (darum markup-gleich), sphinx-design liefert Grids und Karten für die Landing-Seiten, copybutton den Kopierknopf an Codeblöcken, vale prüft Stil und amerikanisches Englisch.
+Zur Spalte „Wofür" je Zeile: Sphinx baut, myst-parser liest Markdown statt reStructuredText, das Theme ist der Unterbau von `plone-sphinx-theme` (darum markup-gleich), sphinx-design liefert Grids und Karten für die Landing-Seiten, copybutton den Kopierknopf an Codeblöcken, sphinxcontrib-mermaid die vier Diagramme aus dem Abschnitt „Diagramme", vale prüft Stil und amerikanisches Englisch.
 
 - [ ] **Schritt 3: `docs/conf.py` schreiben**
 
@@ -96,6 +133,7 @@ extensions = [
     "myst_parser",
     "sphinx_copybutton",
     "sphinx_design",
+    "sphinxcontrib.mermaid",
 ]
 
 myst_enable_extensions = [
@@ -748,9 +786,23 @@ Erwartet unter anderem: `test_vector_payload_hash`, `test_vector_units_hash`, `t
 **Files:**
 - Modify: `docs/superpowers/specs/2026-10-01-architektur.md`, `docs/superpowers/specs/2026-10-02-stufe-1a-log.md`, `docs/superpowers/specs/2026-10-01-previously-design.md`, `CLAUDE.md`
 
+### Das Einfrieren ist ein Vorgang, kein Ereignis
+
+Hier hatte ich den Plan zunächst falsch gefasst, und die Korrektur kommt vom
+Auftraggeber: **Deutsch ist seine Autorensprache für Absicht**, nicht ein
+Altbestand, den man abarbeitet. „Mit Deutsch kann ich mich besser ausdrücken,
+was ich will."
+
+Daraus folgt: jede künftige Stufe wird **wieder** mit einem deutschen Spec
+beginnen, und der friert ein, sobald seine Explanation-Seiten stehen. Das
+Einfrieren ist also ein wiederkehrender Schritt im Ablauf und nichts, was
+dieser Plan ein einziges Mal erledigt. Schreib es als Ablauf hin, nicht als
+Zustand — sonst liest die nächste Stufe die eingefrorenen Specs als Verbot,
+einen neuen zu schreiben.
+
 - [ ] **Schritt 1: Einfrier-Kopf in die drei Specs**
 
-Oben in jedes Dokument, auf Deutsch (die Specs bleiben deutsch):
+Oben in jedes Dokument, auf Deutsch (die Specs sind und bleiben deutsch):
 
 ```markdown
 > **Eingefrorener Entwurfsbericht, Stand 2026-10-03.**
@@ -758,13 +810,29 @@ Oben in jedes Dokument, auf Deutsch (die Specs bleiben deutsch):
 > Es hält fest, **wie und warum** entschieden wurde, und bleibt dafür im
 > Repository. Die lebende Begründung steht in `docs/explanation/`; weicht
 > dieses Dokument davon ab, gilt die Doku.
+>
+> Ein neuer Spec für eine neue Stufe entsteht wieder auf Deutsch — das ist
+> die Sprache, in der die Absicht formuliert wird. Er friert ein, sobald
+> seine Explanation-Seiten stehen.
 ```
 
 - [ ] **Schritt 2: Die Sprachregel in `CLAUDE.md` nachziehen**
 
-Sie sagt heute „German is fine — specifications, plans, …". Nach dieser Umstellung gilt das **nur noch** für eingefrorene Berichte, Pläne und Arbeitsnotizen. Jede **neue** Entwurfsbegründung entsteht auf Englisch in `docs/explanation/`.
+Sie sagt heute „German is fine — specifications, plans, …". Das bleibt
+richtig, bekommt aber einen Ablauf dazu, und der ist der Kern dieser Aufgabe:
 
-Schreib die Änderung als Änderung hin, nicht als wäre es immer so gewesen — die Regel ist am 2026-10-03 entstanden und am selben Tag geändert worden, und das ist für einen Leser nützlicher als eine glatte Fassung.
+- **Ein Spec entsteht auf Deutsch.** Das ist Absicht und keine Nachlässigkeit:
+  der Betreuer formuliert Absicht auf Deutsch genauer, und eine ungenau
+  formulierte Absicht ist teurer als eine Übersetzung.
+- **Die Begründung wird auf Englisch veröffentlicht**, in
+  `docs/explanation/`, und ist dort maßgeblich.
+- **Der Spec friert ein, sobald seine Explanation-Seiten stehen**, mit
+  datiertem Kopf. Danach ist er Provenienz: „so wurde es damals entschieden".
+- Weicht ein eingefrorener Spec von der Doku ab, **gilt die Doku**.
+
+Schreib die Änderung als Änderung hin, nicht als wäre es immer so gewesen — die
+Regel ist am 2026-10-03 entstanden und am selben Tag verfeinert worden, und das
+ist für einen Leser nützlicher als eine glatte Fassung.
 
 - [ ] **Schritt 3: Die Doku-Regel in `CLAUDE.md`**
 

@@ -1434,6 +1434,38 @@ Nach dem Aufnahmekriterium aus §1 gehört nichts davon hierher.
 | Deployment-*Mechanismus* (Container, systemd, k3s) | Betriebsentscheidung, kein Modul hängt daran. Die Architekturfrage ist in §10.2 entschieden |
 | Oberfläche jenseits MCP | verschoben (§14 im Entwurf) |
 
+### Nachtrag 2026-10-03: Deutsch und Englisch, und zwar gemischt
+
+Zwei Zeilen dieser Tabelle — Textsuchvariante und Embedding-Modell — standen
+bisher unter „mehrsprachig". Der Auftraggeber hat das verschärft, und die
+Verschärfung ändert, was dort entschieden werden kann:
+
+> **Deutsch und Englisch sind immer beide da, oft im Mix** — und zwar nicht
+> nur im Bestand, sondern **innerhalb eines Dokuments**. Das Projekt soll in
+> beiden Sprachen bedienbar sein.
+
+Innerhalb eines Dokuments gemischt ist etwas anderes als mehrsprachig. Was es
+für die zwei offenen Punkte heißt:
+
+- **Textsuche:** Hunspell arbeitet mit Wörterbüchern **je Sprache**. Bei einer
+  Einheit, die beide Sprachen trägt, ist die Frage nicht mehr „welches
+  Wörterbuch", sondern „woher weiß ich die Sprache dieser Einheit" — und bei
+  einem Satz mit englischen Fachwörtern in deutscher Prosa gibt es darauf
+  keine Antwort, die nicht selbst eine Schätzung ist. Das spricht für ein
+  sprachunabhängiges Verfahren (Subword, BM25) und gegen Spracherkennung je
+  Einheit. **Entschieden wird es trotzdem erst mit der Messung aus §12.3** —
+  hier steht nur, dass die Messung diesen Fall enthalten muss.
+- **Embedding-Modell:** „mehrsprachig" genügt als Anforderung nicht. Ein
+  Modell, das Deutsch und Englisch getrennt gut kann, ist nicht dasselbe wie
+  eines, das einen **gemischten** Satz in einen sinnvollen Vektor legt. Die
+  Auswahl braucht darum einen Testsatz aus echten, gemischten Einheiten, nicht
+  zwei getrennte Sprachproben.
+
+**Ausdrücklich keine Entscheidung in diesem Dokument.** Die Mehrsprachigkeit
+der **Bedienung** (Ein- und Ausgabe des Werkzeugs, Prompts, Oberfläche) ist
+noch gar nicht betrachtet und gehört in einen eigenen Entwurf; sie ist von der
+Mehrsprachigkeit der **Daten** zu trennen, die hier steht.
+
 ---
 
 ## 12. Zerlegung in Teilprojekte
