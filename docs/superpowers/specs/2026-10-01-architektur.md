@@ -1232,6 +1232,31 @@ Stellen — statt verschlüsselter Blobs neben einer unverschlüsselten Datenban
 **Getrennte Schlüssel für Blobs und Backups, gleicher Tresor.** Unterschiedliche
 Schadensreichweite, also nicht derselbe Schlüssel.
 
+#### Wo die Schlüssel liegen — und warum das hier aufhört
+
+Beide Verschlüsselungsstellen dieses Entwurfs brauchen einen Schlüssel von
+außerhalb des Datenpfads: die Blobs (§10.3, AES-GCM mit `key_id` in der
+Referenz) und die Backups (clientseitig, `aes-256-cbc`).
+
+Stand heute kommen sie über den **External Secrets Operator** aus einem
+**eigenen Namespace** — also nicht aus dem Namespace, in dem die Datenbank
+läuft. Das ist die betriebliche Antwort auf „gleicher Tresor": ein Ort, zwei
+Schlüssel, und beide außerhalb der Reichweite dessen, was sie schützen.
+
+**Ein echter Tresor (Vault) ist die Zielrichtung, aber nicht Sache dieses
+Projekts.** Das ist eine Plattformentscheidung und gehört dorthin, wo die
+Cluster bewirtschaftet werden — nicht in diese Architektur. Previously
+verlangt von der Plattform nur zwei Eigenschaften, und beide sind unabhängig
+davon, womit sie erfüllt werden:
+
+1. Die Schlüssel liegen **nicht** im Namespace der Datenbank und nicht im
+   Backupziel.
+2. Es gibt einen **geprobten** Weg, sie wiederzubeschaffen — denn nach dem
+   Absatz oben verliert man mit der Passphrase die Backups endgültig.
+
+Damit ist die Frage „welcher Tresor" hier zu Recht **nicht** offen: sie ist
+delegiert, mit zwei nachprüfbaren Anforderungen anstelle einer Antwort.
+
 #### Der Preis der clientseitigen Verschlüsselung
 
 Er gehört dazugesagt, weil er aus derselben Familie ist wie alles in diesem
@@ -1246,16 +1271,46 @@ Zweifel helfen; hier kann es niemand. Daraus folgen zwei Vorgaben:
   nie ein Restore versucht wurde, ist so wenig ein Schlüssel wie ein
   ungeprüfter Restore ein Backup ist.
 
-#### Der verbleibende Einwand und seine Antwort
+#### Die verbleibenden Einwände und ihre Antworten
 
-Plugin-Reife. Ein Backup-System ist die schlechteste Stelle für junge Software —
-aber die Antwort darauf ist von der Pluginwahl unabhängig:
+**Erstens: Plugin-Reife.** Ein Backup-System ist die schlechteste Stelle für
+junge Software — aber die Antwort darauf ist von der Pluginwahl unabhängig:
 
 > **Ein ungeprüfter Restore ist kein Backup.**
 
 Siehe Abnahmebedingung 23. Bei uns ist die Prüfung besonders aussagekräftig,
 weil die Hash-Kette den **wiederhergestellten Bestand** verifiziert und nicht
 nur, dass Postgres startet.
+
+**Zweitens: zwei Backupwerkzeuge im selben Betrieb.** Im übrigen Cluster
+läuft barman; dieser Entwurf setzt pgBackRest daneben. Das kostet zwei
+Betriebswege, zwei Restore-Prozeduren — und nach dem Grundsatz eben heißt das
+**zwei Proben einüben**, nicht eine. Der Einwand ist berechtigt und war in
+diesem Abschnitt zunächst gar nicht genannt.
+
+Drei Wege, mit ihrem jeweiligen Preis:
+
+| | Weg | Preis |
+|---|---|---|
+| **A** | pgBackRest nur für diese Datenbank | ein zweites Werkzeug, zweite Restore-Probe |
+| **B** | barman-cloud behalten, Backupziel auf ein EU-S3 mit echtem SSE-S3 | zweite Anbieterbeziehung, **der Anbieter hält den Schlüssel** |
+| **C** | barman-cloud behalten, Backups unverschlüsselt | nichts technisch — aber es muss eine *Entscheidung* sein, kein Versehen |
+
+**Gewählt ist A**, und der Grund ist nicht Werkzeuggüte, sondern wer den
+Schlüssel hat: bei A verlässt er die eigene Maschine nicht, bei B kann der
+Anbieter im Zweifel entschlüsseln, bei C jeder, der an das Bucket kommt. Für
+einen Speicher, dessen ganzer Zweck ein verteidigungsfähiger Verlauf von
+Mandantenprojekten ist, ist das der entscheidende Unterschied.
+
+**Was A umstoßen würde:** wenn die Backups dieser Datenbank im Bedrohungsmodell
+nicht anders stünden als die der übrigen Cluster-Datenbanken. Dann gewinnt
+Einheitlichkeit und B ist die saubere Wahl. Diese Prüfung ist nicht
+geführt — sie hängt daran, was in den anderen Datenbanken liegt, und das ist
+eine Frage an den Betrieb, nicht an diese Architektur.
+
+Dass das Schwesterprojekt kup6s denselben Punkt offen hat — barman-cloud auf
+Hetzner, ohne Verschlüsselung — ist dabei kein Argument für A, sondern nur der
+Beleg, dass die Lücke real ist und nicht aus diesem Entwurf stammt.
 
 ### 10.6 Werkzeuge
 
