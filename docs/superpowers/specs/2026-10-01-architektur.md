@@ -1142,14 +1142,77 @@ GPG-Verschlüsselung, die Cloud-Werkzeuge nicht — es gibt dazu eine offene
 Anfrage. Die vollständige Datenbank würde damit unverschlüsselt im Bucket
 liegen.
 
+**Nachgeprüft am 2026-10-03 gegen Hetzners Dokumentation**, und die Lage ist
+schärfer als dieser Absatz zunächst sagte:
+
+> „There is **no default data-at-rest encryption** of objects, but you can
+> encrypt your data during the upload using SSE-C."
+
+Es gibt dort also nicht nur kein SSE-S3 — es gibt **gar keine**
+Verschlüsselung im Ruhezustand, solange niemand selbst eine anwendet.
+Clientseitig ist damit nicht die bequemere Variante, sondern die einzige, die
+überhaupt etwas verschlüsselt.
+
+Und SSE-C ist für ein Backupwerkzeug nicht bloß unbequem, sondern gefährlich:
+
+> „Only this encryption type: SSE-C" · „**Copy of SSE-C encrypted objects: Not
+> supported**" · CopyObject: „Only supported within the same Bucket."
+
+Die Ursache ist die Technik darunter — Hetzner bestätigt „Any data you save in
+your Bucket is saved in a **Ceph** cluster", und in Ceph RGW hat **keiner** der
+SSE-Modi CopyObject-Unterstützung. Jeder Ablauf, der verschlüsselte Objekte
+kopiert, bricht dort. Das ist in einem Schwesterprojekt (kup6s) schon
+operativ aufgeschlagen: dort gilt die Regel „never use server-side
+encryption", zusammen mit dem Umweg um die Tagging-Aufrufe, die Hetzner mit
+`501` abweist.
+
 **Lösung.** Das **pgBackRest-CNPG-I-Plugin** kann clientseitige
 Verschlüsselung von Backups **und** WAL-Archiven (`encryption: aes-256-cbc`,
 Schlüssel aus einem Secret), dazu Datenverzeichnis-Backup und -Restore,
 WAL-Archivierung, PITR und Replica-Cluster. Hetzners fehlendes SSE-S3 ist
 damit irrelevant: die Daten sind verschlüsselt, bevor sie den Cluster verlassen.
 
-Implementierungen von Dalibo und Opera Software (letztere ausdrücklich
-experimentell). **Welche zur Bauzeit die bestgepflegte ist, ist nachzusehen.**
+Implementierungen von Dalibo und Opera Software. **Welche zur Bauzeit die
+bestgepflegte ist, ist nachzusehen** — hier ein datierter Stand, damit das
+Nachsehen nicht bei null anfängt.
+
+#### Stand der beiden Plugins am 2026-10-03
+
+| | `dalibo/cnpg-plugin-pgbackrest` | `operasoftware/cnpg-plugin-pgbackrest` |
+|---|---|---|
+| Commits seit 03.07.2026 | **2** | **30** |
+| letzte Freigaben | v0.0.3 (25.06.) | v0.8.0 (25.08.), v0.7.0, v0.6.1 |
+| offene Vorgänge | 23 | 44 |
+| Selbstauskunft | — | README: „**Status:** EXPERIMENTAL" |
+
+Das **dreht die Erwartung**: dieser Abschnitt nannte Operas Implementierung
+anfangs „ausdrücklich experimentell" und legte damit Dalibos näher. Gemessen
+ist Dalibos seit Juni praktisch stehengeblieben, während Operas im August
+wöchentlich freigegeben hat. Operas README trägt den
+Experimentell-Vermerk weiterhin — es ist also nicht „das reifere", sondern
+**das, an dem gearbeitet wird**.
+
+Operas Plugin nennt ausdrücklich, was dieser Abschnitt braucht:
+„Client-side encryption of both backups **and** WAL archives",
+`encryption: aes-256-cbc` mit `encryptionKey` aus einem Secret, CNPG ab 1.25.
+
+Keines von beiden nennt sich produktionsreif. Die Wahl bleibt darum eine
+Bauzeit-Entscheidung; das Kriterium ist nicht die Versionsnummer (0.0.3 gegen
+0.8.0 ist eher Zählweise als Reife), sondern **ob zum Zeitpunkt des Baus noch
+jemand daran arbeitet**. Dieselbe Tabelle neu erheben, nicht diese lesen.
+
+#### Eine Warnung für die nächste Pflegeprüfung
+
+Zu **pgBackRest selbst** zirkulieren Artikel, die behaupten, das Projekt sei
+archiviert bzw. werde nicht mehr gepflegt. **Das ist falsch**, am 2026-10-03
+gegen die GitHub-API geprüft: `archived: false`, letzter Push am 02.10.2026,
+24 Commits in den letzten 30 Tagen, drei Freigaben in drei Monaten (2.59.0 im
+Juli, 2.59.1 im August, 2.59.2 am 27.09.).
+
+Wer die Pflege das nächste Mal prüft, wird über dieselben Seiten stolpern.
+Sie sind ein Beispiel für genau das, wogegen §10.7 die Pflegeprüfung
+verlangt: eine Behauptung über Pflege ist gegen das Repository zu prüfen,
+nicht gegen eine Überschrift.
 
 #### Warum das keine Abwägung ist
 
@@ -1168,6 +1231,20 @@ Stellen — statt verschlüsselter Blobs neben einer unverschlüsselten Datenban
 
 **Getrennte Schlüssel für Blobs und Backups, gleicher Tresor.** Unterschiedliche
 Schadensreichweite, also nicht derselbe Schlüssel.
+
+#### Der Preis der clientseitigen Verschlüsselung
+
+Er gehört dazugesagt, weil er aus derselben Familie ist wie alles in diesem
+Entwurf: **wer die Passphrase verliert, verliert die Backups, endgültig.** Bei
+serverseitiger Verschlüsselung hält der Anbieter den Schlüssel und kann im
+Zweifel helfen; hier kann es niemand. Daraus folgen zwei Vorgaben:
+
+- Die Passphrase muss **vor dem ersten Backup** stehen. Ein Wechsel später ist
+  eine Operation über das ganze Repository, nicht ein Konfigurationseintrag.
+- Sie braucht dieselbe Sorgfalt wie die Daten selbst: im Tresor, mit einem
+  dokumentierten Wiederherstellungsweg, und geprüft — ein Schlüssel, mit dem
+  nie ein Restore versucht wurde, ist so wenig ein Schlüssel wie ein
+  ungeprüfter Restore ein Backup ist.
 
 #### Der verbleibende Einwand und seine Antwort
 
