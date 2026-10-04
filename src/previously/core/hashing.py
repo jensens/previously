@@ -26,19 +26,40 @@ from typing import Protocol
 from typing import TYPE_CHECKING
 
 import hashlib
+import secrets
 
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from collections.abc import Sequence
 
-HASH_VERSION = 1
+# Two formats stand side by side ({ref}`hash-version-2`). Version 1 is what
+# every event written before stage 1c carries, and it stays verifiable for
+# good; version 2 is the one new events are meant to be written in. The check
+# must compute the version a row was written in and no other, so the row has
+# to name it; until it can, every row is version 1, because nothing calls the
+# version 2 functions yet.
+HASH_VERSION_1 = 1
+HASH_VERSION_2 = 2
+# The version new events are meant to be written in. Nothing reads this name
+# in order to verify.
+HASH_VERSION = HASH_VERSION_2
 HASH_DOMAIN = "previously/event"
 
 # An own range identifier for the units, for the same reason `HASH_DOMAIN`
 # exists: a units digest must not be able to pass as an event digest, not even
 # by accident and not through a future caller who mixes up the two.
 UNITS_DOMAIN = "previously/units"
+
+# Version 2 hashes the payload and each unit under a range of its own, for the
+# reason the two above exist: no digest may pass for one of another kind.
+PAYLOAD_DOMAIN = "previously/payload"
+UNIT_DOMAIN = "previously/unit"
+
+# 32 random bytes go into every version 2 digest over content, and they are
+# erased together with that content ({ref}`hash-version-2`): a digest that
+# stays behind must not let anybody guess what it was computed from.
+SALT_BYTES = 32
 
 
 def iso_utc(moment: datetime) -> str:
@@ -100,7 +121,7 @@ def units_hash(units: Sequence[HashableUnit]) -> bytes:
     unattested.
     """
     header: Mapping[str, object] = {
-        "v": HASH_VERSION,
+        "v": HASH_VERSION_1,
         "domain": UNITS_DOMAIN,
         "units": [
             {
@@ -139,7 +160,109 @@ def event_hash(
     `null`.
     """
     header: Mapping[str, object] = {
-        "v": HASH_VERSION,
+        "v": HASH_VERSION_1,
+        "domain": HASH_DOMAIN,
+        "id": event_id,
+        "kind": kind,
+        "recorded_at": iso_utc(recorded_at),
+        "occurred_at": iso_utc(occurred_at),
+        "prev": prev_hash.hex() if prev_hash is not None else None,
+        "payload": payload_digest.hex(),
+        "units": units_digest.hex(),
+        "source": source,
+        "external_id": external_id,
+    }
+    return hashlib.sha256(canonical(header)).digest()
+
+
+def new_salt() -> bytes:
+    """A fresh salt out of the operating system's random source.
+
+    `secrets` and not `random`: the salt is all that stands between a digest
+    left behind by an erasure and whoever tries candidates against it.
+    """
+    return secrets.token_bytes(SALT_BYTES)
+
+
+def payload_hash_v2(payload: Mapping[str, object], salt: bytes) -> bytes:
+    """The payload digest of version 2: version, range and salt around the
+    payload, where version 1 hashed the payload and nothing else."""
+    header: Mapping[str, object] = {
+        "v": HASH_VERSION_2,
+        "domain": PAYLOAD_DOMAIN,
+        "salt": salt.hex(),
+        "payload": payload,
+    }
+    return hashlib.sha256(canonical(header)).digest()
+
+
+def unit_digest(
+    *,
+    seq: int,
+    content: str,
+    start_ms: int | None,
+    end_ms: int | None,
+    speaker: str | None,
+    salt: bytes,
+) -> bytes:
+    """The digest of one unit, the piece version 1 does not have.
+
+    Keyword arguments and no protocol like `HashableUnit`: a stored unit may
+    have lost its content to an erasure, and such a unit has nothing to
+    compute a digest from. The caller settles that before it calls, and the
+    type of `content` says so.
+    """
+    header: Mapping[str, object] = {
+        "v": HASH_VERSION_2,
+        "domain": UNIT_DOMAIN,
+        "salt": salt.hex(),
+        "seq": seq,
+        "content": content,
+        "start_ms": start_ms,
+        "end_ms": end_ms,
+        "speaker": speaker,
+    }
+    return hashlib.sha256(canonical(header)).digest()
+
+
+def units_hash_v2(digests: Mapping[int, bytes]) -> bytes:
+    """The units digest of version 2: over the unit digests, not the contents.
+
+    That is what lets one unit be erased while the others stay attested: the
+    erased unit keeps its digest, so this digest can still be computed.
+
+    A mapping from `seq` to digest, sorted here for the reason `units_hash`
+    sorts: the order goes into the hash. `seq` is not repeated in the list,
+    because every unit digest already covers its own.
+    """
+    header: Mapping[str, object] = {
+        "v": HASH_VERSION_2,
+        "domain": UNITS_DOMAIN,
+        "units": [digests[seq].hex() for seq in sorted(digests)],
+    }
+    return hashlib.sha256(canonical(header)).digest()
+
+
+def event_hash_v2(
+    *,
+    event_id: int,
+    kind: str,
+    recorded_at: datetime,
+    occurred_at: datetime,
+    prev_hash: bytes | None,
+    payload_digest: bytes,
+    units_digest: bytes,
+    source: str | None,
+    external_id: str | None,
+) -> bytes:
+    """The event hash of version 2: the fields of `event_hash`, under `"v": 2`.
+
+    A function of its own and not a `version` parameter on `event_hash`, so
+    that the version 1 function and its pinned vector stay untouched, and so
+    that no caller gets version 1 by leaving an argument out.
+    """
+    header: Mapping[str, object] = {
+        "v": HASH_VERSION_2,
         "domain": HASH_DOMAIN,
         "id": event_id,
         "kind": kind,

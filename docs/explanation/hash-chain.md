@@ -4,6 +4,7 @@
 
 Previously computes three SHA-256 digests for every event: one over the payload, one over the units, and one over the event's own fields.
 That third digest names the predecessor's hash, and the naming is the chain.
+Version 2 of the hash format adds one digest per unit, and {ref}`hash-version-2` says why.
 {ref}`hash-format` lists which fields go into each digest.
 This page explains why those fields and not others, and where the chain's promise ends.
 
@@ -42,6 +43,7 @@ The cost of adding it afterward would be the whole chain.
 The same seam stays open for the units, although stage 1a has no erasure of units and therefore no skip for them either.
 `unit.content` is `NOT NULL` today, because skip logic for a behavior that doesn't exist is dead code.
 Opening the seam later takes `ALTER COLUMN content DROP NOT NULL` and the same skip that `payload IS NULL` already gets, and it breaks nothing: no existing row and no existing hash changes.
+In version 1 of the hash format that seam opens only for all units of an event at once, because one digest covers all their texts; {ref}`hash-version-2` explains why version 2 gives every unit a digest of its own.
 
 :::{important}
 The seam has a price, and whoever uses it should know the price.
@@ -170,6 +172,7 @@ Three smaller decisions follow from the same reasoning.
 
 The digest runs over the whole set of units and not over each unit on its own.
 A deleted unit is the forgery that no entry-by-entry comparison finds, since whatever is gone can't be checked against itself.
+Version 2 adds a digest per unit and keeps this one over the whole set, now taken over the unit digests.
 
 The set enters the digest sorted by `seq`, and the sorting belongs to `units_hash` rather than to its caller.
 The order goes into the hash, so the order has to be fixed somewhere; and if it weren't fixed in one single place, `append` would hash a connector's arbitrary order while the check hashes `seq` order, and every event would fail.
@@ -227,7 +230,7 @@ Whoever drops the unique constraint without reading this far appears to loosen a
 
 ## Separating the domains
 
-Both of the wrapped digests carry a version and a domain of their own, and {ref}`hash-format` holds both pairs.
+Every wrapped digest carries a version and a domain of its own, two digests in version 1 and all four in version 2, and {ref}`hash-format` holds every pair.
 The pair keeps a digest from another context out.
 A units digest, in particular, must never be able to count as an event digest, which is why the units get a domain of their own rather than riding along in the event's.
 
@@ -246,8 +249,54 @@ There a retrofit was impossible, because the hashes themselves would have had to
 A column with a default invents no statement; it writes down a statement that already holds.
 
 Hence no column today.
-It would have exactly one possible value, and a column that distinguishes nothing is readiness cost without readiness benefit.
-`HASH_VERSION` stays 1 for the same kind of reason: version 1 was never written to a production database, so version 1 is still being defined here, not departed from.
+It would have exactly one possible value, because nothing writes any other version yet, and a column that distinguishes nothing is readiness cost without readiness benefit.
+
+The corrections of stage 1a, among them the widening above, went into version 1 rather than into a version 2.
+That was right at the time: none of it had reached `main` yet, so version 1 was still being defined, not departed from.
+Stage 1a reached `main` on 2026-10-03, and from then on version 1 is a format that a log outside this repository may hold.
+Redefining it would make every such row fail the check while nothing about the row had changed, and it would turn the pinned vector of version 1 into a recomputed one.
+So the next change of format became a version of its own, and the next section says why there had to be one.
+
+(hash-version-2)=
+
+## Version 2, with a digest per unit and a salt
+
+Version 2 changes two things about the digests over content, and both exist for erasure.
+{ref}`hash-format` lists the fields of each version 2 digest.
+
+The first change is a digest per unit.
+In version 1 the content of every unit of an event goes into one hash: `units_hash` runs over one canonical object that holds each unit together with its text.
+Take the text of one unit away and that hash can't be computed any more.
+The other units of the event would still be readable, and nothing would attest them.
+In version 2 every unit gets a digest of its own, and the units hash runs over those digests rather than over the texts.
+An erased unit keeps its digest, so the hash over the digests stays computable, and the units that remain stay attested.
+The property from earlier on this page survives the change: the units hash still covers the whole set, so a deleted unit still breaks it.
+
+The second change is a salt.
+An erasure leaves the digests standing, because the chain depends on them.
+But a digest over short content can be searched.
+Measured on 2026-10-04 with `docs/superpowers/plans/2026-10-04-stufe-1c-anlagen/measure_guessing.py`, on one core in plain Python: a unit made of a phone number with seven unknown digits came back from its unsalted digest after 1,234,568 candidates in 0.76 to 0.79 seconds, about 1.6 million candidates per second, over four runs.
+Short content is exactly what gets erased: a name, a number, one sentence.
+An erasure that leaves its content guessable from what stays behind isn't an erasure.
+
+A salt is 32 random bytes that go into the digest, and the salt is meant to be erased together with the content.
+As long as the content stands, the salt stands beside it, and the check has both halves of the input.
+Once both are gone, whoever tries candidates against the digest is missing half of what went into it.
+A salt needs no attestation of its own: it's an input of the digest, and a forged salt breaks the digest like forged content would.
+The payload gets the same treatment, a salt and a domain of its own, where version 1 hashed the payload and nothing else.
+
+Neither change can be retrofitted.
+A digest without a salt stays one for good, and so does a units hash over texts.
+Giving an old event a salt or a per-unit digest would mean computing its hashes again, and computing the hashes again means rewriting the chain, the one thing the log must never be able to do.
+That's why version 1 stays verifiable for good instead of being converted.
+
+Version 1 keeps a cost, and an event written in it carries that cost for as long as it exists.
+Its units are attested only together, so it can only be erased as a whole.
+And its digests carry no salt, so whatever content it held stays guessable from them.
+
+What this section describes is the format, and the format is built for an erasure that doesn't exist yet.
+At this point nothing writes version 2, and nothing erases anything.
+The salt protects content only once an erasure takes the salt away along with the content; until then, it's an input like any other.
 
 ## Counting the rows the check has seen
 

@@ -10,9 +10,15 @@ from previously.contract.rows import UnitRow
 from previously.contract.types import RawUnit
 from previously.core.errors import InvalidPayload
 from previously.core.hashing import event_hash
+from previously.core.hashing import event_hash_v2
 from previously.core.hashing import iso_utc
+from previously.core.hashing import new_salt
 from previously.core.hashing import payload_hash
+from previously.core.hashing import payload_hash_v2
+from previously.core.hashing import SALT_BYTES
+from previously.core.hashing import unit_digest
 from previously.core.hashing import units_hash
+from previously.core.hashing import units_hash_v2
 
 import hashlib
 import pytest
@@ -223,9 +229,10 @@ def test_units_hash_treats_rawunit_and_unitrow_alike() -> None:
 # the hash range changes unintentionally in the future — an additional field in
 # the hash, a different key sorting, a different form of timestamp, a different
 # escaping for "ä" — and is therewith the actual proof for acceptance
-# condition 5. Should the hash range change **deliberately**, `HASH_VERSION`
-# belongs raised and this vector recomputed; both then come to notice
-# together.
+# condition 5. A **deliberate** change of the hash range does not recompute
+# this vector: it gets a version of its own and a second vector beside this
+# one, the way version 2 below did. This vector stays as long as events of
+# version 1 can exist, which is for good, because nothing rewrites them.
 #
 # The input strings below are German and stay that way: they go **into** the
 # hash, and the hex literals next to them were computed from exactly these
@@ -292,3 +299,210 @@ def test_vector_event_hash() -> None:
     )
     assert computed.hex() == VECTOR_EVENT_HEX
     assert computed == hashlib.sha256(JCS_EVENT.encode("utf-8")).digest()
+
+
+# ---------------------------------------------------------------------------
+# Version 2 ({ref}`hash-version-2`): a digest per unit, and a salt in every
+# digest over content.
+#
+# A second vector beside the first, not instead of it. The inputs are the
+# same German strings, for the same reason they stay German above, plus three
+# fixed salts. The hex literals were computed on 2026-10-04 from the canonical
+# strings below with `hashlib` alone, before the functions under test existed,
+# so they are a figure the implementation has to meet and not one it produced.
+# ---------------------------------------------------------------------------
+
+V2_PAYLOAD_SALT = bytes(range(64, 96))
+V2_UNIT_SALTS = (bytes(range(96, 128)), bytes(range(128, 160)))
+
+V2_PAYLOAD_HEX = "5342ceb35fbc3d8dedddfa72adbc75380347a7179aad95cdb201cbc51d6c0c39"
+V2_UNIT_HEX = (
+    "a86bc83e609f7686c3697f011e0792f8c52b3e5dab0553bc2551b6e5964f836f",
+    "83d20dfe310bb300e408dfb8eb62c6176dc2806d562e3af70581f4c1ee413d34",
+)
+V2_UNITS_HEX = "af0a6ca8f38722aed8e2c801a6753cb620515ca5918364b70f1077fa06c6fc49"
+V2_UNITS_EMPTY_HEX = "12360633d51803183369cb1eb37230e63427af0800125eb7a38af155dd1cd3d9"
+V2_EVENT_HEX = "649d57e7656dc7a62c02e35fb75d30b0212b100ec20ce9dde7e1e34b5339e484"
+
+JCS_V2_PAYLOAD = (
+    '{"domain":"previously/payload",'
+    '"payload":{"evidence":"verbatim","text":"Preis bleibt 1000 Euro."},'
+    f'"salt":"{V2_PAYLOAD_SALT.hex()}","v":2}}'
+)
+JCS_V2_UNITS = (
+    '{"content":"Preis bleibt 1000 Euro.","domain":"previously/unit","end_ms":null,'
+    f'"salt":"{V2_UNIT_SALTS[0].hex()}","seq":1,"speaker":null,"start_ms":null,"v":2}}',
+    '{"content":"Bitte bestätigen.","domain":"previously/unit","end_ms":2500,'
+    f'"salt":"{V2_UNIT_SALTS[1].hex()}","seq":2,"speaker":"Anna","start_ms":1500,"v":2}}',
+)
+JCS_V2_UNITS_HASH = (
+    f'{{"domain":"previously/units","units":["{V2_UNIT_HEX[0]}","{V2_UNIT_HEX[1]}"],"v":2}}'
+)
+JCS_V2_EVENT = (
+    '{"domain":"previously/event","external_id":"nachricht-1","id":42,'
+    '"kind":"observation","occurred_at":"2026-10-01T09:00:00.000000Z",'
+    f'"payload":"{V2_PAYLOAD_HEX}",'
+    f'"prev":"{VECTOR_PREV.hex()}",'
+    '"recorded_at":"2026-10-02T14:23:45.123456Z","source":"email",'
+    f'"units":"{V2_UNITS_HEX}","v":2}}'
+)
+
+
+def _v2_unit_digests() -> dict[int, bytes]:
+    return {
+        unit.seq: unit_digest(
+            seq=unit.seq,
+            content=unit.content,
+            start_ms=unit.start_ms,
+            end_ms=unit.end_ms,
+            speaker=unit.speaker,
+            salt=salt,
+        )
+        for unit, salt in zip(VECTOR_UNITS, V2_UNIT_SALTS, strict=True)
+    }
+
+
+def test_v2_vector_payload_hash() -> None:
+    computed = payload_hash_v2(VECTOR_PAYLOAD, V2_PAYLOAD_SALT)
+    assert computed.hex() == V2_PAYLOAD_HEX
+    assert computed == hashlib.sha256(JCS_V2_PAYLOAD.encode("utf-8")).digest()
+
+
+def test_v2_vector_unit_digests() -> None:
+    digests = _v2_unit_digests()
+    assert (digests[1].hex(), digests[2].hex()) == V2_UNIT_HEX
+    for seq, canonical_text in zip((1, 2), JCS_V2_UNITS, strict=True):
+        assert digests[seq] == hashlib.sha256(canonical_text.encode("utf-8")).digest()
+
+
+def test_v2_vector_units_hash() -> None:
+    computed = units_hash_v2(_v2_unit_digests())
+    assert computed.hex() == V2_UNITS_HEX
+    assert computed == hashlib.sha256(JCS_V2_UNITS_HASH.encode("utf-8")).digest()
+
+
+def test_v2_vector_event_hash() -> None:
+    computed = event_hash_v2(
+        event_id=42,
+        kind="observation",
+        recorded_at=VECTOR_RECORDED,
+        occurred_at=VECTOR_OCCURRED,
+        prev_hash=VECTOR_PREV,
+        payload_digest=payload_hash_v2(VECTOR_PAYLOAD, V2_PAYLOAD_SALT),
+        units_digest=units_hash_v2(_v2_unit_digests()),
+        source="email",
+        external_id="nachricht-1",
+    )
+    assert computed.hex() == V2_EVENT_HEX
+    assert computed == hashlib.sha256(JCS_V2_EVENT.encode("utf-8")).digest()
+
+
+def test_v2_units_hash_of_an_event_without_units() -> None:
+    """An action carries no units, and its digest is still one fixed value."""
+    assert units_hash_v2({}).hex() == V2_UNITS_EMPTY_HEX
+
+
+def test_units_hash_v2_sorts_by_seq_itself() -> None:
+    digests = _v2_unit_digests()
+    assert units_hash_v2({2: digests[2], 1: digests[1]}) == units_hash_v2(digests)
+
+
+def test_units_hash_v2_notices_a_missing_and_a_swapped_unit() -> None:
+    digests = _v2_unit_digests()
+    assert units_hash_v2({1: digests[1]}) != units_hash_v2(digests)
+    assert units_hash_v2({1: digests[2], 2: digests[1]}) != units_hash_v2(digests)
+
+
+def test_the_salt_alone_changes_a_digest() -> None:
+    """The same content under two salts gives two digests: that is what makes
+    a digest left behind by an erasure useless to whoever knows a candidate
+    for the content but not the salt."""
+    other = bytes(SALT_BYTES)
+    assert payload_hash_v2(VECTOR_PAYLOAD, other) != payload_hash_v2(
+        VECTOR_PAYLOAD, V2_PAYLOAD_SALT
+    )
+    unit = VECTOR_UNITS[0]
+    assert (
+        unit_digest(
+            seq=unit.seq,
+            content=unit.content,
+            start_ms=unit.start_ms,
+            end_ms=unit.end_ms,
+            speaker=unit.speaker,
+            salt=other,
+        )
+        != _v2_unit_digests()[1]
+    )
+
+
+@pytest.mark.parametrize(
+    "changed",
+    [
+        RawUnit(seq=3, content="a", start_ms=1, end_ms=2, speaker="A"),
+        RawUnit(seq=2, content="b", start_ms=1, end_ms=2, speaker="A"),
+        RawUnit(seq=2, content="a", start_ms=None, end_ms=2, speaker="A"),
+        RawUnit(seq=2, content="a", start_ms=1, end_ms=3, speaker="A"),
+        RawUnit(seq=2, content="a", start_ms=1, end_ms=2, speaker=None),
+    ],
+)
+def test_unit_digest_depends_on_every_field(changed: RawUnit) -> None:
+    def digest(unit: RawUnit) -> bytes:
+        return unit_digest(
+            seq=unit.seq,
+            content=unit.content,
+            start_ms=unit.start_ms,
+            end_ms=unit.end_ms,
+            speaker=unit.speaker,
+            salt=V2_UNIT_SALTS[0],
+        )
+
+    base = RawUnit(seq=2, content="a", start_ms=1, end_ms=2, speaker="A")
+    assert digest(changed) != digest(base)
+
+
+def test_version_1_and_version_2_never_agree() -> None:
+    """The same fields under both versions: `v` stands in the hashed header,
+    so a row cannot be passed off under the other version."""
+    first = event_hash(
+        event_id=42,
+        kind="observation",
+        recorded_at=VECTOR_RECORDED,
+        occurred_at=VECTOR_OCCURRED,
+        prev_hash=VECTOR_PREV,
+        payload_digest=DIGEST,
+        units_digest=UNITS_DIGEST,
+        source="email",
+        external_id="nachricht-1",
+    )
+    second = event_hash_v2(
+        event_id=42,
+        kind="observation",
+        recorded_at=VECTOR_RECORDED,
+        occurred_at=VECTOR_OCCURRED,
+        prev_hash=VECTOR_PREV,
+        payload_digest=DIGEST,
+        units_digest=UNITS_DIGEST,
+        source="email",
+        external_id="nachricht-1",
+    )
+    assert first != second
+
+
+def test_new_salt_has_the_declared_length_and_does_not_repeat() -> None:
+    first, second = new_salt(), new_salt()
+    assert len(first) == SALT_BYTES == 32
+    assert first != second
+
+
+def test_version_2_rejects_what_the_canonical_form_rejects() -> None:
+    with pytest.raises(InvalidPayload):
+        unit_digest(
+            seq=1,
+            content="a\x00b",
+            start_ms=None,
+            end_ms=None,
+            speaker=None,
+            salt=bytes(SALT_BYTES),
+        )
+    with pytest.raises(InvalidPayload):
+        payload_hash_v2({"Text": "x"}, bytes(SALT_BYTES))
