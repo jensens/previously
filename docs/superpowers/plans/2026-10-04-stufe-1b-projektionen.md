@@ -1793,6 +1793,11 @@ def catch_up[Conn](
     part — a transaction with id 41 can commit after one with id 42, and a
     worker that has seen 42 loses 41 for good.
     """
+    if batch_size < 1:
+        # A caller error, named as one. `LIMIT 0` would return an empty read
+        # and the loop below would report a gap in the log that is not there.
+        raise ValueError(f"batch_size must be at least 1, got {batch_size}")
+
     rebuilt_from: int | None = None
     with store.begin() as conn:
         state = store.projection_state(conn, projection.name)
@@ -1811,11 +1816,19 @@ def catch_up[Conn](
             if tip is None or tip.id <= state.up_to_id:
                 break
             events = tuple(log.read(conn, from_id=state.up_to_id + 1, limit=batch_size))
-            if not events:
-                raise ProjectionGap(
-                    f"no event above id {state.up_to_id} although the tip is {tip.id}"
-                )
             ids = [event.id for event in events]
+            # The log has no gaps ({ref}`hash-chain`), so the batch has to be
+            # exactly the next `len(ids)` identifiers. Checking only "not
+            # empty" was measured insufficient on 2026-10-04: with id 5 deleted
+            # by hand and `up_to_id` at 4, `read(from_id=5)` returns 6..10, and
+            # a worker that only checks for emptiness projects them and sets
+            # `up_to_id = 10` — the silent loss this error exists to refuse.
+            expected = list(range(state.up_to_id + 1, state.up_to_id + 1 + len(ids)))
+            if ids != expected:
+                raise ProjectionGap(
+                    f"expected events {expected[:1]}.. above id {state.up_to_id}, "
+                    f"read {ids[:3]}{'…' if len(ids) > 3 else ''}; the tip is {tip.id}"
+                )
             batch = Batch(
                 events=events,
                 units=log.units_by_event(conn, ids),
