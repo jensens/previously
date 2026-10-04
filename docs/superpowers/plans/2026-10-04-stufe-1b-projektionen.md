@@ -2065,6 +2065,8 @@ MSG
 **Files:**
 - Modify: `src/previously/cli.py`, `tests/test_cli.py`, `docs/reference/cli.md`, `docs/explanation/projections.md`
 
+> **Nachtrag 2026-10-04 (Ruling T6-a bis T6-c, nach der Umsetzung):** dazu kamen `pyproject.toml` und `tests/test_docs_references.py` — beide nannten „thirteen" `print`-Aufrufe in `cli.py`, und die drei Kommandos machen daraus neunzehn (gemessen mit `ruff check --select T201 --config 'lint.per-file-ignores = {}' src/previously/cli.py`, vom Umsetzer und vom Controller unabhängig). Eine Zahl, die der eigene Commit falsch macht, zieht man im selben Commit nach. Und das Tutorial, aber nur sein Testblock (232).
+
 **Interfaces:**
 - Consumes: `PROJECTIONS`, `catch_up`, `Outcome`, `PostgresStorage.{read_chronicle, read_source_stats, projection_state, tip}`, `parse_moment`.
 - Produces: drei Unterkommandos; Hilfsfunktionen `_escape(text) -> str`, `_plural(n, noun) -> str`, `_describe(outcome) -> str`; der Dispatch in `main` als Tabelle statt `if`-Kette.
@@ -2235,6 +2237,8 @@ def test_stats_prints_one_line_per_source(
 
 Die Funktion heißt `escape_field` und nicht `_escape`, weil `CLAUDE.md` es so verlangt: wer eine Funktion direkt testet, gibt ihr einen öffentlichen Namen statt `reportPrivateUsage` zu unterdrücken. Und kein `# noqa` an den Import — `PL`-Regeln sind in `pyproject.toml` nicht ausgewählt, ein `noqa` dafür wäre `RUF100`.
 
+> **Nachtrag 2026-10-04 (Ruling T6-b):** zwei der neun Tests heißen im Baum anders und prüfen je eine Zusage mehr, weil `cli.md` zwei Formate zusagte, die kein Test erzeugte. `test_project_on_an_empty_log_is_up_to_date_at_zero` → `…_but_still_names_a_rebuild`: setzt `projection_state.version = 2` und erwartet `rebuilt: version 2 -> 1, 0 events, up_to_id 0` — die einzige Lage, in der die Reihenfolge aus Ruling P-1 (Versionswechsel vor Leerlauf) überhaupt messbar ist. `test_chronicle_reports_the_lag_on_stderr_and_only_there` → `test_both_reading_commands_report_the_lag_on_stderr_and_only_there`: prüft `stats` daneben und zieht die beiden Lesezeichen per SQL auseinander, weil nur dann das falsche Lesezeichen eine andere Zahl liefert — die Mutation „`stats` liest das Lesezeichen von `chronicle`" überlebte sonst. `test_project_says_which_path_it_took` bekam `rebuilt: version 2 -> 1, 2 events, up_to_id 2` als vierten Lauf. Neun Tests, 232.
+
 - [ ] **Schritt 2: Laufen lassen — rot**
 
 Run: `uv run pytest tests/test_cli.py -v -k "escape or project or chronicle or stats"`
@@ -2385,6 +2389,8 @@ In `main`, die Parser:
 ```
 
 Der Dispatch — **Tabelle statt `if`-Kette**, und der Grund steht schon in der Datei: `main` hat `C901` einmal gerissen (13 gegen 10). Sieben `if` plus `try/except` säßen genau auf der Schwelle.
+
+> **Korrektur 2026-10-04 (Ruling T6-a):** der letzte Satz ist falsch. Gemessen vom Umsetzer mit `ruff check --select C901 --config 'lint.mccabe.max-complexity = N' src/previously/cli.py`: die Kette brächte `main` auf **9** bei Schwelle 10, die Tabelle auf 2 — die Kette wäre grün durchgekommen, einen Zweig unter der Schwelle. Die Tabelle bleibt, aber als Abstandsargument (2 statt 9), nicht als abgewendete Torverletzung; Kommentar und Commit-Botschaft sagen die Messung. Die 13 aus der Vorgeschichte stammt aus einer Fassung, die es im Baum nicht mehr gibt, und wurde nicht neu gemessen. Ein Plan, der eine Komplexitätszahl behauptet, ohne sie gemessen zu haben, macht denselben Fehler, den `CLAUDE.md` unter *A comment is a claim* beschreibt.
 
 ```python
     commands: dict[str, Callable[[argparse.Namespace], int]] = {
@@ -2585,6 +2591,43 @@ the test run is retyped last at 232.
 
 Assisted-By: Claude <Modell> <noreply@anthropic.com>
 MSG
+```
+
+---
+
+## Nach Aufgabe 8: Das Ausführungsprotokoll wird eingecheckt
+
+> **Nachtrag 2026-10-04 (Ruling T6-c).** Der Plan hatte diesen Schritt nicht. Der Umsetzer von Aufgabe 6 fand, dass `ruling P-1` in einem Test-Docstring auf ein Hauptbuch zeigt, das `.gitignore` ausschließt — dieselbe Lücke, die der Doku-Plan am 2026-10-04 für seine sechzehn Ruling-Zitate geschlossen hat, und die `CLAUDE.md` seit demselben Tag als Regel führt: *A ruling citation is provenance* — und das Hauptbuch liegt unter `docs/superpowers/sdd/`.
+
+**Reihenfolge:** nach der Endprüfung und ihrer Fixwelle, **vor** dem Löschen des Arbeitsverzeichnisses und vor `finishing-a-development-branch`. Erst dann steht im Hauptbuch auch die Endprüfung.
+
+- [ ] **Schritt 1: Kopieren**
+
+```bash
+mkdir -p docs/superpowers/sdd/2026-10-04-stufe-1b-projektionen
+cp .superpowers/sdd/2026-10-04-stufe-1b-projektionen/*.md docs/superpowers/sdd/2026-10-04-stufe-1b-projektionen/
+```
+
+Die `review-*.diff`-Pakete **nicht** — sie sind aus `git diff` jederzeit rekonstruierbar und würden das Repository um Megabytes an Duplikaten wachsen lassen. Alles andere **unverändert**: Aufträge, Berichte, Prüfungen, das Hauptbuch. Eine Arbeitsaufzeichnung, die beim Einchecken glattgezogen wird, ist keine mehr.
+
+- [ ] **Schritt 2: `index.md`**
+
+Nach dem Muster von `docs/superpowers/sdd/2026-10-03-dokumentation/index.md`: der eingefrorene Kopf (Stand = Datum des Commits), ein Absatz, welcher Plan ausgeführt wurde und was im Verzeichnis liegt, ein Abschnitt *Warum das hier liegt* mit den Ruling-Zitaten aus `src/` und `tests/` dieser Stufe — die Zahl **gezählt**, mit dem Kommando daneben:
+
+```bash
+grep -rnoE 'ruling (P|T[0-9]+)-[a-z0-9]+' src tests | sort -u
+```
+
+Und ein Satz, der ehrlich sagt, was fehlt: die Prüfberichte der Aufgaben 1 bis 5 liegen nicht als eigene Dateien vor, sondern als Befundlisten im Hauptbuch; ab Aufgabe 6 gibt es sie als `task-N-review.md`.
+
+- [ ] **Schritt 3: Tore, Commit**
+
+`conf.py` schließt `superpowers/**` aus, der `vale`-Lauf liest nur die vier Quadranten, `test_docs_references.py` nur `*.py` — die sechs Tore sehen das Verzeichnis nicht; trotzdem laufen lassen, einzeln, mit Ausgabe. Eigener Commit, Trailer `Assisted-By:` mit dem Modell des Controllers:
+
+```
+docs: ship the execution record of the stage 1b plan
+
+<Zahl> ruling citations in src/ and tests/ point at this ledger …
 ```
 
 ---
