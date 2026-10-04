@@ -426,6 +426,29 @@ Bei `p_chronicle` ist dieser Unterschied nicht herstellbar — jede Zeile steht
 für sich, nichts wird zusammengerechnet. **Darum eine Aggregation als zweite
 Projektion**: sie ist der Teil, an dem die Zusage wirklich geprüft wird.
 
+> **Korrigiert beim Umsetzen, 2026-10-04 (Aufgabe 5, gemessen).** Der
+> Vergleich inkrementell gegen neu gebaut kann einen Fehler in der
+> Zusammenführungs-Arithmetik (`merge`) **nicht** fangen. `merge` liegt auf
+> beiden Wegen: der Neubau faltet den Stapel über dieselbe Funktion, die der
+> inkrementelle Weg zum Mischen mit der gespeicherten Zeile benutzt. Eine
+> falsche Arithmetik rechnet auf beiden Wegen gleich falsch, und der
+> Vergleich ist grün. Gemessen: die Nie-Nachziehen-Mutation lässt
+> `incremental == rebuilt` bestehen; rot wird nur die festgenagelte
+> Zusicherung `first_seen == NOW − 5 Tage` daneben im selben Test. Was der
+> Vergleich — und die Hypothesis-Eigenschaft — fängt, ist der
+> **Ein-Weg-Fehler**: ein Fehler, den nur der inkrementelle Weg macht. Die
+> falsche gespeicherte Zeile zum Mischen, eine verschobene Stapelgrenze, ein
+> übersprungenes Event. Gemessen: `write` mischt mit `None` statt der
+> gespeicherten Zeile → Vergleich **und** Eigenschaft rot, alle reinen Tests
+> grün. Die Zusage „ableitbar und wegwerfbar" hält also durch **drei
+> Schichten**, nicht durch den Vergleich allein: die reinen `merge`-Tests
+> (Aufgabe 4) fangen die Arithmetik, die festgenagelte Zusicherung fängt sie
+> Ende-zu-Ende, der Vergleich fängt die Buchführung des inkrementellen Wegs.
+> Der Abschnitt oben sagt „nur der Vergleich fängt den falschen
+> inkrementellen Schritt" — richtig für die Buchführung, falsch für die
+> Arithmetik. Die Explanation-Seite trägt die drei Schichten mit ihren
+> Messungen.
+
 ### 5.3 Die Eigenschaft
 
 Eine Hypothesis-Eigenschaft über zufällige Verschränkungen: eine Folge aus
