@@ -278,7 +278,10 @@ The forgery needs some other, unused `prev_hash`.
 A test that reaches for `NULL` is testing the index, not the check.
 
 Two further properties of the check come from the same instinct of not trusting its own field of view.
-It runs in one transaction over the whole chain, because event, units and source attribution have to see one snapshot: read across several transactions, the report would be a statement about several points in time and none about the chain, and a forgery could travel between two reads and look consistent in each of them.
+It reads the whole chain in one snapshot, because event, units, source attribution and the count have to see one state: read across several points in time, the report would be a statement about several states and none about the chain, and a forgery could travel between two reads and look consistent in each of them.
+One transaction alone doesn't give that.
+Under the `READ COMMITTED` the rest of the store runs at, every statement sees a snapshot of its own, and an append that committed between the last read and the count made the check report rows it hadn't reached: 27 of 539 runs did, measured with appends running alongside.
+So the check reads in a read-only `REPEATABLE READ` transaction, which keeps the snapshot of its first statement to the end; {ref}`concurrency` explains why that leaves the appending procedure alone.
 And a payload that resists canonicalization produces a finding rather than an exception.
 The check used to raise there, so a single poisoned row blinded the check of the entire chain, which inverts what an integrity check is for: whoever can forge one row could have hidden every later forgery behind it.
 

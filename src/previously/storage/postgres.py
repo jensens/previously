@@ -53,6 +53,7 @@ if TYPE_CHECKING:
     from collections.abc import Generator
     from collections.abc import Iterator
     from collections.abc import Sequence
+    from contextlib import AbstractContextManager
     from datetime import datetime
     from sqlalchemy import Table
 
@@ -96,15 +97,44 @@ class PostgresStorage:
         # unique indexes serialising. Under SERIALIZABLE a serialisation error
         # would come instead — a different class of error.
         self._engine = engine.execution_options(isolation_level="READ COMMITTED")
+        # The chain check reads here instead, see `snapshot`.
+        self._snapshot_engine = engine.execution_options(
+            isolation_level="REPEATABLE READ", postgresql_readonly=True
+        )
+
+    def begin(self) -> AbstractContextManager[Connection]:
+        """A connection with a transaction at READ COMMITTED, for writing and
+        for every read that does not need one state across its statements."""
+        return self._transaction(self._engine)
+
+    def snapshot(self) -> AbstractContextManager[Connection]:
+        """A read-only transaction in which every statement sees the same state.
+
+        For the chain check ({ref}`hash-chain`): it reads in batches and then
+        counts, and under the READ COMMITTED of `begin` every one of those
+        statements gets a snapshot of its own, so an append committing between
+        the last read and the count made the two disagree. Measured on
+        2026-10-04 with appends running concurrently: 27 of 539 runs of
+        `examine` reported rows it had not reached. REPEATABLE READ takes one
+        snapshot at the first statement and keeps it to the end
+        ({ref}`concurrency`).
+
+        It is safe beside the appending procedure because, as PostgreSQL's
+        documentation on transaction isolation says, a read-only transaction
+        never has a serialization conflict, and under MVCC reading never blocks
+        writing.
+        """
+        return self._transaction(self._snapshot_engine)
 
     @contextmanager
-    def begin(self) -> Generator[Connection]:
-        """A connection with a transaction — and the place where two of the
-        three sqlalchemy exceptions out of review finding W2 are translated.
+    def _transaction(self, engine: Engine) -> Generator[Connection]:
+        """A connection with a transaction on `engine` — and the place where
+        two of the three sqlalchemy exceptions out of review finding W2 are
+        translated, for `begin` and `snapshot` alike.
 
         `OperationalError` (server unreachable) arises only while the
         connection is actually being established, that is, inside
-        `self._engine.begin()`. `ProgrammingError` (schema missing), by
+        `engine.begin()`. `ProgrammingError` (schema missing), by
         contrast, typically arises only once the caller runs a query **inside**
         the `with` block — not during the setup itself. Because the whole
         `with` block stands inside a `try` here, an exception out of the
@@ -122,10 +152,10 @@ class PostgresStorage:
         stack trace.
         """
         try:
-            with self._engine.begin() as conn:
+            with engine.begin() as conn:
                 yield conn
         except OperationalError as error:
-            address = self._engine.url.render_as_string(hide_password=True)
+            address = engine.url.render_as_string(hide_password=True)
             raise ServerUnreachable(
                 f"database server at {address} does not answer — is PostgreSQL "
                 "running there, and is it reachable from here?"
@@ -211,11 +241,13 @@ class PostgresStorage:
     # Before, `read` established a connection of its own and `units` another
     # one per call — with the unit check out of K1 that would have become one
     # connection per event, and the chain check would have seen hundreds of
-    # different snapshots instead of one. A check report over several points in
-    # time is no statement about the chain: a forgery could wander back and
-    # forth between two reads and appear consistent in every single snapshot.
-    # The transaction boundary therefore belongs to the caller, who knows what
-    # has to be read together.
+    # different snapshots. A check report over several points in time is no
+    # statement about the chain: a forgery could wander back and forth between
+    # two reads and appear consistent in every single snapshot. The
+    # transaction therefore belongs to the caller, who knows what has to be
+    # read together — and one transaction is one snapshot only when the caller
+    # took it from `snapshot`: under the READ COMMITTED of `begin`, every
+    # statement sees a snapshot of its own.
     def read(self, conn: Connection, from_id: int, limit: int) -> Iterator[EventRow]:
         """A server-side cursor: materialises nothing."""
         query = (

@@ -43,6 +43,11 @@ The procedure works at that level precisely because the unique index does the se
 Under `SERIALIZABLE` the same race would come back as a serialization failure instead—also recoverable, and a different class of error, raised at a different moment and caught in a different place.
 Building on a default here would be a trap: whoever changed it later would change the error class of the busiest code path in the system without touching that path.
 
+One reader runs at a different level, and on purpose.
+The chain check needs every statement of its pass to see the same state, which `READ COMMITTED` doesn't give, so it reads in a read-only `REPEATABLE READ` transaction of its own; {ref}`hash-chain` says what went wrong without it.
+That leaves the procedure above untouched, for two reasons PostgreSQL's documentation on transaction isolation states: a read-only transaction never has a serialization conflict, and under MVCC reading never blocks writing.
+A check running alongside the busiest code path neither fails because of it nor makes it wait.
+
 The loser rolls back, waits, reads the tip again and starts over from the top.
 The wait is full jitter, a uniformly distributed random number out of `[0, 0.005 * 2**attempt]` seconds, capped at `0.2`.
 Not a fixed interval, and not half the wait plus jitter: with a fixed wait two concurrent writers stay in lockstep, only slower, which is the behavior backing off exists against.

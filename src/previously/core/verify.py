@@ -223,19 +223,21 @@ def examine[Conn](
     for anchor in anchors:
         pending.setdefault(anchor.id, []).append(anchor.hash)
 
-    # One transaction over the **whole** check (review finding G4 of the final
-    # review): only that way do all the reads see the same snapshot. Read over
-    # several transactions, the report would be a statement about several
-    # points in time and none about the chain — a forgery could wander between
-    # two reads and appear consistent in every snapshot taken on its own.
-    with storage.begin() as conn:
+    # One snapshot over the **whole** check (review finding G4 of the final
+    # review): read over several points in time, the report would be a
+    # statement about several states and none about the chain — a forgery
+    # could wander between two reads and appear consistent in every one taken
+    # on its own. One transaction is not enough for that: under the READ
+    # COMMITTED of `begin`, every statement sees a state of its own, which is
+    # why this is `snapshot` ({ref}`hash-chain`).
+    with storage.snapshot() as conn:
         while True:
             rows = list(storage.read(conn, from_id=next_id, limit=batch))
             if not rows:
-                # The count reconciliation belongs in the **same** transaction
-                # as the check, or else it counts a different state than the
-                # one checked and would report a count error on every
-                # concurrent append.
+                # The count reconciliation belongs in the **same** snapshot as
+                # the check, or else it counts a different state than the one
+                # checked and reports a count error whenever an append commits
+                # between the last read and the count.
                 count_finding = _count_finding(checked, storage.count_events(conn))
                 if count_finding is not None:
                     findings.append(count_finding)
