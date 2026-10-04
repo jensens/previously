@@ -297,12 +297,11 @@ never file-level, never a whole rule switched off in `pyproject.toml`.
 
 The existing ones meet that bar and are worth reading as examples: `C901`
 on the recursive payload validator, `S607` on invoking `lint-imports` by
-its fixed name from the dev dependencies, `S603` on starting a fresh
-interpreter in the same place — our own interpreter, our own script, no
-input — and `DTZ001` where a naive datetime is constructed on purpose: you
-cannot test that it gets rejected without building one.
+its fixed name from the dev dependencies, and `DTZ001` where a naive
+datetime is constructed on purpose: you cannot test that it gets rejected
+without building one.
 
-The sixth arrived with the documentation and is the odd one out: `A001` on
+The fifth arrived with the documentation and is the odd one out: `A001` on
 `copyright` in `docs/conf.py`, the name Sphinx requires. **No gate reaches
 it.** `extend-exclude = ["docs"]` keeps `ruff check .` out of that directory,
 and the pre-commit hook adds `--force-exclude` so the staged file is skipped
@@ -312,9 +311,11 @@ all, while `ruff check docs/conf.py` reports `A001`. It stays because whoever
 lints that file by hand should not have to rediscover why the name cannot
 change — but it is a note, not a suppression the gate needs.
 
-That is six suppressions in the whole tree, and the list is meant to stay
+That is five suppressions in the whole tree, and the list is meant to stay
 complete. If you add one, add it here — a rule whose own file does not keep
-it is an invitation to ignore it.
+it is an invitation to ignore it. Removing one counts too: stage 1b deleted
+the `S603` on starting a fresh interpreter, because the test that needed it
+guarded an import edge that no longer exists.
 
 **Never reach into a private name from a test.** If something deserves a
 direct test, it deserves a public name; rename it instead of suppressing

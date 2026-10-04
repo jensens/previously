@@ -16,7 +16,6 @@ from typing import TYPE_CHECKING
 import previously.core
 import pytest
 import subprocess
-import sys
 import warnings
 
 
@@ -40,25 +39,6 @@ _CORE_DIRECTORY = Path(previously.core.__file__).parent
 # against a different tree than the one the probe is written into.
 _REPO_ROOT = _CORE_DIRECTORY.parents[2]
 _PROBE = _CORE_DIRECTORY / "_violation.py"
-
-# The two modules that `.importlinter` grants a named exemption, and the two
-# top-level packages the exemption is about.
-_EXEMPTED_MODULES = ("previously.core.append", "previously.core.verify")
-_FORBIDDEN_AT_RUNTIME = ("sqlalchemy", "psycopg")
-
-# Imports the two exempted modules and reports which of the forbidden
-# packages ended up in `sys.modules`. Runs in a **fresh** interpreter, see the
-# test below. Reduced to the top-level names and printed space-separated: one
-# sqlalchemy import drags in a hundred submodules, and `sqlalchemy` is the
-# whole statement.
-_RUNTIME_PROBE = "\n".join(
-    [
-        "import sys",
-        *(f"import {module}" for module in _EXEMPTED_MODULES),
-        f"forbidden = set({_FORBIDDEN_AT_RUNTIME!r})",
-        'print(" ".join(sorted({n.partition(".")[0] for n in sys.modules} & forbidden)))',
-    ]
-)
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -167,64 +147,3 @@ def test_a_deliberately_wrong_import_breaks_the_named_contracts() -> None:
     # configuration error carries no import — that is what tells the two
     # apart.
     assert "previously.core._violation -> sqlalchemy" in output, output
-
-
-def test_the_exempted_core_modules_load_no_sql_at_runtime() -> None:
-    """The bolt behind the two named exemptions in `.importlinter` — **ruling
-    T7-g**, which is the label the stage 1a specification refers to it by in
-    §12 (frozen design record; finding N-2 of fix round 2 found the label
-    pointing at nothing).
-
-    `core.append` and `core.verify` import `PostgresStorage` only under
-    `if TYPE_CHECKING:`, and the two exemptions are granted for exactly that
-    reason. But they hang on the import **edge**, not on its
-    TYPE_CHECKING property: were somebody to pull one of the two imports out
-    of its `if TYPE_CHECKING:` block, the exemption would keep covering it,
-    `core` would load sqlalchemy at runtime, and the separation of layers
-    would be broken — and of the gates, only this one would say so. `ruff`
-    does catch the simplest form with `TC001`, but only for as long as the
-    symbol appears in annotations and nowhere else; add one use of it outside
-    an annotation and ruff falls silent, which is exactly the case that hurts,
-    because that is when `core` really does load the driver. Measured against
-    the project configuration, with the import out of the block **and** an
-    `isinstance` call on the symbol: `lint-imports` 4 kept 0 broken,
-    `ruff check .` all checks passed, this test the only failure.
-
-    A **fresh interpreter** is necessary. Inside the test process sqlalchemy
-    and psycopg have long been loaded — through `conftest.py`, through
-    `storage`, through testcontainers — so `sys.modules` says nothing there.
-
-    This bolt is green today (measured): it holds a state that already
-    obtains, instead of uncovering an error. That is what it is for — the
-    exemptions are the one place in this tree where a correct decision and a
-    wrong one look exactly alike in the configuration.
-
-    **Measured that it goes red**, in a throwaway worktree: pulling the import
-    out of the `TYPE_CHECKING` block of `core/verify.py` — and separately of
-    `core/append.py` — left `lint-imports` at *4 kept, 0 broken*, because the
-    exemption covers the edge either way, while this test failed with
-    "loaded sqlalchemy at runtime". That is the whole argument for its
-    existence, and without it written down the test looks like redundancy and
-    somebody deletes it.
-
-    It falls away without replacement once `core` is typed against a generic
-    `LogStore[Conn]` protocol in `contract` instead of the concrete
-    `PostgresStorage` — the stage 1a specification
-    §12 (frozen design record) carries that as an open point.
-    """
-    result = subprocess.run(  # noqa: S603 — our own interpreter, our own script, no input
-        [sys.executable, "-c", _RUNTIME_PROBE],
-        capture_output=True,
-        text=True,
-        check=False,
-        cwd=_REPO_ROOT,
-    )
-    assert result.returncode == 0, result.stdout + result.stderr
-
-    loaded = result.stdout.split()
-    assert loaded == [], (
-        f"importing {' and '.join(_EXEMPTED_MODULES)} loaded {', '.join(loaded)} at "
-        "runtime. One of the imports exempted in `.importlinter` has presumably left "
-        "its `if TYPE_CHECKING:` block — the exemption still covers it, but the "
-        "separation of layers is broken."
-    )

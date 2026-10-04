@@ -31,6 +31,8 @@ and version. This module sees only the two translated exceptions, no driver
 error.
 """
 
+from previously.contract.rows import EventRow
+from previously.contract.rows import UnitRow
 from previously.core.errors import BatchTooLarge
 from previously.core.errors import ChainConflict
 from previously.core.errors import InvalidPayload
@@ -40,8 +42,6 @@ from previously.core.hashing import payload_hash
 from previously.core.hashing import units_hash
 from previously.storage.errors import ChainPositionTaken
 from previously.storage.errors import SourceKeyTaken
-from previously.storage.rows import EventRow
-from previously.storage.rows import UnitRow
 from typing import TYPE_CHECKING
 
 import random
@@ -52,9 +52,9 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from collections.abc import Sequence
     from datetime import datetime
+    from previously.contract.store import LogStore
     from previously.contract.types import RawEvent
     from previously.contract.types import RawUnit
-    from previously.storage.postgres import PostgresStorage
 
 
 MAX_RETRIES = 8
@@ -321,8 +321,8 @@ def _prepare(
     return prepared
 
 
-def append(
-    storage: PostgresStorage,
+def append[Conn](
+    storage: LogStore[Conn],
     events: Sequence[RawEvent],
     *,
     recorded_at: datetime,

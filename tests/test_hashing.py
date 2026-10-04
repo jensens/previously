@@ -6,13 +6,13 @@ from datetime import timedelta
 from datetime import timezone
 from datetime import tzinfo
 from datetime import UTC
+from previously.contract.rows import UnitRow
 from previously.contract.types import RawUnit
 from previously.core.errors import InvalidPayload
 from previously.core.hashing import event_hash
 from previously.core.hashing import iso_utc
 from previously.core.hashing import payload_hash
 from previously.core.hashing import units_hash
-from previously.storage.rows import UnitRow
 
 import hashlib
 import pytest

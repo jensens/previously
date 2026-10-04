@@ -34,9 +34,9 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
-    from previously.storage.postgres import PostgresStorage
-    from previously.storage.rows import EventRow
-    from previously.storage.rows import UnitRow
+    from previously.contract.rows import EventRow
+    from previously.contract.rows import UnitRow
+    from previously.contract.store import LogStore
 
 
 @dataclass(frozen=True)
@@ -175,7 +175,7 @@ def _count_finding(checked: int, total: int) -> Finding | None:
     return Finding(0, f"event has {total} rows, {checked} checked — the rest is unreachable")
 
 
-def verify(storage: PostgresStorage, *, batch: int = 1000) -> list[Finding]:
+def verify[Conn](storage: LogStore[Conn], *, batch: int = 1000) -> list[Finding]:
     findings: list[Finding] = []
     previous_hash: bytes | None = None
     next_id = 1

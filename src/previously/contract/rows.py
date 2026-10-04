@@ -1,11 +1,16 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Rows, not domain objects.
+"""Rows, not domain objects — the field contract between `core` and `storage`.
 
 `storage` does not know the domain ({ref}`module-boundaries`): `kind` is
 text, `payload` is uninterpreted JSON. That is why the type is called
 `EventRow` and not `Event` — `core` interprets, `storage` transports.
+
+These types live in `contract` and not in `storage` because the store
+protocols in `contract.store` name them, and `contract` is the bottom layer:
+it may import nothing above it. Measured on 2026-10-04 against
+`.importlinter` — a `contract -> storage` import breaks the `layers` contract.
 """
 
 from collections.abc import Mapping

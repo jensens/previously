@@ -11,14 +11,14 @@ import which, not which methods this one has.
 """
 
 from contextlib import contextmanager
+from previously.contract.rows import EventRow
+from previously.contract.rows import Tip
+from previously.contract.rows import UnitRow
 from previously.storage.errors import ChainPositionTaken
 from previously.storage.errors import InvalidDsn
 from previously.storage.errors import MigrationPending
 from previously.storage.errors import ServerUnreachable
 from previously.storage.errors import SourceKeyTaken
-from previously.storage.rows import EventRow
-from previously.storage.rows import Tip
-from previously.storage.rows import UnitRow
 from previously.storage.schema import event
 from previously.storage.schema import source_key
 from previously.storage.schema import unit
