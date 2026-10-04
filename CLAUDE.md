@@ -312,6 +312,12 @@ The sixth is the documentation: `html` treats warnings as errors, `vale`
 checks style and American English, `linkcheck` resolves every link. What the
 pages themselves have to satisfy is under *Documentation* above.
 
+The dependency audit, `uv run pip-audit --skip-editable`, is not a seventh
+gate and runs in a workflow of its own, `.github/workflows/audit.yml`, on pull
+requests, on `main` and weekly. The six gates judge the tree, and their result
+changes only when the tree does; an audit's result changes when an advisory is
+published, on a day when nobody touched anything.
+
 **A dispatch, a check and a report name all six.** Copy the block above
 rather than listing a subset from memory: an incomplete list is worse than
 none, because it looks like a check. Measured on 2026-10-03, a task ran

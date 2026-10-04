@@ -37,6 +37,7 @@ not appear in it at all.
 | `coverage` | Coverage measurement, `fail_under = 90` | reasoning in §10.6 of the architecture (choice of tooling) | 2026-10-02, active |
 | `pytest-randomly` | Random test order, uncovers dependencies between tests | reasoning in §10.6 of the architecture (choice of tooling) | 2026-10-02, active |
 | `pre-commit` | Git hooks before the commit | reasoning in §10.6 of the architecture (choice of tooling) | 2026-10-02, active |
+| `pip-audit` | Audits the locked environment against published advisories, in `.github/workflows/audit.yml` | — | 2026-10-04, active — last release 2.10.1 on 2026-06-10; repository `pypa/pip-audit` maintained under the Python Packaging Authority, pushed 2026-10-01, not archived, maintainer commits up to 2026-08-31 |
 | `hatch-vcs` | The version out of Git tags | — | 2026-10-02, **over a year old, judgement: finished, not abandoned** — a few lines of glue around `setuptools-scm` |
 | `sphinx` | Builds the documentation | — | 2026-10-03, active — last release 2025-12-31, repository pushed 2026-09-21 |
 | `myst-parser` | Reads Markdown instead of reStructuredText | — | 2026-10-03, active — last release 2026-05-13 |

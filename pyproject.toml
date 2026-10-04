@@ -27,7 +27,13 @@ test = [
     "testcontainers[postgres]>=4.15",
     "hypothesis>=6.168",
 ]
-dev = ["ruff>=0.16", "pyright>=1.1.414", "import-linter>=2.15", "pre-commit>=4.6"]
+dev = [
+    "ruff>=0.16",
+    "pyright>=1.1.414",
+    "import-linter>=2.15",
+    "pre-commit>=4.6",
+    "pip-audit>=2.10.1",
+]
 docs = [
     "sphinx>=9.1",
     "myst-parser>=5.1",
