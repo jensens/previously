@@ -30,6 +30,7 @@ from previously.storage.postgres import PostgresStorage
 from typing import TYPE_CHECKING
 
 import argparse
+import io
 import json
 import os
 import sys
@@ -158,20 +159,34 @@ def _read_anchors(source: str) -> tuple[Anchor, ...]:
     `parse_anchors` in `core`, so that a second entry point reads the same
     format without this file.
 
-    `utf-8-sig`, so that a file an editor saved with a byte order mark reads
-    like one without. A file that is no file — missing, a directory, not
-    text — becomes `InvalidPayload` and with it exit code 2: one sentence,
-    not a stack trace.
+    Both sources are read as bytes and decoded once, here, with
+    `utf-8-sig`, so that nothing can be true of a file and false of standard
+    input: a byte order mark is dropped from either, and bytes that are not
+    UTF-8 are an input error from either. Standard input is not decoded with
+    the terminal's settings, and a source that cannot be read or decoded
+    becomes `InvalidPayload` and with it exit code 2 — one sentence, not a
+    stack trace, and not the exit code 1 a scheduled job reads as a finding.
+
+    `io.StringIO(text, newline=None)` hands the parser lines the way a file
+    opened in text mode does: `\r\n` and `\r` become `\n`, and nothing else
+    ends a line. `str.splitlines()` would also break on a form feed and the
+    other Unicode line separators, and one bad line would then be reported
+    under two line numbers. The parser runs after the `try`, so an
+    `InvalidPayload` it raises never passes through the two handlers.
     """
-    if source == "-":
-        return parse_anchors(sys.stdin)
+    name = "standard input" if source == "-" else f"the anchor file {source!r}"
     try:
-        with open(source, encoding="utf-8-sig") as handle:
-            return parse_anchors(handle)
+        if source == "-":
+            raw = sys.stdin.buffer.read()
+        else:
+            with open(source, "rb") as handle:
+                raw = handle.read()
+        text = raw.decode("utf-8-sig")
     except OSError as error:
-        raise InvalidPayload(f"cannot read the anchor file {source!r}: {error.strerror}") from error
+        raise InvalidPayload(f"cannot read {name}: {error.strerror}") from error
     except UnicodeDecodeError as error:
-        raise InvalidPayload(f"the anchor file {source!r} is not UTF-8 text") from error
+        raise InvalidPayload(f"{name} is not UTF-8 text") from error
+    return parse_anchors(io.StringIO(text, newline=None))
 
 
 def _cmd_append(args: argparse.Namespace) -> int:

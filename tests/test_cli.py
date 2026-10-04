@@ -1040,9 +1040,44 @@ def test_verify_reads_the_anchors_from_standard_input(
     assert main(["anchor"]) == 0
     line = capsys.readouterr().out
 
-    monkeypatch.setattr(sys, "stdin", io.StringIO(line))
+    # As bytes, the way a pipe delivers them: `io.StringIO` has no `.buffer`.
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(line.encode())))
     assert main(["verify", "--anchors", "-"]) == 0
     assert capsys.readouterr().out == "chain intact, 1 anchor holds\n"
+
+
+@pytest.mark.db
+def test_a_byte_order_mark_and_windows_line_ends_on_standard_input_are_read(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Standard input is read the way a file is, so what an editor on another
+    system leaves in a file it also leaves in a pipe, and it is read all the
+    same. The `-` twin of the test for the file. (Review focus 1 of the
+    2026-10-04 external-anchor plan.)"""
+    _setup(db, monkeypatch)
+    _append("email", "m1", "Hello", "2026-10-01T09:00:00Z")
+    capsys.readouterr()
+    assert main(["anchor"]) == 0
+    line = capsys.readouterr().out.strip()
+
+    data = b"\xef\xbb\xbf# kept outside\r\n" + line.encode() + b"\r\n"
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(data)))
+    assert main(["verify", "--anchors", "-"]) == 0
+    assert capsys.readouterr().out == "chain intact, 1 anchor holds\n"
+
+
+def test_bytes_that_are_not_utf8_on_standard_input_are_an_input_error(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Exit code 2 and one sentence, never a traceback: a traceback leaves
+    the interpreter's exit code 1, and 1 tells a scheduled job that the log
+    was tampered with when only its input was broken. Refused before the
+    database is asked for, which is why this test needs none. (Review focus
+    2 of the 2026-10-04 external-anchor plan.)"""
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(b"\xff\xfe junk\n")))
+    assert main(["verify", "--anchors", "-"]) == 2
+    out, err = capsys.readouterr()
+    assert (out, err) == ("", "Error: standard input is not UTF-8 text\n")
 
 
 @pytest.mark.db

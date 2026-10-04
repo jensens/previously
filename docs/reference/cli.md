@@ -61,16 +61,19 @@ With `--anchors`, it also checks the log against anchor lines kept outside the d
 An anchor line holds two fields separated by whitespace: an event `id`, a positive integer, and that event's `hash`, 64 hexadecimal characters.
 `anchor` prints lines in this format.
 
-The anchor file is read as UTF-8 text, with or without a byte order mark, and with Unix or Windows line ends.
+The anchor lines come from the file named by `--anchors`, or from standard input for `-`.
+Both sources are read the same way: as UTF-8 text, with or without a byte order mark, and with Unix or Windows line ends.
 Blank lines and lines starting with `#` don't count.
 Any other line that isn't an anchor line is an input error, named by its line number.
-A file without a single anchor line, a file that can't be read, and a file that isn't UTF-8 text are input errors as well.
+Input without a single anchor line, a file that can't be read, and input that isn't UTF-8 text are input errors as well.
 `--exact` without `--anchors` is an input error, refused before the database is read.
 On an input error, `verify` prints nothing to standard output, prints one sentence to standard error, and returns 2.
 
 Every anchor is checked in the pass that checks the chain.
 An anchor holds when the log contains it: the event at the anchor's `id` exists and carries the anchor's `hash`.
-A file may name the same `id` on several lines, and each line is checked.
+The same `id` may appear on several lines.
+Each of those lines is compared with the event's `hash`, and each line that doesn't match gives its own finding.
+A missing event gives one finding for its `id`, however many lines name it.
 With `--exact`, the log also must not continue past the newest anchor, the anchor with the highest `id`.
 
 Each finding prints as one line: `FINDING <event_id>: <reason>`.

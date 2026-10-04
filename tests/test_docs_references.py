@@ -395,8 +395,9 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     Each of the four blocks is found by the sentence that introduces it, and
     a sentence that vanishes from the page fails with a message naming it.
     Until 2026-10-04 that was an `IndexError`. The direction is page to code
-    only: a reason in `core/verify.py` that the page does not quote is not
-    looked for.
+    only, for both halves: a reason in `core/verify.py` that the page does not
+    quote is not looked for, and neither is a new `print(..., file=sys.stderr)`
+    in `cli.py` that the page does not quote.
     """
     produced = {
         _refusal(payload)
@@ -434,7 +435,18 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     findings = _quoted_block(page, "Three findings come from the anchors")
     assert len(findings) == 3, findings
     for line in findings:
-        reason = line.split(": ", 1)[1]
+        # The prefix is held as well, or a page quoting `FINDINGS 42: ...`
+        # would pass on the strength of its reason. Its form is written down
+        # here rather than read from `cli.py`, where it is an f-string with
+        # nothing but `FINDING ` and `: ` around the id. The other end is held
+        # in `tests/test_cli.py`: `test_verify_reports_a_deleted_tip_against_the_anchor`
+        # and `test_anchor_prints_the_tip_and_verify_holds_it` compare whole
+        # finding lines exactly, so a change to the code's prefix fails there.
+        prefix, _, reason = line.partition(": ")
+        assert re.fullmatch(r"FINDING [0-9]+", prefix), (
+            f"cli.md quotes the finding line {line!r}, and its prefix is not "
+            "`FINDING <id>: `, which is what cli.py prints before a reason."
+        )
         assert any(_is_the_same_sentence(parts, reason) for parts in reasons), (
             f"cli.md quotes the finding {reason!r} and core/verify.py produces no such "
             "reason. Either the code's wording changed, or the page's did."
