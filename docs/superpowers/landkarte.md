@@ -29,27 +29,58 @@ hat **noch kein einziges echtes Event** gehalten.
 
 ## Was als Nächstes kommt
 
-Entschieden vom Betreuer am 2026-10-04, auf Empfehlung des Prüfpunkts.
-Die kleine Wartungsrunde, die dort an erster Stelle stand, ist gebaut, und
-ihre Abnahme ist der Merge ihres Pull-Requests; ihre vier Punkte stehen unten
-unter *Erledigt*. Als Nächstes:
+Zwei Dinge, in dieser Reihenfolge, beide vom Betreuer am 2026-10-04
+entschieden, nach dem Prüfpunkt und der kleinen Wartungsrunde (ihre vier
+Punkte stehen unten unter *Erledigt*).
 
-1. **Der Einwurf — Teilprojekt 2 — bekommt den nächsten Spec.** Sein Ziel ist
-   nicht ein weiteres Bauteil, sondern dass danach **echte Daten im Log
-   stehen**: der Einwurf-Vertrag, der Einwurf per Prompt, und ein Pilotbetrieb
-   mit dauerhafter Datenbank, Sicherung und Anker-Routine.
+### 1. Stufe 1c: Blobs, Verschlüsselung, Tilgung
 
-   Was der Spec entscheiden muss, steht unten unter *Einwurf-Vertrag* und
-   *Betrieb*; das Gewichtigste davon: was mit geändertem Inhalt unter
-   bekanntem Schlüssel geschieht, ob `RawEvent` Rohbytes und Kanalidentitäten
-   trägt, was `occurred_at` bei einer Erinnerung meint, und über welchen
-   Einstieg der Prompt-Pfad läuft, solange es keinen MCP-Server gibt.
+Sie schließt Teilprojekt 1 ab, wie die Architektur es in §12.1 vorsieht, und
+sie kommt **vor** dem Piloten: gebraucht wird sie, wie auch immer der Pilot
+ausgeht. Mit ihr bekommt der Pilot, was er sonst umgehen müsste — einen Ort
+für Rohmails und Anhänge, und eine Tilgung, die eine einzelne Mail aus dem Log
+nimmt, ohne dass die Kette bricht. Was sie entscheiden muss, steht unten unter
+*Stufe 1c: Blobs und Tilgung*. Ihr Spec ist der nächste.
 
-   Eine Bedingung steht schon fest: hinein gehen zuerst **eigene Notizen**.
-   Inhalte Dritter — Mail, Dokumente — erst, wenn die Tilgung als Event
-   gebaut ist und die Einheiten mitnimmt.
+Der Weg dorthin hatte zwei Umwege, und sie stehen hier, damit die Reihenfolge
+nicht wie ein Versehen aussieht: der Prüfpunkt empfahl zuerst den Einwurf mit
+eigenen Notizen, weil das System noch kein echtes Event gehalten hatte; der
+Betreuer machte daraus den Piloten an einem Kunden; und an echter Kundenpost
+wog dann schwerer, was 1c liefert.
 
-Alles danach bekommt seinen Spec, wenn es anfängt.
+### 2. Der Pilot an einem echten Kunden
+
+Der Zuschnitt, den der Prüfpunkt zuerst festhielt — der Einwurf per Prompt,
+zuerst eigene Notizen —, ist verworfen: reine Gedankennotizen wären Theorie
+und sagten wenig. Stattdessen:
+
+- **Quellen:** ein eigens angelegter IMAP-Ordner und ein Ordner in der
+  Nextcloud. Was der Betreuer dorthin kopiert, ist relevant.
+- **Ziele, alle vier:** die Chronik des Kunden lesen; die Aufnahme an echter
+  Post härten; Claude Code fragt das Log; Protokoll und offene Punkte.
+- **Der Weg: Durchstich mit Gate von Anfang an.** Vorschläge kommen aus einer
+  eigenen KI-Schicht hinter dem Gate, mit Policy und Audit — nicht aus dem
+  Cockpit, das der Betreuer dann abnickt.
+- **Datenpolitik des Pilotkunden:** sein Inhalt darf über Claude Code an
+  Anthropic gehen („bei diesem Kunden gedeckt", Betreuer, 2026-10-04).
+- **Betrieb:** gleich in kup6s, nicht erst lokal.
+
+Die Einheiten, in dieser Reihenfolge; nur die jeweils nächste bekommt einen
+Spec:
+
+| # | Einheit | bringt | Spec |
+|---|---|---|---|
+| 1 | Aufnahme aus dem IMAP-Ordner, mit dem Einwurf- und dem Konnektor-Vertrag | Chronik des Kunden; echte Post im Log | ein Entwurf **ruht** auf dem Zweig `worktree-pilot-imap-aufnahme` (Commit `9b493f0`), geschrieben, bevor 1c vorgezogen wurde; er wird neu gefasst, wenn der Pilot anfängt |
+| 2 | Betrieb in kup6s: Image, Datenbank mit Sicherung, Restore-Probe, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | — |
+| 3 | Gate und Policy: Organisationsprofil des Pilotkunden, ein Anbieter-Adapter, Audit, Offenlegungsprüfung | die Grenze, hinter der ein Modell Inhalt sieht | — |
+| 4 | MCP-Lesezugang, mit der Offenlegungsprüfung davor | Claude Code fragt das Log | — |
+| 5 | Feststellungen: Schreibweg, Verpflichtung und Entscheidung, Projektionen, Freigabe | was festgestellt ist, mit Quelle und Verantwortung | — |
+| 6 | KI-Schicht: Vorschläge hinter dem Gate | Protokoll und offene Punkte | — |
+| 7 | Nextcloud-Ordner mit Textextraktion | Dokumente | — |
+
+Offen für Einheit 2 und vom Betreuer noch zu beantworten: was kup6s heute
+bereitstellt (CloudNativePG, ArgoCD, Registry, Zugang vom Arbeitsplatz) und wo
+sein Repository liegt.
 
 ## Was vor was kommen muss
 
@@ -63,7 +94,7 @@ ihren Beleg im Prüfpunkt.
 | `RawEvent` bekommt Rohbytes und Kanalidentitäten, oder die Architektur gibt sie auf | IMAP, Drop-Ordner | Leitsatz 6: was nicht aufgenommen wurde, ist nicht nachholbar |
 | Feststellungen: zweiter Schreibweg, Art und Unterart, Regeln je Art in `verify` | Triage, `record_assertion`, KI-Schicht, Identitätsgraph, jede fachliche Projektion | `append` schreibt nur `observation`; `verify` kennt keine Art-Regeln |
 | Blobs mit Verschlüsselung | Drop-Ordner mit Dateien, IMAP mit Anhängen und Rohmail, Voice | es gibt keinen Ort für Bytes |
-| Tilgung als Event, die Einheiten und Projektionen mitnimmt | Inhalte Dritter im Log (Mail, Dokumente) | heute ist ein Grabstein von einer Fälschung nicht zu unterscheiden, und die Einheiten bleiben stehen |
+| Tilgung als Event, die Einheiten und Projektionen mitnimmt | Inhalte Dritter im Log (Mail, Dokumente) — also der Pilot | heute ist ein Grabstein von einer Fälschung nicht zu unterscheiden, und die Einheiten bleiben stehen |
 | Ein Betrieb mit Sicherung, Restore-Probe und Anker-Routine | Daten, deren Verlust weh tut | bisher gibt es nur Wegwerf-Datenbanken |
 | Echte, gemischtsprachige Einheiten im Log | die Messung zur Textsuche und die Wahl des Embedding-Modells | beide verlangen einen Testsatz aus echten gemischten Einheiten (Architektur §11, Nachtrag) |
 | Warteschlange mit Sperre auf der Zustandszeile | der erste asynchrone Produzent | zwei gleichzeitige Läufe einer Projektion schreiben heute beide |
