@@ -514,6 +514,47 @@ def test_an_empty_log_has_no_tip_and_misses_every_anchor(db: Engine) -> None:
 
 
 @pytest.mark.db
+def test_only_an_intact_chain_gives_an_anchor(db: Engine) -> None:
+    """`anchor` is the tip only when the pass found nothing: an anchor taken on
+    a broken chain would vouch for the break ({ref}`external-anchor`). The
+    rule lives in the core so that a second entry point cannot hand out the
+    tip of a broken chain by forgetting it. `tip` stays set either way — it
+    is where the log ends."""
+    storage = PostgresStorage(db)
+    empty = examine(storage)
+    assert (empty.tip, empty.anchor) == (None, None)
+
+    append(storage, [_event("a"), _event("b")], recorded_at=NOW)
+    intact = examine(storage)
+    assert intact.tip is not None
+    assert intact.anchor == intact.tip
+
+    with db.begin() as c:
+        c.execute(text("UPDATE event SET hash = :h WHERE id = 2"), {"h": b"\x00" * 32})
+    broken = examine(storage)
+    assert broken.findings
+    assert broken.tip == Anchor(2, b"\x00" * 32)
+    assert broken.anchor is None
+
+
+@pytest.mark.db
+def test_the_same_line_repeated_gives_one_finding(db: Engine) -> None:
+    """The routine appends the same line again whenever no event arrived, so
+    a quiet weekend leaves many copies of one anchor in the file. A rewritten
+    event is reported against that anchor once, not once per copy."""
+    storage = PostgresStorage(db)
+    append(storage, [_event("a")], recorded_at=NOW)
+    anchor = _anchor_of(storage)
+    with db.begin() as c:
+        c.execute(text("UPDATE event SET hash = :h WHERE id = 1"), {"h": b"\x00" * 32})
+
+    assert examine(storage, anchors=[anchor, anchor, anchor]).findings == (
+        Finding(1, "hash does not match the fields"),
+        Finding(1, "hash does not match the anchor"),
+    )
+
+
+@pytest.mark.db
 def test_two_lines_for_one_position_are_both_checked(db: Engine) -> None:
     """The same line twice is harmless; two lines that disagree about one
     position cannot both hold, and the one that does not is reported."""

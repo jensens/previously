@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
+    from collections.abc import Collection
     from collections.abc import Mapping
     from collections.abc import Sequence
     from previously.contract.rows import EventRow
@@ -52,12 +53,24 @@ class Examination:
     """What one pass over the chain found, and where the chain ended.
 
     `tip` is the last row the pass saw, not the answer to a second query
-    after it ({ref}`external-anchor`): an anchor printed from it describes
-    exactly the chain that was checked. `None` for an empty log.
+    after it ({ref}`external-anchor`), whether or not the pass found
+    something — it is where the log ends. `None` for an empty log.
     """
 
     findings: tuple[Finding, ...]
     tip: Anchor | None
+
+    @property
+    def anchor(self) -> Anchor | None:
+        """The anchor to take: the tip, but only when the pass found nothing.
+
+        Taken on a chain with a finding, an anchor would vouch for the break:
+        every later check against it would confirm the forged state as the
+        one recorded outside. The rule lives here and not in the command
+        line, so that a second entry point that hands out anchors gets it
+        without copying it. `None` on a finding and on an empty log.
+        """
+        return None if self.findings else self.tip
 
 
 def _payload_finding(row: EventRow) -> Finding | None:
@@ -216,12 +229,14 @@ def examine[Conn](
     expect_first = True
     checked = 0
     tip: Anchor | None = None
-    # Anchors still waiting for their event, by `id`. A list per `id`, because
-    # a file may carry one position twice, and two lines that disagree are
-    # both checked.
-    pending: dict[int, list[bytes]] = {}
+    # Anchors still waiting for their event, by `id`. A set of hashes per
+    # `id`: two lines that disagree about one position are each checked, and
+    # the same line repeated is checked once — the routine appends the same
+    # line again whenever no event arrived, and one rewritten event would
+    # otherwise be reported once per copy.
+    pending: dict[int, set[bytes]] = {}
     for anchor in anchors:
-        pending.setdefault(anchor.id, []).append(anchor.hash)
+        pending.setdefault(anchor.id, set()).add(anchor.hash)
 
     # One snapshot over the **whole** check (review finding G4 of the final
     # review): read over several points in time, the report would be a
@@ -284,7 +299,7 @@ def examine[Conn](
 
 
 def _closing_findings(
-    pending: Mapping[int, Sequence[bytes]],
+    pending: Mapping[int, Collection[bytes]],
     anchors: Sequence[Anchor],
     tip: Anchor | None,
     *,

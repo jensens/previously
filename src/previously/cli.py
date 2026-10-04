@@ -168,7 +168,7 @@ def _read_anchors(source: str) -> tuple[Anchor, ...]:
     stack trace, and not the exit code 1 a scheduled job reads as a finding.
 
     `io.StringIO(text, newline=None)` hands the parser lines the way a file
-    opened in text mode does: `\r\n` and `\r` become `\n`, and nothing else
+    opened in text mode does: `\\r\\n` and `\\r` become `\\n`, and nothing else
     ends a line. `str.splitlines()` would also break on a form feed and the
     other Unicode line separators, and one bad line would then be reported
     under two line numbers. The parser runs after the `try`, so an
@@ -280,19 +280,20 @@ def _cmd_anchor(_args: argparse.Namespace) -> int:
     ({ref}`external-anchor`).
 
     The tip is the last row the pass saw, so the line describes exactly the
-    chain that was checked. On a finding there is no line: an anchor on a
-    broken chain would certify the break.
+    chain that was checked. Whether there is a line at all is
+    `Examination.anchor`'s decision, not this function's: on a finding the
+    core gives none, because an anchor on a broken chain would certify the
+    break. What is left here is formatting.
     """
     examination = examine(_storage())
     for finding in examination.findings:
         print(f"FINDING {finding.event_id}: {finding.reason}")
-    if examination.findings:
-        return 1
-    if examination.tip is None:
+    anchor = examination.anchor
+    if anchor is not None:
+        print(format_anchor(anchor))
+    elif not examination.findings:
         print("the log is empty: nothing to anchor", file=sys.stderr)
-        return 0
-    print(format_anchor(examination.tip))
-    return 0
+    return 1 if examination.findings else 0
 
 
 def _cmd_show(args: argparse.Namespace) -> int:

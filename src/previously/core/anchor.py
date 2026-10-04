@@ -15,6 +15,9 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Iterable
 
+# `len(str(2**63 - 1))`: the largest `bigint`, which the `id` column is.
+_MAX_ID_DIGITS = 19
+
 
 def format_anchor(anchor: Anchor) -> str:
     """`<id> <hash>`, the hash in lower-case hex, no line end."""
@@ -41,6 +44,16 @@ def parse_anchors(lines: Iterable[str]) -> tuple[Anchor, ...]:
                 f"anchor line {number}: expected `<id> <hash>`, got {len(fields)} fields"
             )
         id_text, hash_text = fields
+        # The length before `int()`, for the same reason as `isascii` below:
+        # beyond 4300 digits `int()` raises a `ValueError` nobody translated.
+        # 19 digits is the length of the largest `bigint`, so no event `id`
+        # is longer; the digits are not echoed, a damaged file can hold
+        # thousands of them.
+        if len(id_text) > _MAX_ID_DIGITS:
+            raise InvalidPayload(
+                f"anchor line {number}: the id has more than {_MAX_ID_DIGITS} digits, "
+                "longer than any event id"
+            )
         # `isascii` first: `str.isdigit()` is true for `²`, and `int()` then
         # raises a `ValueError` nobody translated.
         if not (id_text.isascii() and id_text.isdigit() and int(id_text) >= 1):
@@ -57,5 +70,5 @@ def parse_anchors(lines: Iterable[str]) -> tuple[Anchor, ...]:
             raise InvalidPayload(f"anchor line {number}: the hash is not hexadecimal") from None
         anchors.append(Anchor(int(id_text), digest))
     if not anchors:
-        raise InvalidPayload("the anchor file holds no anchor")
+        raise InvalidPayload("the input holds no anchor")
     return tuple(anchors)

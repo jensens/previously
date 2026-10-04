@@ -946,7 +946,7 @@ def test_verify_reports_a_deleted_tip_against_the_anchor(
     ("content", "fragment"),
     [
         (b"1 zz\n", "anchor line 1"),
-        (b"", "holds no anchor"),
+        (b"", "Error: the input holds no anchor"),
         (b"\xff\xfe\x00junk", "not UTF-8"),
         (None, "cannot read the anchor file"),
     ],

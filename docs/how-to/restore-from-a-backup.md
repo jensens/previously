@@ -40,10 +40,11 @@ Don't add `--exact` here: it reports any event after the newest anchor as a find
 
 ## Restore to an earlier point
 
-If you restored on purpose to a point before the newest anchor, check the restore against the anchor file as it stood at that point.
+If you restored on purpose to a point before the newest anchor, check the restore against the last version of the anchor file from before that point.
 
-1.  Get the anchor file as it stood at the restore point from the place you keep it: the version of that time under version control, or the copy or message from that time.
+1.  Get the last version of the anchor file from before the restore point from the place you keep it: under version control, or as a copy or message.
     The file doesn't date its own lines, so you can't read that version off the current file.
+    Don't take a version recorded after the restore point: it holds anchors from after it, and each of those reads as a loss.
     Save it as `anchors-restored.txt`.
     If the file didn't exist yet at that point, or held no anchor line, see *After the check* below.
     If you can't get it, see *If the anchor file has no history* below.
@@ -88,6 +89,9 @@ It can't show that the restore reached the point you meant, because the cut come
     previously verify --anchors anchors.txt
     ```
 
+    If it reports no `anchored event is missing` finding, whether it exits `0` or reports only other findings, the restore reached the newest anchor and there's nothing to cut.
+    Treat it as the first case, *Restore to the latest state*, and read its result there.
+
 2.  Number the lines of the anchor file:
 
     ```shell
@@ -104,24 +108,27 @@ It can't show that the restore reached the point you meant, because the cut come
     head -n 2 anchors.txt > anchors-restored.txt
     ```
 
-4.  Check against the new file, as in steps 2 and 3 above.
+4.  Check against the new file, as in steps 2 and 3 above, keeping in mind what the cut can't show.
+    Exit code `0` there doesn't mean that the restore reached the point you meant.
     Add `--exact` only if the `id` of its last anchor is the tip of the restored log.
 
 ### After the check
 
-From now on, run the routine from {ref}`verify-the-chain` against `anchors-restored.txt`.
-Against `anchors.txt`, it would raise the alarm on every run.
-Keep `anchors.txt` unchanged: it records what the restore gave up.
+Keep `anchors.txt` unchanged in either case below: it records what the restore gave up.
 
-If no anchor is at or below the restore point, for example because you restored to a point before the first anchor, no anchor describes the restored log.
+If no anchor was taken before the restore point, for example because you restored to a point before the first anchor, no anchor describes the restored log.
 Run `previously verify` without `--anchors`, which checks only that the chain is consistent in itself, as *Read the result* says.
-Then start over with a first anchor in a new file, as {ref}`verify-the-chain` shows.
+Then start over with a first anchor in a file of a new name, for example `anchors-new.txt`, never `anchors.txt`.
+Take it as {ref}`verify-the-chain` shows, with that name in place of `anchors.txt`, and run the routine against it from then on.
+
+Otherwise, run the routine from {ref}`verify-the-chain` against `anchors-restored.txt` from now on.
+Against `anchors.txt`, it would raise the alarm on every run.
 
 ## Read the result
 
 If `previously verify` exits `1` against the anchor file that fits your case, the restored instance doesn't hold what the anchors say it should, and the restore failed, even if PostgreSQL itself started without complaint.
 Discard the instance and restore again.
-The one check whose findings you expect is the first step of *If the anchor file has no history*: there, they only give you the tip.
+The one check whose findings you expect is the first step of *If the anchor file has no history*, after a restore on purpose to an earlier point: there, they only give you the tip.
 
 If `previously verify` exits `2`, it didn't check anything: the anchor file is missing or unreadable, holds no anchor line, or holds a line that isn't an anchor line, or storage raised an error.
 The message on standard error names the problem; see {ref}`cli-reference` for what counts as an input error.

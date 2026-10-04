@@ -46,6 +46,7 @@ def test_reading_tolerates_comments_blank_lines_case_and_whitespace() -> None:
         (f"0 {HASH}", "positive integer"),
         (f"-3 {HASH}", "positive integer"),
         (f"² {HASH}", "positive integer"),
+        pytest.param(f"{'9' * 5000} {HASH}", "more than 19 digits", id="5000-digit-id"),
         (f"1 {HASH[:-1]}", "64 hex characters"),
         (f"1 {'zz' * 32}", "not hexadecimal"),
     ],
@@ -56,15 +57,18 @@ def test_a_broken_line_is_refused_with_its_line_number(line: str, message: str) 
     The `²` case pins that a digit outside ASCII is refused as a bad id and
     not let through to a `ValueError`: `str.isdigit()` takes it for a number
     and `int()` does not (review focus 5 of the 2026-10-04 external-anchor
-    plan)."""
+    plan). The 5000 digits pin the same for a different `ValueError`, the one
+    `int()` raises beyond its digit limit, and the length bound on the
+    message pins that a damaged line is not echoed back whole."""
     with pytest.raises(InvalidPayload, match=re.escape(message)) as caught:
         parse_anchors([f"1 {HASH}", line])
     assert "anchor line 2" in str(caught.value)
+    assert len(str(caught.value)) < 100
 
 
 @pytest.mark.parametrize("lines", [[], ["", "# only a comment", "   "]])
 def test_a_file_without_an_anchor_is_refused(lines: list[str]) -> None:
     """`chain intact, 0 anchors hold` would be the weak statement dressed as
     the strong one."""
-    with pytest.raises(InvalidPayload, match="holds no anchor"):
+    with pytest.raises(InvalidPayload, match=r"^the input holds no anchor$"):
         parse_anchors(lines)

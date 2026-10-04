@@ -221,7 +221,7 @@ One change removed the two exemptions and the bolt behind them, and it removed t
 `class LogStore[Conn](Protocol)` in `contract.store`, generic over the connection type, gives `core` something to be typed against that isn't the concrete `PostgresStorage`.
 `append` and `verify` are generic functions over that connection type, the edge `core → storage.postgres` doesn't exist, so there's nothing to exempt and nothing for a test to watch over.
 
-The protocol has eight methods, and the number was read off the two callers rather than copied from the store's method list:
+The protocol has nine methods, and the number was read off the two callers rather than copied from the store's method list:
 
 ```text
 $ grep -o 'storage\.[a-z_]*(' src/previously/core/append.py src/previously/core/verify.py \
@@ -231,6 +231,7 @@ storage.count_events(
 storage.insert_event(
 storage.lookup(
 storage.read(
+storage.snapshot(
 storage.source_keys(
 storage.tip(
 storage.units_by_event(
@@ -238,7 +239,7 @@ storage.units_by_event(
 
 Reading it off that way is what keeps the protocol a statement about what `core` needs instead of a copy of what the store happens to offer.
 `PostgresStorage.units` is the test of that: it fetches the units of a single event, `cli` calls it for `show`, and `core` never does—so it's a method of the store and not a member of the protocol.
-A protocol copied from the implementation would have carried nine methods and said something false about `core`.
+A protocol copied from the implementation would have carried ten methods and said something false about `core`.
 
 The store still has to satisfy the protocol, and that's now a typed claim rather than a guarded one.
 Renaming `count_events` to `count_rows` in `storage/postgres.py`, measured on 2026-10-04, turns `pyright` red at every place a `PostgresStorage` is handed to `append` or `verify`:
