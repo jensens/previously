@@ -163,6 +163,19 @@ nach `storage/rows.py`, das heute schon kein SQLAlchemy importiert und darum
 das „the shape is already half in place". `Tip`, `EventRow`, `UnitRow` liegen
 dort bereits.
 
+> **Korrigiert beim Planen, 2026-10-04.** Der Absatz oben ist falsch, und
+> zwar an der Schicht: `contract` ist die **unterste** Schicht des
+> `layers`-Vertrags in `.importlinter`, und die Protokolle in `contract`
+> können keine Typen aus `storage/rows.py` nennen, ohne dass `contract`
+> `storage` importiert — ein Import nach oben, der den Vertrag bricht
+> (gemessen beim Planen: `BROKEN`). „Unbedenkliche Quelle über die Grenze"
+> stimmt nur für `core → storage`, nicht für `contract → storage`. Also
+> wandern **alle** Zeilentypen nach `previously.contract.rows`, und
+> `storage/rows.py` wird gelöscht, kein Re-Export. Folge: `storage` importiert
+> dann `contract`, und damit existieren **alle sechs** Kanten, die die
+> Schichtenordnung erlaubt — `module-boundaries.md` sagte fünf. Der Plan
+> trägt das in Aufgabe 1.
+
 `PostgresStorage` implementiert beide Protokolle und bindet `Conn` an
 `sqlalchemy.Connection`. `core` nennt diesen Typ nie.
 
@@ -435,8 +448,10 @@ keep beside the test a case measured to stay green*:
   als je zwei Zeichen. Der gespeicherte Inhalt in `p_chronicle` ist
   unverändert — die Entschärfung ist Ausgabeformat, nicht Daten.
 - **Rückstand.** Nach `append` ohne `project`: `chronicle` schreibt
-  `projection is 1 events behind` nach `stderr`, `stdout` enthält nur Zeilen.
-  **Kontrolle:** nach `project` schreibt es nichts nach `stderr`.
+  `projection is 1 event behind; run `previously project`` nach `stderr`,
+  `stdout` enthält nur Zeilen. **Kontrolle:** nach `project` schreibt es
+  nichts nach `stderr`. (Hier stand `1 events`; Singular korrigiert beim
+  Planen, 2026-10-04.)
 - **Kappung.** `--limit 2` bei fünf Zeilen im Fenster: zwei Zeilen auf `stdout`
   und ein Hinweis auf `stderr`. **Kontrolle:** `--limit 10` bei fünf Zeilen,
   kein Hinweis.
@@ -466,6 +481,12 @@ Nichts zu tun:
 chronicle       up to date, up_to_id 42
 source-stats    up to date, up_to_id 42
 ```
+
+> **Präzisiert beim Planen, 2026-10-04.** Der erste Lauf auf eine leere
+> `projection_state` ist ein vierter Fall, den die drei Ausgaben oben nicht
+> decken. `rebuilt: version 0 -> 1` wäre wörtlich falsch — es gab nichts zu
+> *re*-bauen. Er heißt `built: 42 events, up_to_id 42`. Und alle vier zählen
+> richtig: `1 event`, `12 events`.
 
 Die Projektionsnamen in der Ausgabe sind die aus `projection_state.name`:
 `chronicle`, `source-stats`. Rückgabecode 0; 1 bei Fehler, wie die anderen
@@ -504,7 +525,12 @@ dieser Reihenfolge: `event_id`, `seq`, `occurred_at` (ISO 8601), `source`,
 ausgeschrieben.** Eine Zeile ist eine Einheit — das ist der Zweck von
 Einheiten, und ein mehrzeiliges Feld in einem tabgetrennten Strom wäre weder
 lesbar noch auswertbar. Der Rückstrich selbst wird als `\\` ausgeschrieben,
-damit die Entschärfung umkehrbar ist. `show` bleibt, wie es ist: es zeigt
+damit die Entschärfung umkehrbar ist.
+
+> **Präzisiert beim Planen, 2026-10-04.** Auch `\r` wird als die zwei Zeichen
+> `\r` ausgeschrieben. `split_plaintext` normalisiert nur den eigenen Weg;
+> ein Konnektor kann ein `\r` in einer Einheit liefern, und es bricht eine
+> Terminalzeile genauso wie `\n`. Vier Zeichen also, Rückstrich zuerst. `show` bleibt, wie es ist: es zeigt
 **ein** Event für Menschen, `chronicle` ist ein Strom für Menschen und
 Werkzeuge.
 
