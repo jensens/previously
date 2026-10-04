@@ -137,6 +137,16 @@ code needs; the lock says what was tested.
 
 Work in a git worktree, never directly on `main`.
 
+**A merge into `main` is the acceptance.** When the maintainer merges a branch
+or approves a pull request into `main`, that act accepts the work it carries.
+Nothing else does: six green gates, a review verdict, a report that says
+"done" are claims waiting for that merge. Stated by the maintainer on
+2026-10-04, when stage 1b was ready and the question arose what "accepted"
+means — and it answers an older one in passing: the frozen stage 1a
+specification still reads `Status: zur Abnahme` under its frozen header,
+because its acceptance was the merge of 2026-10-03, not a line in the
+document.
+
 Technical directives from the maintainer are **proposals**. Contradiction is
 wanted — but bring a measurement, not an opinion. Measure against the project
 configuration, never with `--isolated`, or you will measure a different
