@@ -23,7 +23,7 @@ Which check to run depends on what you restored to.
 
 ## Restore to the latest state
 
-If you restored a base backup and replayed the write-ahead log to the latest state, check that the log contains every anchor:
+If you restored a base backup and replayed the write-ahead log to the latest state, or to any point after the newest anchor, check that the log contains every anchor:
 
 ```shell
 previously verify --anchors anchors.txt
@@ -32,29 +32,61 @@ previously verify --anchors anchors.txt
 Exit code `0` means that up to the newest anchor, nothing is lost and nothing is rewritten.
 Whatever the restored log holds after the newest anchor, this check doesn't vouch for it.
 Whatever it should hold there and doesn't, this check doesn't see.
-Don't add `--exact` here: any event after the newest anchor would be reported as a finding, although nothing is missing.
+
+Here, every `anchored event is missing` finding is a loss: the restore stopped short of an anchor, and it failed.
+There's nothing to cut; see *Read the result*.
+
+Don't add `--exact` here: it reports any event after the newest anchor as a finding, and that finding says nothing about loss.
 
 ## Restore to an earlier point
 
-If you restored to a point earlier than the newest anchor, first run the same check against the whole anchor file:
+If you restored on purpose to a point before the newest anchor, check the restore against the anchor file as it stood at that point.
 
-```shell
-previously verify --anchors anchors.txt
-```
+1.  Get the anchor file as it stood at the restore point from the place you keep it: the version of that time under version control, or the copy or message from that time.
+    The file doesn't date its own lines, so you can't read that version off the current file.
+    Save it as `anchors-restored.txt`.
+    If the file didn't exist yet at that point, or held no anchor line, see *After the check* below.
+    If you can't get it, see *If the anchor file has no history* below.
 
-Each anchor taken after the restore point reports a finding of this form, with exit code `1`:
+2.  Check against that file:
+
+    ```shell
+    previously verify --anchors anchors-restored.txt
+    ```
+
+    Exit code `0` means that up to the newest anchor in that file, nothing is lost and nothing is rewritten.
+    As in the first case, the check doesn't vouch for anything after that anchor.
+    An `anchored event is missing` finding against that file is a loss: the restore stopped short of an anchor taken before the point it was meant to reach.
+
+3.  If the restore point coincides with the last anchor in that file, add `--exact`:
+
+    ```shell
+    previously verify --anchors anchors-restored.txt --exact
+    ```
+
+    Exit code `0` then means, in addition, that the tip of the restored log is exactly that anchor.
+
+Against the anchor file as it stands today, every anchor taken after the restore point reports a finding of this form:
 
 ```text
 FINDING 3: anchored event is missing (the log ends at 2)
 ```
 
-Expect these findings here: those lines anchor events that this restore gave up.
-Don't discard the instance because of them.
+Those findings are true: the restore gave up those events, and that's why you check against the earlier file instead.
 For why a restore looks like this to the anchors, see {ref}`external-anchor`.
 
-Check the restore against the anchor file as it stood at the restore point instead:
+### If the anchor file has no history
 
-1.  Read the tip of the restored log from the finding: the number after `the log ends at`.
+If the anchor file was only ever appended to in one place, you can't tell which lines it held at the restore point.
+Then cut it at the tip of the restored log instead, and know its limit before you start.
+The cut shows that nothing up to the last anchor it keeps was rewritten.
+It can't show that the restore reached the point you meant, because the cut comes from the result of the restore itself.
+
+1.  Run the check against the whole file, and read the tip of the restored log from a finding: the number after `the log ends at`.
+
+    ```shell
+    previously verify --anchors anchors.txt
+    ```
 
 2.  Number the lines of the anchor file:
 
@@ -62,45 +94,39 @@ Check the restore against the anchor file as it stood at the restore point inste
     cat -n anchors.txt
     ```
 
-    Find the last anchor line whose `id`, the first field, isn't above that tip.
+    Find the last anchor line whose `id`, the first field, isn't above that tip, and note its line number, the number `cat -n` prints in front of it.
+    If no anchor line has an `id` at or below the tip, don't cut; see *After the check* below.
 
 3.  Copy the file up to and including that line into a new file.
-    For that line as line 2:
+    Pass the line number to `head -n`, not the `id`, even though both are `2` in this example:
 
     ```shell
     head -n 2 anchors.txt > anchors-restored.txt
     ```
 
-4.  Check against the new file.
-    If the `id` of its last anchor is the tip of the restored log, add `--exact`:
+4.  Check against the new file, as in steps 2 and 3 above.
+    Add `--exact` only if the `id` of its last anchor is the tip of the restored log.
 
-    ```shell
-    previously verify --anchors anchors-restored.txt --exact
-    ```
-
-    Exit code `0` means that up to that anchor, nothing is lost and nothing is rewritten, and that the tip is exactly that anchor.
-
-    If the tip is above that anchor, run the check without `--exact`:
-
-    ```shell
-    previously verify --anchors anchors-restored.txt
-    ```
-
-    Exit code `0` then means the same as in the first case, and it vouches for nothing after the newest anchor in the new file.
+### After the check
 
 From now on, run the routine from {ref}`verify-the-chain` against `anchors-restored.txt`.
 Against `anchors.txt`, it would raise the alarm on every run.
 Keep `anchors.txt` unchanged: it records what the restore gave up.
 
+If no anchor is at or below the restore point, for example because you restored to a point before the first anchor, no anchor describes the restored log.
+Run `previously verify` without `--anchors`, which checks only that the chain is consistent in itself, as *Read the result* says.
+Then start over with a first anchor in a new file, as {ref}`verify-the-chain` shows.
+
 ## Read the result
 
-If `previously verify` exits `1` against the anchor file that fits your case, the restored instance doesn't hold what the anchors say it should, even if PostgreSQL itself started without complaint.
+If `previously verify` exits `1` against the anchor file that fits your case, the restored instance doesn't hold what the anchors say it should, and the restore failed, even if PostgreSQL itself started without complaint.
 Discard the instance and restore again.
+The one check whose findings you expect is the first step of *If the anchor file has no history*: there, they only give you the tip.
 
-If `previously verify` exits `2`, it didn't check anything: the anchor file is missing or unreadable, or a line in it isn't an anchor line, or storage raised an error.
+If `previously verify` exits `2`, it didn't check anything: the anchor file is missing or unreadable, holds no anchor line, or holds a line that isn't an anchor line, or storage raised an error.
 The message on standard error names the problem; see {ref}`cli-reference` for what counts as an input error.
 
-If you have no anchor file, `previously verify` without `--anchors` is the only check left.
+If you have no anchor file, or no anchor describes the restored log, `previously verify` without `--anchors` is the only check left.
 Its exit code `0` means that the restored chain is consistent in itself, and nothing more: a restore from an older state is a shorter chain that passes as well.
 
 Don't treat a restored instance as a backup until it has passed this check.

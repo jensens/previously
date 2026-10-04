@@ -54,6 +54,8 @@ The first command checks the chain and every anchor taken so far.
 The second command appends the current tip as a new anchor, and runs only if the first one exited `0`.
 Treat any exit code other than `0` as an alarm.
 If the second command exits other than `0`, whatever it printed to standard output is now in the anchor file, and you have to remove those lines by hand before the next run.
+If no event arrived since the last run, the routine appends the same line again.
+That's harmless, and it means that the count in `chain intact, <n> anchors hold` counts lines, not events.
 
 If the command runs inside a container and the anchor file lives outside it, pass `-` to read the anchors from standard input:
 
