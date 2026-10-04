@@ -1,16 +1,23 @@
 # Previously — Stufe 1b: Projektionen
 
-Stand: 2026-10-04 · Status: Entwurf, zur Abnahme
+> **Eingefrorener Entwurfsbericht, Stand 2026-10-04.**
+> Dieses Dokument wird nicht mehr nachgezogen.
+> Es hält fest, **wie und warum** entschieden wurde, und bleibt dafür im
+> Repository. Die lebende Begründung steht in der Dokumentation unter
+> `docs/` — soweit sie dort steht; wo sie fehlt, ist dieses Dokument die
+> einzige Quelle. Weicht es von der Doku ab, gilt die Doku.
+>
+> Ein neuer Spec für eine neue Stufe entsteht wieder auf Deutsch — das ist
+> die Sprache, in der die Absicht formuliert wird. Er friert ein, sobald
+> seine Explanation-Seiten stehen. Das Einfrieren als **Ablauf**, und die
+> Karte von jedem zitierten Paragraphen zu seiner Seite, stehen in
+> [About the frozen design records](../../explanation/design-records.md).
 
-Dieser Spec entsteht auf Deutsch, weil Absicht hier genauer zu fassen ist. Er
-friert ein, sobald seine Explanation-Seiten stehen, mit datiertem Kopf — so, wie
-`CLAUDE.md` es unter *A specification starts in German and then freezes*
-beschreibt und [About the frozen design records](../../explanation/design-records.md)
-es als Ablauf festhält. Bis dahin ist er das maßgebliche Dokument für 1b.
+Stand: 2026-10-04 · Status: eingefroren
 
-Er argumentiert aus der Architektur (`2026-10-01-architektur.md`, eingefroren)
-und aus dem, was Stufe 1a gebaut hat. Wo er der Architektur widerspricht oder
-sie präzisiert, sagt er es in §1.1.
+Dieser Spec argumentiert aus der Architektur (`2026-10-01-architektur.md`,
+eingefroren) und aus dem, was Stufe 1a gebaut hat. Wo er der Architektur
+widerspricht oder sie präzisiert, sagt er es in §1.1.
 
 ---
 
@@ -707,10 +714,17 @@ voraussichtlich `upsert` brauchen; der Plan misst das.
 
 ## 10. Was offen bleibt
 
-Dieser Abschnitt ist **gepflegt**, nicht eingefroren, solange der Spec lebt —
-und wenn er einfriert, wandert, was dann noch offen ist, in den Spec der
-nächsten Stufe. Mit dem Einfrieren der drei ersten Specs hat das Projekt den
-Ort für offene Punkte verloren; dieser Abschnitt stellt ihn wieder her.
+Dieser Abschnitt war **gepflegt**, solange der Spec lebte; mit dem Einfrieren
+verliert er seine Pflege. Was hier steht, ist damit nicht abgearbeitet, sondern
+weitergegeben: es gehört in den Spec der nächsten Stufe, und der äußere Anker
+gehört dort nach oben — er ist eine ausdrückliche Zusage des Betreuers und
+keine Vertagung wie die übrigen Punkte.
+
+Punkt 8 und die zwei Notizen darunter kamen beim Einfrieren dazu, aus den
+Prüfbefunden F11, F9 und F12 der Prüfung von Aufgabe 5 dieses Plans. Die
+Befunde im Wortlaut und die Entscheidung, sie nicht zu bauen, stehen im
+Ausführungsprotokoll dieses Plans, unter
+`docs/superpowers/sdd/2026-10-04-stufe-1b-projektionen/progress.md`.
 
 1. **Der äußere Anker.** Ausdrückliche Zusage des Betreuers vom 2026-10-04:
    darf nicht vergessen werden. Ohne Anker bezeugt die Kette, dass
@@ -747,3 +761,33 @@ Ort für offene Punkte verloren; dieser Abschnitt stellt ihn wieder her.
 7. **`previously stats` ohne Zeitraum.** Bewusst, damit `stats` nicht zur
    zweiten Zeitordnung wird. Wenn ein Zeitraum gebraucht wird, ist das eine
    neue Projektion (je Quelle und Tag), nicht ein Filter auf dieser.
+8. **Keine Sperre auf der Zustandszeile** (Prüfbefund F11). `catch_up` nimmt
+   die Zeile in `projection_state` ungesperrt. Zwei gleichzeitige Läufe
+   derselben Projektion kommen beide durch die Versionsprüfung und schreiben
+   beide — das Ergebnis zählt unter. Heute kann sie niemand starten: der
+   Arbeiter ist ein Kommando, und eine Warteschlange gibt es nicht (Punkt 4).
+   Dorthin gehört die Sperre, und zwar in demselben Schritt, der die
+   Warteschlange baut: `SELECT … FOR UPDATE` auf die Zustandszeile, oder ein
+   Advisory-Lock je Projektion. Wer die Warteschlange baut, ohne eins von
+   beiden zu tun, öffnet den Weg.
+
+   Zwei Notizen aus derselben Prüfung stehen darunter. Keine der beiden
+   bekommt einen eigenen Punkt, weil der heutige Code zu beiden keinen Weg
+   hat; beide verlangen eine Entscheidung, bevor eine dritte Projektion
+   dazukommt.
+
+   - **`Projection.write` könnte sich eine eigene Transaktion nehmen**
+     (Prüfbefund F9). Die Methode bekommt die Verbindung des Aufrufers und
+     könnte über `store.begin()` eine zweite daneben öffnen; dann schreibt
+     der Stapel in zwei Transaktionen, und die tragende Invariante aus §4.1 —
+     Zeilen und `up_to_id` wandern in derselben Transaktion — hält nicht mehr.
+     Das Typsystem verhindert es nicht, der Vertrag steht allein im
+     Docstring. Entweder trägt die nächste Stufe ihn in die Typen, oder sie
+     prüft ihn mit einem Test, der eine Projektion mit eigener Transaktion
+     durchfallen lässt.
+   - **`projection_state.version` hat kein `CHECK (version > 0)`**
+     (Prüfbefund F12). Der Arbeiter liest `rebuilt_from == 0` als „es gab
+     nichts"; eine 0 in der Spalte wäre damit nicht von einem Erstbau zu
+     unterscheiden und würde als einer gemeldet. Die Spalte bekommt den
+     `CHECK`, oder `rebuilt_from` bekommt eine Form, die „nichts" nicht als
+     Zahl ausdrückt.

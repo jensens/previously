@@ -2,11 +2,11 @@
 
 # About the frozen design records
 
-Three German documents under `docs/superpowers/specs/` hold how this project was decided: the design, the architecture, and the detailed specification of stage 1a.
-They're frozen as of 2026-10-03, and nothing pulls them forward again.
+Four German documents under `docs/superpowers/specs/` hold how this project was decided: the design, the architecture, the detailed specification of stage 1a, and the one for stage 1b.
+The first three froze on 2026-10-03, the stage 1b specification on 2026-10-04, and nothing pulls any of them forward again.
 The reasoning that gets maintained along with the code lives in this quadrant instead, and where a specification and a page disagree, the page is what holds.
 
-Until this documentation existed, those three documents were the only place a reason was written down, so the code cited them: 72 paragraph references across 21 files in `src/`, `tests/` and `migrations/`, pointing at 20 paragraphs.
+Until this documentation existed, those first three documents were the only place a reason was written down, so the code cited them: 72 paragraph references across 21 files in `src/`, `tests/` and `migrations/`, pointing at 20 paragraphs.
 Fourteen of the 72 still do, two were dropped from error messages the user reads, and the remaining 56 name a page instead.
 This page says what the frozen records are still for, how the freezing works for the stages that follow, and which page took over each of those paragraphs.
 If you arrived from a paragraph number in a comment, the table under *Where each cited paragraph went* is the map, and the section after it says when a comment keeps its number instead of naming a page.
@@ -16,8 +16,12 @@ If you arrived from a paragraph number in a comment, the table under *Where each
 German is the language the intent gets written in, and that isn't a leftover to work off.
 A new stage therefore starts with a new German specification, and that specification freezes as soon as its explanation pages stand.
 
-So the right way to read the three frozen documents is as the output of a step that repeats, not as a rule against writing a fourth.
+So the right way to read the frozen documents is as the output of a step that repeats, not as a rule against writing the next one.
 A reader who takes the freeze for a prohibition would start the next stage without the document the stage needs most.
+
+Stage 1b is the first time that step ran as a step.
+Projections got their own German specification, dated 2026-10-04, and it froze the same day, because the pages its reasoning belongs on stood by then: {ref}`projections` for the derived tables and the worker that fills them, {ref}`module-boundaries` for the contracts that let `core` write them without importing storage.
+{ref}`database-schema` and {ref}`cli-reference` took the facts—the three tables, and the three commands that build and read them.
 
 ## What a frozen record is still good for
 
@@ -71,6 +75,11 @@ So both keep their number, and `storage/postgres.py` says which document to open
 The other three are registers tied to a date.
 The stage 1a specification's §10.2 names the chain's properties `P1` to `P7`, §11 numbers the acceptance conditions for the stage, and §12 lists its open points.
 The property names, the condition numbers and the open points mean something only against the document that assigned them, so a citation of one of those belongs in a frozen record and says so.
+
+No row names the stage 1b specification, and that's the one thing worth saying about it.
+Measured across `src/previously/core/projection`, `src/previously/contract/store.py` and `src/previously/contract/rows.py`, stage 1b's code holds a single paragraph sign, and it cites the architecture's §4.4 with `(frozen design record)` on the same line.
+Not one line points at the specification of its own stage.
+Stage 1b is the first stage whose code never had to: its pages were written in the same pull request as the code, so a reason had a page to name from the first draft, and `test_no_bare_paragraph_references_remain` in `tests/test_docs_references.py` turns that from a habit into a gate by refusing an unmarked paragraph sign.
 
 ## Two kinds of citation, and the code shows which is which
 

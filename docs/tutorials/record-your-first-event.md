@@ -2,8 +2,8 @@
 
 # Record your first event
 
-In this tutorial, we will record our first event in Previously, look at the chronicle it produces, check that the chain holds, and prove both with the project's own test suite.
-Every command below is real: it was typed against a real PostgreSQL 17, in a fresh checkout at `/tmp/previously-task3-fresh`.
+In this tutorial, we will record our first event in Previously, read it back from the log, check that the chain holds, build the two derived views, read the chronicle and the counts per source, and prove all of it with the project's own test suite.
+Every command below is real: it was typed in a fresh checkout, against a real PostgreSQL 17 in a container like the one below.
 No output below names a directory, so nothing here depends on where you put yours.
 
 ## Prerequisites
@@ -55,10 +55,12 @@ $ uv run alembic upgrade head
 INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
 INFO  [alembic.runtime.migration] Will assume transactional DDL.
 INFO  [alembic.runtime.migration] Running upgrade  -> 0001_log, Log, units, idempotency key
+INFO  [alembic.runtime.migration] Running upgrade 0001_log -> 0002_projections, Projections: state, chronicle, source statistics
 ```
 
-Notice that there's exactly one upgrade step.
-Stage 1a's whole schema—the log, its units, and the idempotency key—lives in that one migration.
+Notice that there are two upgrade steps.
+The first one brings the log, its units, and the idempotency key.
+The second one brings three more tables: one for each derived view, and one that records how far each view has read.
 
 ## Submit your first event
 
@@ -77,11 +79,11 @@ Next milestone: content migration starts Monday."
 Notice that the id is `1`.
 This is the first event in the chain, so there's no predecessor to link to.
 
-## Look at the chronicle
+## Look at the log
 
 ```console
 $ uv run previously log
-1	2026-10-03T15:41:19.888666+00:00	observation	495362ef39c9
+1	2026-10-04T04:53:01.069903+00:00	observation	b97c59a1f2c3
 ```
 
 Notice that the chain now has one event.
@@ -102,8 +104,8 @@ It found nothing wrong, so it printed exactly that one line.
 ```console
 $ uv run previously show 1
 id=1 kind=observation
-occurred_at=2026-10-03T15:41:19.888666+00:00
-hash=495362ef39c9af8358eaee83acc956d4813464cdd07057bd38c44680e3410dcc
+occurred_at=2026-10-04T04:53:01.069903+00:00
+hash=b97c59a1f2c353abb0e96eb3e2858c7479798f7bd1fbb60c536256867011fcd7
 evidence=recollection
 payload={"evidence": "recollection", "text": "The client approved the new homepage design.\n\nNext milestone: content migration starts Monday."}
   ¶1 The client approved the new homepage design.
@@ -114,10 +116,52 @@ Notice that the text split into two units at the blank line, numbered `¶1` and 
 Notice also `evidence=recollection`: the command above didn't pass `--evidence`, and `recollection` is what it defaults to.
 
 :::{note}
-The hash on your screen won't match the one above.
+The hash and the timestamps on your screen won't match the ones above, here or in any block below.
 `recorded_at`—the moment you submitted the event—feeds the hash, so the same text submitted at a different time produces a different event, and therefore a different hash.
 Running this tutorial twice, or on two different machines, gives two different hashes, both correct.
 :::
+
+## Build the derived views
+
+The chronicle and the counts per source are derived from the log, they start out empty, and one command fills them both.
+
+```console
+$ uv run previously project
+chronicle       built: 1 event, up_to_id 1
+source-stats    built: 1 event, up_to_id 1
+```
+
+Notice that both lines say `built`: nothing existed yet, so the worker built each view from the log, starting at the first event.
+Run the same command a second time.
+
+```console
+$ uv run previously project
+chronicle       up to date, up_to_id 1
+source-stats    up to date, up_to_id 1
+```
+
+Notice that both lines now say `up to date`.
+`up_to_id 1` is how far each view has read, the log hasn't grown since, so there was nothing left to project.
+
+## Read the chronicle
+
+```console
+$ uv run previously chronicle
+1	1	2026-10-04T04:53:01.069903+00:00	email	2026-10-03-kickoff@example.org	The client approved the new homepage design.
+1	2	2026-10-04T04:53:01.069903+00:00	email	2026-10-03-kickoff@example.org	Next milestone: content migration starts Monday.
+```
+
+Notice that each line is one unit, and that each one carries `email` and the message identifier we passed to `append`.
+That source attribution is what makes this a chronicle and not a copy of `log`.
+
+## Count per source
+
+```console
+$ uv run previously stats
+email	1	2	2026-10-04T04:53:01.069903+00:00	2026-10-04T04:53:01.069903+00:00
+```
+
+Notice that `email` stands at one event and two units, and that the two timestamps are the same moment: the log holds one event, so the first one seen and the last one seen are that event.
 
 ## Run the test suite
 
@@ -128,32 +172,32 @@ It raises its own PostgreSQL container and never touches the database above.
 $ uv run pytest
 ============================= test session starts ==============================
 platform linux -- Python 3.14.3, pytest-9.1.1, pluggy-1.6.0
-Using --randomly-seed=1472962872
+Using --randomly-seed=1705979683
 configfile: pyproject.toml
 testpaths: tests
 plugins: hypothesis-6.168.3, cov-7.1.0, randomly-5.0.0, platformdirs-4.12.2
 collected 232 items
 
-tests/test_storage.py ..........................                         [ 11%]
-tests/test_contracts.py ..                                               [ 12%]
-tests/test_projection_store.py ........                                  [ 15%]
-tests/test_docs_references.py .....                                      [ 17%]
-tests/test_migrations_dsn.py ...                                         [ 18%]
-tests/test_properties.py .........                                       [ 22%]
-tests/test_docs_build.py ......                                          [ 25%]
-tests/test_cli.py ...................................                    [ 40%]
-tests/test_rows.py ....                                                  [ 42%]
-tests/test_verify.py .................                                   [ 49%]
-tests/test_schema.py .............                                       [ 55%]
-tests/test_docs_typed_output.py .                                        [ 55%]
-tests/test_projection_worker.py ............                             [ 60%]
+tests/test_projection_store.py ........                                  [  3%]
+tests/test_storage.py ..........................                         [ 14%]
+tests/test_contracts.py ..                                               [ 15%]
+tests/test_projection_derive.py .........                                [ 19%]
+tests/test_rows.py ....                                                  [ 21%]
+tests/test_docs_typed_output.py .                                        [ 21%]
+tests/test_verify.py .................                                   [ 28%]
+tests/test_projection_worker.py ............                             [ 34%]
+tests/test_schema.py .............                                       [ 39%]
+tests/test_migrations_dsn.py ...                                         [ 40%]
+tests/test_docs_build.py ......                                          [ 43%]
+tests/test_units.py .............                                        [ 49%]
+tests/test_canonical.py ...............                                  [ 55%]
+tests/test_properties.py .........                                       [ 59%]
+tests/test_docs_references.py .....                                      [ 61%]
 tests/test_hashing.py ........................                           [ 71%]
-tests/test_canonical.py ...............                                  [ 77%]
-tests/test_projection_derive.py .........                                [ 81%]
-tests/test_append.py ..............................                      [ 94%]
-tests/test_units.py .............                                        [100%]
+tests/test_cli.py ...................................                    [ 87%]
+tests/test_append.py ..............................                      [100%]
 
-============================= 232 passed in 20.32s =============================
+============================= 232 passed in 21.69s =============================
 ```
 
 `pytest-randomly` reshuffles the file order on every run and prints its seed, so a hidden dependency between two tests surfaces instead of staying hidden.
@@ -161,6 +205,7 @@ Your run prints one line this page leaves out, a `rootdir:` naming your own chec
 
 ## Next steps
 
-You have now recorded your first event, confirmed the chain is intact, and proven both with the project's own test suite.
+You have now recorded your first event, confirmed the chain is intact, built the two derived views, and proven all of it with the project's own test suite.
 For the full command reference, see {ref}`cli-reference`.
+For why `log` and `chronicle` are two commands, see {ref}`projections`.
 For exactly what goes into the hash you saw above, see {ref}`hash-format`.

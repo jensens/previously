@@ -64,17 +64,19 @@ lives under `docs/`. Build it locally with `make -C docs html`, then open
 session typed out against a real PostgreSQL 17, from a fresh checkout to a
 passing test suite.
 
-The three specifications below are **frozen design records**, in German and
+The four specifications below are **frozen design records**, in German and
 dated: they hold how and why a decision was taken, and the documentation under
 `docs/` carries the reasoning that is maintained with the code. Where the two
 disagree, the documentation wins. A new stage starts with a new German
-specification, which freezes once its explanation pages stand.
+specification, which freezes once its explanation pages stand — stage 1b is
+the first one that went that way from the start.
 
 | Document | Content |
 |---|---|
 | [Design](docs/superpowers/specs/2026-10-01-previously-design.md) | Frozen design record: goal, guiding principles, core model, attribution, projections, release model, acceptance conditions |
 | [Architecture](docs/superpowers/specs/2026-10-01-architektur.md) | Frozen design record: modules and boundaries, schema, connector contract, process model, MCP, tooling |
 | [Stage 1a](docs/superpowers/specs/2026-10-02-stufe-1a-log.md) | Frozen design record: detailed specification of the append-only log with its hash chain |
+| [Stage 1b](docs/superpowers/specs/2026-10-04-stufe-1b-projektionen.md) | Frozen design record, 2026-10-04: detailed specification of the projections — the two derived tables, the worker, and the three commands; its reasoning is maintained in [About derived views](docs/explanation/projections.md) and [About the module boundaries](docs/explanation/module-boundaries.md) |
 | [Execution records](docs/superpowers/sdd/) | Frozen working records, one directory per executed plan: the ledger of every decision taken while building it, and the target of the `ruling …` citations in the code |
 | [CLAUDE.md](CLAUDE.md) | The working agreements: language, attribution, dependencies, the six gates |
 | [DEPENDENCIES.md](DEPENDENCIES.md) | Every dependency with its purpose, the rejected alternative and the date it was last checked |
