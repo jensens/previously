@@ -58,3 +58,22 @@ class MigrationPending(StorageError):
     is written to or read from a table that `alembic upgrade head` has not
     created yet.
     """
+
+
+class BlobStoreUnreachable(StorageError):
+    """The blob store does not answer, or broke off while it was sending.
+
+    Translates every `botocore.exceptions.BotoCoreError`: no connection, a
+    connection that timed out, a stream that ended before its length. The
+    message names the endpoint, never the credentials.
+    """
+
+
+class BlobStoreRefused(StorageError):
+    """The blob store answered, and refused: wrong credentials, a bucket
+    that does not exist, a request it does not allow.
+
+    Translates every `botocore.exceptions.ClientError` that does not mean
+    "no such object". The message names the endpoint, the bucket and the
+    store's own code, never the credentials.
+    """

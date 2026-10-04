@@ -56,3 +56,33 @@ class RedactionRefused(PreviouslyError):
     that cannot attest part of its units. The command line shows the one
     sentence and returns 2, like every other `PreviouslyError`.
     """
+
+
+class BlobError(PreviouslyError):
+    """Root of what can go wrong between a content and its sealed object
+    ({ref}`blobs`). Raised as itself when `pyrage` refuses to seal, which it
+    does when the source breaks off while it is being read.
+
+    No message of this family names an identity: an identity is the secret
+    half of a key, and a message ends up on a terminal and in a log.
+    """
+
+
+class InvalidKey(BlobError, ValueError):
+    """A recipient or an identity is not an age X25519 key.
+
+    A malformed recipient is named in the message, since a recipient is
+    public. A malformed identity is not: what stands in its place may be a
+    real identity with a typo in it.
+    """
+
+
+class CannotOpen(BlobError):
+    """A sealed object cannot be opened: it names no key, no identity for its
+    key is at hand, the identity belongs to another key, or `age` refuses it
+    — the wrong identity, or bytes that are not an age file."""
+
+
+class AddressMismatch(BlobError):
+    """An object opened, and its plaintext is not the content its address
+    names. The bytes written so far are to be thrown away."""

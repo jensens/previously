@@ -1,10 +1,13 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Test setup: real PostgreSQL in a container, migrations run against the container."""
+"""Test setup: real PostgreSQL in a container, migrations run against the
+container, and a real S3 server in a second one for the blobs."""
 
 from alembic import command
 from alembic.config import Config
+from botocore.exceptions import BotoCoreError
+from botocore.exceptions import ClientError
 from previously.contract.rows import EventRow
 from previously.contract.rows import UnitRow
 from previously.core.hashing import event_hash
@@ -12,14 +15,21 @@ from previously.core.hashing import HASH_VERSION_1
 from previously.core.hashing import payload_hash
 from previously.core.hashing import units_hash
 from previously.storage.postgres import PostgresStorage
+from previously.storage.s3 import from_settings
+from previously.storage.s3 import S3BlobStore
 from previously.storage.schema import metadata
 from sqlalchemy import create_engine
 from sqlalchemy import Engine
 from sqlalchemy import text
 from testcontainers.community.postgres import PostgresContainer
+from testcontainers.core.container import DockerContainer
 from typing import TYPE_CHECKING
 
+import itertools
+import pyrage
 import pytest
+import secrets
+import time
 
 
 if TYPE_CHECKING:
@@ -174,3 +184,83 @@ def unmigrated_engine() -> Iterator[Engine]:
     """
     with PostgresContainer("postgres:17", driver="psycopg") as container:
         yield create_engine(container.get_connection_url())
+
+
+@pytest.fixture
+def age_identity() -> str:
+    """A fresh age X25519 identity, as the text `age-keygen` writes.
+
+    Made at run time and never written into the tree: the repository is
+    public, and a committed identity would be a secret in public, whatever it
+    was meant for.
+    """
+    return str(pyrage.x25519.Identity.generate())
+
+
+@pytest.fixture
+def other_age_identity() -> str:
+    """A second fresh identity, for the tests that need two keys: the wrong
+    identity, a change of key, two writers sealing to two recipients."""
+    return str(pyrage.x25519.Identity.generate())
+
+
+# The access key and the secret of the test server. The secret is drawn at run
+# time rather than written here: the repository is public, and a secret that
+# never stands in it cannot be mistaken for one that matters.
+_S3_ACCESS_KEY = "previously-test"
+_S3_SECRET_KEY = secrets.token_hex(16)
+# A number per bucket, so that every test gets one of its own.
+_BUCKETS = itertools.count(1)
+
+
+@pytest.fixture(scope="session")
+def s3_settings() -> Iterator[dict[str, str]]:
+    """A real S3 server for the session: RustFS in a container, with what
+    `storage.s3.from_settings` needs to reach it, the bucket left out.
+
+    One container for the whole run, the way PostgreSQL has one: starting it
+    is what costs, and a bucket per test (`blob_store`) keeps the tests apart
+    without a second start. The image is named here as a literal, like
+    `postgres:17` above, so that a change of version is a change of this
+    line.
+    """
+    container = (
+        DockerContainer("rustfs/rustfs:1.0.1")
+        .with_exposed_ports(9000)
+        .with_env("RUSTFS_ACCESS_KEY", _S3_ACCESS_KEY)
+        .with_env("RUSTFS_SECRET_KEY", _S3_SECRET_KEY)
+    )
+    with container:
+        host = container.get_container_host_ip()
+        settings = {
+            "endpoint": f"http://{host}:{container.get_exposed_port(9000)}",
+            "region": "us-east-1",
+            "access_key": _S3_ACCESS_KEY,
+            "secret_key": _S3_SECRET_KEY,
+        }
+        # The container counts as started before the server answers, so the
+        # fixture waits on an answer. 30 s is a ceiling, not a measurement.
+        probe = from_settings(**settings, bucket="probe")
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                probe.client.list_buckets()
+                break
+            except BotoCoreError, ClientError:
+                if time.monotonic() > deadline:
+                    raise
+                time.sleep(0.1)
+        probe.close()
+        yield settings
+
+
+@pytest.fixture
+def blob_store(s3_settings: dict[str, str]) -> Iterator[S3BlobStore]:
+    """A store on a bucket of its own, created fresh for this test: no test
+    sees the objects of another, and none has to clean up after itself. Closed
+    afterwards, so that its connections do not wait for the garbage
+    collector."""
+    store = from_settings(**s3_settings, bucket=f"test-{next(_BUCKETS)}")
+    store.client.create_bucket(Bucket=store.bucket)
+    yield store
+    store.close()

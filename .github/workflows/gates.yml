@@ -27,13 +27,15 @@ permissions:
 jobs:
   gates:
     # Docker is needed, because `tests/conftest.py` raises a real PostgreSQL
-    # 17 via testcontainers — no mock stands in for the database (CLAUDE.md).
+    # 17 and a real S3 server, RustFS, via testcontainers — no mock stands in
+    # for the database or the blob store (CLAUDE.md).
     # Checked, not assumed: the runner image for ubuntu-24.04, which
     # `ubuntu-latest` currently resolves to, lists "Docker Client 28.0.4",
     # "Docker Server 28.0.4" and "Docker Compose 2.38.2"
     # (actions/runner-images, images/ubuntu/Ubuntu2404-Readme.md). So no
-    # service container: `conftest.py` brings its own container up, and a
-    # second PostgreSQL route beside it would be a trap for the next reader.
+    # service container: `conftest.py` brings its own containers up, and a
+    # second route to either server beside it would be a trap for the next
+    # reader.
     runs-on: ubuntu-latest
 
     steps:

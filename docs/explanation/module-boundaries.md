@@ -3,9 +3,9 @@
 # About the module boundaries
 
 Previously is one code base with one dependency set and one database, divided into modules whose dependencies run one way.
-In stages 1a and 1b there are four of them, and the order is `cli` above `core` above `storage` above `contract`.
+Through stage 1c there are four of them, and the order is `cli` above `core` above `storage` above `contract`.
 The order isn't a convention somebody is asked to respect.
-It's four `import-linter` contracts, checked by a gate, and the gate prints the contract names, so the names themselves are part of the design rather than labels on it.
+It's `import-linter` contracts, six of them since stage 1c, checked by a gate, and the gate prints the contract names, so the names themselves are part of the design rather than labels on it.
 
 The point of the boundaries is narrow and worth stating before the mechanics.
 `core` is where the hash chain and the idempotency live, and it must stay able to run against a store it didn't import.
@@ -16,9 +16,10 @@ Since stage 1b `contract` also holds the row types and the store protocol that `
 ## The edges
 
 The diagram shows which module imports which, and since stage 1b there's nothing dashed in it.
+The arrows that leave the package each have a contract that names the one module allowed to draw them.
 
 ```{mermaid}
-:caption: The import edges after stage 1b: all six between its own modules, and not one of them exempted. The seventh arrow leaves the package.
+:caption: The import edges after stage 1c: all six between its own modules, and not one of them exempted. Three arrows leave the package.
 
 graph TD
     cli[cli] --> core[core]
@@ -28,6 +29,8 @@ graph TD
     core --> contract
     storage --> contract
     storage --> sqlalchemy[sqlalchemy]
+    core --> pyrage[pyrage]
+    storage --> boto3[boto3]
 ```
 
 Two things in that picture answer questions the contract names don't.
@@ -66,7 +69,7 @@ Until stage 1b this page carried two dashed edges from `core` into `storage.post
 The exemptions weren't about the edge `core → storage` being forbidden—the layer order allows it—but about what travels along it: `storage.postgres` imports SQLAlchemy, so every module that imports `storage.postgres` reaches SQLAlchemy transitively, and two contracts forbid exactly that for `core`.
 `cli` is no source module of those contracts, so the same edge needs no mention there.
 
-## Four contracts, and the names are the output
+## Six contracts, and the names are the output
 
 What `.importlinter` holds, in the words the gate prints:
 
@@ -75,15 +78,18 @@ Layers: core above storage, contract below both KEPT
 core knows no foreign system and no model KEPT
 Only storage imports sqlalchemy KEPT
 No vendor SDK in the package KEPT
+Only core.sealing imports pyrage KEPT (1 ignored import)
+Only storage.s3 imports boto3 KEPT (2 ignored imports)
 
-Contracts: 4 kept, 0 broken.
+Contracts: 6 kept, 0 broken.
 ```
 
-Two of those lines read `KEPT (2 ignored imports)` until 2026-10-04.
-The number was the price of typing `core` against a concrete store, and it stood in the gate log so the price stayed countable until somebody paid it.
-Stage 1b paid it, which is why there's no parenthesis left to read.
+The output was measured on 2026-10-05.
+The second and third lines read `KEPT (2 ignored imports)` until 2026-10-04.
+That number was the price of typing `core` against a concrete store, and it stood in the gate log so the price stayed countable until somebody paid it.
+Stage 1b paid it, and the parentheses on the last two contracts are a different thing: no debt, but the one module each contract exists to allow, named.
 
-Two of the four contracts differ from the architecture's table on purpose, and both differences are about what a contract can actually check.
+Two of the first four contracts differ from the architecture's table on purpose, and both differences are about what a contract can actually check.
 
 The second contract forbids `sqlalchemy`, `psycopg` and `alembic` rather than the four modules the architecture names.
 `connectors`, `gate`, `ai_layer` and `mcp_server` don't exist in stage 1a, and a `forbidden` contract on modules that don't exist checks nothing.
@@ -109,6 +115,23 @@ The negation would have forbidden it and left somebody to add an exemption for a
 The fourth contract is stricter in stage 1a than it will be in the end, and that's right rather than an oversight.
 It forbids `anthropic` and `openai` across the whole package without exception.
 From stage 4 on `gate` becomes the one exception, because `gate` is where model calls belong—but as long as there's no `gate`, no model call has any business being in this code at all.
+
+## Two contracts for the blobs
+
+Stage 1c brought two foreign systems for the blobs, and each got a contract over the whole package with one module named as the exception.
+{ref}`blobs` says what the two modules do; this section says why each sits where it does.
+
+`pyrage` may be imported by `core.sealing` and nowhere else.
+Sealing belongs in `core` because that's where the rules are: the format a content is sealed in is part of what the log promises about it, and the store below gets and gives ciphertext only.
+The probe that proves the contract therefore goes into `storage`, not into `core`, since a storage module that could open what it stores is the mistake the contract exists for.
+
+`boto3` and `botocore` may be imported by `storage.s3` and nowhere else.
+Storing belongs in `storage` for the reason SQL does: that's where the foreign systems are, and what reaches `core` is the protocol in `contract.blobs` and the errors in `storage.errors`.
+`botocore` stands beside `boto3` because the exceptions and the client configuration come from there, and an import of either would carry the foreign system upwards.
+The adapter keeps that promise for a stream read long after `get` returned, too: it hands out a thin wrapper whose `read` translates what `botocore` raises, because `pyrage` lets an exception out of `read` pass unchanged into `core`.
+
+The exceptions are edges named one by one, never a pattern, for the reason the next section measures.
+One more property comes for free, measured on 2026-10-05: an exemption for an import that doesn't exist makes `lint-imports` fail with `No matches for ignored import`, so neither exemption can outlive the edge it names.
 
 ## Why the two exemptions were enumerated and not matched
 

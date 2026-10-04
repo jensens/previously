@@ -3,10 +3,11 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The module boundaries as contracts ({ref}`module-boundaries`).
 
-The probe module that the second test writes is the reason this file carries
-so much machinery: it lands **inside the package**, because that is what
-`lint-imports` analyses, and a copy left lying around breaks the gate for
-everybody who works in this tree afterwards — with a violation nobody wrote.
+The probe modules that the tests after the first write are the reason this
+file carries so much machinery: they land **inside the package**, because that
+is what `lint-imports` analyses, and a copy left lying around breaks the gate
+for everybody who works in this tree afterwards — with a violation nobody
+wrote.
 """
 
 from contextlib import contextmanager
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import previously.core
+import previously.storage
 import pytest
 import subprocess
 import warnings
@@ -39,6 +41,11 @@ _CORE_DIRECTORY = Path(previously.core.__file__).parent
 # against a different tree than the one the probe is written into.
 _REPO_ROOT = _CORE_DIRECTORY.parents[2]
 _PROBE = _CORE_DIRECTORY / "_violation.py"
+# The second place a probe goes: `storage`, for the contract that keeps
+# `pyrage` in `core.sealing`. A probe in `core` cannot show that one breaks,
+# since `core` is where the one allowed importer lives.
+_STORAGE_PROBE = Path(previously.storage.__file__).parent / "_violation.py"
+_PROBES = (_PROBE, _STORAGE_PROBE)
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -53,37 +60,41 @@ def _sweep_a_left_over_probe() -> Iterator[None]:
     silently would hide exactly the knowledge that helps: the warning names
     the path, so that the same thing outside a test run is recognisable.
     """
-    if _PROBE.exists():
-        warnings.warn(
-            f"a probe module out of an aborted test run lay at {_PROBE} and has been "
-            "removed. Had it stayed, `lint-imports`, `ruff` and `pyright` would have "
-            "reported a violation nobody wrote.",
-            stacklevel=1,
-        )
-        _PROBE.unlink()
+    for probe in _PROBES:
+        if probe.exists():
+            warnings.warn(
+                f"a probe module out of an aborted test run lay at {probe} and has been "
+                "removed. Had it stayed, `lint-imports`, `ruff` and `pyright` would have "
+                "reported a violation nobody wrote.",
+                stacklevel=1,
+            )
+            probe.unlink()
     yield
-    if _PROBE.exists():
-        _PROBE.unlink()
-        pytest.fail(f"the probe module {_PROBE} was still lying there after the tests")
+    left = [probe for probe in _PROBES if probe.exists()]
+    for probe in left:
+        probe.unlink()
+    if left:
+        pytest.fail(f"the probe modules {left} were still lying there after the tests")
 
 
 @contextmanager
-def _probe_module(source: str) -> Generator[None]:
-    """Writes a throwaway module into `previously.core` and removes it again.
+def _probe_module(source: str, probe: Path = _PROBE) -> Generator[None]:
+    """Writes a throwaway module into the package and removes it again —
+    into `previously.core` unless `probe` names another of `_PROBES`.
 
     The removal is what this helper exists for. Should it fail nonetheless,
     the error names the file to be deleted by hand — the alternative is a
     contract broken for a reason nobody can find.
     """
-    _PROBE.write_text(source, encoding="utf-8")
+    probe.write_text(source, encoding="utf-8")
     try:
         yield
     finally:
         try:
-            _PROBE.unlink()
+            probe.unlink()
         except OSError as error:
             raise AssertionError(
-                f"could not remove the probe module {_PROBE}: {error}. Delete it by "
+                f"could not remove the probe module {probe}: {error}. Delete it by "
                 "hand — otherwise `lint-imports` reports a violation nobody wrote."
             ) from error
 
@@ -147,3 +158,36 @@ def test_a_deliberately_wrong_import_breaks_the_named_contracts() -> None:
     # configuration error carries no import — that is what tells the two
     # apart.
     assert "previously.core._violation -> sqlalchemy" in output, output
+
+
+def test_boto3_outside_storage_s3_breaks_its_contract() -> None:
+    """`boto3` in `core` breaks the contract that keeps it in `storage.s3`,
+    by name, with the offending import underneath.
+
+    The exemption for `storage.s3` is one named edge, so this probe is the
+    proof that the contract covers the rest of the package and not only the
+    layer above it: the layer contract alone would not mind, since `boto3` is
+    not a layer.
+    """
+    with _probe_module("import boto3\n"):
+        result = _gate()
+    output = result.stdout + result.stderr
+
+    assert result.returncode != 0, output
+    assert "Only storage.s3 imports boto3 BROKEN" in output, output
+    assert "previously.core._violation -> boto3" in output, output
+
+
+def test_pyrage_outside_core_sealing_breaks_its_contract() -> None:
+    """`pyrage` in `storage` breaks the contract that keeps it in
+    `core.sealing`: the store gets and gives ciphertext only, so a storage
+    module that could open what it stores is the mistake this contract is
+    for ({ref}`blobs`).
+    """
+    with _probe_module("import pyrage\n", _STORAGE_PROBE):
+        result = _gate()
+    output = result.stdout + result.stderr
+
+    assert result.returncode != 0, output
+    assert "Only core.sealing imports pyrage BROKEN" in output, output
+    assert "previously.storage._violation -> pyrage" in output, output

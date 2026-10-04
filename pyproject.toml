@@ -13,6 +13,8 @@ dependencies = [
     "sqlalchemy>=2.1",
     "psycopg[binary]>=3.3",
     "alembic>=1.20",
+    "boto3>=1.43",
+    "pyrage>=1.4",
 ]
 
 [project.scripts]
@@ -33,6 +35,8 @@ dev = [
     "import-linter>=2.15",
     "pre-commit>=4.6",
     "pip-audit>=2.10.1",
+    "pyrage-stubs>=1.4",
+    "types-boto3-lite[s3]>=1.43",
 ]
 docs = [
     "sphinx>=9.1",
@@ -137,7 +141,10 @@ pythonVersion = "3.14"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-markers = ["db: needs PostgreSQL (testcontainer)"]
+markers = [
+    "db: needs PostgreSQL (testcontainer)",
+    "s3: needs an S3 server (testcontainer)",
+]
 # `migrations` is not an installed package (no entry in [project], and no
 # `__init__.py` needed thanks to implicit namespace packages), so without this
 # it is not on sys.path — `tests/test_migrations_dsn.py` could not import
