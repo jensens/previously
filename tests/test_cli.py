@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from datetime import datetime
 from datetime import UTC
+from previously.cli import COMMANDS
 from previously.cli import escape_field
 from previously.cli import main
 from previously.cli import MAX_TEXT_BYTES
@@ -1121,3 +1122,31 @@ def test_an_anchor_file_with_a_byte_order_mark_and_windows_line_ends_is_read(
     anchors.write_bytes(b"\xef\xbb\xbf# kept outside\r\n" + line.encode() + b"\r\n")
     assert main(["verify", "--anchors", str(anchors)]) == 0
     assert capsys.readouterr().out == "chain intact, 1 anchor holds\n"
+
+
+# --- One sequence declares the commands --------------------------------------
+
+
+def test_the_help_names_exactly_the_commands_of_the_sequence(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`main` builds its subparsers and its dispatch from `COMMANDS`, so a
+    command cannot be in one and not in the other. What is left to hold is
+    that nobody adds a subparser beside the sequence: that one would parse,
+    and then end in a `KeyError` traceback at the dispatch. Read through the
+    public surface, `previously --help`, rather than through `argparse`'s
+    private attributes, because the help lists every subparser `main` added,
+    whichever way it was added.
+
+    The order is held too: the reference and `--help` list the commands in
+    the order of the sequence.
+    """
+    with pytest.raises(SystemExit) as exit_info:
+        main(["--help"])
+    assert exit_info.value.code == 0
+    out = capsys.readouterr().out
+    listed = re.search(r"^  \{([a-z,]+)\}$", out, flags=re.MULTILINE)
+    assert listed is not None, out
+    assert listed.group(1).split(",") == [command.name for command in COMMANDS]
+    for command in COMMANDS:
+        assert re.search(rf"^    {command.name} +{re.escape(command.help)}$", out, re.MULTILINE)
