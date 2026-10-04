@@ -8,4 +8,5 @@ Solve a specific problem with Previously.
 verify-the-chain
 restore-from-a-backup
 add-a-migration
+rebuild-a-projection
 ```

@@ -6,6 +6,7 @@ Stage 1b adds three tables that carry no truth of their own: `projection_state`,
 This page explains what that promise means in practice and why the two content-bearing tables look the way they do.
 Three sections follow on the worker that keeps them current: how it catches up in batches, why a gap in the log can't arise and is checked for all the same, and which test makes the promise more than a claim.
 Two more follow on the commands that read them: why `log` and `chronicle` are two commands rather than one with more options, and what the commands say about what they don't know.
+A last section follows on what the unit-level chronicle makes visible about an erasure that empties a payload.
 
 ## Derivable and disposable
 
@@ -190,3 +191,25 @@ The third is the one `project` answers.
 A catch-up that empties a table and builds it again looks, in the table, exactly like one that appended a few rows—so `project` names the path the run took, `built`, `caught up`, `rebuilt: version 1 -> 2` or `up to date`, and a version-triggered rebuild stops being invisible.
 What that line reports is the path *this* run took, and one case escapes it: if a run is interrupted after the version check has rewritten the state row but before its first batch commits, the next run finds the state row already at the new version and reports an ordinary catch-up, because the rebuild it continues was recorded nowhere that survived the interruption.
 That's a known limit rather than a bug to fix in the worker: the alternative is a second stored field whose only reader is a sentence on the terminal.
+
+## What a chronicle per unit teaches about erasure
+
+Erasure isn't built, and the shape it will take is fixed already: a tombstone replaces `payload` with SQL `NULL`, and the chain survives that because the event hash covers the payload's digest rather than the payload itself.
+{ref}`tombstone-seam` carries the reasoning for the detour and the price it comes with.
+What the shape leaves alone is `unit`.
+The units stand in a table of their own, and emptying a payload doesn't reach them—so a chronicle built one row per unit goes on showing the content of an erased event, with its `evidence` column empty beside the content.
+
+The architecture's §4.6 (frozen design record) describes that tombstone and overlooks the units: nothing in it reaches `unit`, and nothing had to, because no reader at unit level existed yet.
+Stage 1b builds the first one, and the finding comes with it.
+A chronicle per unit means that whoever erases has to erase the units along with the payload, or the content was never erased at all—a demand on the erasure event rather than a decision for this stage to take.
+A projection one row per event would have hidden the question behind an empty payload column, which is worth noticing about findings of this kind: this one comes out of the shape of the projection and not out of any change to the log.
+
+A second consequence sits one table over, and it's the sharper one.
+`p_source_stats.units` counts the units of events the worker has already folded in, and the worker never looks below its bookmark again.
+An erasure that deletes units would therefore leave that count standing at a number the log no longer supports, and no catch-up would correct it.
+Here the disposable half of the promise earns its keep: an erasure event that raises the projection's version gets the count back for nothing, because the table is then built again from what the log holds and nothing but the log decides it.
+A count that no rebuild could reproduce would have been a second copy of the truth, and the erasure would have had to repair it by hand.
+
+`test_a_tombstoned_event_keeps_its_chronicle_rows_with_evidence_null` pins today's behavior: one event with its payload set to `NULL`, two chronicle rows, `evidence` null in both and the content unchanged.
+The pin is what keeps the finding from being a note somebody may or may not act on.
+An erasure that deletes units turns that test red, and whoever makes it green again has to decide what the chronicle of an erased event shows.

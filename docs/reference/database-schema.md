@@ -2,12 +2,14 @@
 
 # Database schema
 
-Previously stores every event in three PostgreSQL tables: `event`, `unit`, and `source_key`.
-`src/previously/storage/schema.py` declares them as SQLAlchemy Core tables, with no ORM.
+Previously stores its data in six PostgreSQL tables.
+Three hold the log: `event`, `unit`, and `source_key`.
+Three hold projections, which are derived from the log and disposable: `projection_state`, `p_chronicle`, and `p_source_stats`; {ref}`projections` explains what that means.
+`src/previously/storage/schema.py` declares all six as SQLAlchemy Core tables, with no ORM.
 Each event relates to zero or more units, and to at most one source key.
 
 ```{mermaid}
-:caption: event, unit, and source_key, with their foreign keys.
+:caption: The three tables of the log, with their foreign keys; the projection tables are described below.
 
 erDiagram
     event {
