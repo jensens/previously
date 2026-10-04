@@ -61,4 +61,3 @@ source_modules =
 forbidden_modules =
     anthropic
     openai
-

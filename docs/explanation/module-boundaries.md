@@ -18,7 +18,7 @@ Since stage 1b `contract` also holds the row types and the store protocol that `
 The diagram shows which module imports which, and since stage 1b there's nothing dashed in it.
 
 ```{mermaid}
-:caption: The import edges after stage 1b: all six the layer order permits, and not one of them exempted.
+:caption: The import edges after stage 1b: all six between its own modules, and not one of them exempted. The seventh arrow leaves the package.
 
 graph TD
     cli[cli] --> core[core]
@@ -37,7 +37,7 @@ A layers contract settles the *order* in which modules may depend on each other;
 
 That count was five until stage 1b.
 `storage` had no edge to `contract` at all, not even though the layer order would have permitted one, and the sixth edge arrived when the row types moved out of `storage/rows.py` into `contract/rows.py`—the store protocol in `contract.store` names those types, and `contract` may import nothing above itself.
-Counted per module, over import statements only, because two modules under `storage` mention `previously.core` in a comment and a count over all text would include them:
+Counted per module, over import statements only, because two modules under `storage` mention `previously.core` in prose rather than in an import, and a count over all text would include them:
 
 ```text
 $ grep -rhoE 'from previously\.[a-z]+' src/previously/cli.py | sort -u
@@ -91,7 +91,8 @@ It would stand in the configuration looking like a guarantee and guaranteeing no
 
 The third names `core` and `contract` as its sources instead of writing "everything except storage."
 The enumeration has to be extended by hand with every stage, and the negation would include every future module without anybody deciding that it should.
-That reads like a loss of convenience, and it's also measurable, because the negation doesn't merely overreach into the future—it breaks on a module that exists today.
+That reads like a loss of convenience, and it's the same trade the section below is about, one level up.
+It's also measurable, because the negation doesn't merely overreach into the future—it breaks on a module that exists today.
 With `previously.cli` added to the sources, which is what "everything except storage" means in this tree, measured on 2026-10-04 and abbreviated at the line numbers of the second step:
 
 ```text
@@ -167,7 +168,33 @@ Add one use of the symbol outside an annotation and ruff falls silent, because t
 That's also the moment at which `core` does load SQLAlchemy for real.
 
 The choice of use decided how far the mutation got, and the obvious candidate didn't get far.
-An `isinstance` call against the parameter was that candidate, and `pyright` strict refused it, measured against the project configuration on 2026-10-03:
+An `isinstance` call against the parameter was that candidate, and `pyright` strict refused it: `storage` was declared as `PostgresStorage`, so the check could never fail.
+`core/append.py` still argues the same point from the other side, where `_is_text` takes `object` precisely so that its `isinstance` isn't a dead check.
+An attribute access on the class was the use that survived every gate but one.
+
+Measured against the project configuration on 2026-10-03, with the import out of the block and `_ = PostgresStorage.__name__` in `verify`, all six gates:
+
+```text
+uv run ruff check .           All checks passed!
+uv run ruff format --check .  39 files already formatted   (40 today)
+uv run pyright                0 errors, 0 warnings, 0 informations
+uv run lint-imports           Contracts: 4 kept, 0 broken.
+uv run pytest -q              1 failed, 193 passed         (194 tests then)
+    test_the_exempted_core_modules_load_no_sql_at_runtime
+    -> loaded sqlalchemy at runtime
+make -C docs html             build succeeded.
+make -C docs vale             0 errors, 0 warnings and 0 suggestions in 20 files.
+make -C docs linkcheck        build succeeded.
+```
+
+The first, second and fifth lines carry numbers that have moved since, and only one of them is a coincidence worth clearing up.
+`193` reads the same here and in today's test run for a reason rather than by accident: the 193 that passed then are the 193 that remain, because the one that failed is the one stage 1b deleted.
+The file count went from 39 to 40 with `contract/store.py`.
+
+The first line and the fourth are the whole case for the test.
+`ruff` passed and `lint-imports` passed while `core` loaded SQLAlchemy at runtime, and the fifth line is the only gate that noticed.
+
+With an `isinstance` call in that same place instead of the attribute access, the third gate caught the example before the test did:
 
 ```text
 uv run pyright  1 error
@@ -176,7 +203,8 @@ src/previously/core/verify.py:179:12 - error: Unnecessary isinstance call;
 (reportUnnecessaryIsInstance)
 ```
 
-An attribute access on the class was the use that survived every gate but that one test, and that measurement was the whole argument for the test's existence—without it written down the test looked like redundancy beside `lint-imports` and `TC001`, and somebody would delete it.
+That measurement was the whole argument for the test's existence, and without it written down the test looked like redundancy beside `lint-imports` and `TC001`, and somebody would delete it.
+It was green on the day it was written, so it held a state that already obtained rather than uncovering an error—which is what it was for, because the exemptions were the one place in this tree where a correct decision and a wrong one looked exactly alike in the configuration.
 
 Somebody did, and for the other reason: there's no exempted edge left to pull out of a `TYPE_CHECKING` block, because there's no import of `PostgresStorage` in `core` at all.
 The bolt fell with the edge rather than moving elsewhere, and `tests/test_contracts.py` has held two tests since stage 1b.
