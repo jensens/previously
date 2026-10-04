@@ -257,6 +257,28 @@ Die erste Fassung dieses Specs verlangte nach jedem Restore `--exact` gegen
 diesen einen Zeitpunkt nicht; die Frage des Betreuers nach dem Betrieb hat
 das gezeigt (2026-10-04).
 
+**Die zwei Hostingformen**, gegen die `CLAUDE.md` jeden Entwurf hält
+(*Operations are part of every design*):
+
+- **kup6s** — Kubernetes mit CloudNativePG. Die Routine ist ein `CronJob`
+  mit dem Image der Anwendung und `PREVIOUSLY_DSN` aus demselben Secret. Die
+  Ankerdatei liegt in einem Git-Repository außerhalb des Clusters; der Job
+  holt sie, prüft, ankert, schiebt sie zurück. Kein neuer Dienst, kein
+  Volume, keine Migration.
+- **Ein Host mit `docker-compose`.** Eine Zeile in der Crontab des Hosts, die
+  die zwei Kommandos im Container ausführt. Die Datei muss dafür nicht in den
+  Container: `--anchors -` liest sie von `stdin`, und `anchor` druckt auf
+  `stdout`. Schwierig ist hier nicht das Kommando, sondern die Bedingung aus
+  §2 — wer auf dem einen Host root ist, kann Datenbank und Datei schreiben.
+  Die Datei muss den Host also verlassen: ein Push, eine Kopie auf eine
+  zweite Maschine, eine Mail.
+
+**Der Einfachheits-Check** fällt gut aus: der Anker ist eine Textzeile, die
+Routine sind zwei Kommandos, und beide Hostingformen brauchen dafür nichts,
+was sie nicht schon haben — einen Zeitgeber und einen Ort außerhalb. Er hat
+auch etwas gefunden: dass `-` für `stdin` nicht Bequemlichkeit ist, sondern
+der Weg, auf dem der Compose-Fall ohne Volume auskommt.
+
 **Wo die Datei liegt und wie oft geankert wird**, entscheidet dieser Spec
 nicht. Beides fällt mit dem Deployment einer späteren Stufe und steht in §10.
 Die eine Bedingung aus §2 gilt unabhängig davon.
