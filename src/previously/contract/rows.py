@@ -49,3 +49,38 @@ class UnitRow:
     start_ms: int | None = None
     end_ms: int | None = None
     speaker: str | None = None
+
+
+@dataclass(frozen=True)
+class ProjectionState:
+    """One row of `projection_state`: how far a projection has been built."""
+
+    name: str
+    up_to_id: int
+    version: int
+    built_at: datetime
+
+
+@dataclass(frozen=True)
+class ChronicleRow:
+    event_id: int
+    seq: int
+    content: str
+    occurred_at: datetime
+    kind: str
+    evidence: str | None
+    source: str | None
+    external_id: str | None
+    speaker: str | None = None
+    start_ms: int | None = None
+    end_ms: int | None = None
+
+
+@dataclass(frozen=True)
+class SourceStatsRow:
+    source: str
+    events: int
+    units: int
+    first_seen: datetime
+    last_seen: datetime
+    last_event_id: int

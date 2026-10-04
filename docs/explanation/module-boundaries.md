@@ -213,7 +213,7 @@ The reason for checking the output is a measurement too: `lint-imports` answers 
 Measured against a configuration broken on purpose, the return code was `1` with no contract name and no import in the output; measured from the wrong working directory, `1` with `Could not read any configuration.`
 In both cases an assertion on the return code alone was green although no contract had been checked at all—and the acceptance condition that a wrong import lets the build fail hung on exactly that assertion.
 
-## The protocol that made the exemptions unnecessary
+## The protocols that made the exemptions unnecessary
 
 One change removed the two exemptions and the bolt behind them, and it removed them rather than relocating them.
 `class LogStore[Conn](Protocol)` in `contract.store`, generic over the connection type, gives `core` something to be typed against that isn't the concrete `PostgresStorage`.
@@ -268,7 +268,7 @@ previously.contract is not allowed to import previously.storage:
 So `storage/rows.py` became `contract/rows.py`, six import sites followed, and no re-export stayed behind: a module that exists only to forward a name is the kind of thing this project removes rather than keeps.
 `storage.postgres` imports the row types from `contract` now, which is where the page's sixth edge came from.
 
-A second protocol is coming, for the projection store ({ref}`projections`), and it's a second one by design rather than more methods on this one.
+A second protocol exists now, `ProjectionStore[Conn]`, for the projection store ({ref}`projections`), and it's a second one by design rather than more methods on this one.
 `LogStore` is append-only—write once, read in chain order, never change.
 A projection store empties, inserts and updates, because a projection is derivable and disposable by design ({ref}`projections`).
 One protocol covering both would blur exactly the line that separates them: a projection carries no truth of its own, and a type that offers "append to the log" and "truncate the table" through the same interface stops saying so.

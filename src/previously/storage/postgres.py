@@ -8,10 +8,17 @@ delete, no transaction control to the outside, no SQL passthrough, no
 returning of database objects. Those five are the interface's own argument and
 have no page in `docs/`; {ref}`module-boundaries` settles which module may
 import which, not which methods this one has.
+
+The projection methods below delete and update, and that is the point: a
+projection is disposable, the log is not; the two protocols in
+`contract.store` keep the two apart.
 """
 
 from contextlib import contextmanager
+from previously.contract.rows import ChronicleRow
 from previously.contract.rows import EventRow
+from previously.contract.rows import ProjectionState
+from previously.contract.rows import SourceStatsRow
 from previously.contract.rows import Tip
 from previously.contract.rows import UnitRow
 from previously.storage.errors import ChainPositionTaken
@@ -20,18 +27,24 @@ from previously.storage.errors import MigrationPending
 from previously.storage.errors import ServerUnreachable
 from previously.storage.errors import SourceKeyTaken
 from previously.storage.schema import event
+from previously.storage.schema import p_chronicle
+from previously.storage.schema import p_source_stats
+from previously.storage.schema import projection_state
 from previously.storage.schema import source_key
 from previously.storage.schema import unit
 from sqlalchemy import Connection
 from sqlalchemy import create_engine
+from sqlalchemy import delete
 from sqlalchemy import Engine
 from sqlalchemy import func
 from sqlalchemy import insert
 from sqlalchemy import select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.exc import ProgrammingError
+from typing import ClassVar
 from typing import TYPE_CHECKING
 
 
@@ -39,6 +52,8 @@ if TYPE_CHECKING:
     from collections.abc import Generator
     from collections.abc import Iterator
     from collections.abc import Sequence
+    from datetime import datetime
+    from sqlalchemy import Table
 
 # Three indexes mark the same class of conflict. Ruling T6-b had excluded
 # event_hash_idx here, on the grounds that a duplicate `hash` means "the same
@@ -314,6 +329,175 @@ class PostgresStorage:
                 )
             )
         }
+
+    # --- ProjectionStore ({ref}`projections`) --------------------------------
+
+    # Name as the caller knows it -> table. `truncate_projection` takes the
+    # name and not the table, because `core` must not know a `Table`.
+    _PROJECTION_TABLES: ClassVar[dict[str, Table]] = {
+        "chronicle": p_chronicle,
+        "source-stats": p_source_stats,
+    }
+
+    def projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
+        row = conn.execute(
+            select(projection_state).where(projection_state.c.name == name)
+        ).one_or_none()
+        if row is None:
+            return None
+        return ProjectionState(
+            name=row.name, up_to_id=row.up_to_id, version=row.version, built_at=row.built_at
+        )
+
+    def set_projection_state(self, conn: Connection, state: ProjectionState) -> None:
+        statement = pg_insert(projection_state).values(
+            name=state.name,
+            up_to_id=state.up_to_id,
+            version=state.version,
+            built_at=state.built_at,
+        )
+        conn.execute(
+            statement.on_conflict_do_update(
+                index_elements=[projection_state.c.name],
+                set_={
+                    "up_to_id": statement.excluded.up_to_id,
+                    "version": statement.excluded.version,
+                    "built_at": statement.excluded.built_at,
+                },
+            )
+        )
+
+    def truncate_projection(self, conn: Connection, name: str) -> None:
+        """Empties one projection table. A plain DELETE, not TRUNCATE: TRUNCATE
+        takes an ACCESS EXCLUSIVE lock and is not transactional in the sense
+        that matters here — the caller's transaction has to be able to roll
+        it back together with the state row."""
+        try:
+            table = self._PROJECTION_TABLES[name]
+        except KeyError:
+            raise ValueError(f"unknown projection {name!r}") from None
+        conn.execute(delete(table))
+
+    def insert_chronicle(self, conn: Connection, rows: Sequence[ChronicleRow]) -> None:
+        if not rows:
+            return
+        conn.execute(
+            insert(p_chronicle),
+            [
+                {
+                    "event_id": r.event_id,
+                    "seq": r.seq,
+                    "content": r.content,
+                    "occurred_at": r.occurred_at,
+                    "kind": r.kind,
+                    "evidence": r.evidence,
+                    "source": r.source,
+                    "external_id": r.external_id,
+                    "speaker": r.speaker,
+                    "start_ms": r.start_ms,
+                    "end_ms": r.end_ms,
+                }
+                for r in rows
+            ],
+        )
+
+    def source_stats(self, conn: Connection, sources: Sequence[str]) -> dict[str, SourceStatsRow]:
+        if not sources:
+            return {}
+        return {
+            row.source: SourceStatsRow(
+                source=row.source,
+                events=row.events,
+                units=row.units,
+                first_seen=row.first_seen,
+                last_seen=row.last_seen,
+                last_event_id=row.last_event_id,
+            )
+            for row in conn.execute(
+                select(p_source_stats).where(p_source_stats.c.source.in_(sources))
+            )
+        }
+
+    def upsert_source_stats(self, conn: Connection, rows: Sequence[SourceStatsRow]) -> None:
+        """Writes the rows as given — the merge arithmetic lives in `core`
+        ({ref}`projections`), so a unit test reaches it without a database."""
+        if not rows:
+            return
+        statement = pg_insert(p_source_stats)
+        conn.execute(
+            statement.on_conflict_do_update(
+                index_elements=[p_source_stats.c.source],
+                set_={
+                    "events": statement.excluded.events,
+                    "units": statement.excluded.units,
+                    "first_seen": statement.excluded.first_seen,
+                    "last_seen": statement.excluded.last_seen,
+                    "last_event_id": statement.excluded.last_event_id,
+                },
+            ),
+            [
+                {
+                    "source": r.source,
+                    "events": r.events,
+                    "units": r.units,
+                    "first_seen": r.first_seen,
+                    "last_seen": r.last_seen,
+                    "last_event_id": r.last_event_id,
+                }
+                for r in rows
+            ],
+        )
+
+    # --- Reads for the command line, outside the protocols -------------------
+    # Like `units`: only `cli` calls these. The protocols hold what `core`
+    # needs, and `core` never reads a projection back.
+
+    def read_chronicle(
+        self,
+        conn: Connection,
+        *,
+        since: datetime | None,
+        until: datetime | None,
+        limit: int,
+    ) -> list[ChronicleRow]:
+        """Time order, half-open window: `since` inclusive, `until` exclusive."""
+        query = select(p_chronicle)
+        if since is not None:
+            query = query.where(p_chronicle.c.occurred_at >= since)
+        if until is not None:
+            query = query.where(p_chronicle.c.occurred_at < until)
+        query = query.order_by(
+            p_chronicle.c.occurred_at, p_chronicle.c.event_id, p_chronicle.c.seq
+        ).limit(limit)
+        return [
+            ChronicleRow(
+                event_id=row.event_id,
+                seq=row.seq,
+                content=row.content,
+                occurred_at=row.occurred_at,
+                kind=row.kind,
+                evidence=row.evidence,
+                source=row.source,
+                external_id=row.external_id,
+                speaker=row.speaker,
+                start_ms=row.start_ms,
+                end_ms=row.end_ms,
+            )
+            for row in conn.execute(query)
+        ]
+
+    def read_source_stats(self, conn: Connection) -> list[SourceStatsRow]:
+        return [
+            SourceStatsRow(
+                source=row.source,
+                events=row.events,
+                units=row.units,
+                first_seen=row.first_seen,
+                last_seen=row.last_seen,
+                last_event_id=row.last_event_id,
+            )
+            for row in conn.execute(select(p_source_stats).order_by(p_source_stats.c.source))
+        ]
 
 
 def from_dsn(dsn: str) -> PostgresStorage:

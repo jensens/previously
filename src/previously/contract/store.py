@@ -32,7 +32,10 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from collections.abc import Sequence
     from contextlib import AbstractContextManager
+    from previously.contract.rows import ChronicleRow
     from previously.contract.rows import EventRow
+    from previously.contract.rows import ProjectionState
+    from previously.contract.rows import SourceStatsRow
     from previously.contract.rows import Tip
     from previously.contract.rows import UnitRow
 
@@ -54,3 +57,29 @@ class LogStore[Conn](Protocol):
     def units_by_event(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, list[UnitRow]]: ...
     def count_events(self, conn: Conn) -> int: ...
     def source_keys(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, tuple[str, str]]: ...
+
+
+class ProjectionStore[Conn](Protocol):
+    """A projection store: emptied, filled, updated — disposable by design.
+
+    Separate from `LogStore` so that "carries no truth of its own"
+    (architecture §4.4, frozen design record) stays a type and not a
+    comment: nothing typed against `LogStore` can truncate, and nothing typed
+    against this protocol can append to the log.
+
+    `upsert_source_stats` writes the rows it is given. The arithmetic that
+    merges an existing row with a batch — count plus count, earliest of two
+    `first_seen` — is domain logic and lives in `core.projection.source_stats`,
+    where a unit test reaches it without a database. Done in SQL
+    (`ON CONFLICT DO UPDATE SET …`) the correctness of the incremental step
+    would sit in `storage`, and the claim "derivation without SQL" would be
+    false.
+    """
+
+    def begin(self) -> AbstractContextManager[Conn]: ...
+    def projection_state(self, conn: Conn, name: str) -> ProjectionState | None: ...
+    def set_projection_state(self, conn: Conn, state: ProjectionState) -> None: ...
+    def truncate_projection(self, conn: Conn, name: str) -> None: ...
+    def insert_chronicle(self, conn: Conn, rows: Sequence[ChronicleRow]) -> None: ...
+    def source_stats(self, conn: Conn, sources: Sequence[str]) -> dict[str, SourceStatsRow]: ...
+    def upsert_source_stats(self, conn: Conn, rows: Sequence[SourceStatsRow]) -> None: ...
