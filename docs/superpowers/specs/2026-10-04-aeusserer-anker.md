@@ -1,13 +1,23 @@
 # Previously — Der äußere Anker
 
-Stand: 2026-10-04 · Status: Entwurf, zur Abnahme
+> **Eingefrorener Entwurfsbericht, Stand 2026-10-04.**
+> Dieses Dokument wird nicht mehr nachgezogen.
+> Es hält fest, **wie und warum** entschieden wurde, und bleibt dafür im
+> Repository. Die lebende Begründung steht in der Dokumentation unter
+> `docs/` — soweit sie dort steht; wo sie fehlt, ist dieses Dokument die
+> einzige Quelle. Weicht es von der Doku ab, gilt die Doku.
+>
+> Ein neuer Spec für eine neue Stufe entsteht wieder auf Deutsch — das ist
+> die Sprache, in der die Absicht formuliert wird. Er friert ein, sobald
+> seine Explanation-Seiten stehen. Das Einfrieren als **Ablauf**, und die
+> Karte von jedem zitierten Paragraphen zu seiner Seite, stehen in
+> [About the frozen design records](../../explanation/design-records.md).
 
-Dieser Spec entsteht auf Deutsch und friert ein, sobald
-`docs/explanation/hash-chain.md` den Anker trägt — so, wie `CLAUDE.md` es unter
-*A specification starts in German and then freezes* beschreibt. Er ist klein:
-keine Stufe, sondern die Einlösung einer Zusage. Der Betreuer hat sie am
-2026-10-04 gegeben („darf nicht vergessen werden"), und sie stand als Punkt 1
-in §10 der eingefrorenen 1b-Spec.
+Stand: 2026-10-04 · Status: eingefroren
+
+Dieser Spec ist klein: keine Stufe, sondern die Einlösung einer Zusage. Der
+Betreuer hat sie am 2026-10-04 gegeben („darf nicht vergessen werden"), und
+sie stand als Punkt 1 in §10 der eingefrorenen 1b-Spec.
 
 Er argumentiert aus §11 der eingefrorenen 1a-Spec, die den Anker zuerst
 beschrieb, und widerspricht ihr an einer Stelle (§1.1).
@@ -411,11 +421,12 @@ into `main` is the acceptance*).
 
 ## 10. Was offen bleibt
 
-Dieser Abschnitt ist **gepflegt**, solange der Spec lebt. Er übernimmt, was
-die eingefrorene 1b-Spec in §10 weitergegeben hat, und was das
-Ausführungsprotokoll der Stufe 1b in seiner `index.md` für die nächste Stufe
-vorgemerkt hat. Friert dieser Spec ein, wandert die Liste in den Spec, der
-ihm folgt.
+Dieser Abschnitt war **gepflegt**, solange der Spec lebte; mit dem Einfrieren
+verliert er seine Pflege. Er hatte übernommen, was die eingefrorene 1b-Spec in
+§10 weitergegeben hat, und was das Ausführungsprotokoll der Stufe 1b in seiner
+`index.md` für die nächste Stufe vorgemerkt hat. Was hier steht, ist damit
+nicht abgearbeitet, sondern weitergegeben: seine fünfzehn Punkte gehören in
+den Spec, der diesem folgt.
 
 **Neu aus diesem Spec:**
 

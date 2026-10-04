@@ -2,10 +2,9 @@
 
 # How to check the chain in operation
 
-This guide shows you how to check whether the chain is intact, and how to read what it reports.
+This guide shows you how to check whether the chain is intact, how to read what it reports, and how to anchor the chain outside the database.
 
 Run `previously verify`.
-It takes no arguments.
 
 ```shell
 previously verify
@@ -13,17 +12,49 @@ echo $?
 ```
 
 If the exit code is `0`, the chain has no finding.
-`previously verify` printed exactly one line: `chain intact`.
+`previously verify` printed `chain intact` on standard output, and a notice on standard error that no anchor was given.
 
-If the exit code is `1`, the chain has at least one finding.
+If the exit code is `1`, the chain or an anchor has at least one finding.
 `previously verify` printed one `FINDING <event_id>: <reason>` line per finding instead of `chain intact`.
 Read the `<reason>` directly: it names the specific problem with that event, such as a hash that no longer matches its fields.
 There's no separate table to look it up against—the printed line is the finding.
-See {ref}`cli-reference` for the full exit-code table, including the `2` that a storage error uses.
+See {ref}`cli-reference` for the full exit-code table, including the `2` that invalid input or a storage error uses.
 
 If you run this check from a script, for example in a deployment pipeline, treat any exit code other than `0` as a failure and stop before you rely on that database further.
 
-`previously verify` proves that no event in the chain has changed since you recorded it.
-It doesn't prove that the chain is complete.
-Deleting the chain's tip, or appending a new event with its own self-consistent chain, can both leave `previously verify` satisfied.
-For what the chain guarantees and where that stops, see {ref}`hash-chain`.
+Without anchors, exit code `0` means that the chain is consistent in itself, and nothing more.
+It doesn't mean that the chain is complete: a deleted tip, an appended event, or a chain rewritten from the start can each leave that check satisfied.
+To check the log up to a point you recorded outside the database, anchor the chain as the next section shows.
+
+## Anchor the chain, and check against the anchors
+
+Keep the anchor file in a place that whoever can write the database can't write.
+A file on the database's own host or volume doesn't count.
+
+The first time, no anchor file exists yet.
+Once the log holds at least one event, take the first anchor:
+
+```shell
+previously anchor > anchors.txt
+```
+
+From then on, run this routine on a schedule:
+
+```shell
+previously verify --anchors anchors.txt && previously anchor >> anchors.txt
+```
+
+The first command checks the chain and every anchor taken so far.
+The second command appends the current tip as a new anchor, and runs only if the first one exited `0`.
+Treat any exit code other than `0` as an alarm.
+
+If the command runs inside a container and the anchor file lives outside it, pass `-` to read the anchors from standard input:
+
+```shell
+previously verify --anchors - < anchors.txt
+```
+
+`previously anchor` prints its line to standard output, so redirect that output to the file outside the container in the same way.
+
+For the format of an anchor line and the three findings an anchor can produce, see {ref}`cli-reference`.
+For what an anchor closes, and what it leaves open, see {ref}`external-anchor`.
