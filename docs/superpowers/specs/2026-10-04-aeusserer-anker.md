@@ -231,6 +231,36 @@ unverändert. Was es bis zum jüngsten Anker sagte, ist vollständig. Dass
 seither nichts hinzugefälscht wurde, bezeugt nur der Vergleich der Spitze mit
 einem Anker, den man in Ruhe genommen hat.*
 
+### 5.1 Was das für den Betrieb heißt
+
+**Das Intervall ist die Beweis-Lücke.** Was seit dem jüngsten Anker dazukam,
+ist nicht verankert. Wer stündlich ankert, hat höchstens eine Stunde, die das
+Log nicht als vollständig bezeugt.
+
+**Ein Restore hat zwei Fälle**, und sie verlangen verschiedene Prüfarten. Die
+Architektur sichert mit Base-Backup und WAL-Archiv (§10.5 der Architektur),
+also mit Point-in-Time-Recovery:
+
+- **Restore bis zum letzten Stand.** Er bringt auch die Events zurück, die
+  nach dem jüngsten Anker angefügt wurden — sie kommen aus dem WAL. `--exact`
+  würde dann „continues past" melden, obwohl nichts fehlt. Richtig ist
+  **„enthält"** gegen den jüngsten Anker: darunter ist nichts verloren und
+  nichts umgeschrieben; was darüber liegt, ist der unverankerte Rest aus dem
+  Absatz davor.
+- **Restore auf einen festen Punkt.** Nur hier passt **`--exact`**, und nur,
+  wenn Anker und Wiederherstellungspunkt zusammenfallen: ein benannter
+  Restore-Point unmittelbar nach dem Ankern, oder ein logischer Dump mit dem
+  Anker im selben Atemzug.
+
+Die erste Fassung dieses Specs verlangte nach jedem Restore `--exact` gegen
+„den Anker vom Zeitpunkt des Backups". Für ein Backup mit WAL-Archiv gibt es
+diesen einen Zeitpunkt nicht; die Frage des Betreuers nach dem Betrieb hat
+das gezeigt (2026-10-04).
+
+**Wo die Datei liegt und wie oft geankert wird**, entscheidet dieser Spec
+nicht. Beides fällt mit dem Deployment einer späteren Stufe und steht in §10.
+Die eine Bedingung aus §2 gilt unabhängig davon.
+
 ## 6. Schnitt im Code
 
 - **`previously.contract.types.Anchor`** — eingefrorene Dataclass,
@@ -315,9 +345,9 @@ Im selben Pull-Request, nach `plone-doc-style:author`.
 - **`docs/how-to/restore-from-a-backup.md`** — der Satz „If `previously
   verify` exits `0`, the restore is trustworthy" ist zu stark: ein Restore
   aus einem älteren Backup ist eine kürzere, in sich stimmige Kette und
-  besteht. Die Anleitung verlangt künftig den Anker vom Zeitpunkt des Backups
-  und `verify --anchors … --exact`, und sagt, was Rückgabecode 0 **ohne**
-  Anker bedeutet.
+  besteht. Die Anleitung führt künftig die zwei Fälle aus §5.1 — Restore bis
+  zum letzten Stand mit `verify --anchors …`, Restore auf einen festen Punkt
+  mit `--exact` — und sagt, was Rückgabecode 0 **ohne** Anker bedeutet.
 - **`README.md`** — die Zahl der Kommandos, und der Absatz über die Grenze
   der Kette.
 - **`docs/tutorials/record-your-first-event.md`** — der `verify`-Block zeigt
@@ -364,29 +394,42 @@ ihm folgt.
    sagt, was eine Transaktion unter `READ COMMITTED` wirklich gibt.
 3. **Ein beglaubigtes „wann".** Der Anker trägt keinen Zeitpunkt (§2). Wer
    ihn braucht, über den Ablageort hinaus, landet bei einem Zeitstempeldienst.
+4. **Ablageort und Intervall im Betrieb.** Eine Betriebsentscheidung, die mit
+   dem Deployment fällt (§5.1). Der Stand der Überlegung vom 2026-10-04, als
+   Ausgangspunkt und nicht als Beschluss: die Routine ist ein CronJob mit dem
+   Image der Anwendung, der die alten Anker prüft, einen neuen nimmt und bei
+   einem Rückgabecode ungleich 0 alarmiert. Als Ablageort, nach Stärke: ein
+   Git-Repository bei einem Dritten mit einem Deploy-Key, der nur dorthin
+   schreiben darf, und gesperrtem Force-Push — dann kann auch ein
+   Cluster-Admin nur anhängen; ein Bucket mit Object Lock im anderen
+   Standort — **ungeprüft**, ob der Anbieter das hat; eine Mail an ein
+   Postfach bei einem Dritten als zweiter Kanal. Gegenüber Dritten ist der
+   Anker nur ein Beleg, wenn er bei einem Dritten liegt. Und für `--exact`
+   nach einem Restore braucht es einen benannten Restore-Point im Takt des
+   Ankerns.
 
 **Übernommen aus der 1b-Spec §10** (dort im Wortlaut):
 
-4. Eine Tilgung der Nutzlast tilgt die Einheiten nicht (Punkt 2).
-5. `show` druckt Einheiten roh (Punkt 3).
-6. Die Warteschlange, mit ihr die Sperre auf der Zustandszeile (Punkte 4
+5. Eine Tilgung der Nutzlast tilgt die Einheiten nicht (Punkt 2).
+6. `show` druckt Einheiten roh (Punkt 3).
+7. Die Warteschlange, mit ihr die Sperre auf der Zustandszeile (Punkte 4
    und 8, Prüfbefund F11 der Prüfung von Aufgabe 5 des 1b-Plans), und die
    zwei Notizen darunter: `Projection.write` mit eigener Transaktion (F9),
    `projection_state.version` ohne `CHECK` (F12).
-7. Drei geparkte Testlöcher am Doku-Tor (Punkt 5).
-8. Zuordnung zu Projekten (Punkt 6).
-9. `previously stats` ohne Zeitraum (Punkt 7).
+8. Drei geparkte Testlöcher am Doku-Tor (Punkt 5).
+9. Zuordnung zu Projekten (Punkt 6).
+10. `previously stats` ohne Zeitraum (Punkt 7).
 
 **Übernommen aus dem Ausführungsprotokoll der Stufe 1b**
 (`docs/superpowers/sdd/2026-10-04-stufe-1b-projektionen/index.md`):
 
-10. Ein Test, dass jeder Unterparser-Name einen Eintrag der Dispatch-Tabelle
+11. Ein Test, dass jeder Unterparser-Name einen Eintrag der Dispatch-Tabelle
     hat. Dieser Spec fügt einen achten Eintrag hinzu; der Plan entscheidet,
     ob der Test mitkommt.
-11. Eine Obergrenze für `--limit`.
-12. Die Seiten-Reihenfolge der zwei `stderr`-Hinweise in `cli.md` hält nichts
+12. Eine Obergrenze für `--limit`.
+13. Die Seiten-Reihenfolge der zwei `stderr`-Hinweise in `cli.md` hält nichts
     mechanisch.
-13. `_quoted_notices` läuft bei fehlendem Ankersatz in einen `IndexError`;
+14. `_quoted_notices` läuft bei fehlendem Ankersatz in einen `IndexError`;
     `_message_patterns` nimmt auch die `_describe`-Literale auf.
-14. Das Tor für `§`-Zitate prüft den Marker, nicht, ob der zitierte Spec
+15. Das Tor für `§`-Zitate prüft den Marker, nicht, ob der zitierte Spec
     eingefroren ist.
