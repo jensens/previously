@@ -171,12 +171,18 @@ Befunden der Kette, Rückgabecode 1:
 | Befund | `event_id` | `reason` |
 |---|---|---|
 | Hash weicht ab | die `id` des Ankers | `hash does not match the anchor` |
-| geankertes Event fehlt | die `id` des Ankers | `anchored event is missing — the log ends at <tip>` |
+| geankertes Event fehlt | die `id` des Ankers | `anchored event is missing (the log ends at <tip>)` |
 | Spitze liegt über dem jüngsten Anker (nur `--exact`) | die `id` der Spitze | `the log continues past the newest anchor (<id>)` |
 
 `<tip>` ist die `id` der Spitze, bei leerem Log 0. Liegt die Spitze **unter**
 dem jüngsten Anker, ist das schon „fehlt"; `--exact` meldet dann nichts
 Zweites.
+
+Alle drei Texte **enden auf festem Text**, nicht auf einer eingesetzten Zahl.
+Das ist kein Geschmack: der Test, der die Zitate der Reference gegen den Code
+hält, ordnet einen Satz über seinen festen Anfang und sein festes Ende zu
+(gemessen am 2026-10-04 an `_is_the_same_sentence`). Die erste Fassung des
+zweiten Textes endete auf `<tip>` und wäre für ihn unsichtbar gewesen.
 
 ### 4.4 Erfolgsmeldungen und der Hinweis ohne Anker
 
@@ -355,8 +361,13 @@ auf fehlende Anker entfernen (1 rot), `--exact` zur Nulloperation machen
 Im selben Pull-Request, nach `plone-doc-style:author`.
 
 - **`docs/explanation/hash-chain.md`** — ein Abschnitt zum Anker mit eigenem
-  Label: was er ist, warum die `id`-Hälfte die wichtige ist, die Tabelle aus
-  §5, die Zusage im Ganzen, und was offen bleibt. Der Satz „closes all three
+  Label: was er ist, was die `id` neben dem Hash leistet, die Tabelle aus
+  §5, die Zusage im Ganzen, und was offen bleibt. Zur `id`: die 1b-Spec
+  nannte sie „die wichtige Hälfte", und das ist zu grob. Der Hash deckt die
+  `id` mit ab, er allein nagelt das Präfix schon fest. Die `id` sagt, **wie
+  lang** das Log mindestens war — sie macht aus „diesen Hash gab es" ein
+  „das Log reichte bis hierher" —, und sie ist das, was `--exact` mit der
+  Spitze vergleicht. Der Satz „closes all three
   at once" fällt; „stage 1a has none" ebenso.
 - **`docs/reference/cli.md`** — `anchor` als achtes Kommando; `verify` mit
   seinen zwei Argumenten, den drei Befundtexten, den Erfolgsmeldungen, dem
