@@ -1,7 +1,8 @@
 # Previously — Stufe 1c: Blobs und Tilgung
 
 **Datum:** 2026-10-04
-**Status:** Entwurf, zur Durchsicht
+**Status:** Entwurf, vom Betreuer am 2026-10-04 durchgesehen; Grundlage des
+Plans `docs/superpowers/plans/2026-10-04-stufe-1c-blobs-und-tilgung.md`
 
 Detail-Spec für Teilprojekt 1, Stufe 1c (§12.1 der Architektur). Setzt die
 Architektur (`2026-10-01-architektur.md`), die Stufen 1a und 1b und den
@@ -169,14 +170,16 @@ Ein Protokoll `BlobStore` in `contract`, eine Umsetzung in `storage` für S3:
 ```python
 class BlobStore(Protocol):
     def stat(self, address: str) -> StoredBlob | None: ...
-    def put(self, address: str, sealed: BinaryIO, *, key_id: str) -> None: ...
-    def get(self, address: str) -> BinaryIO: ...
+    def put(self, address: str, sealed: IO[bytes], *, key_id: str) -> None: ...
+    def get(self, address: str) -> tuple[StoredBlob, ByteSource] | None: ...
     def delete(self, address: str) -> None: ...
 ```
 
 Der Speicher bekommt und gibt **nur Chiffretext**; versiegelt und geöffnet
 wird in `core`. `stat` sagt, ob ein Objekt liegt und an welche `key_id` es
-versiegelt ist.
+versiegelt ist. `get` liefert Metadatum und Datenstrom aus **einer** Antwort:
+zwei Anfragen könnten, während ein Objekt ersetzt wird, den Schlüssel des
+einen und den Inhalt des anderen sehen (§2.7).
 
 - **Erster gewinnt** (Architektur §4.6). Vor dem Hochladen fragt der
   Schreibweg, ob das Objekt liegt, und lädt dann nicht. Das ist Nachsehen und
@@ -395,10 +398,9 @@ Dazu zwei Grenzen des Kommandos:
   enthalten, was getilgt wird; das Kommando kann das nicht prüfen, die
   Anleitung sagt es.
 
-Das Kommando sagt vor dem Schreiben, was es tilgen wird, und danach, was es
-getilgt hat, mit der `id` des Tilgungs-Events. Eine Rückfrage stellt es
-nicht: es ist ein Werkzeug für Skripte und Menschen zugleich, und die
-Begründung ist die Bremse.
+Das Kommando sagt, was es getilgt hat, mit der `id` des Tilgungs-Events. Eine
+Rückfrage stellt es nicht: es ist ein Werkzeug für Skripte und Menschen
+zugleich, und die Begründung ist die Bremse.
 
 ### 4.2 Das Tilgungs-Event
 
@@ -499,8 +501,8 @@ Vollzug:
 |---|---|
 | `payload is erased without a redaction` | Nutzlast `NULL`, und kein Tilgungs-Event nennt das Event |
 | `unit <seq> is erased without a redaction` | Einheit ohne Inhalt, und kein Tilgungs-Event nennt sie oder ihr Event |
-| `redaction of event <id> is not carried out` | das genannte Event trägt noch Nutzlast, Inhalt oder ein Salz |
-| `redaction of unit <seq> of event <id> is not carried out` | die genannte Einheit trägt noch Inhalt oder Salz |
+| `redaction of event <id> is not carried out` | das genannte Event trägt noch Nutzlast oder Inhalt |
+| `redaction of unit <seq> of event <id> is not carried out` | die genannte Einheit trägt noch Inhalt |
 | `redaction names a target that does not exist` | das Event steht nicht vor dem Tilgungs-Event in der Kette, oder es hat die Einheit nicht |
 | `units are erased in part, which version 1 cannot attest` | Teil-Grabsteine, wo es keine Hashes je Einheit gibt |
 
@@ -508,8 +510,10 @@ Die ersten beiden und der letzte stehen unter der `id` des Events mit dem
 Grabstein, die übrigen unter der des Tilgungs-Events. Der Wortlaut gilt: die
 Reference zitiert ihn, und der Test hält das Zitat gegen den Code.
 
-**Vollzogen heißt: Inhalt und Salz fehlen.** Ein Grabstein mit Salz ist eine
-halbe Tilgung und ein Befund.
+**Vollzogen heißt: Inhalt und Salz fehlen.** Dass kein Salz neben einem
+Grabstein stehen bleibt, erzwingt die Datenbank mit je einer Bedingung an
+`event` und `unit`; eine halbe Tilgung lässt sich darum nicht schreiben, und
+`verify` muss sie nicht melden.
 
 Geprüft wird im selben Durchlauf: er merkt sich Grabsteine und Anordnungen
 und gleicht sie am Ende ab, wie er es mit den Ankern tut. Ein Tilgungs-Event
@@ -518,9 +522,11 @@ steht in der Kette immer **nach** seinem Ziel.
 ### 5.2 Arten, Fassungen, Register
 
 - **Eine Einheit in v=2** wird gegen ihren `digest` gerechnet, wenn sie Inhalt
-  trägt; `units_hash` wird aus den `digest` gerechnet, ob getilgt oder nicht.
-  Eine Zeile zu viel oder zu wenig fällt darum auch am ganz getilgten Event
-  auf.
+  trägt (`unit <seq> does not match its digest`); `units_hash` wird aus den
+  `digest` gerechnet, ob getilgt oder nicht. Eine Zeile zu viel oder zu wenig
+  fällt darum auch am ganz getilgten Event auf.
+- **Eine Fassung, die die Prüfung nicht kennt**, ist ein Befund
+  (`hash_version <n> is not known`) und kein Abbruch.
 - **Ein Event der Art `action`** muss `payload.action` tragen; eine
   `redaction` zusätzlich `scope`, `target` und `reason` in der Form aus §4.2.
   Sonst: `action has no valid form`. Das ist die erste Regel je Art in
@@ -621,16 +627,17 @@ Schlüssel, und das ist die Trennung, die man im Betrieb haben will.
 | Ort | Was |
 |---|---|
 | `contract/types.py` | `BlobRef`; `blobs` an `RawEvent` |
-| `contract/store.py` | `BlobStore`; die Erweiterungen an `LogStore` für `event_blob`, Grabsteine, Salze und die Fassung; an `ProjectionStore` das Löschen von Chronik-Zeilen |
-| `contract/keys.py` | die Naht für Schlüssel |
+| `contract/store.py` | die Erweiterungen an `LogStore` für `event_blob`, Salze und die Fassung; ein drittes Protokoll `RedactionStore` für die Grabsteine, damit „kann tilgen" ein Typ ist und kein Kommentar; an `ProjectionStore` das Löschen von Chronik-Zeilen |
+| `contract/blobs.py` | `BlobStore`, `StoredBlob`, die Naht für Schlüssel |
 | `core/hashing.py` | v=2 neben v=1 |
 | `core/sealing.py` | versiegeln und öffnen im Format `age`, stückweise; mitrechnen der Adresse |
 | `core/blob.py` | speichern und holen: Adresse, „erster gewinnt", die zwei Durchgänge |
 | `core/chain.py` | was `append` und der Schreibweg für Handlungen teilen |
-| `core/redact.py` | die Tilgung, und die Regel aus §4.1 |
+| `core/redaction.py` | die Form des Tilgungs-Events, sein Verzeichnis und die Regel aus §4.1 — rein, damit `verify` sie benutzt, ohne den Ablauf zu kennen |
+| `core/redact.py` | der Ablauf der Tilgung |
 | `core/verify.py` | §5 |
 | `core/projection/chronicle.py` | §6 |
-| `storage/postgres.py`, Migration `0003` | `hash_version`, `payload_salt`, `unit.digest`, `unit.salt`, `unit.content` `NULL`-fähig, `event_blob` |
+| `storage/postgres.py`, Migrationen `0003` und `0004` | `hash_version`, `payload_salt`, `unit.digest`, `unit.salt`, `unit.content` `NULL`-fähig, die zwei Bedingungen aus §5.1; `event_blob` |
 | `storage/s3.py` | der Adapter |
 | `storage/keys.py` | Identitäten aus einem Verzeichnis, als Text |
 | `cli.py` | die Kommandos; liest die Umgebung und formatiert |
@@ -655,11 +662,15 @@ Geprüft am 2026-10-04 an den Registern; das Urteil kommt mit Beleg nach
 | `boto3` 1.43.108 | 2026-10-02, tägliche Veröffentlichungen | aktiv |
 | `pyrage` 1.4.0 | 2026-08-23; davor 2025-06 und 2025-04; ein Betreuer; keine Python-Abhängigkeiten; Wheels `abi3` ab 3.10 | dünne Bindung an die Rust-Bibliothek `age`; selten veröffentlicht. Getragen wird das Urteil vom **Format**: verwaist die Bindung, liest jede andere `age`-Umsetzung die Blobs weiter |
 | `pyrage-stubs` 1.4.0 | 2026-08-23, aus demselben Repository | nur für die Typprüfung |
-| `types-boto3[s3]` 1.43.108 | 2026-10-02, täglich erzeugt; zieht `types-boto3-s3`, `botocore-stubs` (2026-08-08) und `types-s3transfer` (2025-12-08) nach | nur für die Typprüfung |
+| `types-boto3-lite[s3]` 1.43.108 | 2026-10-02, täglich erzeugt; zieht `types-boto3-s3`, `botocore-stubs` (2026-08-08) und `types-s3transfer` (2025-12-08) nach | nur für die Typprüfung |
 
 Die beiden unteren Zeilen sind der Preis von pyright strict: weder `boto3`
 noch `pyrage` liefert Typen mit (gemessen: kein `py.typed`, keine `.pyi` im
-Paket).
+Paket). Die Fassung `lite` und nicht `types-boto3[s3]`, gemessen am 2026-10-04
+an einem Adapter-Entwurf: mit der vollen Fassung ist `boto3.client` unter
+strict „partially unknown", weil ihre Überladungen für jeden nicht
+installierten Dienst ins Unbekannte zeigen; mit `lite` und `pyrage-stubs`
+meldet pyright nichts.
 
 Verworfen: das Python-SDK von MinIO (letzte Veröffentlichung 2025-11, das
 Projekt dahinter archiviert); `cryptography` mit AES-GCM in einem Stück
@@ -698,8 +709,8 @@ echten S3-Server im Container; kein Mock für Zeit, Datenbank oder Zufall.
    meldet es. Mutation: `units_hash` rechnet wieder über die Inhalte.
 6. **Getilgtes lässt sich nicht erraten.** Nach der Tilgung fehlt das Salz,
    und der stehengebliebene Hash geht aus dem bekannten Inhalt allein nicht
-   mehr hervor. Mutation: die Tilgung lässt das Salz stehen — und `verify`
-   meldet es.
+   mehr hervor. Mutation: die Tilgung lässt das Salz stehen — und die
+   Datenbank weist sie ab.
 7. **v=1 bleibt prüfbar**, und sein Hash-Vektor unverändert.
 8. **Ein Grabstein ohne Anordnung ist ein Befund**, für Nutzlast und Einheit.
    Das ist die Messung aus dem 1a-Spec §3.1, umgedreht. Mutation: der Abgleich
