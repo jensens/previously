@@ -289,7 +289,7 @@ Share one block between them and the poisoned payload leaves it before the units
 
 ## What the chain doesn't cover
 
-Three manipulations pass, and no change to the code can stop them.
+Three manipulations pass the chain, and no change to the chain check can stop them.
 Delete the tip.
 Append a self-hashed event.
 Rewrite the chain from the beginning.
@@ -313,7 +313,7 @@ Of the three, appending is the one to worry about.
 Deleting takes a statement away from the store; appending puts one into its mouth.
 A reader who finds an event missing has a chance of noticing the absence from somewhere else, from a mail client, a calendar, a memory.
 A reader who finds an event that was never recorded has nothing to notice it against, and the chain will vouch for it.
-An external anchor closes two of the three, and {ref}`the next section <external-anchor>` says which two and why not the third.
+An external anchor closes two of the three up to the newest anchor, and {ref}`the next section <external-anchor>` says which two and why not the third.
 Without one, the chain speaks for itself alone.
 
 So the promise, in full:

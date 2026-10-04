@@ -424,6 +424,9 @@ def test_a_deleted_tip_passes_without_an_anchor_and_fires_with_one(db: Engine) -
     assert examine(storage, anchors=[anchor]).findings == (
         Finding(3, "anchored event is missing (the log ends at 2)"),
     )
+    assert examine(storage, anchors=[anchor], exact=True).findings == (
+        Finding(3, "anchored event is missing (the log ends at 2)"),
+    )
 
 
 @pytest.mark.db
@@ -442,6 +445,9 @@ def test_a_rewritten_chain_is_consistent_in_itself_and_fails_the_anchor(
 
     assert verify(storage) == []
     assert examine(storage, anchors=[anchor]).findings == (
+        Finding(2, "hash does not match the anchor"),
+    )
+    assert examine(storage, anchors=[anchor], exact=True).findings == (
         Finding(2, "hash does not match the anchor"),
     )
 
@@ -475,7 +481,11 @@ def test_a_tip_deleted_above_the_newest_anchor_is_seen_by_neither_check(db: Engi
     append(storage, [_event("a"), _event("b")], recorded_at=NOW)
     anchor = _anchor_of(storage)
     append(storage, [_event("c")], recorded_at=NOW)
+    tip = examine(storage).tip
+    assert tip is not None
+    assert tip.id == 3
     _delete_event(db, 3)
+    assert examine(storage).tip == anchor
 
     assert examine(storage, anchors=[anchor]).findings == ()
     assert examine(storage, anchors=[anchor], exact=True).findings == ()
@@ -492,7 +502,9 @@ def test_exact_without_an_anchor_is_refused(db: Engine) -> None:
 
 @pytest.mark.db
 def test_an_empty_log_has_no_tip_and_misses_every_anchor(db: Engine) -> None:
-    """Review focus 4."""
+    """An empty log has no tip, so every anchor is missing and the finding says
+    the log ends at 0 (review focus 4 of the 2026-10-04 external-anchor
+    plan)."""
     storage = PostgresStorage(db)
     assert examine(storage) == Examination((), None)
     stray = Anchor(1, b"\x11" * 32)
@@ -518,8 +530,10 @@ def test_two_lines_for_one_position_are_both_checked(db: Engine) -> None:
 
 @pytest.mark.db
 def test_anchors_are_checked_across_a_batch_boundary(db: Engine) -> None:
-    """Review focus 3. Five events in batches of two: the anchor at 3 lies in
-    the second batch, the tip in the third."""
+    """Anchors are checked as the pass comes by them, so an anchor and the tip
+    that lie in later batches than the first are checked all the same (review
+    focus 3 of the 2026-10-04 external-anchor plan). Five events in batches of
+    two: the anchor at 3 lies in the second batch, the tip in the third."""
     storage = PostgresStorage(db)
     append(storage, [_event(str(n)) for n in range(5)], recorded_at=NOW)
     tip = _anchor_of(storage)

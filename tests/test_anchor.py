@@ -53,8 +53,10 @@ def test_reading_tolerates_comments_blank_lines_case_and_whitespace() -> None:
 def test_a_broken_line_is_refused_with_its_line_number(line: str, message: str) -> None:
     """A damaged file is not read by halves ({ref}`external-anchor`): a check
     against some of the anchors would look like a check against all of them.
-    `²` is review focus 5 — `str.isdigit()` takes it for a number and `int()`
-    does not."""
+    The `²` case pins that a digit outside ASCII is refused as a bad id and
+    not let through to a `ValueError`: `str.isdigit()` takes it for a number
+    and `int()` does not (review focus 5 of the 2026-10-04 external-anchor
+    plan)."""
     with pytest.raises(InvalidPayload, match=re.escape(message)) as caught:
         parse_anchors([f"1 {HASH}", line])
     assert "anchor line 2" in str(caught.value)

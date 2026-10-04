@@ -118,7 +118,7 @@ def _check_event(
 ) -> list[Finding]:
     """The findings of a single event, in the order they are checked.
 
-    A function of its own, because `verify` would otherwise do two things at
+    A function of its own, because `examine` would otherwise do two things at
     once: walk over batches and check an event. The batch loop needs the
     connection, the check only rows — and the smaller the check, the easier it
     is to read as a whole.
@@ -243,7 +243,7 @@ def examine[Conn](
 
             # Source attributions **and** units of the whole batch, each in
             # one query. Asking per event would be two million queries with a
-            # million events — and `verify` is the routine that runs over the
+            # million events — and `examine` is the routine that runs over the
             # whole history. Until finding N2 the source attributions were
             # fetched by batch with exactly this reasoning while the units
             # were fetched per event six lines further down, which made the
