@@ -9,6 +9,8 @@ forgets.
 """
 
 from collections.abc import Callable
+from collections.abc import Generator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import UTC
@@ -149,14 +151,25 @@ def _lag_line(tip_id: int, up_to_id: int) -> str | None:
     return f"projection is {_plural(lag, 'event')} behind; run `previously project`"
 
 
-def _storage() -> PostgresStorage:
-    # Creating the engine itself stands in `storage.postgres.from_dsn`
-    # (ruling T9-a) — `cli` knows neither SQLAlchemy nor a driver URL, only
-    # the environment variable.
+@contextmanager
+def _storage() -> Generator[PostgresStorage]:
+    """The storage a command works with, closed when the command is done,
+    whether it returns or raises.
+
+    Creating the engine itself stands in `storage.postgres.from_dsn`
+    (ruling T9-a) — `cli` knows neither SQLAlchemy nor a driver URL, only
+    the environment variable. Closing it is `PostgresStorage.close`: `main`
+    may run many times in one process, and a storage left open keeps its
+    connections until the garbage collector finds it.
+    """
     dsn = os.environ.get("PREVIOUSLY_DSN")
     if not dsn:
         raise PreviouslyError("PREVIOUSLY_DSN is not set")
-    return from_dsn(dsn)
+    storage = from_dsn(dsn)
+    try:
+        yield storage
+    finally:
+        storage.close()
 
 
 def _read_anchors(source: str) -> tuple[Anchor, ...]:
@@ -232,7 +245,8 @@ def _cmd_append(args: argparse.Namespace) -> int:
         units=split_plaintext(args.text),
         payload={"text": args.text},
     )
-    ids = append(_storage(), [event], recorded_at=datetime.now(UTC))
+    with _storage() as storage:
+        ids = append(storage, [event], recorded_at=datetime.now(UTC))
     print(ids[0])
     return 0
 
@@ -256,7 +270,6 @@ def _cmd_log(args: argparse.Namespace) -> int:
     # commands, the same option, two error shapes.
     if args.limit < 1:
         raise InvalidPayload(f"--limit must be at least 1, got {args.limit}")
-    storage = _storage()
     # The reading methods take the connection in since review finding G4: the
     # transaction boundary belongs to the caller, who knows what has to be
     # read together. Here that is a formality. `show` reads an event and its
@@ -272,7 +285,7 @@ def _cmd_log(args: argparse.Namespace) -> int:
     # payload from before it beside units from after it — every row whole,
     # and the next `show` consistent again. That is a display, not a check;
     # `verify` reads in one snapshot.
-    with storage.begin() as conn:
+    with _storage() as storage, storage.begin() as conn:
         for row in storage.read(conn, from_id=args.from_id, limit=args.limit):
             print(f"{row.id}\t{row.occurred_at.isoformat()}\t{row.kind}\t{row.hash.hex()[:12]}")
     return 0
@@ -291,7 +304,8 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     if args.exact and args.anchors is None:
         raise InvalidPayload("--exact needs --anchors")
     anchors = () if args.anchors is None else _read_anchors(args.anchors)
-    examination = examine(_storage(), anchors=anchors, exact=args.exact)
+    with _storage() as storage:
+        examination = examine(storage, anchors=anchors, exact=args.exact)
     for finding in examination.findings:
         print(f"FINDING {finding.event_id}: {finding.reason}")
     if examination.findings:
@@ -333,7 +347,8 @@ def _cmd_anchor(_args: argparse.Namespace) -> int:
     code 2) instead of reporting the finding (exit code 1). On standard
     output there is an anchor line or nothing ({ref}`cli-reference`).
     """
-    examination = examine(_storage())
+    with _storage() as storage:
+        examination = examine(storage)
     for finding in examination.findings:
         print(f"FINDING {finding.event_id}: {finding.reason}", file=sys.stderr)
     anchor = examination.anchor
@@ -349,8 +364,7 @@ def _show_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _cmd_show(args: argparse.Namespace) -> int:
-    storage = _storage()
-    with storage.begin() as conn:
+    with _storage() as storage, storage.begin() as conn:
         for row in storage.read(conn, from_id=args.event_id, limit=1):
             if row.id != args.event_id:
                 break
@@ -455,32 +469,35 @@ def _cmd_redact(args: argparse.Namespace) -> int:
     # Blanks alone count as empty: a reason that says nothing brakes nothing.
     if not args.reason.strip():
         raise RedactionRefused("--reason must not be empty")
-    storage = _storage()
     now = datetime.now(UTC)
-    if args.target == "event":
-        result = redact_event(storage, storage, args.event_id, reason=args.reason, recorded_at=now)
-    else:
-        result = redact_units(
-            storage, storage, args.event_id, args.seqs, reason=args.reason, recorded_at=now
-        )
-    for seq in result.skipped_units:
-        print(f"unit {seq} was already erased", file=sys.stderr)
-    # The line first: the redaction stands whether or not the catch-up below
-    # gets through, and standard output says what stands. After `already` as
-    # well, so that a second call finishes what the first did not get to.
-    print(_redacted_line(result))
-    _catch_up_after(storage, result.redaction_id)
+    with _storage() as storage:
+        if args.target == "event":
+            result = redact_event(
+                storage, storage, args.event_id, reason=args.reason, recorded_at=now
+            )
+        else:
+            result = redact_units(
+                storage, storage, args.event_id, args.seqs, reason=args.reason, recorded_at=now
+            )
+        for seq in result.skipped_units:
+            print(f"unit {seq} was already erased", file=sys.stderr)
+        # The line first: the redaction stands whether or not the catch-up
+        # below gets through, and standard output says what stands. After
+        # `already` as well, so that a second call finishes what the first did
+        # not get to.
+        print(_redacted_line(result))
+        _catch_up_after(storage, result.redaction_id)
     return 0
 
 
 def _cmd_project(_args: argparse.Namespace) -> int:
-    storage = _storage()
     # `PROJECTIONS` fixes the order, so two runs print their lines the same way
     # round. `catch_up` gets the same object twice because `PostgresStorage` is
     # both the log it reads and the projection store it writes.
-    for projection in PROJECTIONS:
-        outcome = catch_up(storage, storage, projection)
-        print(f"{outcome.name:<15} {_describe(outcome)}")
+    with _storage() as storage:
+        for projection in PROJECTIONS:
+            outcome = catch_up(storage, storage, projection)
+            print(f"{outcome.name:<15} {_describe(outcome)}")
     return 0
 
 
@@ -512,8 +529,7 @@ def _cmd_chronicle(args: argparse.Namespace) -> int:
     # refused here too rather than silently read as local time.
     since = parse_moment(args.since) if args.since else None
     until = parse_moment(args.until) if args.until else None
-    storage = _storage()
-    with storage.begin() as conn:
+    with _storage() as storage, storage.begin() as conn:
         # Tip and bookmark in one statement, not in two: a transaction is not
         # a moment under READ COMMITTED (see `tip_and_bookmark`).
         position = storage.tip_and_bookmark(conn, CHRONICLE.name)
@@ -545,8 +561,7 @@ def _cmd_chronicle(args: argparse.Namespace) -> int:
 
 
 def _cmd_stats(_args: argparse.Namespace) -> int:
-    storage = _storage()
-    with storage.begin() as conn:
+    with _storage() as storage, storage.begin() as conn:
         # `SOURCE_STATS.name`, not `CHRONICLE.name`: after a rebuild of one of
         # the two the bookmarks differ, and the lag a reader is told has to be
         # the lag of the table they are reading. The name comes off the

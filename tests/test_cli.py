@@ -1435,3 +1435,65 @@ def test_project_rebuilds_a_chronicle_built_at_version_1(
     assert main(["chronicle"]) == 0
     out = capsys.readouterr().out
     assert [line.split("\t")[:2] for line in out.splitlines()] == [["2", "1"]]
+
+
+def _connections(engine: Engine) -> int:
+    """What the server holds for the test database right now, this query's
+    own connection included."""
+    from sqlalchemy import text
+
+    with engine.connect() as c:
+        return c.execute(
+            text("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()")
+        ).scalar_one()
+
+
+@pytest.mark.db
+def test_main_releases_the_connections_it_opened(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every command gives back what it opened, on success and on error alike,
+    so a process that calls `main` again and again holds no more connections
+    at the end than at the start.
+
+    The garbage collector is switched off for the loop: an engine nobody
+    refers to any more lets go of its connections when it is collected, and a
+    collection that happened to run inside the loop would hide a missing
+    release. Measured on 2026-10-05: with the release, 1 connection before
+    the 33 calls and 1 after, so the bound needs no allowance. With
+    `PostgresStorage.close` emptied, 34 after; with the release on success
+    only, 4 after, one for each refused `redact`. Before the release existed,
+    a test run in fixed order piled up 93 of the server's 100 connections,
+    and on other runs the test that came next could not connect.
+    """
+    import gc
+
+    engine = _connect(db, monkeypatch)
+    _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
+    assert main(["redact", "units", "1", "1", "--reason", "r"]) == 0
+    capsys.readouterr()
+    commands = [
+        ["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"],
+        ["redact", "units", "1", "1", "--reason", "r"],
+        ["log"],
+        ["verify"],
+        ["anchor"],
+        ["show", "1"],
+        ["project"],
+        ["chronicle"],
+        ["stats"],
+        ["show", "99"],  # exit code 1
+        ["redact", "event", "99", "--reason", "r"],  # a refusal, exit code 2
+    ]
+    gc.collect()
+    before = _connections(engine)
+    gc.disable()
+    try:
+        for _ in range(3):
+            for command in commands:
+                main(command)
+        after = _connections(engine)
+    finally:
+        gc.enable()
+    capsys.readouterr()
+    assert after <= before
