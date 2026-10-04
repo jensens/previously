@@ -1,7 +1,17 @@
 # Previously — Pilot, Einheit 1: die Aufnahme aus einem IMAP-Ordner
 
 **Datum:** 2026-10-04
-**Status:** Entwurf, zur Durchsicht
+**Status:** Entwurf, **ruht**
+
+> **Zurückgestellt am 2026-10-04, noch am Tag des Entwurfs.** Der Betreuer hat
+> entschieden: erst Stufe 1c (Blobs, Verschlüsselung, Tilgung), dann der
+> Pilot — 1c wird gebraucht, wie auch immer der Pilot ausgeht. Dieser Entwurf
+> ist nicht freigegeben und wird neu gefasst, wenn der Pilot anfängt. Drei
+> Stellen sind dann überholt, weil sie Stufe 1c umgehen: das wegwerfbare
+> Pilot-Log (§1.1), der Rohverweis an Stelle der Rohbytes (§2.3), und Anhänge
+> ohne Inhalt (§1, §3.4). Was davon unabhängig ist und bleibt: die
+> Inhaltsidentität des Artefakts (§2.2), die Abbildung einer Mail (§3), der
+> Konnektor-Vertrag und der Lauf (§4).
 
 Detail-Spec für die erste Einheit des Piloten an einem echten Kunden. Setzt
 den Entwurf (`2026-10-01-previously-design.md`), die Architektur
