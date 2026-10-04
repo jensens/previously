@@ -69,6 +69,8 @@ Fünf Eingaben, die der Spec impliziert und die keine seiner Zusicherungen von s
 4. **Leeres Log mit Ankern.** Erwartet: jeder Anker fehlt, „the log ends at 0". → Aufgabe 1.
 5. **Eine `id` aus Ziffern, die keine ASCII-Ziffern sind** (`²`). `str.isdigit()` hält sie für eine Zahl, `int()` nicht. Erwartet: Eingabefehler mit Zeilennummer, kein `ValueError`. → Aufgabe 1.
 
+> **Nachtrag 2026-10-04, nach der Prüfung der Aufgabe 2 (Ruling T2-a).** Die Punkte 1 und 2 sagen „Ankerdatei" und haben damit die Standardeingabe ausgelassen, die der Spec in §5.1 zum Betriebsweg macht (`--anchors -`, wenn das Kommando im Container läuft und die Datei draußen liegt). Beide gelten für `-` genauso: ein Byte-Order-Mark wird gelesen, und Bytes, die kein UTF-8 sind, sind ein Eingabefehler mit Rückgabecode 2. Was daraus im Plantext der Aufgabe 2 falsch wurde, steht dort im Nachtrag.
+
 ---
 
 ## Dateistruktur
@@ -963,6 +965,12 @@ def _read_anchors(source: str) -> tuple[Anchor, ...]:
         raise InvalidPayload(f"the anchor file {source!r} is not UTF-8 text") from error
 ```
 
+> **Nachtrag 2026-10-04, nach der Prüfung (Ruling T2-a).** Dieser Rumpf ist falsch, und der Fehler ist einer des Plans: der Zweig für `-` steht **vor** dem `try` und liest `sys.stdin`, wie das Terminal es dekodiert. An der Kommandozeile gemessen: Bytes, die kein UTF-8 sind, enden auf `--anchors -` in einem Traceback mit Rückgabecode 1 — und 1 heißt für den Cron-Job, der das Kommando fährt, „Befund"; ein Byte-Order-Mark wird verweigert. Ich hatte vor dem Dispatch die Komplexität dieses Rumpfs gemessen, nicht sein Verhalten auf der Standardeingabe.
+>
+> Im Baum (Commit `81992f9`) liest die Funktion beide Quellen als Bytes und dekodiert an **einer** Stelle, in **einem** `try`: `sys.stdin.buffer.read()` oder `open(source, "rb")`, dann `raw.decode("utf-8-sig")`, die Zeilen über `io.StringIO(text, newline=None)` — das bricht wie eine Datei im Textmodus und nicht, wie `str.splitlines()`, auch an U+2028. Die Meldungen für eine Datei sind wortgleich geblieben; für `-` heißen sie `cannot read standard input: …` und `standard input is not UTF-8 text`. Zwei Tests kamen dazu (Byte-Order-Mark und Windows-Zeilenenden auf der Standardeingabe; Bytes, die kein UTF-8 sind), und der bestehende Test für `-` reicht die Zeile jetzt als Bytes, wie eine Pipe es tut — mit `io.StringIO` lief die Dekodierung, um die es geht, nie.
+>
+> Die Lehre ist dieselbe wie bei `examine` in Aufgabe 1, eine Stufe weiter: **Code im Plan wird nicht nur gemessen, sondern auf jedem Weg, den er hat, ausgeführt.** Ein Zweig, der vor dem `try` zurückkehrt, ist ein eigener Weg.
+
 `_cmd_verify` wird:
 
 ```python
@@ -1177,6 +1185,8 @@ Wie in Aufgabe 1: den Testlauf-Block aus einem echten Lauf neu tippen. Den `veri
 
 Erwartet: `pytest` **263 passed** (251 + 12: acht einfache Tests und vier Fälle des parametrisierten).
 
+> **Nachtrag 2026-10-04.** Gemessen 263 nach dem ersten Commit der Aufgabe (`2637c8e`) und **265** nach ihrer Fixrunde (`81992f9`), die zwei Tests für die Standardeingabe brachte. Die Fixrunde hält außerdem das Präfix `FINDING <id>` der zitierten Befundzeilen fest (Ruling T2-c), das Schritt 7 mit `line.split(": ", 1)[1]` ungeprüft weggeworfen hatte.
+
 ```bash
 git status --short
 git add src/previously/cli.py tests/test_cli.py tests/test_docs_references.py \
@@ -1284,7 +1294,7 @@ Erwartet: leer. Und `grep -rn "§" src tests migrations | wc -l` gegen die Zahl,
 
 - [ ] **Schritt 7: Alle sechs Tore, Commit**
 
-Erwartet: `pytest` **263 passed**, unverändert; Vale mit derselben Dateizahl wie zuvor (keine neue Seite).
+Erwartet: `pytest` **265 passed**, unverändert gegenüber dem Stand nach Aufgabe 2 samt ihrer Fixrunde (hier stand 263, bis die Fixrunde zwei Tests für die Standardeingabe brachte); Vale mit derselben Dateizahl wie zuvor (keine neue Seite).
 
 ```bash
 git status --short
@@ -1339,6 +1349,6 @@ Prüfer schreiben ihren Bericht in eine Datei im Arbeitsverzeichnis des Plans un
 
 **3. Namenskonsistenz.** `Anchor(id, hash)`; `parse_anchors`, `format_anchor`; `Examination(findings, tip)`; `examine(storage, *, anchors, exact, batch)`; `verify(storage, *, batch)`. Die drei Befundtexte stehen gleichlautend in *Vertragliche Wortlaute*, in `examine`, in den Tests beider Aufgaben und im Block für `cli.md`. Der Hinweis steht gleichlautend in `_cmd_verify`, in `_HINT` (mit Zeilenende) und im Block für `cli.md`.
 
-**4. Testzahlen**, am Plantext gezählt: `test_anchor.py` zwei einfache Tests, ein parametrisierter mit sieben Fällen, einer mit zwei → 11. `test_verify.py` acht neue. Aufgabe 1: 232 + 19 = **251**. `test_cli.py` acht einfache Tests und ein parametrisierter mit vier Fällen → 12. Aufgabe 2: 251 + 12 = **263**. Aufgabe 3: **263**. Jede Zahl ist eine Vorhersage, die der Umsetzer nachzählt.
+**4. Testzahlen**, am Plantext gezählt: `test_anchor.py` zwei einfache Tests, ein parametrisierter mit sieben Fällen, einer mit zwei → 11. `test_verify.py` acht neue. Aufgabe 1: 232 + 19 = **251**. `test_cli.py` acht einfache Tests und ein parametrisierter mit vier Fällen → 12. Aufgabe 2: 251 + 12 = **263**. Aufgabe 3: **263**. Jede Zahl ist eine Vorhersage, die der Umsetzer nachzählt. *Nachtrag 2026-10-04:* gemessen 251, 263 und nach der Fixrunde der Aufgabe 2 **265**; Aufgabe 3 fügt keinen Test hinzu und steht damit bei 265.
 
 **5. Review Focus.** 1 → `test_an_anchor_file_with_a_byte_order_mark_and_windows_line_ends_is_read`; 2 → `test_a_broken_anchor_file_is_an_input_error` und `test_a_directory_as_anchor_file_is_an_input_error`; 3 → `test_anchors_are_checked_across_a_batch_boundary`; 4 → `test_an_empty_log_has_no_tip_and_misses_every_anchor`; 5 → der Fall `²` in `test_a_broken_line_is_refused_with_its_line_number`.
