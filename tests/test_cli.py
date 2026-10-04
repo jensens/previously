@@ -7,7 +7,10 @@ from previously.cli import escape_field
 from previously.cli import main
 from previously.cli import MAX_TEXT_BYTES
 from previously.cli import parse_moment
+from previously.contract.rows import EventRow
+from previously.contract.rows import UnitRow
 from previously.core.errors import InvalidPayload
+from previously.storage.postgres import PostgresStorage
 
 import pytest
 
@@ -587,17 +590,49 @@ def test_chronicle_prints_one_line_per_unit_in_time_order_with_the_source(
 ) -> None:
     """Spec §6.2 (frozen design record): time order, not chain order.
 
-    Event 2 happened before event 1.
+    Event 2 happened before event 1. Event 3 carries no source attribution,
+    which is the only way to reach the two empty fields the reference page
+    promises: `append` always writes a `source_key`, so the sourceless event
+    goes in through `insert_event` with no key, the way
+    `test_projection_worker.py` builds one.
     """
+    from sqlalchemy import Engine
+
+    assert isinstance(db, Engine)
     _setup(db, monkeypatch)
     _append("email", "m1", "late", "2026-10-02T09:00:00Z")
     _append("chat", "c1", "early\ttab", "2026-10-01T09:00:00Z")
+    storage = PostgresStorage(db)
+    with storage.begin() as conn:
+        tip = storage.tip(conn)
+        assert tip is not None
+        orphan = datetime(2026, 10, 1, 12, 0, tzinfo=UTC)
+        storage.insert_event(
+            conn,
+            # The hash fields are arbitrary 32-byte values: nothing in this
+            # test verifies the chain, and `hash` and `prev_hash` only have to
+            # satisfy their unique indexes.
+            EventRow(
+                3,
+                "observation",
+                orphan,
+                orphan,
+                tip.hash,
+                b"\x03" * 32,
+                b"\x04" * 32,
+                b"\x05" * 32,
+                {},
+            ),
+            [UnitRow(3, 1, "orphan")],
+            None,
+        )
     main(["project"])
     capsys.readouterr()
     assert main(["chronicle"]) == 0
     out, err = capsys.readouterr()
     assert out.splitlines() == [
         "2\t1\t2026-10-01T09:00:00+00:00\tchat\tc1\tearly\\ttab",
+        "3\t1\t2026-10-01T12:00:00+00:00\t\t\torphan",
         "1\t1\t2026-10-02T09:00:00+00:00\temail\tm1\tlate",
     ]
     assert err == ""  # up to date: silence
@@ -689,6 +724,18 @@ def test_chronicle_limit_warns_on_stderr_when_it_cuts_and_not_otherwise(
     assert main(["chronicle", "--limit", "3"]) == 0
     out, err = capsys.readouterr()
     assert (len(out.splitlines()), err) == (3, "")
+
+    # A limit below one is refused before the read, through the same path as
+    # every other user error: exit code 2, one sentence, nothing on stdout.
+    # Measured without the guard: `--limit 0` returned 0 and claimed `output
+    # truncated at 0 lines` with no line printed, and `--limit -2` came back
+    # as `sqlalchemy.exc.DataError: LIMIT must not be negative` — a stack
+    # trace and exit code 1, which is the shape of review finding W2.
+    for limit in ("0", "-2"):
+        assert main(["chronicle", "--limit", limit]) == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err.strip() == f"Error: --limit must be at least 1, got {limit}"
 
 
 @pytest.mark.db

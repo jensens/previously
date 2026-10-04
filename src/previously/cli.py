@@ -236,6 +236,23 @@ def _cmd_project(_args: argparse.Namespace) -> int:
 
 
 def _cmd_chronicle(args: argparse.Namespace) -> int:
+    # A caller error, named as one and refused before the read. Measured
+    # against a real PostgreSQL 17 without this guard: `--limit 0` returned 0
+    # with an empty stdout and `output truncated at 0 lines` on stderr — a
+    # truncation that had not happened, because `limit + 1` still returns a
+    # row — and `--limit -2` passed `LIMIT -1` to the driver and came back as
+    # `sqlalchemy.exc.DataError: LIMIT must not be negative`, a foreign
+    # exception this command line does not catch, so a stack trace and the
+    # interpreter's exit code 1 instead of 2 (review finding W2's class).
+    #
+    # `InvalidPayload` and not a `type=` callable on the argument: a callable
+    # that raises goes through `parser.error()` to `sys.exit(2)`, a process
+    # abort rather than a `return 2` out of `main` — the same reason
+    # `_parse_evidence` exists instead of `choices=` (review finding W2, both
+    # branches return exit code 2). `core.projection.catch_up` refuses its own
+    # `batch_size` below one in the same words.
+    if args.limit < 1:
+        raise InvalidPayload(f"--limit must be at least 1, got {args.limit}")
     # The same `parse_moment` as `--occurred-at`, so a window without a zone is
     # refused here too rather than silently read as local time.
     since = parse_moment(args.since) if args.since else None
@@ -325,15 +342,24 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
 
-    # A table instead of an `if` chain, and the margin is measured rather than
-    # assumed. The plan expected seven `if` branches to sit on the `C901`
-    # threshold; measured on 2026-10-04 with `ruff check --select C901
-    # --config 'lint.mccabe.max-complexity = N'`, the chain puts `main` at 9
-    # against a threshold of 10, and the table puts it at 2. So the chain would
-    # pass — one branch short of breaking the gate, which is the argument for
-    # writing the table at the seventh command rather than at the eighth. This
-    # `main` crossed that threshold once already, at 13, and that is why the
-    # command bodies live in their own functions at all.
+    # A table instead of an `if` chain, for the structure: the dispatch is the
+    # one place in this file that grows with every command, and a lookup adds
+    # no branch where each `if` adds one.
+    #
+    # It is not the gate that forces it, and the margin was measured twice
+    # before that came out right. With `ruff check --select C901 --config
+    # 'lint.mccabe.max-complexity = N' src/previously/cli.py` on 2026-10-04:
+    # the chain puts `main` at 9 with these seven commands, at 10 with an
+    # eighth and at 11 with a ninth, while the table puts it at 2. `C901`
+    # fires strictly **above** its threshold, so against this project's 10 an
+    # eighth command would still pass and only a ninth would break the gate.
+    # Two branches of headroom — the plan had the chain sitting on the
+    # threshold, the first version of this comment had it one branch short,
+    # and both were wrong in the same direction.
+    #
+    # The 13 this `main` is said to have measured once is a historical figure
+    # from a version no longer in the tree, not re-measured here. It is why
+    # the command bodies live in their own functions at all.
     commands: dict[str, Callable[[argparse.Namespace], int]] = {
         "append": _cmd_append,
         "log": _cmd_log,

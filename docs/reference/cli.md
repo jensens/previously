@@ -16,7 +16,7 @@ Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see
 | `show` | The event was printed. | No event exists at the given `event_id`. | The input was invalid, or storage raised an error. |
 | `project` | Every projection stands at the tip of the log. | Not used. | Storage raised an error. |
 | `chronicle` | The chronicle was printed, even when the window holds no row. | Not used. | The input was invalid, or storage raised an error. |
-| `stats` | The statistics were printed, even when no source has an event. | Not used. | The input was invalid, or storage raised an error. |
+| `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
 
 ## `append`
 
@@ -80,7 +80,7 @@ There are four outcomes:
 | `built: <n> events, up_to_id <id>` | The projection had no state row, and the log held events to project. |
 | `caught up: <n> events, up_to_id <id>` | The projection had a state row at the code's version, and the log had grown since. |
 | `rebuilt: version <n> -> <m>, <k> events, up_to_id <id>` | The state row stood at version `<n>` and the code declares `<m>`, so the table was emptied and built again. |
-| `up to date, up_to_id <id>` | No event was projected. |
+| `up to date, up_to_id <id>` | No event was projected, and the version was unchanged. |
 
 A count of one prints as `1 event`, every other count as `<n> events`.
 `up to date` carries no count, and `up_to_id 0` means that nothing has been projected yet.
@@ -93,7 +93,7 @@ Prints the chronicle in time order, one line per unit.
 |---|---|---|---|
 | `--since` | No | — | An ISO 8601 timestamp with a UTC offset, as an inclusive lower bound on `occurred_at`. |
 | `--until` | No | — | An ISO 8601 timestamp with a UTC offset, as an exclusive upper bound on `occurred_at`. |
-| `--limit` | No | `50` | The maximum number of lines to print. |
+| `--limit` | No | `50` | The maximum number of lines to print, at least 1. |
 
 Each line holds six tab-separated fields, in this order: `event_id`, `seq`, `occurred_at` (ISO 8601), `source`, `external_id`, and `content`.
 An event with no source attribution prints two empty fields in place of `source` and `external_id`.
@@ -105,6 +105,7 @@ The stored content is unchanged; the escaping is part of the output format.
 
 `--since` and `--until` form a half-open window, so a `--since` equal to or later than `--until` selects nothing.
 Both need a UTC offset; without one, `chronicle` returns 2 and prints one sentence to standard error.
+A `--limit` below 1 is refused the same way, before anything is read.
 
 Two notices go to standard error, and both leave the exit code at 0.
 The first prints when the projection stands behind the tip of the log, the second when `--limit` cuts the output:
@@ -126,7 +127,7 @@ It takes no arguments.
 
 Each line holds five tab-separated fields, in this order: `source`, `events`, `units`, `first_seen` (ISO 8601), and `last_seen` (ISO 8601).
 Lines come out ordered by `source`.
-An event with no source attribution appears in no line, because there is no source to attribute it to.
+An event with no source attribution appears in no line.
 
 `stats` reports the lag of `source-stats` on standard error, in the same sentence `chronicle` uses and with the same exit code 0.
 The two commands report the lag of the projection each one reads, so after a rebuild of one of the two the numbers can differ.
