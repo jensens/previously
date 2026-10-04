@@ -129,6 +129,33 @@ def test_truncate_empties_only_the_named_projection(db: Engine) -> None:
 
 
 @pytest.mark.db
+def test_delete_chronicle_takes_the_named_rows_or_all_of_an_event(db: Engine) -> None:
+    """Named units take their rows, `None` takes every row of the event, and an
+    empty sequence takes nothing — not everything: `[]` and `None` are two
+    different requests, and a deletion that read the one as the other would
+    empty an event the redaction did not name."""
+    storage = PostgresStorage(db)
+    _event(storage, 1)
+    _event(storage, 2)
+    rows = [
+        *(
+            ChronicleRow(1, seq, f"a{seq}", NOW, "observation", None, None, None)
+            for seq in (1, 2, 3)
+        ),
+        *(ChronicleRow(2, seq, f"b{seq}", NOW, "observation", None, None, None) for seq in (1, 2)),
+    ]
+    with storage.begin() as c:
+        storage.insert_chronicle(c, rows)
+        storage.delete_chronicle(c, 1, [])
+        storage.delete_chronicle(c, 1, [1, 3])
+        named = c.execute(text("SELECT event_id, seq FROM p_chronicle ORDER BY 1, 2")).all()
+        storage.delete_chronicle(c, 2, None)
+        whole = c.execute(text("SELECT event_id, seq FROM p_chronicle ORDER BY 1, 2")).all()
+    assert [tuple(r) for r in named] == [(1, 2), (2, 1), (2, 2)]
+    assert [tuple(r) for r in whole] == [(1, 2)]
+
+
+@pytest.mark.db
 def test_truncating_an_unknown_projection_is_an_error(db: Engine) -> None:
     storage = PostgresStorage(db)
     with pytest.raises(ValueError, match="unknown projection"), storage.begin() as c:

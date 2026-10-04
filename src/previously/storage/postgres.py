@@ -507,6 +507,18 @@ class PostgresStorage:
             ],
         )
 
+    def delete_chronicle(self, conn: Connection, event_id: int, seqs: Sequence[int] | None) -> None:
+        if seqs is None:
+            conn.execute(delete(p_chronicle).where(p_chronicle.c.event_id == event_id))
+            return
+        if not seqs:
+            return
+        conn.execute(
+            delete(p_chronicle).where(
+                p_chronicle.c.event_id == event_id, p_chronicle.c.seq.in_(seqs)
+            )
+        )
+
     def source_stats(self, conn: Connection, sources: Sequence[str]) -> dict[str, SourceStatsRow]:
         if not sources:
             return {}

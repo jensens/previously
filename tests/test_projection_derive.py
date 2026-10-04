@@ -16,6 +16,8 @@ from previously.contract.rows import UnitRow
 from previously.core.projection import chronicle
 from previously.core.projection import source_stats
 from previously.core.projection.worker import Batch
+from previously.core.redaction import event_payload
+from previously.core.redaction import units_payload
 
 
 T1 = datetime(2026, 10, 1, tzinfo=UTC)
@@ -23,10 +25,15 @@ T2 = datetime(2026, 10, 2, tzinfo=UTC)
 T3 = datetime(2026, 10, 3, tzinfo=UTC)
 
 
-def _event(event_id: int, occurred_at: datetime, payload: dict[str, object] | None) -> EventRow:
+def _event(
+    event_id: int,
+    occurred_at: datetime,
+    payload: dict[str, object] | None,
+    kind: str = "observation",
+) -> EventRow:
     return EventRow(
         id=event_id,
-        kind="observation",
+        kind=kind,
         recorded_at=T3,
         occurred_at=occurred_at,
         prev_hash=None,
@@ -60,11 +67,14 @@ def test_chronicle_leaves_source_null_for_an_event_without_a_key() -> None:
     assert (row.source, row.external_id) == (None, None)
 
 
-def test_chronicle_still_derives_rows_for_an_erased_payload() -> None:
-    """A tombstone empties the payload and leaves the units standing
-    ({ref}`projections`): the chronicle shows them, with `evidence` NULL.
-    Whoever builds an erasure that deletes units has to change this test on
-    purpose."""
+def test_chronicle_still_derives_rows_for_a_payload_erased_without_a_redaction() -> None:
+    """A payload set to `NULL` with the units left standing is no erasure
+    `redact` writes: that one takes the units too, and the redaction it
+    records is what takes the rows out ({ref}`projections`). What is left is a
+    tombstone without an order, which `verify` reports, and for that the
+    chronicle shows the units it still finds, with `evidence` NULL.
+    `test_erasures_names_what_a_redaction_takes_out` is the test about the
+    erasure that has an order."""
     batch = Batch(
         events=(_event(1, T1, None),), units={1: [UnitRow(1, 1, "a")]}, keys={1: ("cli", "x")}
     )
@@ -87,6 +97,38 @@ def test_chronicle_derives_no_row_for_a_unit_without_content() -> None:
 def test_chronicle_derives_nothing_for_an_event_without_units() -> None:
     batch = Batch(events=(_event(1, T1, {"evidence": "recollection"}),), units={}, keys={})
     assert chronicle.derive(batch) == []
+
+
+def test_erasures_names_what_a_redaction_takes_out() -> None:
+    """A redaction of an event takes every row of it, a redaction of units
+    the rows of those units, in chain order ({ref}`projections`). An action
+    of another name takes nothing, nor does one that cannot be read as a
+    redaction, nor a redaction of a blob: the chronicle holds no blob. An observation that
+    carries the form of a redaction in its payload orders nothing either,
+    since only the kind `action` is a redaction's. And a redaction that names
+    an event after itself takes nothing, because it can order the erasure only
+    of something before it."""
+    blob: dict[str, object] = {
+        "action": "redaction",
+        "scope": "blob",
+        "target": {"blob": "ab" * 32, "events": [5]},
+        "reason": "r",
+    }
+    batch = Batch(
+        events=(
+            _event(6, T1, event_payload(5, blobs=(), reason="r"), kind="action"),
+            _event(7, T1, {"action": "redaction", "scope": "event"}, kind="action"),
+            _event(8, T1, units_payload(5, [3, 1], reason="r"), kind="action"),
+            _event(9, T1, blob, kind="action"),
+            _event(10, T1, event_payload(4, blobs=(), reason="r")),
+            _event(11, T1, None, kind="action"),
+            _event(12, T1, event_payload(13, blobs=(), reason="r"), kind="action"),
+            _event(13, T1, {"action": "something-else"}, kind="action"),
+        ),
+        units={},
+        keys={},
+    )
+    assert chronicle.erasures(batch) == [(5, None), (5, (1, 3))]
 
 
 def test_source_stats_aggregates_a_batch_per_source() -> None:

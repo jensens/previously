@@ -13,6 +13,7 @@ from previously.contract.rows import UnitRow
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.errors import InvalidPayload
+from previously.core.redact import redact_event
 from previously.core.units import split_plaintext
 from previously.storage.postgres import PostgresStorage
 from typing import TYPE_CHECKING
@@ -591,10 +592,10 @@ def test_project_on_an_empty_log_is_up_to_date_at_zero_but_still_names_a_rebuild
     ]
 
     with db.begin() as c:
-        c.execute(text("UPDATE projection_state SET version = 2 WHERE name = 'chronicle'"))
+        c.execute(text("UPDATE projection_state SET version = 3 WHERE name = 'chronicle'"))
     assert main(["project"]) == 0
     assert capsys.readouterr().out.splitlines() == [
-        "chronicle       rebuilt: version 2 -> 1, 0 events, up_to_id 0",
+        "chronicle       rebuilt: version 3 -> 2, 0 events, up_to_id 0",
         "source-stats    up to date, up_to_id 0",
     ]
 
@@ -646,12 +647,12 @@ def test_project_says_which_path_it_took(
     # reference page promises and nothing produces. `source-stats` is left
     # alone, so the two projections report different paths in the same run.
     with db.begin() as c:
-        c.execute(text("UPDATE projection_state SET version = 2 WHERE name = 'chronicle'"))
+        c.execute(text("UPDATE projection_state SET version = 3 WHERE name = 'chronicle'"))
     capsys.readouterr()
     assert main(["project"]) == 0
     fourth = capsys.readouterr().out.splitlines()
     assert fourth == [
-        "chronicle       rebuilt: version 2 -> 1, 2 events, up_to_id 2",
+        "chronicle       rebuilt: version 3 -> 2, 2 events, up_to_id 2",
         "source-stats    up to date, up_to_id 2",
     ]
 
@@ -1329,3 +1330,108 @@ def test_a_refused_redaction_is_one_sentence(
     assert err == f"Error: {refusal}\n"
     assert main(["log"]) == 0
     assert len(capsys.readouterr().out.splitlines()) == 3
+
+
+@pytest.mark.db
+def test_after_redact_the_chronicle_no_longer_shows_it(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`redact` brings the projections up to date itself ({ref}`projections`):
+    `chronicle` straight after it, with no `project` between, shows neither
+    the erased event nor a lag."""
+    _connect(db, monkeypatch)
+    _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
+    _append("cli", "b", "Three", "2026-10-02T09:00:00Z")
+    assert main(["project"]) == 0
+    capsys.readouterr()
+
+    assert main(["redact", "event", "1", "--reason", "wrong recipient"]) == 0
+    assert capsys.readouterr() == ("redacted by event 3\n", "")
+
+    assert main(["chronicle"]) == 0
+    out, err = capsys.readouterr()
+    assert [line.split("\t")[:2] for line in out.splitlines()] == [["2", "1"]]
+    assert err == ""
+
+
+@pytest.mark.db
+def test_a_second_redact_finishes_what_the_first_left_behind(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A redaction written by a call that did not get to the catch-up — taken
+    here through `core`, which does not catch up — is caught up by the next
+    call, the one that says `already`."""
+    engine = _connect(db, monkeypatch)
+    _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
+    assert main(["project"]) == 0
+    storage = PostgresStorage(engine)
+    redact_event(storage, storage, 1, reason="r", recorded_at=datetime.now(UTC))
+    capsys.readouterr()
+
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("already redacted by event 2\n", "")
+    assert main(["chronicle"]) == 0
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.db
+def test_a_catch_up_that_fails_after_the_redaction_says_what_is_outstanding(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The redaction is written and the catch-up fails: one line on standard
+    output, as for a call that finished, and the error says what stands and
+    what does not. The failure is a gap in the log, forged with plain SQL the
+    way `test_projection_worker` forges it — nothing in the write paths can
+    produce one, which makes it a failure no wrapper has to stand in for."""
+    from sqlalchemy import text
+
+    engine = _connect(db, monkeypatch)
+    _append("cli", "a", "One", "2026-10-01T09:00:00Z")
+    assert main(["project"]) == 0
+    _append("cli", "b", "Two", "2026-10-02T09:00:00Z")
+    _append("cli", "c", "Three", "2026-10-03T09:00:00Z")
+    with engine.begin() as c:
+        c.execute(text("DELETE FROM source_key WHERE event_id = 2"))
+        c.execute(text("DELETE FROM unit WHERE event_id = 2"))
+        c.execute(text("DELETE FROM event WHERE id = 2"))
+    capsys.readouterr()
+
+    assert main(["redact", "event", "1", "--reason", "r"]) == 2
+    out, err = capsys.readouterr()
+    assert out == "redacted by event 4\n"
+    assert err == (
+        "Error: the redaction is recorded as event 4, but it is not finished: "
+        "projection chronicle is not caught up (expected events 2.. above id 1, "
+        "read [3, 4]; the tip is 4); run the same command again\n"
+    )
+
+
+@pytest.mark.db
+def test_project_rebuilds_a_chronicle_built_at_version_1(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Version 1 of the chronicle did not read redactions, so a table it built
+    can still hold the rows of an erased event. The state row is set to what
+    such a table carries — version 1, caught up past the redaction — and the
+    first `project` of version 2 rebuilds it and says so."""
+    from sqlalchemy import text
+
+    engine = _connect(db, monkeypatch)
+    _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
+    _append("cli", "b", "Three", "2026-10-02T09:00:00Z")
+    assert main(["project"]) == 0
+    storage = PostgresStorage(engine)
+    redact_event(storage, storage, 1, reason="r", recorded_at=datetime.now(UTC))
+    with engine.begin() as c:
+        c.execute(
+            text("UPDATE projection_state SET version = 1, up_to_id = 3 WHERE name = 'chronicle'")
+        )
+    capsys.readouterr()
+
+    assert main(["project"]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == (
+        "chronicle       rebuilt: version 1 -> 2, 3 events, up_to_id 3"
+    )
+    assert main(["chronicle"]) == 0
+    out = capsys.readouterr().out
+    assert [line.split("\t")[:2] for line in out.splitlines()] == [["2", "1"]]

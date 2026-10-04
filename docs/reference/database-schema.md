@@ -122,7 +122,7 @@ Three more tables hold projections derived from the tables above.
 | `content` | `text` | No | The unit's text. |
 | `occurred_at` | `timestamp with time zone` | No | When the event happened. |
 | `kind` | `text` | No | The event's kind: one of `observation`, `assertion`, `action`. |
-| `evidence` | `text` | Yes | The evidence kind from the payload; `NULL` after an erasure (a tombstone). |
+| `evidence` | `text` | Yes | The evidence kind from the payload; `NULL` when the payload is a tombstone that no redaction ordered. An event a redaction erased has no rows here. |
 | `source` | `text` | Yes | The system the event came from; `NULL` when the event carries no source attribution. |
 | `external_id` | `text` | Yes | The event's identifier within that source; `NULL` under the same condition as `source`. |
 | `speaker` | `text` | Yes | The speaker's name; always `NULL` until stage 2. |

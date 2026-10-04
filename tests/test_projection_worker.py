@@ -9,6 +9,7 @@ rebuild-only test proves determinism; only the comparison catches a wrong
 incremental step, and that is the failure that kills projections.
 """
 
+from dataclasses import dataclass
 from datetime import datetime
 from datetime import timedelta
 from datetime import UTC
@@ -31,6 +32,8 @@ from previously.core.projection.chronicle import ChronicleProjection
 from previously.core.projection.source_stats import SOURCE_STATS
 from previously.core.projection.source_stats import SourceStatsProjection
 from previously.core.projection.worker import catch_up
+from previously.core.redact import redact_event
+from previously.core.redact import redact_units
 from previously.core.units import split_plaintext
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import Connection
@@ -101,16 +104,19 @@ def test_incremental_equals_rebuilt(db: Engine) -> None:
     `assert incremental == rebuilt`: `merge` folds the batch *and* merges the
     fold with the stored row, so that mutation moves both paths alike and
     they stay equal. Replacing it by `addition.first_seen` — overwriting —
-    leaves all twelve tests in this file green, for the reason the dated
+    leaves every test in this file green, for the reason the dated
     correction in the specification gives: the older late arrival happens to
     be the minimum.
 
     What the comparison catches is a wrong *incremental* step, and that was
     measured too. With `SourceStatsProjection.write` merging `None` instead
-    of the stored row, this test and the property fail and all nine tests in
-    `test_projection_derive.py` stay green — a mutation invisible to every
+    of the stored row, this test and the property fail and every test in
+    `test_projection_derive.py` stays green — a mutation invisible to every
     pure test and to the pinned value, which is the whole reason this test
     exists.
+
+    All three remeasured on 2026-10-05, with fifteen tests in this file and
+    eleven in `test_projection_derive.py`, and each came out as above.
     """
     storage = PostgresStorage(db)
     moments = [NOW, NOW + timedelta(days=1), NOW - timedelta(days=5)]
@@ -200,6 +206,9 @@ class _FailingStore:
             raise RuntimeError("injected failure")
         self._inner.insert_chronicle(conn, rows)
 
+    def delete_chronicle(self, conn: Connection, event_id: int, seqs: Sequence[int] | None) -> None:
+        self._inner.delete_chronicle(conn, event_id, seqs)
+
     def source_stats(self, conn: Connection, sources: Sequence[str]) -> dict[str, SourceStatsRow]:
         return self._inner.source_stats(conn, sources)
 
@@ -282,10 +291,16 @@ def test_an_event_without_a_source_is_in_the_chronicle_and_not_in_the_stats(db: 
 
 
 @pytest.mark.db
-def test_a_tombstoned_event_keeps_its_chronicle_rows_with_evidence_null(db: Engine) -> None:
-    """Erasing the payload does not erase the units ({ref}`projections`).
-    Pinned, so that an erasure which deletes units has to change this on
-    purpose."""
+def test_a_payload_erased_without_a_redaction_keeps_its_chronicle_rows_with_evidence_null(
+    db: Engine,
+) -> None:
+    """A payload set to `NULL` by hand, units left standing: a tombstone
+    without an order, which `verify` reports, and not an erasure `redact`
+    writes — that one takes the units as well and records the redaction that
+    takes the rows out ({ref}`projections`). For the tombstone without an
+    order the chronicle shows the units it still finds, with `evidence` NULL.
+    `test_a_redacted_event_leaves_no_chronicle_row` is the test about the
+    erasure that has an order."""
     storage = PostgresStorage(db)
     append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
     with db.begin() as c:
@@ -296,6 +311,76 @@ def test_a_tombstoned_event_keeps_its_chronicle_rows_with_evidence_null(db: Engi
     with db.begin() as c:
         rows = c.execute(text("SELECT content, evidence FROM p_chronicle ORDER BY seq")).all()
     assert [tuple(r) for r in rows] == [("one", None), ("two", None)]
+
+
+def _chronicle_keys(db: Engine) -> list[tuple[int, int]]:
+    with db.begin() as c:
+        rows = c.execute(text("SELECT event_id, seq FROM p_chronicle ORDER BY event_id, seq"))
+        return [(r.event_id, r.seq) for r in rows]
+
+
+@pytest.mark.db
+def test_incremental_equals_rebuilt_with_redactions_before_and_after_the_worker(
+    db: Engine,
+) -> None:
+    """Both ways an erasure reaches the chronicle end alike ({ref}`projections`).
+
+    Events 1 to 3 are projected, then event 1 is redacted (4) and unit 1 of
+    event 2 (5): the worker has rows for both and takes them out when it reads
+    the redactions. Events 6 and 7 are appended and 6 is redacted (8) before
+    the worker has seen it: its units are tombstones by the time it reads
+    them, so it builds no row, and the deletion meets nothing. The rebuild
+    goes the second way for all three, and has to arrive at the same rows.
+    """
+    storage = PostgresStorage(db)
+    append(
+        storage, [_raw(n, "email", NOW + timedelta(hours=n)) for n in (1, 2, 3)], recorded_at=NOW
+    )
+    _project_all(storage)
+    redact_event(storage, storage, 1, reason="wrong recipient", recorded_at=NOW)
+    redact_units(storage, storage, 2, [1], reason="a third party", recorded_at=NOW)
+    append(storage, [_raw(n, "chat", NOW - timedelta(days=n)) for n in (6, 7)], recorded_at=NOW)
+    redact_event(storage, storage, 6, reason="never meant for the log", recorded_at=NOW)
+    _project_all(storage)
+    incremental = _snapshot(db)
+    assert _chronicle_keys(db) == [(2, 2), (3, 1), (3, 2), (7, 1), (7, 2)]
+
+    _force_rebuild(storage)
+    _project_all(storage)
+    assert _snapshot(db) == incremental
+
+
+@pytest.mark.db
+def test_a_redacted_event_leaves_no_chronicle_row(db: Engine) -> None:
+    """From an empty projection: the worker reads the event after its
+    redaction, finds tombstones and builds no row ({ref}`projections`). The
+    event beside it keeps its rows."""
+    storage = PostgresStorage(db)
+    append(storage, [_raw(n, "email", NOW) for n in (1, 2)], recorded_at=NOW)
+    redact_event(storage, storage, 1, reason="wrong recipient", recorded_at=NOW)
+    catch_up(storage, storage, CHRONICLE)
+    assert _chronicle_keys(db) == [(2, 1), (2, 2)]
+
+
+@pytest.mark.db
+def test_the_stats_keep_counting_an_erased_unit(db: Engine) -> None:
+    """`units` counts the units recorded, erased ones included: an erasure
+    leaves the rows of its units standing as tombstones ({ref}`projections`),
+    so the count the log supports does not move, incrementally or rebuilt."""
+    storage = PostgresStorage(db)
+    append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
+    _project_all(storage)
+    before = _snapshot(db)[1]
+    assert [(r[0], r[2]) for r in before] == [("email", 2)]
+
+    redact_units(storage, storage, 1, [1], reason="a third party", recorded_at=NOW)
+    redact_event(storage, storage, 1, reason="wrong recipient", recorded_at=NOW)
+    _project_all(storage)
+    assert _snapshot(db)[1] == before
+
+    _force_rebuild(storage)
+    _project_all(storage)
+    assert _snapshot(db)[1] == before
 
 
 @pytest.mark.db
@@ -377,46 +462,84 @@ SLOW = settings(
 WINDOW_FROM = datetime(2026, 1, 1, tzinfo=UTC).replace(tzinfo=None)
 WINDOW_UNTIL = datetime(2026, 12, 31, tzinfo=UTC).replace(tzinfo=None)
 
-# Steps: each is one to three events from a handful of sources, with
-# `occurred_at` drawn at random and therefore out of order — the case that
-# tells a minimum from an assignment.
-steps = st.lists(
+
+@dataclass(frozen=True)
+class _Append:
+    """One to three events from a handful of sources, with `occurred_at`
+    drawn at random and therefore out of order — the case that tells a
+    minimum from an assignment."""
+
+    events: tuple[tuple[str, datetime], ...]
+
+
+@dataclass(frozen=True)
+class _CatchUp:
+    """Every projection brought up to the tip."""
+
+
+@dataclass(frozen=True)
+class _Redact:
+    """An erasure of one of the events appended so far, picked by position
+    modulo their number: the whole event for `units` None, else those units
+    of its two. A target already covered is the ordinary `already` path."""
+
+    pick: int
+    units: tuple[int, ...] | None
+
+
+_appends = st.builds(
+    _Append,
     st.lists(
         st.tuples(
             st.sampled_from(["email", "chat", "cli"]),
-            st.datetimes(
-                min_value=WINDOW_FROM,
-                max_value=WINDOW_UNTIL,
-                timezones=st.just(UTC),
-            ),
+            st.datetimes(min_value=WINDOW_FROM, max_value=WINDOW_UNTIL, timezones=st.just(UTC)),
         ),
         min_size=1,
         max_size=3,
-    ),
-    min_size=1,
-    max_size=6,
+    ).map(tuple),
 )
+_redactions = st.builds(
+    _Redact,
+    st.integers(min_value=0, max_value=20),
+    st.one_of(st.none(), st.sampled_from([(1,), (2,), (1, 2)])),
+)
+steps = st.lists(st.one_of(_appends, st.just(_CatchUp()), _redactions), min_size=1, max_size=8)
 
 
 @pytest.mark.db
 @SLOW
 @given(steps=steps)
 def test_property_any_interleaving_of_append_and_catch_up_equals_a_rebuild(
-    db: Engine, truncate_statement: str, steps: list[list[tuple[str, datetime]]]
+    db: Engine, truncate_statement: str, steps: list[_Append | _CatchUp | _Redact]
 ) -> None:
-    """Random interleavings of "append k events" and "catch up", against one
-    rebuild at the end ({ref}`projections`)."""
+    """Random interleavings of "append k events", "catch up" and "redact",
+    against one rebuild at the end ({ref}`projections`). A redaction lands
+    before or after the worker has read its target, depending on the draw,
+    and both ways have to end in the rows the rebuild derives."""
     with db.begin() as c:
         c.execute(text(truncate_statement))
     storage = PostgresStorage(db)
     n = 0
+    appended: list[int] = []
     for step in steps:
-        events: list[RawEvent] = []
-        for source, moment in step:
-            n += 1
-            events.append(_raw(n, source, moment))
-        append(storage, events, recorded_at=NOW)
-        _project_all(storage)
+        match step:
+            case _Append(events=drawn):
+                raws: list[RawEvent] = []
+                for source, moment in drawn:
+                    n += 1
+                    raws.append(_raw(n, source, moment))
+                appended.extend(append(storage, raws, recorded_at=NOW))
+            case _CatchUp():
+                _project_all(storage)
+            case _Redact(pick=pick, units=units):
+                if not appended:
+                    continue
+                target = appended[pick % len(appended)]
+                if units is None:
+                    redact_event(storage, storage, target, reason="r", recorded_at=NOW)
+                else:
+                    redact_units(storage, storage, target, units, reason="r", recorded_at=NOW)
+    _project_all(storage)
     incremental = _snapshot(db)
     _force_rebuild(storage)
     _project_all(storage)

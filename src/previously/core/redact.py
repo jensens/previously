@@ -121,9 +121,10 @@ def _retrying[Conn](log: LogStore[Conn], once: Callable[[Conn], Redacted]) -> Re
     The policy is `append`'s ({ref}`concurrency`): a lost chain position rolls
     the transaction back and the next attempt starts from the lock. The
     position is lost at `insert_event`, before any tombstone is set, so the
-    rollback undoes the lock and nothing else; the tombstones are only ever
-    written by the attempt that got its position. Every other error rolls
-    back as well and is not retried.
+    rollback undoes the lock and nothing else. The tombstones are written by
+    an attempt that got its position, or by one that needed none because a
+    redaction already covers its target and it writes no event. Every other
+    error rolls back as well and is not retried.
     """
     for attempt in range(MAX_RETRIES):
         try:

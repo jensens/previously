@@ -126,6 +126,7 @@ A message identifier carries a domain, and whoever can't let that stand can't er
 
 **What was derived or copied stays where it went.**
 Output printed in a terminal, a copy in another system, anything outside the log is beyond the reach of any erasure.
-Inside it, the chronicle is a projection of the log, and it doesn't follow an erasure yet: the rows it built before the erasure stay until the projection is rebuilt, which {ref}`rebuild-a-projection` shows.
+Inside it, the chronicle is a projection of the log, and it follows an erasure: `redact` catches the projections up after it, and the rows of what was erased are deleted, as {ref}`projections` explains.
+If that catch-up fails, the erasure stands and the chronicle lags behind it until the same command runs again or `project` runs.
 
 The anchors, by contrast, keep holding: an erasure changes no event hash, so an anchor taken before an erasure holds after it, and an anchor taken after it holds exactly.

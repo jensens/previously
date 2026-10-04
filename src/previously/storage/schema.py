@@ -189,9 +189,12 @@ p_chronicle = Table(
     Column("content", Text, nullable=False),
     Column("occurred_at", TIMESTAMP(timezone=True), nullable=False),
     Column("kind", Text, nullable=False),
-    # NULL when the payload was erased: the kind of evidence lives in the
-    # payload, and a tombstone has none. NOT NULL here would mean the chronicle
-    # cannot show an erased event at all — a row in the log, silently missing.
+    # NULL when the payload is a tombstone that no redaction ordered: the kind
+    # of evidence lives in the payload, and a tombstone has none. An event a
+    # redaction erased has no row here at all, because its units are erased
+    # with it; the tombstone without an order keeps its units, which `verify`
+    # reports, and NOT NULL here would mean the chronicle could not show them —
+    # rows in the log, silently missing.
     Column("evidence", Text),
     # NULL when the event carries no source attribution; `source_key` enforces
     # at most one per event, not at least one.

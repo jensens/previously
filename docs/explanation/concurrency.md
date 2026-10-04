@@ -64,7 +64,8 @@ Whoever loses the chain position consumed no number, so a retry leaves no gap be
 Since stage 1c two paths write to the chain: `append` writes observations, and an erasure writes its redaction event, which {ref}`erasure` describes.
 Both read the tip the same way, derive `id` and `prev_hash` from it, and let the same two indexes decide who gets the position.
 An erasure that loses the race loses it at the insert of its redaction, before it has set a single tombstone, so the rollback undoes no more than its lock and its reads.
-It backs off with the same jitter and starts over from the lock, up to the same eight attempts, and only the attempt that wins a position sets the tombstones.
+It backs off with the same jitter and starts over from the lock, up to the same eight attempts.
+The tombstones are set by the attempt that wins a position, or by one that needs none, because a redaction already covers its target and it writes no event.
 So a redaction racing an append ends the way two appends do: both events stand, one after the other, on one chain.
 
 An erasure takes one lock that `append` doesn't, and the lock isn't on the tip.

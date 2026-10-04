@@ -423,13 +423,36 @@ def _redacted_line(result: Redacted) -> str:
     return f"already redacted by event {result.redaction_id}"
 
 
+def _catch_up_after(storage: PostgresStorage, redaction_id: int) -> None:
+    """Brings every projection up to the tip once a redaction is recorded, so
+    the chronicle stops showing what was erased without waiting for the next
+    `project` ({ref}`projections`).
+
+    A failure here comes after the redaction committed, and the message says
+    so: what stands, what does not, and that the same command finishes it —
+    the second call finds the target covered, writes nothing and catches up.
+    Only the errors `main` turns into a sentence are caught; anything foreign
+    goes through as a stack trace, as everywhere else.
+    """
+    for projection in PROJECTIONS:
+        try:
+            catch_up(storage, storage, projection)
+        except (PreviouslyError, StorageError) as error:
+            raise PreviouslyError(
+                f"the redaction is recorded as event {redaction_id}, but it is not "
+                f"finished: projection {projection.name} is not caught up ({error}); "
+                "run the same command again"
+            ) from error
+
+
 def _cmd_redact(args: argparse.Namespace) -> int:
-    """Erases an event or units of it ({ref}`erasure`).
+    """Erases an event or units of it ({ref}`erasure`), then catches the
+    projections up.
 
     No question before it acts: the reason is the brake, and a command that
     asked would be no tool for a script.
     """
-    # Blanks alone count as empty: the reason is the brake ({ref}`erasure`).
+    # Blanks alone count as empty: a reason that says nothing brakes nothing.
     if not args.reason.strip():
         raise RedactionRefused("--reason must not be empty")
     storage = _storage()
@@ -442,7 +465,11 @@ def _cmd_redact(args: argparse.Namespace) -> int:
         )
     for seq in result.skipped_units:
         print(f"unit {seq} was already erased", file=sys.stderr)
+    # The line first: the redaction stands whether or not the catch-up below
+    # gets through, and standard output says what stands. After `already` as
+    # well, so that a second call finishes what the first did not get to.
     print(_redacted_line(result))
+    _catch_up_after(storage, result.redaction_id)
     return 0
 
 

@@ -11,7 +11,7 @@ Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see
 | Command | 0 | 1 | 2 |
 |---|---|---|---|
 | `append` | The event was recorded, or an event with the same `--source` and `--external-id` already existed. | Not used. | The input was invalid, or storage raised an error. |
-| `redact` | The redaction was recorded and carried out, or the target was already covered by one. | Not used. | The input was invalid, the redaction was refused, or storage raised an error. |
+| `redact` | The redaction was recorded and carried out, or the target was already covered by one, and every projection stands at the tip of the log. | Not used. | The input was invalid, the redaction was refused, storage raised an error, or the projections couldn't be caught up after the redaction was recorded. |
 | `log` | The log was printed. | Not used. | The input was invalid, or storage raised an error. |
 | `verify` | The chain has no finding, and every anchor holds. | The chain or an anchor has at least one finding. | The input was invalid, or storage raised an error. |
 | `anchor` | The anchor line was printed, or the log is empty. | The chain has at least one finding. | Storage raised an error. |
@@ -73,7 +73,18 @@ already redacted by event 42
 
 The first names the redaction it wrote.
 The second means that a redaction already covers the target and nothing was written; it names that redaction, or for units the newest of the redactions that cover them.
-In both cases the tombstones are set, and the exit code is 0.
+In both cases the tombstones are set.
+
+After either line, `redact` brings every projection up to the tip of the log, the way `project` does, and prints nothing about it.
+The chronicle then holds no row of what was erased, without a separate `project`.
+If that catch-up fails, the redaction stays recorded, the line on standard output stands, one sentence goes to standard error, and the exit code is 2:
+
+```text
+Error: the redaction is recorded as event 42, but it is not finished: projection chronicle is not caught up (expected events 2.. above id 1, read [3, 4]; the tip is 4); run the same command again
+```
+
+The text in parentheses is the error the catch-up raised.
+Running the same command again finds the target covered, prints `already redacted by event 42`, and catches up.
 
 For each unit it skips, one notice goes to standard error:
 
@@ -94,7 +105,7 @@ Error: event 1 has no unit 7
 Error: --reason must not be empty
 ```
 
-The fourth refuses `redact units` on an event whose `hash_version` is neither 1 nor 2, which only a forged row can carry.
+The fourth refuses `redact units` on an event whose `hash_version` is neither 1 nor 2, which only a row this version didn't write can carry.
 `--reason` counts as empty when it holds nothing but blanks.
 
 ## `log`
@@ -290,6 +301,7 @@ Prints the per-source statistics, one line per source.
 It takes no arguments.
 
 Each line holds five tab-separated fields, in this order: `source`, `events`, `units`, `first_seen` (ISO 8601), and `last_seen` (ISO 8601).
+`units` counts the units recorded, erased units included.
 `source` is escaped the way `chronicle` escapes its fields, so a tab in a source name can't add a sixth field.
 Lines come out ordered by `source`.
 An event with no source attribution appears in no line.
