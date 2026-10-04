@@ -20,6 +20,9 @@
 | `measure_rustfs.py` | Speicher und Zeit des ganzen Wegs bei wählbarer Größe |
 | `measure_race.py` | zwei Schreiber zugleich auf eine Adresse |
 | `measure_guessing.py` | wie schnell sich eine kurze Einheit aus einem Hash ohne Salz erraten lässt |
+| `measure_gcm.py` | was AES-GCM in einem Stück an Speicher kostet, und wo es aufhört |
+
+> **Nachtrag 2026-10-05, während der Ausführung.** `measure_gcm.py` kam nach der Prüfung der Aufgabe 5 dazu: der Spec zitiert in §2.6 und §8.3 die Messung, mit der AES-GCM in einem Stück verworfen wurde, und das Skript dazu lag nur im Wegwerf-Verzeichnis — eine Zahl ohne Verfahren, die `DEPENDENCIES.md` dann nur abschreiben konnte. Am selben Tag berichtigt: Aufgabe 1 nannte die Hex-Werte des Vektors einmal als sieben und einmal als fünf; es sind sechs Hashes und drei Salze (Fund des Umsetzers der Aufgabe 1).
 
 ## Was der Plan vorgibt und was nicht
 
@@ -191,7 +194,7 @@ Erwartet: `272 tests collected`. Weicht die Zahl ab, zähl nach, bevor du weiter
 
 Run: `uv run python docs/superpowers/plans/2026-10-04-stufe-1c-anlagen/vector_v2.py`
 
-Lies das Skript, bevor du seiner Ausgabe traust: es benutzt keinen Projektcode. Prüfe an den gedruckten Zeichenketten, dass die Schlüssel sortiert sind, kein Leerraum steht und `ä` als `ä` steht — so, wie `JCS_UNITS` in `tests/test_hashing.py` es für v=1 zeigt. Die sieben Hex-Werte, die es druckt, sind die, die der Patch als Literale trägt. Stimmt einer nicht überein, halte an und melde es.
+Lies das Skript, bevor du seiner Ausgabe traust: es benutzt keinen Projektcode. Prüfe an den gedruckten Zeichenketten, dass die Schlüssel sortiert sind, kein Leerraum steht und `ä` als `ä` steht — so, wie `JCS_UNITS` in `tests/test_hashing.py` es für v=1 zeigt. Die sechs Hashes und drei Salze, die es druckt, sind die, die der Patch als Literale trägt. Stimmt einer nicht überein, halte an und melde es.
 
 - [ ] **Schritt 3: Nur die Tests anwenden, und sehen, dass sie scheitern**
 
@@ -237,7 +240,7 @@ Vorher `plone-doc-style:author` aufrufen. Reference: beschreiben, nichts begrün
 
 - Die Seite führt heute drei Formen (Nutzlast, Einheiten, Event) mit je einer Tabelle der Felder. Sie bekommt für v=2 dieselbe Darstellung für **vier** Formen: Nutzlast, einzelne Einheit, Einheiten, Event. Je Form die Felder, ihr Bereich (`domain`), und was der Wert ist.
 - Welche Fassung geschrieben wird (`HASH_VERSION`), dass v=1 geprüft bleibt, und dass eine Zeile ihre Fassung in `event.hash_version` nennt — die Spalte kommt in Aufgabe 2, die Seite sagt es als Tatsache dieser Stufe erst, wenn sie steht: **in dieser Aufgabe nur das Format**, der Satz zur Spalte in Aufgabe 2.
-- Der zweite Vektor: Eingaben, Salze, die fünf Hex-Werte, und wo er im Baum steht.
+- Der zweite Vektor: Eingaben, Salze, die sechs Hashes, und wo er im Baum steht.
 - Der Satz bei Zeile 85 („The one exception is a deliberate change to the hash range, which raises `HASH_VERSION` along with the vector") ist die Seitenfassung des Kommentars aus Schritt 5 und genauso falsch. Neu fassen.
 - Die Tabellenzeilen `` `1` (`HASH_VERSION`) `` nennen einen Namen, der jetzt 2 ist: `HASH_VERSION_1`.
 
