@@ -1789,9 +1789,11 @@ def test_a_batch_without_any_source_leaves_the_stats_untouched(db: Engine) -> No
 ```
 
 > Die drei letzten Tests kamen in Fixrunde 1 dazu (Prüfbefunde F1, F2 und
-> das Bedenken 4 des Umsetzers). Der Lückentest war **gegen den alten Code
-> grün**, obwohl id 5 fehlte — die Messung, die ihn rechtfertigt. `EventRow`
-> und `UnitRow` gehören dafür an den Dateikopf.
+> das Bedenken 4 des Umsetzers). Gegen den alten Code war der Lückentest
+> **rot mit `DID NOT RAISE`** — und eine Wegwerfsonde ohne die Erwartung zeigte,
+> was der alte Arbeiter stattdessen tat: 6..10 projiziert, `up_to_id = 10`.
+> Das ist die Messung, die den Test rechtfertigt. `EventRow` und `UnitRow`
+> gehören dafür an den Dateikopf.
 
 Die Reihenfolge der Spalten in `_snapshot` ist die der Tabelle: `p_chronicle` hat `source` an Position 6 (0-basiert), `p_source_stats` hat `events` an 1 und `first_seen` an 3. Wer die Tabelle ändert, ändert die Indizes hier mit — darum stehen die Kommentare daneben.
 
