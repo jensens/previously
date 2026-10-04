@@ -475,7 +475,7 @@ def test_an_unrepresentable_character_in_argv_gives_one_sentence(
 
 
 def test_escape_field_folds_tab_newline_return_and_backslash_into_two_characters_each() -> None:
-    """Spec §6.3 (frozen design record) plus review focus 3: one unit is one line.
+    """One unit is one line ({ref}`cli-reference`) plus review focus 3.
 
     The escaping is reversible because the backslash is escaped first.
     """
@@ -588,7 +588,7 @@ def test_project_says_which_path_it_took(
 def test_chronicle_prints_one_line_per_unit_in_time_order_with_the_source(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Spec §6.2 (frozen design record): time order, not chain order.
+    """Time order, not chain order ({ref}`projections`).
 
     Event 2 happened before event 1. Event 3 carries no source attribution,
     which is the only way to reach the two empty fields the reference page

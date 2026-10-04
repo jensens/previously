@@ -764,12 +764,20 @@ Ausführungsprotokoll dieses Plans, unter
 8. **Keine Sperre auf der Zustandszeile** (Prüfbefund F11). `catch_up` nimmt
    die Zeile in `projection_state` ungesperrt. Zwei gleichzeitige Läufe
    derselben Projektion kommen beide durch die Versionsprüfung und schreiben
-   beide — das Ergebnis zählt unter. Heute kann sie niemand starten: der
-   Arbeiter ist ein Kommando, und eine Warteschlange gibt es nicht (Punkt 4).
-   Dorthin gehört die Sperre, und zwar in demselben Schritt, der die
-   Warteschlange baut: `SELECT … FOR UPDATE` auf die Zustandszeile, oder ein
-   Advisory-Lock je Projektion. Wer die Warteschlange baut, ohne eins von
-   beiden zu tun, öffnet den Weg.
+   beide. Was das anrichtet, hängt an der Projektion, und die Unterzählung,
+   die F11 nannte, ist nur eine von drei Richtungen: `p_chronicle` hat den
+   Primärschlüssel `(event_id, seq)` und `insert_chronicle` fügt ohne
+   `ON CONFLICT` ein, der zweite Lauf läuft dort also in eine
+   Unique-Verletzung — laut, nicht still; `source_stats.merge` addiert
+   `events` und `units`, ein doppelter Durchgang zählt dort **über**; und
+   **unter** zählt allein der Neubau-Pfad, wenn ein `truncate_projection`
+   committet, nachdem der andere Lauf schon geschrieben hat. Heute startet das
+   System keine zwei Läufe: der Arbeiter ist ein Kommando, und eine
+   Warteschlange gibt es nicht (Punkt 4) — zwei Terminals können es trotzdem.
+   Die Sperre gehört in denselben Schritt, der die Warteschlange baut:
+   `SELECT … FOR UPDATE` auf die Zustandszeile, oder ein Advisory-Lock je
+   Projektion. Wer die Warteschlange baut, ohne eins von beiden zu tun,
+   öffnet den Weg.
 
    Zwei Notizen aus derselben Prüfung stehen darunter. Keine der beiden
    bekommt einen eigenen Punkt, weil der heutige Code zu beiden keinen Weg

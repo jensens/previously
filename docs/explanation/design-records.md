@@ -7,7 +7,7 @@ The first three froze on 2026-10-03, the stage 1b specification on 2026-10-04, a
 The reasoning that gets maintained along with the code lives in this quadrant instead, and where a specification and a page disagree, the page is what holds.
 
 Until this documentation existed, those first three documents were the only place a reason was written down, so the code cited them: 72 paragraph references across 21 files in `src/`, `tests/` and `migrations/`, pointing at 20 paragraphs.
-Fourteen of the 72 still do, two were dropped from error messages the user reads, and the remaining 56 name a page instead.
+Twelve of the 72 still do, two were dropped from error messages the user reads, two left with the test that cited them, and the remaining 56 name a page instead.
 This page says what the frozen records are still for, how the freezing works for the stages that follow, and which page took over each of those paragraphs.
 If you arrived from a paragraph number in a comment, the table under *Where each cited paragraph went* is the map, and the section after it says when a comment keeps its number instead of naming a page.
 
@@ -38,7 +38,7 @@ Against a maintained page the same citation would turn false, without a word, th
 ## Where each cited paragraph went
 
 The table is the map from a paragraph to the page that carries its reasoning now.
-It has one row per paragraph rather than one per citation, and §5 appears twice because the architecture and the stage 1a specification both have one.
+It has one row per paragraph rather than one per citation, and §4.1, §4.4 and §5 appear twice each, because the architecture and the stage 1a specification both carry a paragraph with that number.
 
 | Paragraph | Document | Where the reasoning lives now |
 |---|---|---|
@@ -48,8 +48,10 @@ It has one row per paragraph rather than one per citation, and §5 appears twice
 | §3.3 | stage 1a | {ref}`hash-format` for the exact shape of the hashed string; {ref}`timestamps` for why the caller sets the value |
 | §3.4 | stage 1a | {ref}`hash-chain` |
 | §4 | stage 1a | {ref}`concurrency` |
+| §4.1 | architecture | {ref}`projections` |
 | §4.1 | stage 1a | {ref}`hash-chain` |
 | §4.2 | stage 1a | {ref}`conflict-classes`; the whole of {ref}`concurrency` where the citation is about the indexes as the serialization, or about the backing off |
+| §4.4 | architecture | {ref}`projections`; {ref}`module-boundaries` where the citation is about the two store protocols staying apart |
 | §4.4 | stage 1a | {ref}`concurrency` |
 | §4.6 | architecture | {ref}`tombstone-seam` |
 | §5 | architecture | nowhere; frozen design record |
@@ -62,7 +64,7 @@ It has one row per paragraph rather than one per citation, and §5 appears twice
 | §10.1 | architecture | nowhere; frozen design record |
 | §10.2 | stage 1a | nowhere; frozen design record |
 | §11 | stage 1a | nowhere; frozen design record |
-| §12 | stage 1a | nowhere; frozen design record |
+| §12 | stage 1a | nowhere; frozen design record, and no longer cited since stage 1b deleted the test that cited it |
 
 The last five rows are answers and not gaps, and they divide into two kinds.
 
@@ -77,9 +79,10 @@ The stage 1a specification's §10.2 names the chain's properties `P1` to `P7`, �
 The property names, the condition numbers and the open points mean something only against the document that assigned them, so a citation of one of those belongs in a frozen record and says so.
 
 No row names the stage 1b specification, and that's the one thing worth saying about it.
-Measured across `src/previously/core/projection`, `src/previously/contract/store.py` and `src/previously/contract/rows.py`, stage 1b's code holds a single paragraph sign, and it cites the architecture's §4.4 with `(frozen design record)` on the same line.
+Measured over `src/`, `tests/` and `migrations/`, the directories `tests/test_docs_references.py` walks, stage 1b added three paragraph references, and all three name the architecture: §4.4 twice, for the promise that a projection carries no truth of its own, and §4.1 once, for the two orders the chronicle's index keeps apart.
 Not one line points at the specification of its own stage.
 Stage 1b is the first stage whose code never had to: its pages were written in the same pull request as the code, so a reason had a page to name from the first draft, and `test_no_bare_paragraph_references_remain` in `tests/test_docs_references.py` turns that from a habit into a gate by refusing an unmarked paragraph sign.
+Two citations in the test suite did point at this specification, as `§6.2` and `§6.3`, and both carried the `(frozen design record)` marking while the specification was still a draft; fix round 1 of the freezing task sent them to the pages that hold the reasoning instead.
 
 ## Two kinds of citation, and the code shows which is which
 

@@ -123,7 +123,8 @@ Running this tutorial twice, or on two different machines, gives two different h
 
 ## Build the derived views
 
-The chronicle and the counts per source are derived from the log, they start out empty, and one command fills them both.
+The chronicle and the counts per source are derived from the log, and they start out empty.
+One command fills them both.
 
 ```console
 $ uv run previously project
@@ -141,7 +142,8 @@ source-stats    up to date, up_to_id 1
 ```
 
 Notice that both lines now say `up to date`.
-`up_to_id 1` is how far each view has read, the log hasn't grown since, so there was nothing left to project.
+`up_to_id 1` is how far each view has read, and the log hasn't grown since.
+There was nothing left to project.
 
 ## Read the chronicle
 
@@ -205,7 +207,7 @@ Your run prints one line this page leaves out, a `rootdir:` naming your own chec
 
 ## Next steps
 
-You have now recorded your first event, confirmed the chain is intact, built the two derived views, and proven all of it with the project's own test suite.
+You have now recorded your first event, confirmed the chain is intact, built the two derived views, read the chronicle and the counts per source, and proven all of it with the project's own test suite.
 For the full command reference, see {ref}`cli-reference`.
 For why `log` and `chronicle` are two commands, see {ref}`projections`.
 For exactly what goes into the hash you saw above, see {ref}`hash-format`.
