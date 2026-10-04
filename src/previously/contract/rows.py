@@ -66,9 +66,11 @@ class TipAndBookmark:
     """The two numbers a lag is the difference of, read in one statement.
 
     Not a lag: the difference is formed where it is printed, because the
-    reading command decides what to do with a zero. Both numbers are 0 when
-    the log is empty or the projection has no state row yet — the reading of
-    `up_to_id 0` is "nothing yet", and the two cases give the same lag.
+    reading command decides what to do with a zero. Each number is 0 in its
+    own empty case: `tip_id` when the log is empty, `up_to_id` when the
+    projection has no state row yet — the reading of `up_to_id 0` is
+    "nothing yet", so a missing state row and a state row at 0 give the same
+    lag, which is the whole log.
     """
 
     tip_id: int

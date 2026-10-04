@@ -407,7 +407,7 @@ The census, as a command, because a number here would go stale the way the
 last one did:
 
 ```
-grep -rnioE 'ruling (P|T[0-9]+)-[a-z0-9]+' src tests pyproject.toml .importlinter | sort -u
+grep -rnioE 'ruling (P|T[0-9]+)-[a-z0-9]+' src tests migrations pyproject.toml .importlinter | sort -u
 ```
 
 `.importlinter` belongs in that path list and was missing from it until

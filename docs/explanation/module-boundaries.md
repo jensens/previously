@@ -190,7 +190,7 @@ make -C docs linkcheck        build succeeded.
 Every number above is the number of 2026-10-03, and the block keeps it that way rather than tracking the tree.
 Three of the lines have moved since.
 Measured on 2026-10-04: `uv run ruff format --check .` reports `48 files already formatted`, `uv run pytest` reports `232 passed`, and `make -C docs vale` reads 22 files.
-The file count moved by one on the day of the measurement itself, with `contract/store.py`, and by the rest with stage 1b's modules.
+The file count moved by one with `contract/store.py` and by the rest with stage 1b's other modules, all of it on 2026-10-04, the day after the block was measured.
 The fifth line is the one worth reading twice: the test that failed there is the test stage 1b deleted, so a run today has nothing to put in its place, and that's why the failure can't be reproduced from the current tree.
 
 The first line and the fourth are the whole case for the test.
