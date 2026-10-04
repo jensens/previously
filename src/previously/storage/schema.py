@@ -82,13 +82,15 @@ event = Table(
     # column. The code is not being bent to fit the spec; the database is made
     # to enforce what the spec took for granted.
     #
-    # The honest limit: *today* a forger gains nothing here that
-    # `payload = NULL` would not also give — on a version 2 row together with
-    # `payload_salt = NULL`, which `event_payload_salt_check` demands. The
-    # sharpness is that the disclosed limit ({ref}`tombstone-seam`) and the
-    # redemption it announces — a tombstone without an accompanying erasure
-    # event becomes a finding — do not catch this case, because it is no
-    # tombstone *in the sense of the query*.
+    # The limit this closed: until stage 1c a forger gained nothing here that
+    # `payload = NULL` would not also give, since both left the check
+    # satisfied. The sharpness was that the disclosed limit
+    # ({ref}`tombstone-seam`) and the redemption it announced — a tombstone
+    # without a redaction becomes a finding — would not have caught this case,
+    # because it was no tombstone *in the sense of the query*. That redemption
+    # exists now ({ref}`erasure`), and `payload = NULL` without a redaction is
+    # a finding; this constraint is what keeps JSON `null` from slipping past
+    # it.
     CheckConstraint(
         "payload IS NULL OR jsonb_typeof(payload) = 'object'",
         name="event_payload_object_check",
@@ -100,9 +102,11 @@ Index("event_kind_occurred_idx", event.c.kind, event.c.occurred_at)
 Index("event_hash_idx", event.c.hash, unique=True)
 
 # Together with event_pkey this carries the entire concurrency control for
-# append ({ref}`concurrency`): no advisory lock, no FOR UPDATE, but two
-# unique indexes decide which writer gets the chain position. The loser
-# re-reads the tip and retries.
+# the chain position ({ref}`concurrency`): no advisory lock, no FOR UPDATE on
+# the tip, but two unique indexes decide which writer gets the position —
+# `append` and an erasure alike. The loser re-reads the tip and retries. The
+# one row lock in the system, an erasure's `FOR UPDATE`, is on the erased
+# event and orders two erasures of the same target, not the chain.
 #
 # NULLS NOT DISTINCT is not optional: without it several NULL count as
 # distinct, and every process could write its own genesis entry

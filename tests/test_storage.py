@@ -17,6 +17,7 @@ from previously.storage.postgres import PostgresStorage
 from sqlalchemy import create_engine
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import OperationalError
 from typing import TYPE_CHECKING
 
 import pytest
@@ -491,3 +492,105 @@ def test_a_missing_table_becomes_a_storage_error(unmigrated_engine: Engine) -> N
     storage = PostgresStorage(unmigrated_engine)
     with pytest.raises(MigrationPending, match="alembic upgrade head"), storage.begin() as c:
         storage.tip(c)
+
+
+# --- RedactionStore ({ref}`erasure`) ------------------------------------------
+#
+# The two `UPDATE`s on the log, and the row lock in front of them. What a
+# tombstone may keep is the database's to enforce (`event_payload_salt_check`
+# and `unit_tombstone_check`); these tests hold that the methods ask for no
+# more and no less than that.
+
+
+def _salted(event_id: int, prev: bytes | None) -> EventRow:
+    return replace(_row(event_id, prev), hash_version=2, payload_salt=b"\x2a" * 32)
+
+
+def _unit(event_id: int, seq: int, content: str) -> UnitRow:
+    return UnitRow(
+        event_id,
+        seq,
+        content,
+        start_ms=seq * 1000,
+        end_ms=seq * 1000 + 500,
+        speaker="A",
+        digest=bytes([seq]) * 32,
+        salt=bytes([seq + 16]) * 32,
+    )
+
+
+@pytest.mark.db
+def test_lock_event_returns_the_row_or_none(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    with storage.begin() as c:
+        storage.insert_event(c, _salted(1, None), [_unit(1, 1, "a")], ("cli", "x1"))
+    with storage.begin() as c:
+        assert storage.lock_event(c, 1) == _salted(1, None)
+        assert storage.lock_event(c, 2) is None
+
+
+@pytest.mark.db
+def test_lock_event_makes_a_second_locker_wait(db: Engine) -> None:
+    """The second connection waits for the first: with a `lock_timeout` it
+    gives up while the first holds the row, and gets it once the first has
+    committed. A plain read of the same row does not wait, which is the
+    control that shows the timeout comes from the lock and not from the
+    connection."""
+    storage = PostgresStorage(db)
+    with storage.begin() as c:
+        storage.insert_event(c, _salted(1, None), [_unit(1, 1, "a")], ("cli", "x1"))
+    with storage.begin() as first:
+        assert storage.lock_event(first, 1) is not None
+        with db.connect() as second:
+            second.execute(text("SET lock_timeout = '200ms'"))
+            assert [r.id for r in storage.read(second, from_id=1, limit=1)] == [1]
+            with pytest.raises(OperationalError, match="lock timeout"):
+                storage.lock_event(second, 1)
+    with db.connect() as second:
+        second.execute(text("SET lock_timeout = '200ms'"))
+        assert storage.lock_event(second, 1) is not None
+
+
+@pytest.mark.db
+def test_erase_payload_takes_the_salt_along(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    with storage.begin() as c:
+        storage.insert_event(c, _salted(1, None), [_unit(1, 1, "a")], ("cli", "x1"))
+    with storage.begin() as c:
+        storage.erase_payload(c, 1)
+    with storage.begin() as c:
+        row = next(iter(storage.read(c, from_id=1, limit=1)))
+    assert (row.payload, row.payload_salt) == (None, None)
+    assert row.payload_hash == _salted(1, None).payload_hash
+    assert row.hash == _salted(1, None).hash
+
+
+@pytest.mark.db
+def test_erase_units_touches_only_the_named(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    units = [_unit(1, 1, "a"), _unit(1, 2, "b"), _unit(1, 3, "c")]
+    with storage.begin() as c:
+        storage.insert_event(c, _salted(1, None), units, ("cli", "x1"))
+    with storage.begin() as c:
+        storage.erase_units(c, 1, [1, 3])
+        storage.erase_units(c, 1, [])
+    with storage.begin() as c:
+        after = storage.units(c, 1)
+    assert after == [
+        UnitRow(1, 1, None, digest=units[0].digest),
+        units[1],
+        UnitRow(1, 3, None, digest=units[2].digest),
+    ]
+
+
+@pytest.mark.db
+def test_read_by_kind_yields_only_that_kind_in_chain_order(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    with storage.begin() as c:
+        storage.insert_event(c, replace(_row(1, None), kind="action"), [], None)
+        storage.insert_event(c, _row(2, b"\x01" * 32), [UnitRow(2, 1, "b")], ("cli", "x2"))
+        storage.insert_event(c, replace(_row(3, b"\x02" * 32), kind="action"), [], None)
+    with storage.begin() as c:
+        assert [r.id for r in storage.read_by_kind(c, "action")] == [1, 3]
+        assert [r.id for r in storage.read_by_kind(c, "observation")] == [2]
+        assert list(storage.read_by_kind(c, "assertion")) == []

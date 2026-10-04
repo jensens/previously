@@ -4,8 +4,8 @@
 
 Two processes read the same chain tip, derive the same `id` and the same `prev_hash` from it, and both try to write the event that follows.
 One of them has to lose, and the whole of what makes it lose is two unique indexes.
-There's no advisory lock in Previously, no `SELECT … FOR UPDATE`, and no coordination between processes of any kind.
-{ref}`database-schema` names the indexes; this page says why two of them are enough, what the loser does afterward, and why one of the two recoveries behaves differently from the way the specification first described it.
+No advisory lock decides the chain position, no `SELECT … FOR UPDATE` on the tip, and no coordination between processes of any kind.
+{ref}`database-schema` names the indexes; this page says why two of them are enough, what the loser does afterward, why one of the two recoveries behaves differently from the way the specification first described it, and what the one row lock in the system is for.
 
 ## The indexes are the serialization
 
@@ -58,6 +58,19 @@ After the eighth attempt `append` raises `ChainConflict` instead of spinning.
 
 That a lost race costs nothing but time is a consequence of where the `id` comes from.
 Whoever loses the chain position consumed no number, so a retry leaves no gap behind to explain; {ref}`hash-chain` carries that argument in full, including why a sequence would have been worse.
+
+## Two write paths on one chain
+
+Since stage 1c two paths write to the chain: `append` writes observations, and an erasure writes its redaction event, which {ref}`erasure` describes.
+Both read the tip the same way, derive `id` and `prev_hash` from it, and let the same two indexes decide who gets the position.
+An erasure that loses the race rolls back its transaction, tombstones included, backs off with the same jitter, and starts over, up to the same eight attempts.
+So a redaction racing an append ends the way two appends do: both events stand, one after the other, on one chain.
+
+An erasure takes one lock that `append` doesn't, and the lock isn't on the tip.
+It locks the row of its *target* with `SELECT … FOR UPDATE` before it reads which redactions exist.
+Two erasures of the same event then run one after the other, and the second, once it holds the lock, sees the redaction the first one wrote and writes none of its own.
+Without the lock both would read before either had committed, find nothing, and both write a redaction for the same target.
+The lock decides nothing about the chain position: an append never asks for it, and two erasures of different targets never wait for each other.
 
 ## The index clause that isn't optional
 

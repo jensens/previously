@@ -10,7 +10,10 @@ from previously.cli import MAX_TEXT_BYTES
 from previously.cli import parse_moment
 from previously.contract.rows import EventRow
 from previously.contract.rows import UnitRow
+from previously.contract.types import Evidence
+from previously.contract.types import RawEvent
 from previously.core.errors import InvalidPayload
+from previously.core.units import split_plaintext
 from previously.storage.postgres import PostgresStorage
 from typing import TYPE_CHECKING
 
@@ -21,6 +24,10 @@ import sys
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from collections.abc import Sequence
+    from sqlalchemy import Engine
+
     import pathlib
 
 
@@ -158,7 +165,9 @@ def test_show_says_so_when_the_payload_is_erased(
     """The tombstone has neither payload nor kind of evidence
     ({ref}`tombstone-seam`). `show` has to say that rather than print an
     empty line — and it must not crash on `None`, which is the branch a plain
-    `payload.get(...)` would have fallen into."""
+    `payload.get(...)` would have fallen into. Forged with plain SQL, the
+    tombstone has no redaction to name, and the line stays `payload=<erased>`
+    ({ref}`erasure`)."""
     from sqlalchemy import Engine
     from sqlalchemy import text
 
@@ -182,8 +191,8 @@ def test_show_says_so_when_a_unit_is_erased(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A unit without content prints as erased, and its neighbour as before.
-    The erasure is forged with plain SQL here: nothing in the tree erases a
-    unit yet."""
+    The tombstone is forged with plain SQL here, so no redaction ordered it,
+    and `show` says `<erased>` without naming one ({ref}`erasure`)."""
     from sqlalchemy import Engine
     from sqlalchemy import text
 
@@ -1176,3 +1185,144 @@ def test_the_help_names_exactly_the_commands_of_the_sequence(
     assert listed.group(1).split(",") == [command.name for command in COMMANDS]
     for command in COMMANDS:
         assert re.search(rf"^    {command.name} +{re.escape(command.help)}$", out, re.MULTILINE)
+
+
+# --- redact ({ref}`erasure`) -------------------------------------------------
+
+# The `write_version_1` fixture from `conftest.py`, under a `type` alias for
+# the reason its docstring gives.
+type WriteVersion1 = Callable[[PostgresStorage, Sequence[RawEvent], datetime], list[int]]
+
+
+def _connect(db: object, monkeypatch: pytest.MonkeyPatch) -> Engine:
+    from sqlalchemy import Engine
+
+    assert isinstance(db, Engine)
+    monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
+    return db
+
+
+@pytest.mark.db
+def test_redact_event_prints_the_redaction_and_show_names_it(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _connect(db, monkeypatch)
+    assert main(["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"]) == 0
+    capsys.readouterr()
+
+    assert main(["redact", "event", "1", "--reason", "wrong recipient"]) == 0
+    out, err = capsys.readouterr()
+    assert (out, err) == ("redacted by event 2\n", "")
+
+    assert main(["show", "1"]) == 0
+    output = capsys.readouterr().out
+    assert (
+        "payload=<erased by event 2>\n  ¶1 <erased by event 2>\n  ¶2 <erased by event 2>\n"
+        in output
+    )
+    assert "evidence=" not in output
+
+    assert main(["show", "2"]) == 0
+    output = capsys.readouterr().out
+    assert "id=2 kind=action" in output
+    assert (
+        'payload={"action": "redaction", "reason": "wrong recipient", "scope": "event", '
+        '"target": {"blobs": [], "event": 1}}'
+    ) in output
+    assert "evidence=" not in output
+    assert main(["verify"]) == 0
+
+
+@pytest.mark.db
+def test_redact_units_names_each_tombstone(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each erased unit names the redaction that ordered it, and the payload
+    and the unit left standing print as before."""
+    _connect(db, monkeypatch)
+    text_ = "One\n\nTwo\n\nThree"
+    assert main(["append", "--source", "cli", "--external-id", "a", "--text", text_]) == 0
+    assert main(["redact", "units", "1", "3", "--reason", "r"]) == 0
+    assert main(["redact", "units", "1", "1", "3", "--reason", "r"]) == 0
+    out, err = capsys.readouterr()
+    assert out == "1\nredacted by event 2\nredacted by event 3\n"
+    assert err == "unit 3 was already erased\n"
+
+    assert main(["show", "1"]) == 0
+    output = capsys.readouterr().out
+    assert "evidence=recollection" in output
+    assert "  ¶1 <erased by event 3>\n  ¶2 Two\n  ¶3 <erased by event 2>\n" in output
+
+
+@pytest.mark.db
+def test_redacting_twice_says_already(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _connect(db, monkeypatch)
+    assert main(["append", "--source", "cli", "--external-id", "a", "--text", "One"]) == 0
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    capsys.readouterr()
+
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("already redacted by event 2\n", "")
+
+
+@pytest.mark.parametrize(
+    ("arguments", "refusal"),
+    [
+        pytest.param(["event", "9"], "there is no event 9", id="missing-event"),
+        pytest.param(
+            ["event", "3"],
+            "event 3 is a redaction, and a redaction cannot be redacted",
+            id="a-redaction",
+        ),
+        pytest.param(
+            ["units", "2", "1"],
+            "event 2 was written in hash format 1, which attests its units only "
+            "together: use `previously redact event`",
+            id="version-1-units",
+        ),
+        pytest.param(["units", "1", "1", "7"], "event 1 has no unit 7", id="missing-unit"),
+        pytest.param(
+            ["event", "1", "--reason", ""], "--reason must not be empty", id="empty-reason"
+        ),
+    ],
+)
+@pytest.mark.db
+def test_a_refused_redaction_is_one_sentence(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    write_version_1: WriteVersion1,
+    arguments: list[str],
+    refusal: str,
+) -> None:
+    """Event 1 is version 2, event 2 version 1, event 3 a redaction of a unit
+    of event 1. Every refusal leaves the log as it was."""
+    engine = _connect(db, monkeypatch)
+    assert main(["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"]) == 0
+    write_version_1(
+        PostgresStorage(engine),
+        [
+            RawEvent(
+                source="cli",
+                external_id="b",
+                occurred_at=datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC),
+                evidence=Evidence.RECOLLECTION,
+                units=split_plaintext("Old"),
+                payload={"text": "Old"},
+            )
+        ],
+        datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC),
+    )
+    assert main(["redact", "units", "1", "2", "--reason", "r"]) == 0
+    capsys.readouterr()
+
+    if "--reason" not in arguments:
+        arguments = [*arguments, "--reason", "r"]
+    assert main(["redact", *arguments]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == f"Error: {refusal}\n"
+    assert main(["log"]) == 0
+    assert len(capsys.readouterr().out.splitlines()) == 3

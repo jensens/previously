@@ -3,7 +3,7 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has eight subcommands: `append`, `log`, `verify`, `anchor`, `show`, `project`, `chronicle`, and `stats`.
+It has nine subcommands: `append`, `redact`, `log`, `verify`, `anchor`, `show`, `project`, `chronicle`, and `stats`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
 
 ## Exit codes
@@ -11,6 +11,7 @@ Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see
 | Command | 0 | 1 | 2 |
 |---|---|---|---|
 | `append` | The event was recorded, or an event with the same `--source` and `--external-id` already existed. | Not used. | The input was invalid, or storage raised an error. |
+| `redact` | The redaction was recorded and carried out, or the target was already covered by one. | Not used. | The input was invalid, the redaction was refused, or storage raised an error. |
 | `log` | The log was printed. | Not used. | The input was invalid, or storage raised an error. |
 | `verify` | The chain has no finding, and every anchor holds. | The chain or an anchor has at least one finding. | The input was invalid, or storage raised an error. |
 | `anchor` | The anchor line was printed, or the log is empty. | The chain has at least one finding. | Storage raised an error. |
@@ -34,6 +35,63 @@ Submits one event and prints its `id`.
 `append` prints exactly one line to standard output: the new event's `id`.
 Calling `append` again with the same `--source` and `--external-id` doesn't create a second event.
 It prints the existing event's `id` and returns 0.
+
+## `redact`
+
+Erases an event or units of one event, and records the erasure as a redaction event; see {ref}`erasure`.
+It has two forms:
+
+```text
+previously redact event ID --reason TEXT
+previously redact units ID SEQ [SEQ] --reason TEXT
+```
+
+`[SEQ]` may repeat.
+
+| Argument | Required | Default | Description |
+|---|---|---|---|
+| `ID` | Yes | — | The `id` of the event to erase from, as a positional argument. |
+| `SEQ` | Yes, for `units` | — | The `seq` of each unit to erase, as positional arguments, one or more. |
+| `--reason` | Yes | — | Why the erasure happens, not empty. It stays in the log for good and must not contain what's erased. |
+
+`redact event` erases the event's payload, and the content, speaker, timestamps and salt of every unit.
+`redact units` erases the content, speaker, timestamps and salt of the named units.
+The order of the `SEQ` arguments doesn't matter, and a `SEQ` given twice counts once.
+Every hash, the source key and the rows of the units stay.
+
+The redaction is an event of kind `action`, written in the same transaction as the tombstones.
+Its payload holds four keys: `action` with the value `redaction`, `scope` with `event` or `units`, `target`, and `reason`.
+`target` holds the erased event's `id` under `event`, and either `blobs` with an empty list, for `event`, or `units` with the erased `seq` values in ascending order, for `units`.
+A unit a redaction already covers isn't named again.
+
+`redact` prints one of two lines to standard output:
+
+```text
+redacted by event 42
+already redacted by event 42
+```
+
+The first names the redaction it wrote.
+The second means that a redaction already covers the target and nothing was written; it names that redaction, or for units the newest of the redactions that cover them.
+In both cases the tombstones are set, and the exit code is 0.
+
+For each unit it skips, one notice goes to standard error:
+
+```text
+unit 3 was already erased
+```
+
+`redact units` skips a unit that a redaction already covers, and names the remaining units in the redaction it writes.
+
+Five refusals print one sentence to standard error, print nothing to standard output, write nothing, and return 2:
+
+```text
+Error: there is no event 9
+Error: event 3 is a redaction, and a redaction cannot be redacted
+Error: event 2 was written in hash format 1, which attests its units only together: use `previously redact event`
+Error: event 1 has no unit 7
+Error: --reason must not be empty
+```
 
 ## `log`
 
@@ -90,6 +148,34 @@ The first two name the anchored `id`, the third names the tip.
 `the log ends at` names the `id` of the last event in the log, and `0` for an empty log.
 The number in parentheses in the third is the `id` of the newest anchor.
 
+Nine findings come from the hash formats and from erasure:
+
+```text
+FINDING 7: unit 2 does not match its digest
+FINDING 7: hash_version 3 is not known
+FINDING 7: payload is erased without a redaction
+FINDING 7: unit 2 is erased without a redaction
+FINDING 9: redaction of event 7 is not carried out
+FINDING 9: redaction of unit 2 of event 7 is not carried out
+FINDING 9: redaction names a target that does not exist
+FINDING 7: units are erased in part, which version 1 cannot attest
+FINDING 9: action has no valid form
+```
+
+| Finding | Condition | Event |
+|---|---|---|
+| `unit <seq> does not match its digest` | A unit in hash format 2 carries content, and its digest isn't the one computed from that content with its salt, or its salt or digest is missing. | The event of the unit. |
+| `hash_version <n> is not known` | The event names a hash format `verify` doesn't know; nothing else is computed for it. | The event. |
+| `payload is erased without a redaction` | The payload is `NULL`, and no redaction of the event exists. | The event. |
+| `unit <seq> is erased without a redaction` | The unit has no content, and no redaction names it or its event. | The event of the unit. |
+| `redaction of event <id> is not carried out` | The event a redaction erased still carries its payload or the content of a unit. | The redaction. |
+| `redaction of unit <seq> of event <id> is not carried out` | A unit a redaction erased still carries its content. | The redaction. |
+| `redaction names a target that does not exist` | The event a redaction names doesn't stand before the redaction in the chain, or doesn't have a unit it names. | The redaction. |
+| `units are erased in part, which version 1 cannot attest` | An event in hash format 1 has some units without content, and others with it. | The event. |
+| `action has no valid form` | An event of kind `action` carries no `action` name in its payload, or a redaction's payload doesn't have exactly the form `redact` writes. | The action. |
+
+`verify` matches tombstones and redactions after it has read the whole chain, in the same snapshot.
+
 With no finding, `verify` prints a single line, which depends on the arguments:
 
 | Arguments | Line |
@@ -133,8 +219,10 @@ Prints one event with its units.
 | `event_id` | Yes | — | The event's `id`, as a positional argument. |
 
 On success, `show` opens with three lines, in this order: `id=<id> kind=<kind>`—both on the one line—then `occurred_at=<ISO 8601>`, then `hash=<64 hexadecimal characters>`.
-It then prints either `payload=<erased>`, or both `evidence=<verbatim|recollection>` and `payload=<JSON object, with sorted keys>`.
-It then prints one line per unit, in `seq` order: `  ¶<seq> <content>`, or `  ¶<seq> <erased>` for a unit without content.
+For an erased payload it then prints `payload=<erased by event <id>>`, naming the redaction that ordered the erasure, or `payload=<erased>` when no redaction did.
+Otherwise it prints `evidence=<verbatim|recollection>` when the payload carries the key `evidence`, and then `payload=<JSON object, with sorted keys>`.
+A redaction carries no `evidence`, so `show` prints no `evidence=` line for it.
+It then prints one line per unit, in `seq` order: `  ¶<seq> <content>`, or for a unit without content `  ¶<seq> <erased by event <id>>`, or `  ¶<seq> <erased>` when no redaction covers it.
 Without an event at the given `event_id`, `show` prints `No event <event_id>` to standard error.
 
 ## `project`

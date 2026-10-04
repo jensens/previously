@@ -26,6 +26,7 @@ import pytest
 if TYPE_CHECKING:
     from previously.contract.store import LogStore
     from previously.contract.store import ProjectionStore
+    from previously.contract.store import RedactionStore
 
 
 NOW = datetime(2026, 10, 4, 12, 0, 0, tzinfo=UTC)
@@ -158,3 +159,17 @@ def test_postgres_storage_satisfies_both_protocols() -> None:
     # method is missing. The isinstance checks only give the test a body.
     assert isinstance(log, PostgresStorage)
     assert isinstance(projections, PostgresStorage)
+
+
+def test_postgres_storage_satisfies_the_redaction_protocol() -> None:
+    """The third protocol, in the form of the test above (ruling P-2 of the
+    2026-10-04 stage 1c plan): pyright proves it at the assignment, and the
+    test gives the proof a name. `PostgresStorage` is the log, the projection
+    store and the eraser at once; the three protocols keep apart what each
+    caller may do with it ({ref}`erasure`)."""
+    from sqlalchemy import Connection
+    from sqlalchemy import create_engine
+
+    storage = PostgresStorage(create_engine("postgresql+psycopg://x:y@localhost/z"))
+    eraser: RedactionStore[Connection] = storage
+    assert isinstance(eraser, PostgresStorage)

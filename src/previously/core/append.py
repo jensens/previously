@@ -63,10 +63,13 @@ MAX_RETRIES = 8
 MAX_BATCH = 500
 
 # Fixed to "observation": everything that comes out of connectors and the
-# command line is an observation. Assertions come from the model and therefore
-# only in a later stage. A constant instead of the same literal in two places
-# (hash and row) — the same danger of divergence that the payload further down
-# is forced into a single place against.
+# command line through `append` is an observation. Assertions come from the
+# model and therefore only in a later stage; actions are what the system does
+# itself, and the one it does so far, a redaction, is written by
+# `core/redact.py` and not through here ({ref}`erasure`). A constant instead
+# of the same literal in two places (hash and row) — the same danger of
+# divergence that the payload further down is forced into a single place
+# against.
 _KIND = "observation"
 
 # Backing off between the attempts ({ref}`concurrency`, review finding W3):

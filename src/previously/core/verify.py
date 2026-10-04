@@ -37,6 +37,11 @@ from previously.core.hashing import payload_hash_v2
 from previously.core.hashing import unit_digest
 from previously.core.hashing import units_hash
 from previously.core.hashing import units_hash_v2
+from previously.core.redaction import action_name
+from previously.core.redaction import MalformedAction
+from previously.core.redaction import parse
+from previously.core.redaction import REDACTION
+from previously.core.redaction import RedactionIndex
 from typing import cast
 from typing import Protocol
 from typing import TYPE_CHECKING
@@ -52,6 +57,7 @@ if TYPE_CHECKING:
     from previously.contract.rows import UnitRow
     from previously.contract.store import LogStore
     from previously.core.hashing import HashableUnit
+    from previously.core.redaction import Redaction
 
 
 @dataclass(frozen=True)
@@ -89,7 +95,9 @@ def _payload_finding(row: EventRow) -> Finding | None:
     """`payload_hash` against the stored payload in version 1, or `None`.
 
     Skipped on `payload IS NULL`: that is the tombstone, and `payload_hash`
-    stays standing in that case ({ref}`tombstone-seam`).
+    stays standing in that case ({ref}`tombstone-seam`). Whether a redaction
+    ordered the tombstone is not this row's question but the pass's, which
+    answers it once it has read the redactions (`_Erasures`).
     """
     if row.payload is None:
         return None
@@ -110,12 +118,15 @@ def _units_finding(row: EventRow, units: Sequence[UnitRow]) -> Finding | None:
     rewritten, one of two units deleted, and both of them with the finding
     "chain intact".
 
-    Version 1 takes the texts of all units into one digest, so a unit without
-    content leaves nothing to compute it from ({ref}`hash-version-2`), and
-    that is this digest's finding.
+    Version 1 takes the texts of all units into one digest, so a unit
+    without content leaves nothing to compute it from ({ref}`hash-version-2`),
+    and the digest is not computed. What such an event is owed is decided at
+    the end of the pass, by `_Erasures`: all of its units erased by a
+    redaction is an erasure version 1 can carry, and some of them is not
+    ({ref}`erasure`).
     """
     if any(unit.content is None for unit in units):
-        return Finding(row.id, "units_hash does not match the units")
+        return None
     try:
         # Every unit carries content, which the line above established and
         # the type of `UnitRow.content` cannot say: the cast states it.
@@ -309,6 +320,104 @@ _CHECKS: Mapping[
 }
 
 
+class _Erasures:
+    """The tombstones and the redactions one pass has seen, and the findings
+    that need both ({ref}`erasure`).
+
+    A tombstone is matched against the redactions only once the pass has
+    ended, still inside its snapshot: a redaction stands behind its target in
+    the chain, so at the target's row it has not been read yet, and it may be
+    batches away.
+
+    What it keeps is small: the position of every tombstone, and the
+    redactions, which are few. The form of every action is checked as it
+    comes by, because that needs nothing but the row.
+    """
+
+    def __init__(self) -> None:
+        self._redactions = RedactionIndex()
+        self._payloads: list[int] = []
+        self._units: list[tuple[int, int]] = []
+        self._partial: list[int] = []
+
+    def observe(self, row: EventRow, units: Sequence[UnitRow]) -> list[Finding]:
+        """Remembers the tombstones of one row, and reads it if it is an
+        action; the finding about the form of an action, if any."""
+        if row.payload is None:
+            self._payloads.append(row.id)
+        erased = [unit.seq for unit in units if unit.content is None]
+        self._units.extend((row.id, seq) for seq in erased)
+        # Some units of a version 1 event and not all: its digest takes the
+        # texts of all of them, so the ones left standing are attested by
+        # nothing, whoever ordered the erasure.
+        if row.hash_version == HASH_VERSION_1 and 0 < len(erased) < len(units):
+            self._partial.append(row.id)
+        if row.kind != "action" or row.payload is None:
+            return []
+        try:
+            if action_name(row.payload) == REDACTION:
+                self._redactions.add(parse(row.id, row.payload))
+        except MalformedAction:
+            return [Finding(row.id, "action has no valid form")]
+        return []
+
+    def reconcile[Conn](self, storage: LogStore[Conn], conn: Conn) -> list[Finding]:
+        """The order against the execution: every tombstone needs a
+        redaction, and every redaction needs its tombstones."""
+        index = self._redactions
+        findings = [
+            Finding(event_id, "payload is erased without a redaction")
+            for event_id in self._payloads
+            if index.of_event(event_id) is None
+        ]
+        findings.extend(
+            Finding(event_id, f"unit {seq} is erased without a redaction")
+            for event_id, seq in self._units
+            if index.of_unit(event_id, seq) is None
+        )
+        findings.extend(
+            Finding(event_id, "units are erased in part, which version 1 cannot attest")
+            for event_id in self._partial
+        )
+        for redaction in index:
+            findings.extend(_execution_findings(storage, conn, redaction))
+        return findings
+
+
+def _execution_findings[Conn](
+    storage: LogStore[Conn], conn: Conn, redaction: Redaction
+) -> list[Finding]:
+    """Whether the target of one redaction stands before it in the chain,
+    has what it names, and no longer carries what it erased.
+
+    The target is **read**, by `id`, and not inferred from the tombstones the
+    pass counted: a tombstone says only that something is missing, and a
+    redaction whose unit still carries its text has to be told apart from one
+    whose unit does not. One read per redaction, because redactions are few.
+    """
+    if redaction.event is None:
+        # A redaction of a blob names no event to read here; what it erased
+        # lies in the blob store, and its check comes with the blobs.
+        return []
+    target = redaction.event
+    missing = [Finding(redaction.id, "redaction names a target that does not exist")]
+    row = next(iter(storage.read(conn, from_id=target, limit=1)), None)
+    if target >= redaction.id or row is None or row.id != target:
+        return missing
+    units = {unit.seq: unit for unit in storage.units_by_event(conn, [target]).get(target, [])}
+    if redaction.scope == "event":
+        if row.payload is None and all(unit.content is None for unit in units.values()):
+            return []
+        return [Finding(redaction.id, f"redaction of event {target} is not carried out")]
+    if any(seq not in units for seq in redaction.units):
+        return missing
+    return [
+        Finding(redaction.id, f"redaction of unit {seq} of event {target} is not carried out")
+        for seq in redaction.units
+        if units[seq].content is not None
+    ]
+
+
 def _check_event(
     row: EventRow,
     units: Sequence[UnitRow],
@@ -396,6 +505,7 @@ def examine[Conn](
     if exact and not anchors:
         raise InvalidPayload("exact needs at least one anchor to compare the tip with")
     findings: list[Finding] = []
+    erasures = _Erasures()
     previous_hash: bytes | None = None
     next_id = 1
     expect_first = True
@@ -428,6 +538,9 @@ def examine[Conn](
                 count_finding = _count_finding(checked, storage.count_events(conn))
                 if count_finding is not None:
                     findings.append(count_finding)
+                # In the same snapshot for the same reason: the targets read
+                # here have to be the rows the pass checked.
+                findings.extend(erasures.reconcile(storage, conn))
                 break
 
             # Source attributions **and** units of the whole batch, each in
@@ -448,15 +561,17 @@ def examine[Conn](
             units_of = storage.units_by_event(conn, event_ids)
 
             for row in rows:
+                units = units_of.get(row.id, [])
                 findings.extend(
                     _check_event(
                         row,
-                        units_of.get(row.id, []),
+                        units,
                         keys.get(row.id),
                         previous_hash=previous_hash,
                         first=expect_first,
                     )
                 )
+                findings.extend(erasures.observe(row, units))
                 for anchored in pending.pop(row.id, ()):
                     if anchored != row.hash:
                         findings.append(Finding(row.id, "hash does not match the anchor"))

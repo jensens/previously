@@ -10,8 +10,15 @@ have no page in `docs/`; {ref}`module-boundaries` settles which module may
 import which, not which methods this one has.
 
 The projection methods below delete and update, and that is the point: a
-projection is disposable, the log is not; the two protocols in
-`contract.store` keep the two apart.
+projection is disposable, the log is not; the protocols in `contract.store`
+keep the two apart.
+
+On the log itself there are exactly two `UPDATE`s since stage 1c, and no
+`DELETE`: `erase_payload` and `erase_units`, both behind `RedactionStore`,
+the third protocol. What they may set is enumerated in them — the content
+and its salt, and on a unit the speaker and the timestamps — and every
+digest stays ({ref}`erasure`). Nothing typed against `LogStore` reaches
+either.
 """
 
 from contextlib import contextmanager
@@ -39,12 +46,16 @@ from sqlalchemy import delete
 from sqlalchemy import Engine
 from sqlalchemy import func
 from sqlalchemy import insert
+from sqlalchemy import null
+from sqlalchemy import Row
 from sqlalchemy import select
+from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import ArgumentError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.exc import ProgrammingError
+from typing import Any
 from typing import ClassVar
 from typing import TYPE_CHECKING
 
@@ -270,19 +281,24 @@ class PostgresStorage:
             .execution_options(stream_results=True, yield_per=100)
         )
         for row in conn.execute(query):
-            yield EventRow(
-                id=row.id,
-                kind=row.kind,
-                recorded_at=row.recorded_at,
-                occurred_at=row.occurred_at,
-                prev_hash=row.prev_hash,
-                hash=row.hash,
-                payload_hash=row.payload_hash,
-                units_hash=row.units_hash,
-                payload=row.payload,
-                hash_version=row.hash_version,
-                payload_salt=row.payload_salt,
-            )
+            yield _event_row(row)
+
+    def read_by_kind(self, conn: Connection, kind: str) -> Iterator[EventRow]:
+        """Every event of one kind, in chain order, through a server-side
+        cursor like `read`.
+
+        `storage` does not interpret a payload, so the question "which events
+        are redactions" is not asked in SQL here: `core.redaction` reads the
+        actions and decides ({ref}`erasure`).
+        """
+        query = (
+            select(event)
+            .where(event.c.kind == kind)
+            .order_by(event.c.id)
+            .execution_options(stream_results=True, yield_per=100)
+        )
+        for row in conn.execute(query):
+            yield _event_row(row)
 
     def units(self, conn: Connection, event_id: int) -> list[UnitRow]:
         return [
@@ -380,6 +396,45 @@ class PostgresStorage:
                 )
             )
         }
+
+    # --- RedactionStore ({ref}`erasure`) -------------------------------------
+    #
+    # The two `UPDATE`s this module runs on the log, and the lock in front of
+    # them. Each sets every column a tombstone must not keep in one statement:
+    # `event_payload_salt_check` and `unit_tombstone_check` refuse anything
+    # less, so an erasure that forgot the salt would fail here rather than
+    # leave a digest that can still be tried against.
+
+    def lock_event(self, conn: Connection, event_id: int) -> EventRow | None:
+        """The row of one event, locked `FOR UPDATE` until the caller's
+        transaction ends, or `None` when there is none.
+
+        The lock is on the target of an erasure, not on the tip: the chain
+        position stays the unique indexes' to decide ({ref}`concurrency`).
+        """
+        row = conn.execute(
+            select(event).where(event.c.id == event_id).with_for_update()
+        ).one_or_none()
+        return None if row is None else _event_row(row)
+
+    def erase_payload(self, conn: Connection, event_id: int) -> None:
+        # `null()` and not `None` for the payload: on a JSONB column SQLAlchemy
+        # writes Python `None` as JSON `null`, not as SQL `NULL`. Measured on
+        # 2026-10-04 with `payload=None` here: `event_payload_object_check`
+        # refused the statement, the constraint correction K-1 added for
+        # exactly this confusion.
+        conn.execute(
+            update(event).where(event.c.id == event_id).values(payload=null(), payload_salt=None)
+        )
+
+    def erase_units(self, conn: Connection, event_id: int, seqs: Sequence[int]) -> None:
+        if not seqs:
+            return
+        conn.execute(
+            update(unit)
+            .where(unit.c.event_id == event_id, unit.c.seq.in_(seqs))
+            .values(content=None, salt=None, speaker=None, start_ms=None, end_ms=None)
+        )
 
     # --- ProjectionStore ({ref}`projections`) --------------------------------
 
@@ -587,6 +642,23 @@ class PostgresStorage:
             )
             for row in conn.execute(select(p_source_stats).order_by(p_source_stats.c.source))
         ]
+
+
+def _event_row(row: Row[Any]) -> EventRow:
+    """One row of `event` as the contract's type, for every reader of it."""
+    return EventRow(
+        id=row.id,
+        kind=row.kind,
+        recorded_at=row.recorded_at,
+        occurred_at=row.occurred_at,
+        prev_hash=row.prev_hash,
+        hash=row.hash,
+        payload_hash=row.payload_hash,
+        units_hash=row.units_hash,
+        payload=row.payload,
+        hash_version=row.hash_version,
+        payload_salt=row.payload_salt,
+    )
 
 
 def from_dsn(dsn: str) -> PostgresStorage:

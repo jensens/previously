@@ -158,12 +158,18 @@ def test_a_json_array_or_scalar_payload_is_refused(db: Engine) -> None:
 
 
 @pytest.mark.db
-def test_a_real_tombstone_stays_permitted_and_passes_verification(db: Engine) -> None:
+def test_a_real_tombstone_stays_permitted_and_is_found_without_a_redaction(db: Engine) -> None:
     """The counter-test to the constraint, and acceptance condition 3 of the
     stage 1a specification §11 (frozen design record): setting `payload` to
     SQL `NULL` must still work and must not break the chain. Without this
     test the constraint could be tightened until the erasure seam closed, and
     nothing would say so.
+
+    The first half holds as it did: SQL `NULL` is permitted where JSON `null`
+    is not. The second half turned over with stage 1c, and the name with it
+    (it ended in `passes_verification` until then): a tombstone that no
+    redaction ordered is a finding now ({ref}`erasure`). It is the only
+    finding, though — every hash still holds, so the chain is not broken.
 
     Goes through `append` and `verify` rather than through raw DDL, because
     that is the path the acceptance condition is about.
@@ -174,6 +180,7 @@ def test_a_real_tombstone_stays_permitted_and_passes_verification(db: Engine) ->
     from previously.contract.types import RawEvent
     from previously.core.append import append
     from previously.core.units import split_plaintext
+    from previously.core.verify import Finding
     from previously.core.verify import verify
     from previously.storage.postgres import PostgresStorage
 
@@ -199,7 +206,7 @@ def test_a_real_tombstone_stays_permitted_and_passes_verification(db: Engine) ->
         # refuses the statement (ruling P-1 of the 2026-10-04 stage 1c plan).
         c.execute(text("UPDATE event SET payload = NULL, payload_salt = NULL WHERE id = 1"))
         assert c.execute(text("SELECT count(*) FROM event WHERE payload IS NULL")).scalar_one() == 1
-    assert verify(storage) == []
+    assert verify(storage) == [Finding(1, "payload is erased without a redaction")]
 
 
 @pytest.mark.db

@@ -216,7 +216,7 @@ def test_no_program_output_cites_a_specification() -> None:
     Every module that can produce output is read, not the files that happened
     to carry a citation. Measured in fix round 1: with two files named, a
     marked message in `core/verify.py` and a `print` in `cli.py` both passed
-    -- and `cli.py`, with twenty-four `print` calls since `anchor` arrived
+    -- and `cli.py`, with twenty-six `print` calls since `redact` arrived
     (measured on 2026-10-04), is the only file in this tree that writes to
     the terminal. Measured in fix round 2:
     with only `src/` read, a marked citation in `migrations/dsn.py` passed as
@@ -269,11 +269,24 @@ def _static_parts(node: ast.expr) -> list[str]:
     if isinstance(node, ast.Constant):
         return [node.value] if isinstance(node.value, str) else []
     if isinstance(node, ast.JoinedStr):
-        return [
+        parts = [
             value.value
             for value in node.values
             if isinstance(value, ast.Constant) and isinstance(value.value, str)
         ]
+        if not "".join(parts):
+            return []
+        # An interpolation at either end becomes an empty part there, so that
+        # `_is_the_same_sentence` lets the line open or close with whatever
+        # was interpolated: `f"there is no event {event_id}"` ends in a number,
+        # not in `event `. Measured on 2026-10-04, when `redact` brought the
+        # first quoted messages that end in an interpolation and the check
+        # refused every one of them.
+        if not isinstance(node.values[0], ast.Constant):
+            parts.insert(0, "")
+        if not isinstance(node.values[-1], ast.Constant):
+            parts.append("")
+        return parts
     return []
 
 
@@ -316,6 +329,20 @@ def _finding_patterns(path: pathlib.Path) -> list[list[str]]:
         and node.func.id == "Finding"
         and len(node.args) == 2
         and (parts := _static_parts(node.args[1]))
+    ]
+
+
+def _raised_patterns(path: pathlib.Path, error: str) -> list[list[str]]:
+    """The static parts of every message a module raises as `error(...)`."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return [
+        parts
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == error
+        and node.args
+        and (parts := _static_parts(node.args[0]))
     ]
 
 
@@ -380,10 +407,13 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     five restrictions below" with a row missing. Deriving the payloads from
     the code is the fix and it is not built yet.
 
-    The second half holds the four standard-error sentences `cli.md` quotes,
-    in three blocks, against the literals in `cli.py`, and the three anchor
-    findings it quotes against the reasons `core/verify.py` hands to
-    `Finding`. The first two sentences were quoted and covered by nothing
+    The second half holds the five standard-error sentences and the two
+    lines of `redact` on standard output that `cli.md` quotes, in five
+    blocks, against the literals in `cli.py`; the five refusals of `redact`
+    against the messages `core/redact.py` and `cli.py` raise as
+    `RedactionRefused`; and the twelve findings it quotes, three from the
+    anchors and nine from the hash formats and erasure, against the reasons
+    `core/verify.py` hands to `Finding`. The first two sentences were quoted and covered by nothing
     until 2026-10-04: the first half of this test reads the *Payload range*
     table and nothing else, and the command line's notices reach no other
     check. They cannot be produced by calling the code the way a refusal can
@@ -392,7 +422,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     the message's static parts instead, which is the strongest form available
     without a database.
 
-    Each of the four blocks is found by the sentence that introduces it, and
+    Each block is found by the sentence that introduces it, and
     a sentence that vanishes from the page fails with a message naming it.
     Until 2026-10-04 that was an `IndexError`. The direction is page to code
     only, for both halves: a reason in `core/verify.py` that the page does not
@@ -422,18 +452,40 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         ("Two notices go to standard error", 2),
         ("Without anchors, one notice goes to standard error", 1),
         ("On an empty log, one notice goes to standard error", 1),
+        ("For each unit it skips, one notice goes to standard error", 1),
+        ("`redact` prints one of two lines to standard output", 2),
     ):
         notices = _quoted_block(page, after)
         assert len(notices) == expected, f"{after!r}: {notices}"
         for notice in notices:
             assert any(_is_the_same_sentence(parts, notice) for parts in patterns), (
-                f"cli.md quotes {notice!r} on standard error and no message in cli.py "
+                f"cli.md quotes {notice!r} as output and no message in cli.py "
                 "says that. Either the code's wording changed, or the page's did."
             )
 
+    # The refusals of `redact` come out of `core/redact.py`, and the one about
+    # `--reason` out of `cli.py`; the command line prints each behind
+    # `Error: `, which is held here the way the `FINDING` prefix is below.
+    refusals = [
+        *_raised_patterns(ROOT / "src" / "previously" / "core" / "redact.py", "RedactionRefused"),
+        *_raised_patterns(ROOT / "src" / "previously" / "cli.py", "RedactionRefused"),
+    ]
+    quoted = _quoted_block(page, "Five refusals")
+    assert len(quoted) == 5, quoted
+    for line in quoted:
+        prefix, _, refusal = line.partition(": ")
+        assert prefix == "Error", f"cli.md quotes the refusal {line!r} without `Error: `"
+        assert any(_is_the_same_sentence(parts, refusal) for parts in refusals), (
+            f"cli.md quotes the refusal {refusal!r} and no `RedactionRefused` raises it. "
+            "Either the code's wording changed, or the page's did."
+        )
+
     reasons = _finding_patterns(ROOT / "src" / "previously" / "core" / "verify.py")
-    findings = _quoted_block(page, "Three findings come from the anchors")
-    assert len(findings) == 3, findings
+    findings = [
+        *_quoted_block(page, "Three findings come from the anchors"),
+        *_quoted_block(page, "Nine findings come from the hash formats and from erasure"),
+    ]
+    assert len(findings) == 12, findings
     for line in findings:
         # The prefix is held as well, or a page quoting `FINDINGS 42: ...`
         # would pass on the strength of its reason. Its form is written down

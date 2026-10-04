@@ -19,11 +19,15 @@ from previously.core.anchor import parse_anchors
 from previously.core.append import append
 from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
+from previously.core.errors import RedactionRefused
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
 from previously.core.projection import Outcome
 from previously.core.projection import PROJECTIONS
 from previously.core.projection import SOURCE_STATS
+from previously.core.redact import redact_event
+from previously.core.redact import redact_units
+from previously.core.redaction import read_index
 from previously.core.units import split_plaintext
 from previously.core.verify import examine
 from previously.storage.errors import StorageError
@@ -41,6 +45,8 @@ import sys
 if TYPE_CHECKING:
     from collections.abc import Sequence
     from previously.contract.types import Anchor
+    from previously.core.redact import Redacted
+    from previously.core.redaction import Redaction
 
 MAX_TEXT_BYTES = 1_000_000
 
@@ -258,8 +264,14 @@ def _cmd_log(args: argparse.Namespace) -> int:
     # COMMITTED of `begin` are two snapshots. It still shows one state, and
     # not because of a snapshot: `insert_event` writes an event and its units
     # in the one transaction of `append`, so they commit together, and
-    # nothing in `src` rewrites or deletes either afterwards. Whoever sees the
-    # event sees its units.
+    # nothing in `src` deletes either afterwards, so whoever sees the event
+    # sees its units. Since stage 1c one thing rewrites them: an erasure
+    # ({ref}`erasure`) turns payload and units into tombstones in one
+    # transaction. `show` reads the event, the redactions and the units in
+    # three statements, so an erasure that commits between them can show a
+    # payload from before it beside units from after it — every row whole,
+    # and the next `show` consistent again. That is a display, not a check;
+    # `verify` reads in one snapshot.
     with storage.begin() as conn:
         for row in storage.read(conn, from_id=args.from_id, limit=args.limit):
             print(f"{row.id}\t{row.occurred_at.isoformat()}\t{row.kind}\t{row.hash.hex()[:12]}")
@@ -356,11 +368,18 @@ def _cmd_show(args: argparse.Namespace) -> int:
             # ({ref}`canonicalization`): it is not one payload field among
             # others but the statement that separates proof from report. The
             # tombstone has neither ({ref}`tombstone-seam`), and
-            # `payload=<erased>` says that instead of printing an empty line.
+            # `payload=<erased by event …>` says that instead of printing an
+            # empty line, naming the redaction that ordered it ({ref}`erasure`).
+            #
+            # `evidence=` only where the payload carries the key: `append`
+            # mixes it into every observation, and an action has none, so
+            # `evidence=None` would be a statement nobody made.
+            index = read_index(storage, conn)
             if row.payload is None:
-                print("payload=<erased>")
+                print(f"payload={_erased(index.of_event(row.id))}")
             else:
-                print(f"evidence={row.payload.get('evidence')}")
+                if "evidence" in row.payload:
+                    print(f"evidence={row.payload['evidence']}")
                 # `sort_keys` so the output is stable across runs: `payload`
                 # comes back out of jsonb, and the order of keys in jsonb is
                 # not the order they were written in.
@@ -368,11 +387,62 @@ def _cmd_show(args: argparse.Namespace) -> int:
             for unit in storage.units(conn, row.id):
                 # An erased unit says so, like the payload above, rather than
                 # printing `None` where its text stood.
-                content = "<erased>" if unit.content is None else unit.content
+                content = unit.content
+                if content is None:
+                    content = _erased(index.of_unit(row.id, unit.seq))
                 print(f"  ¶{unit.seq} {content}")
             return 0
     print(f"No event {args.event_id}", file=sys.stderr)
     return 1
+
+
+def _erased(by: Redaction | None) -> str:
+    """How `show` prints what is missing: with the redaction that ordered
+    it, or bare when none did — a tombstone without an order, which `verify`
+    reports."""
+    return "<erased>" if by is None else f"<erased by event {by.id}>"
+
+
+def _redact_arguments(parser: argparse.ArgumentParser) -> None:
+    # The first command with a second level: what is erased is a word of its
+    # own, `event` or `units`, each with its own arguments.
+    targets = parser.add_subparsers(dest="target", required=True)
+    event = targets.add_parser("event", help="erase the payload and the content of every unit")
+    event.add_argument("event_id", type=int)
+    event.add_argument("--reason", required=True, help="why; it stays in the log for good")
+    units = targets.add_parser("units", help="erase the content of the named units")
+    units.add_argument("event_id", type=int)
+    units.add_argument("seqs", type=int, nargs="+", metavar="SEQ")
+    units.add_argument("--reason", required=True, help="why; it stays in the log for good")
+
+
+def _redacted_line(result: Redacted) -> str:
+    """The one line `redact` prints on standard output."""
+    if result.written:
+        return f"redacted by event {result.redaction_id}"
+    return f"already redacted by event {result.redaction_id}"
+
+
+def _cmd_redact(args: argparse.Namespace) -> int:
+    """Erases an event or units of it ({ref}`erasure`).
+
+    No question before it acts: the reason is the brake, and a command that
+    asked would be no tool for a script.
+    """
+    if not args.reason:
+        raise RedactionRefused("--reason must not be empty")
+    storage = _storage()
+    now = datetime.now(UTC)
+    if args.target == "event":
+        result = redact_event(storage, storage, args.event_id, reason=args.reason, recorded_at=now)
+    else:
+        result = redact_units(
+            storage, storage, args.event_id, args.seqs, reason=args.reason, recorded_at=now
+        )
+    for seq in result.skipped_units:
+        print(f"unit {seq} was already erased", file=sys.stderr)
+    print(_redacted_line(result))
+    return 0
 
 
 def _cmd_project(_args: argparse.Namespace) -> int:
@@ -494,6 +564,7 @@ class Command:
 # help names against these names.
 COMMANDS: tuple[Command, ...] = (
     Command("append", "submit text", _cmd_append, _append_arguments),
+    Command("redact", "erase an event or units of it", _cmd_redact, _redact_arguments),
     # "print the chronicle" until stage 1b, which is now the other command:
     # `log` is the chain order and `chronicle` the chronology ({ref}`projections`).
     Command("log", "print the log in chain order", _cmd_log, _log_arguments),

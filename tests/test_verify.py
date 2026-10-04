@@ -7,8 +7,13 @@ from previously.contract.types import Anchor
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
+from previously.core.chain import link
+from previously.core.chain import prepare
 from previously.core.errors import InvalidPayload
 from previously.core.hashing import unit_digest
+from previously.core.redact import redact_event
+from previously.core.redaction import event_payload
+from previously.core.redaction import units_payload
 from previously.core.units import split_plaintext
 from previously.core.verify import Examination
 from previously.core.verify import examine
@@ -24,6 +29,7 @@ import pytest
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from collections.abc import Mapping
     from collections.abc import Sequence
 
 
@@ -122,15 +128,20 @@ def test_a_manipulated_payload_fires(
 
 @WRITTEN_IN
 @pytest.mark.db
-def test_a_tombstone_passes(db: Engine, write_version_1: WriteVersion1, version: int) -> None:
-    """Setting payload to NULL does not break the chain."""
+def test_a_tombstone_without_a_redaction_fires(
+    db: Engine, write_version_1: WriteVersion1, version: int
+) -> None:
+    """Setting payload to NULL does not break the chain, and since erasure is
+    an event it is no longer indistinguishable from a forgery: a tombstone
+    that no redaction ordered is a finding ({ref}`erasure`). It was
+    `test_a_tombstone_passes` until stage 1c."""
     storage = PostgresStorage(db)
     _write(version, storage, [_event("a"), _event("b")], write_version_1)
     with db.begin() as c:
         # The salt goes with the payload, or `event_payload_salt_check`
         # refuses the statement (ruling P-1 of the 2026-10-04 stage 1c plan).
         c.execute(text("UPDATE event SET payload = NULL, payload_salt = NULL WHERE id = 1"))
-    assert verify(storage) == []
+    assert verify(storage) == [Finding(1, "payload is erased without a redaction")]
 
 
 @WRITTEN_IN
@@ -357,17 +368,24 @@ def test_a_chain_of_both_versions_passes(db: Engine, write_version_1: WriteVersi
 
 
 @pytest.mark.db
-def test_v1_a_unit_without_content_is_the_units_hash_finding(
+def test_v1_a_unit_without_content_is_an_erasure_finding_not_the_units_hash_finding(
     db: Engine, write_version_1: WriteVersion1
 ) -> None:
     """Version 1 takes the texts of all units into one digest, so a unit
-    without content leaves it nothing to be computed from. That is a finding
-    at the units digest, not a crash."""
+    without content leaves it nothing to be computed from, and the check does
+    not compute it: whether the event may have units without content is
+    decided by the redactions, once the pass has seen them ({ref}`erasure`).
+    Here no redaction ordered it, and one of two units is no erasure version 1
+    can attest. Until stage 1c this was `units_hash does not match the units`.
+    """
     storage = PostgresStorage(db)
     write_version_1(storage, [_message("m")], NOW)
     with db.begin() as c:
         c.execute(text("UPDATE unit SET content = NULL WHERE event_id = 1 AND seq = 1"))
-    assert verify(storage) == [Finding(1, "units_hash does not match the units")]
+    assert verify(storage) == [
+        Finding(1, "unit 1 is erased without a redaction"),
+        Finding(1, "units are erased in part, which version 1 cannot attest"),
+    ]
 
 
 @pytest.mark.db
@@ -857,3 +875,142 @@ def test_anchors_are_checked_across_a_batch_boundary(db: Engine) -> None:
     assert examine(storage, anchors=[Anchor(3, b"\x33" * 32)], batch=2).findings == (
         Finding(3, "hash does not match the anchor"),
     )
+
+
+# ---------------------------------------------------------------------------
+# Erasure ({ref}`erasure`): the check demands the order and its execution.
+# Every tombstone needs a redaction that covers it, and every redaction needs
+# its tombstones. The redactions below are written by hand, through `chain`
+# and `insert_event`, wherever the point is a redaction `redact` would never
+# write: one without its tombstones, or one with a target it cannot have.
+# ---------------------------------------------------------------------------
+
+# A unit tombstone as the database allows it: every column
+# `unit_tombstone_check` names goes with the content (ruling P-1 of the
+# 2026-10-04 stage 1c plan).
+_ERASE_UNIT = (
+    "UPDATE unit SET content = NULL, salt = NULL, speaker = NULL, start_ms = NULL, "
+    "end_ms = NULL WHERE event_id = :e AND seq = :s"
+)
+
+
+def _action(storage: PostgresStorage, payload: Mapping[str, object]) -> int:
+    """An action event on the tip, and nothing of what `redact` does beside
+    writing it."""
+    prepared = prepare(kind="action", occurred_at=NOW, payload=payload, units=(), key=None)
+    with storage.begin() as c:
+        tip = storage.tip(c)
+        assert tip is not None
+        row, units = link(prepared, event_id=tip.id + 1, prev_hash=tip.hash, recorded_at=NOW)
+        storage.insert_event(c, row, units, None)
+    return row.id
+
+
+@WRITTEN_IN
+@pytest.mark.db
+def test_a_unit_tombstone_without_a_redaction_fires(
+    db: Engine, write_version_1: WriteVersion1, version: int
+) -> None:
+    """In version 1 one erased unit of two is, besides, a partial erasure
+    that version 1 cannot attest."""
+    storage = PostgresStorage(db)
+    _write(version, storage, [_message("m")], write_version_1)
+    with db.begin() as c:
+        c.execute(text(_ERASE_UNIT), {"e": 1, "s": 2})
+    expected = [Finding(1, "unit 2 is erased without a redaction")]
+    if version == 1:
+        expected.append(Finding(1, "units are erased in part, which version 1 cannot attest"))
+    assert verify(storage) == expected
+
+
+@WRITTEN_IN
+@pytest.mark.db
+def test_a_redaction_of_an_event_that_was_not_carried_out_fires(
+    db: Engine, write_version_1: WriteVersion1, version: int
+) -> None:
+    storage = PostgresStorage(db)
+    _write(version, storage, [_message("m")], write_version_1)
+    _action(storage, event_payload(1, blobs=[], reason="r"))
+    assert verify(storage) == [Finding(2, "redaction of event 1 is not carried out")]
+
+
+@WRITTEN_IN
+@pytest.mark.db
+def test_a_redaction_of_units_that_was_not_carried_out_fires(
+    db: Engine, write_version_1: WriteVersion1, version: int
+) -> None:
+    """Unit 1 is carried out and unit 2 is not: the target is read, and each
+    named unit is held against it. In version 1 the one erased unit is also
+    the partial erasure version 1 cannot attest."""
+    storage = PostgresStorage(db)
+    _write(version, storage, [_message("m")], write_version_1)
+    _action(storage, units_payload(1, [1, 2], reason="r"))
+    with db.begin() as c:
+        c.execute(text(_ERASE_UNIT), {"e": 1, "s": 1})
+    expected = [Finding(2, "redaction of unit 2 of event 1 is not carried out")]
+    if version == 1:
+        expected.insert(0, Finding(1, "units are erased in part, which version 1 cannot attest"))
+    assert verify(storage) == expected
+
+
+@pytest.mark.parametrize("case", ["an-id-behind-its-own", "a-seq-the-event-does-not-have"])
+@pytest.mark.db
+def test_a_redaction_naming_a_missing_target_fires(db: Engine, case: str) -> None:
+    """A target behind the redaction exists by the time the check runs, and
+    is still no target: a redaction can only order the erasure of what was
+    recorded before it."""
+    storage = PostgresStorage(db)
+    append(storage, [_message("m")], recorded_at=NOW)
+    if case == "an-id-behind-its-own":
+        _action(storage, event_payload(3, blobs=[], reason="r"))
+        append(storage, [_message("n")], recorded_at=NOW)
+    else:
+        _action(storage, units_payload(1, [9], reason="r"))
+    assert verify(storage) == [Finding(2, "redaction names a target that does not exist")]
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        pytest.param({"note": "no name"}, id="without-action"),
+        pytest.param(
+            {"action": "redaction", "scope": "event", "target": {"event": 1, "blobs": []}},
+            id="redaction-without-reason",
+        ),
+    ],
+)
+@pytest.mark.db
+def test_an_action_without_a_valid_form_fires(db: Engine, payload: dict[str, object]) -> None:
+    storage = PostgresStorage(db)
+    append(storage, [_message("m")], recorded_at=NOW)
+    _action(storage, payload)
+    assert verify(storage) == [Finding(2, "action has no valid form")]
+
+
+@pytest.mark.db
+def test_partial_unit_tombstones_in_version_1_fire(
+    db: Engine, write_version_1: WriteVersion1
+) -> None:
+    """A redaction of units orders the tombstone, and the tombstone is there,
+    so there is no finding about either: what is left is that version 1
+    attests the units of an event only together, and the one left standing is
+    attested by nothing. `redact units` refuses to write this; a forger is not
+    asked."""
+    storage = PostgresStorage(db)
+    write_version_1(storage, [_message("m")], NOW)
+    _action(storage, units_payload(1, [1], reason="r"))
+    with db.begin() as c:
+        c.execute(text(_ERASE_UNIT), {"e": 1, "s": 1})
+    assert verify(storage) == [
+        Finding(1, "units are erased in part, which version 1 cannot attest")
+    ]
+
+
+@pytest.mark.db
+def test_tombstone_and_redaction_are_matched_across_batch_boundaries(db: Engine) -> None:
+    """With `batch=2` the target is in the first batch and its redaction in
+    the third: matched per batch, the tombstone would have no order yet."""
+    storage = PostgresStorage(db)
+    append(storage, [_message("m"), _event("b"), _event("c"), _event("d")], recorded_at=NOW)
+    redact_event(storage, storage, 1, reason="r", recorded_at=NOW)
+    assert verify(storage, batch=2) == []

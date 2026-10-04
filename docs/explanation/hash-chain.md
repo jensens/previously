@@ -32,8 +32,8 @@ graph LR
     units_hash --> event_hash
 ```
 
-The detour exists for one purpose, and the purpose lies in the future: erasure.
-An append-only store and a right to erasure don't get along on their own, and the mechanism for it isn't built yet.
+The detour exists for one purpose: erasure.
+An append-only store and a right to erasure don't get along on their own, and the mechanism that reconciles them arrived only in stage 1c, long after the chain's format was fixed; {ref}`erasure` describes it.
 But a chain that hashes the payload inline would break on every erasure, over all old data at once, and no later change could repair that.
 Through `payload_hash` the chain survives it: an erasure replaces `payload` with a tombstone and keeps `payload_hash` standing.
 The check runs through unchanged, and it stays provable *what* stood there without holding it any more.
@@ -45,23 +45,16 @@ Stage 1a kept `unit.content` `NOT NULL`, because skip logic for a behavior that 
 Stage 1c opened the seam with the migration that brought version 2: `unit.content` accepts `NULL` now, and that change broke nothing, because no existing row and no existing hash changed.
 In version 1 of the hash format that seam opens only for all units of an event at once, because one digest covers all their texts; {ref}`hash-version-2` explains why version 2 gives every unit a digest of its own.
 
-:::{important}
-The seam has a price, and whoever uses it should know the price.
-**A tombstone is indistinguishable from a forgery.**
-`UPDATE event SET payload = NULL` leaves the check satisfied, measured as `verify() -> []`, and that result is the behavior the acceptance condition for stage 1a demands.
-On a version 2 row the statement has to set `payload_salt = NULL` as well, or the database refuses it, and then the check is satisfied all the same.
-The check can't do better: it sees that `payload` is missing, and whether a warranted erasure or a quiet deletion took it stands nowhere.
+The seam had a price, and for two stages the log paid it.
+**A tombstone was indistinguishable from a forgery.**
+`UPDATE event SET payload = NULL` left the check satisfied, measured as `verify() -> []`, and that result was the behavior the acceptance condition for stage 1a demanded.
+The check couldn't do better: it saw that `payload` was missing, and whether a warranted erasure or a quiet deletion had taken it stood nowhere.
+Stages 1a and 1b had no erasure at all, so every `NULL` in `payload` was a forgery, and the check reported none of them.
 
-Stage 1a has no erasure at all.
-So today *every* `NULL` in `payload` is a forgery, and the check reports none of them.
-That's a gap in the bookkeeping, not a defect in the code.
-
-The price gets paid off by making an erasure an event in the log itself.
-Then the warrant stands *in* the chain, with its time, its cause and its author, hashed like everything else and as unchangeable as everything else.
-The check can demand from that point on: every tombstone has an erasure event that ordered it.
-A tombstone without that event becomes a finding, and the seam costs nothing further.
-Until that event exists, the gap stands.
-:::
+Stage 1c paid the price off the way it had been announced, by making an erasure an event in the log itself.
+The warrant now stands *in* the chain, hashed like everything else, and the check demands that every tombstone has a redaction that ordered it.
+The same statement is a finding today, and the seam costs nothing further.
+{ref}`erasure` explains the redaction event and what the check holds it to.
 
 ## The tombstone that wasn't one
 
@@ -82,7 +75,7 @@ verify() -> []
 ```
 
 Row 2 was erased as far as the check could tell, and invisible to any bookkeeping that looks for tombstones at the SQL level.
-The announced way of paying off the seam's price slips exactly here: a tombstone without an erasure event would become a finding, but this row is no tombstone *in the sense of that query*.
+The way the seam's price was later paid off would have slipped exactly here: a tombstone without a redaction is a finding now, but this row was no tombstone *in the sense of that query*.
 
 The fix sits in the schema and not in the check: `CHECK (payload IS NULL OR jsonb_typeof(payload) = 'object')`, listed in {ref}`database-schema` as `event_payload_object_check`.
 Two things are worth saying about it.
@@ -93,7 +86,7 @@ So the database enforces what the specification already presupposed, and *that* 
 The code wasn't bent toward the specification, and the specification wasn't bent toward the code.
 
 And the finding deserves no inflation.
-A forger gains nothing today from JSON `null` that plain `payload = NULL` wouldn't also give, since both leave the check satisfied.
+A forger gained nothing then from JSON `null` that plain `payload = NULL` wouldn't also have given, since both left the check satisfied.
 The sharpness lies in the fact that a disclosed boundary and an announced remedy both failed to catch this one case.
 
 ## The identifier comes from the predecessor, not from a sequence
@@ -297,10 +290,10 @@ Version 1 keeps a cost, and an event written in it carries that cost for as long
 Its units are attested only together, so it can only be erased as a whole.
 And its digests carry no salt, so whatever content it held stays guessable from them.
 
-The format is built for an erasure that doesn't exist yet.
-`append` writes version 2, and a log can hold events of both versions side by side, but nothing erases anything.
+`append` writes version 2, and a log can hold events of both versions side by side.
 The salt protects content only once an erasure takes the salt away along with the content; until then, it's an input like any other.
-The database already holds any future erasure to that rule: it refuses a payload set to `NULL` while its salt stays, and a unit without content that keeps its salt, its speaker or its timestamps.
+The database holds every erasure to that rule: it refuses a payload set to `NULL` while its salt stays, and a unit without content that keeps its salt, its speaker or its timestamps.
+{ref}`erasure` describes the erasure the format was built for.
 
 ## Counting the rows the check has seen
 

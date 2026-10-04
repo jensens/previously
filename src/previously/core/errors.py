@@ -46,3 +46,13 @@ class ProjectionGap(PreviouslyError):
     `up_to_id` 4 the worker projected 6 to 10 and stored `up_to_id = 10` —
     exactly what this type says it refuses.
     """
+
+
+class RedactionRefused(PreviouslyError):
+    """An erasure that cannot be carried out as asked ({ref}`erasure`).
+
+    Raised before anything is written: the target does not exist, is itself a
+    redaction, names a unit it does not have, or was written in a hash format
+    that cannot attest part of its units. The command line shows the one
+    sentence and returns 2, like every other `PreviouslyError`.
+    """
