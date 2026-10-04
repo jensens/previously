@@ -8,13 +8,19 @@ there are dozens of them, so this file is the only thing standing between a
 renamed label and a comment that points nowhere. The convention these checks
 enforce is written down in {ref}`design-records`.
 
-Why the checks read `.py` only, when the marking rule covers every English
-file in the tree: the dividing line is not the extension but **how the place
-gets read**. A comment is read on its own, so it carries its marking on its
-own line, and a check that reads lines is the right shape for it. A table is
-read whole, so one paragraph above it marks every row -- which is why
-`DEPENDENCIES.md` says it once instead of thirteen times, and why a bare
-citation in `pyproject.toml` is a decision rather than a gap here.
+Why the paragraph-sign checks read `.py` only, when the marking rule covers
+every English file in the tree: the dividing line is not the extension but
+**how the place gets read**. A comment is read on its own, so it carries its
+marking on its own line, and a check that reads lines is the right shape for
+it. A table is read whole, so one paragraph above it marks every row -- which
+is why `DEPENDENCIES.md` says it once instead of thirteen times, and why a
+bare citation in `pyproject.toml` is a decision rather than a gap here.
+
+The **label** check is the one exception, and since 2026-10-04 it reads the
+two root configuration files as well. A documentation label is not a marking
+a reader can judge on the line: it either resolves or it points nowhere, and
+nothing but a check can tell which. `.importlinter` had carried one since
+stage 1b with no gate in sight.
 """
 
 from typing import TYPE_CHECKING
@@ -29,6 +35,18 @@ if TYPE_CHECKING:
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SOURCE_DIRS = ["src", "tests", "migrations"]
+
+# Two root configuration files carry a documentation label of their own, and
+# until 2026-10-04 they lay outside every check: `.importlinter` points at
+# {ref}`module-boundaries` for the measurement behind "a named edge, never a
+# pattern", and the final review found it there. `pyproject.toml` carries
+# none today and is read all the same, because the next one will land in
+# whichever of the two the author happens to be editing.
+#
+# These are read with the plain regexes below and not with `ast`: the AST
+# parts of this file serve the checks that have to tell a docstring from a
+# message, and neither file holds a Python literal.
+CONFIG_FILES = ["pyproject.toml", ".importlinter"]
 
 # Where a message a user reads can come from: the command line under `src/`
 # and the migration runner under `migrations/`, whose refusal
@@ -90,11 +108,16 @@ def _modules(directories: list[str]) -> list[pathlib.Path]:
     return found
 
 
+def _referencing_files() -> list[pathlib.Path]:
+    """Every file whose reference roles this check resolves."""
+    return [*_modules(SOURCE_DIRS), *(ROOT / name for name in CONFIG_FILES)]
+
+
 def _references() -> tuple[dict[str, list[str]], dict[str, list[str]]]:
     """The targets referenced from the code, and the roles nothing could read."""
     used: dict[str, list[str]] = {}
     unreadable: dict[str, list[str]] = {}
-    for module in _modules(SOURCE_DIRS):
+    for module in _referencing_files():
         where = str(module.relative_to(ROOT))
         text = module.read_text(encoding="utf-8")
         for role in ROLE.finditer(text):
@@ -193,11 +216,11 @@ def test_no_program_output_cites_a_specification() -> None:
     Every module that can produce output is read, not the files that happened
     to carry a citation. Measured in fix round 1: with two files named, a
     marked message in `core/verify.py` and a `print` in `cli.py` both passed
-    -- and `cli.py`, with thirteen `print` calls, is the only file in this
-    tree that writes to the terminal. Measured in fix round 2: with only
-    `src/` read, a marked citation in `migrations/dsn.py` passed as well, and
-    that module raises its refusal as an implicitly concatenated f-string,
-    which is the exact shape of the two the check was built for.
+    -- and `cli.py`, with nineteen `print` calls since stage 1b, is the only
+    file in this tree that writes to the terminal. Measured in fix round 2:
+    with only `src/` read, a marked citation in `migrations/dsn.py` passed as
+    well, and that module raises its refusal as an implicitly concatenated
+    f-string, which is the exact shape of the two the check was built for.
     """
     offenders = {
         str(path.relative_to(ROOT)): found
@@ -224,6 +247,78 @@ def _quoted_messages(page: str) -> set[str]:
         )
         quoted.add(message[1:-1])
     return quoted
+
+
+def _quoted_notices(page: str) -> list[str]:
+    """The two standard-error sentences `cli.md` quotes, in the page's order."""
+    after = page.split("Two notices go to standard error", 1)[1]
+    block = after.split("```text", 1)[1].split("```", 1)[0]
+    return [line for line in block.splitlines() if line.strip()]
+
+
+def _static_parts(node: ast.expr) -> list[str]:
+    """What stays of a string literal once the interpolations are taken out.
+
+    A plain literal is one part, an f-string is its `Constant` values in
+    order. Only the direct children of the `JoinedStr` count: a literal
+    nested inside an interpolation -- `_plural(lag, 'event')` is the case in
+    this tree -- is an argument, not text of the message.
+    """
+    if isinstance(node, ast.Constant):
+        return [node.value] if isinstance(node.value, str) else []
+    if isinstance(node, ast.JoinedStr):
+        return [
+            value.value
+            for value in node.values
+            if isinstance(value, ast.Constant) and isinstance(value.value, str)
+        ]
+    return []
+
+
+def _message_patterns(path: pathlib.Path) -> list[list[str]]:
+    """The static parts of the strings the module hands to the terminal.
+
+    Both ways it does: the first positional argument of a `print(...,
+    file=sys.stderr)` call, and every string a function returns. The second
+    is not decoration. `cli.py` prints the lag sentence as
+    `print(lag, file=sys.stderr)`, where `lag` came out of `_lag_line`, so a
+    check that read only the call sites would see the truncation sentence and
+    not the one next to it -- measured on 2026-10-04, with the page's lag line
+    falsified and the check green.
+    """
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: list[list[str]] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Return) and node.value is not None:
+            found.append(_static_parts(node.value))
+        if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Name):
+            continue
+        if node.func.id != "print" or not node.args:
+            continue
+        if any(
+            keyword.arg == "file" and ast.unparse(keyword.value) == "sys.stderr"
+            for keyword in node.keywords
+        ):
+            found.append(_static_parts(node.args[0]))
+    return [parts for parts in found if parts and len("".join(parts)) >= 10]
+
+
+def _is_the_same_sentence(parts: list[str], line: str) -> bool:
+    """Whether `line` is that message with its interpolations filled in.
+
+    The first part has to open the line and the last has to close it, or a
+    message whose end was rewritten would still pass on the strength of its
+    beginning.
+    """
+    if not line.startswith(parts[0]) or not line.endswith(parts[-1]):
+        return False
+    position = 0
+    for part in parts:
+        found = line.find(part, position)
+        if found < 0:
+            return False
+        position = found + len(part)
+    return True
 
 
 def _refusal(payload: Mapping[str, object]) -> str:
@@ -268,6 +363,16 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     when it arrives in the code — then `hash-format.md` goes on saying "The
     five restrictions below" with a row missing. Deriving the payloads from
     the code is the fix and it is not built yet.
+
+    The second half holds the two standard-error sentences `cli.md` quotes
+    against the literals in `cli.py`. Those were quoted and covered by
+    nothing until 2026-10-04: the first half of this test reads the *Payload
+    range* table and nothing else, and the command line's notices reach no
+    other check. They cannot be produced by calling the code the way a
+    refusal can — the truncation sentence needs a cut window and the lag
+    sentence a projection that is behind — so this half matches the page's
+    line against the message's static parts instead, which is the strongest
+    form available without a database.
     """
     produced = {
         _refusal(payload)
@@ -285,6 +390,15 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         f"apart.\nonly in the table: {_quoted_messages(page) - produced}\n"
         f"only in the code:  {produced - _quoted_messages(page)}"
     )
+
+    patterns = _message_patterns(ROOT / "src" / "previously" / "cli.py")
+    notices = _quoted_notices((DOCS / "reference" / "cli.md").read_text(encoding="utf-8"))
+    assert len(notices) == 2, f"cli.md quotes {len(notices)} notices, not two: {notices}"
+    for notice in notices:
+        assert any(_is_the_same_sentence(parts, notice) for parts in patterns), (
+            f"cli.md quotes {notice!r} on standard error and no message in cli.py "
+            "says that. Either the code's wording changed, or the page's did."
+        )
 
 
 def test_the_reference_quotes_the_refusal_by_type_name() -> None:

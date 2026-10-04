@@ -28,3 +28,21 @@ class BatchTooLarge(PreviouslyError, ValueError):
     A very large transaction holds for a long time and loses the conflict
     against every small submission that commits meanwhile — starvation.
     """
+
+
+class ProjectionGap(PreviouslyError):
+    """The log has a gap above `up_to_id` — which {ref}`projections` says it
+    cannot have: `id = predecessor.id + 1` and the unique index on `prev_hash`
+    leave no room for one. Raised rather than skipped over, because a worker
+    that silently moved past a gap would turn an impossible state into a
+    silent loss.
+
+    The check compares the identifiers the batch read with the run that has to
+    start at `up_to_id + 1`. The first version checked the read for emptiness
+    instead, and that check was measured on 2026-10-04 to be unable to fire
+    for any gap at all: the tip is itself a row with
+    `id >= up_to_id + 1` and `read` filters on `id >= from_id`, so the result
+    is empty only for a `batch_size` below one. With id 5 deleted by hand at
+    `up_to_id` 4 the worker projected 6 to 10 and stored `up_to_id = 10` —
+    exactly what this type says it refuses.
+    """

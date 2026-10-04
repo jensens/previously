@@ -5,9 +5,9 @@
 
 from datetime import datetime
 from datetime import UTC
-from previously.storage.rows import EventRow
-from previously.storage.rows import Tip
-from previously.storage.rows import UnitRow
+from previously.contract.rows import EventRow
+from previously.contract.rows import Tip
+from previously.contract.rows import UnitRow
 
 
 def test_tip_carries_id_and_hash() -> None:

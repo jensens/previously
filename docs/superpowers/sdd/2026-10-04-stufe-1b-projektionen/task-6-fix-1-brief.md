@@ -1,0 +1,17 @@
+# Task 6 — Fixrunde 1: Auftrag an den Umsetzer (Opus), nach der Prüfung von `a2dbe17`
+
+Wörtlich, wie an den Umsetzer geschickt (Kürzungen nur bei der Wiederholung der Prüfbefunde, die in `task-6-review.md` stehen).
+
+---
+
+Fixrunde 1 zu Aufgabe 6. Die Prüfung bestätigt den Kern: alle vier Dateien plus Tutorial-Block, Auflösungen 2–5 und 7 gehalten, der getippte Testblock nachgerechnet als echte Messung (alle 18 Dateizahlen gegen `--collect-only` identisch), die zwei Zusatz-Hunks richtig, die drei Teständerungen ausdrücklich als Gewinn beurteilt — „jedes Kommando liest sein eigenes Lesezeichen" ist dadurch eine Messung. Nicht freigegeben wegen **zwei Prosa-Behauptungen**; dazu fünf Minors, die in dieselben Dateien fallen.
+
+**I1 — `src/previously/cli.py:333-334`, der C901-Kommentar ist einen Zweig zu scharf.** „One branch short of breaking the gate … at the seventh command rather than at the eighth" folgt aus deiner Messung nicht. Der Prüfer hat nachgemessen: `C901` feuert **strikt oberhalb** der Schwelle — das heutige `main` (2) wird bei `max-complexity = 2` nicht gemeldet, bei `= 1` als `2 > 1`; die Kette mit sieben Kommandos steht bei 9; eine Kette mit einem **achten** Kommando stünde bei 10 und wäre bei der Projektschwelle 10 **noch grün**; das Tor risse erst beim neunten (11 > 10). Also zwei Zweige Luft, nicht einer. Schreib den Kommentar so, dass er genau das sagt, oder streich das Abstandsargument ganz und begründe nur die Struktur. Die **13** kennzeichne als historische Zahl aus einer Fassung, die es im Baum nicht mehr gibt. Dieselbe falsche Zeile steht in der Botschaft von `a2dbe17`; **die bleibt** (keine History-Umschreibung), dein Fix-Commit nennt die Abweichung ausdrücklich.
+
+**I2 — `docs/reference/cli.md:19`.** `stats` hat keine Argumente; seine Zelle für Rückgabecode 2 lautet wie bei `project` und `verify` nur „Storage raised an error." Der Brief hatte das falsch vorgegeben (plan-mandatiert); der Plan ist korrigiert (`eae7357`).
+
+**Minors, in dieselbe Runde:** `cli.md:83` „No event was projected, and the version was unchanged."; `cli.md:129` Begründung raus, Tatsache bleibt; `pyproject.toml:90-94` Satz nach dem Befehl formulieren, „gone stale" → falsche Zahl; `chronicle --limit < 1` abweisen (Rückgabecode 2, `stderr`-Zeile nennt `--limit`, über denselben Fehlerpfad wie die übrigen Nutzerfehler — `InvalidPayload` oder `argparse`-`type`, am Code entscheiden und begründen), als Zusicherung in den bestehenden Limit-Test gefaltet (`0` und `-2`), `log --limit` **nicht anfassen**; den Zweig `row.source or ''` im bestehenden Zeitordnungstest erreichen (quellenloses Event über `PostgresStorage(db).insert_event(c, EventRow(…), [UnitRow(…)], None)` wie in `test_projection_worker.py`), Zeile mit zwei leeren Feldern zusichern. Zahl bleibt 232.
+
+**Nicht in dieser Runde:** `set(sub.choices) == set(commands)` (eigener Test → 233 → Tutorial-Retype; Fixwelle), `ruling P-1` nachschlagbar machen (Schlussschritt des Plans).
+
+**Danach:** betroffene Tests gezielt, dann alle sechs Tore einzeln — und die **Schlusszeilen ungekürzt** in den Bericht. Dateien stagen namentlich: `src/previously/cli.py`, `tests/test_cli.py`, `docs/reference/cli.md`, `pyproject.toml`; `git status --short` vorher. Commit „fix: the if chain had two branches of headroom, and stats has no input" mit Trailer `Assisted-By: Claude Opus 5 <noreply@anthropic.com>`. Fixbericht an `task-6-report.md` anhängen; zurück nur Commit-Hash, je Punkt eine Zeile, die sechs Schlusszeilen, jede Stelle, an der du widersprichst.

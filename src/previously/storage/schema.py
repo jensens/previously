@@ -126,3 +126,66 @@ source_key = Table(
     # holds instead of leaving it to the whim of future callers.
     UniqueConstraint("event_id", name="source_key_event_id_key"),
 )
+
+# --- Projections ({ref}`projections`) ---------------------------------------
+#
+# Derivable and disposable (architecture §4.4, frozen design record): these
+# tables carry no truth of their own, so they carry no foreign keys onto one
+# another — only onto `event`, because a projection of an event that does not
+# exist must never be built. Prefix `p_`.
+
+projection_state = Table(
+    "projection_state",
+    metadata,
+    Column("name", Text, primary_key=True),
+    # 0 = nothing built yet. Unambiguous because events number from 1.
+    Column("up_to_id", BigInteger, nullable=False),
+    # The rebuild trigger: the worker compares it with the version the code
+    # declares, and any difference — not only a lower one — empties the table
+    # and starts over.
+    Column("version", Integer, nullable=False),
+    Column("built_at", TIMESTAMP(timezone=True), nullable=False),
+)
+
+p_chronicle = Table(
+    "p_chronicle",
+    metadata,
+    Column("event_id", BigInteger, ForeignKey("event.id"), nullable=False),
+    Column("seq", Integer, nullable=False),
+    Column("content", Text, nullable=False),
+    Column("occurred_at", TIMESTAMP(timezone=True), nullable=False),
+    Column("kind", Text, nullable=False),
+    # NULL when the payload was erased: the kind of evidence lives in the
+    # payload, and a tombstone has none. NOT NULL here would mean the chronicle
+    # cannot show an erased event at all — a row in the log, silently missing.
+    Column("evidence", Text),
+    # NULL when the event carries no source attribution; `source_key` enforces
+    # at most one per event, not at least one.
+    Column("source", Text),
+    Column("external_id", Text),
+    Column("speaker", Text),
+    Column("start_ms", Integer),
+    Column("end_ms", Integer),
+    PrimaryKeyConstraint("event_id", "seq"),
+)
+
+# The primary key carries chain order; this index carries time order
+# (architecture §4.1, frozen design record, wants both). `chronicle` reads in
+# index direction, and the triple is unique, so the output is deterministic.
+Index(
+    "p_chronicle_occurred_idx",
+    p_chronicle.c.occurred_at,
+    p_chronicle.c.event_id,
+    p_chronicle.c.seq,
+)
+
+p_source_stats = Table(
+    "p_source_stats",
+    metadata,
+    Column("source", Text, primary_key=True),
+    Column("events", BigInteger, nullable=False),
+    Column("units", BigInteger, nullable=False),
+    Column("first_seen", TIMESTAMP(timezone=True), nullable=False),
+    Column("last_seen", TIMESTAMP(timezone=True), nullable=False),
+    Column("last_event_id", BigInteger, ForeignKey("event.id"), nullable=False),
+)

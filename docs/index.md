@@ -21,7 +21,7 @@ Record your first event and verify the chain.
 
 **How-to guides**
 ^^^
-Solve a specific problem: restore a backup, add a migration, check the chain in operation.
+Solve a specific problem: restore a backup, add a migration, rebuild a projection, check the chain in operation.
 :::
 
 :::{grid-item-card}

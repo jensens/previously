@@ -56,7 +56,7 @@ class HashableUnit(Protocol):
     """What `units_hash` needs of a unit — structurally, not nominally.
 
     Two types carry the same five fields: `contract.types.RawUnit` on the way
-    in and `storage.rows.UnitRow` on the way out. `append` hashes the one,
+    in and `contract.rows.UnitRow` on the way out. `append` hashes the one,
     `verify` the other, and both must yield the same digest. A protocol holds
     the two directions together without `core.hashing` having to import
     either of the two types — the definition of the hash is then independent
