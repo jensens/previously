@@ -29,15 +29,12 @@ hat **noch kein einziges echtes Event** gehalten.
 
 ## Was als Nächstes kommt
 
-Entschieden vom Betreuer am 2026-10-04, auf Empfehlung des Prüfpunkts:
+Entschieden vom Betreuer am 2026-10-04, auf Empfehlung des Prüfpunkts.
+Die kleine Wartungsrunde, die dort an erster Stelle stand, ist gebaut, und
+ihre Abnahme ist der Merge ihres Pull-Requests; ihre vier Punkte stehen unten
+unter *Erledigt*. Als Nächstes:
 
-1. **Eine kleine Wartungsrunde, als eigener Pull-Request.** `pip-audit` in der
-   CI und Renovate, beide von der Architektur festgelegt und nie gebaut; der
-   Test, dass jeder Unterparser einen Eintrag der Dispatch-Tabelle hat; und
-   `previously anchor` schreibt Befunde auf die Standardfehlerausgabe statt
-   auf die Standardausgabe. Das Letzte weicht vom eingefrorenen Anker-Spec §3
-   ab; die Reference-Seite gilt.
-2. **Der Einwurf — Teilprojekt 2 — bekommt den nächsten Spec.** Sein Ziel ist
+1. **Der Einwurf — Teilprojekt 2 — bekommt den nächsten Spec.** Sein Ziel ist
    nicht ein weiteres Bauteil, sondern dass danach **echte Daten im Log
    stehen**: der Einwurf-Vertrag, der Einwurf per Prompt, und ein Pilotbetrieb
    mit dauerhafter Datenbank, Sicherung und Anker-Routine.
@@ -240,17 +237,12 @@ Zeile seines Belegberichts.
   gebaut; es gibt nur den Alarm. Kein Grund aufgeschrieben (PP, A2).
 - Zwei gleichzeitig laufende Anker-Routinen hängen beide an; folgenlos, aber
   ohne Sperre (P-AA).
-- `pip-audit` in der CI und Renovate, beide in Architektur §10.6 und §10.7
-  festgelegt, beide nicht gebaut, kein Grund aufgeschrieben (PP, A2).
 
 ### Kette und Anker
 
 - Die Signatur des Schreibers: nur sie schließt gefälschtes Anhängen außerhalb
   eines Moments der Ruhe (AA §10 Punkt 1).
 - Ein beglaubigtes „wann" über den Ablageort hinaus (AA §10 Punkt 3).
-- `previously anchor` druckt Befunde auf die Standardausgabe; mit `>>` landen
-  sie in der Ankerdatei. Entschieden am 2026-10-04: sie gehen auf die
-  Standardfehlerausgabe, in der Wartungsrunde (P-AA).
 - Die Kettenprüfung geht bei jedem Lauf das ganze Log ab und hält ihren
   Schnappschuss so lange offen: gemessen 13 s je 100 000 Events, hochgerechnet
   rund elf Minuten bei fünf Millionen — bei jedem Lauf der Anker-Routine. Eine
@@ -278,8 +270,6 @@ Zeile seines Belegberichts.
 
 ### Tore und Werkzeuge
 
-- Ein Test, dass jeder Unterparser einen Eintrag der Dispatch-Tabelle hat
-  (P-1b; AA §10 Punkt 11).
 - Drei geparkte Testlöcher am Doku-Tor (1b §10 Punkt 5).
 - Die Reihenfolge der zwei `stderr`-Hinweise in `cli.md` hält nichts
   mechanisch; `_message_patterns` nimmt auch die `_describe`-Literale auf
@@ -318,3 +308,15 @@ Zeile seines Belegberichts.
 - `_quoted_notices` mit lesbarer Zusicherung (P-1b) — Stufe Anker.
 - JCS-Implementierung gewählt; Versionsquelle entschieden (1a §12) — Stufe 1a,
   `DEPENDENCIES.md`.
+- `previously anchor` druckt Befunde auf die Standardfehlerausgabe statt auf
+  die Standardausgabe, sodass `>>` sie nicht in die Ankerdatei trägt (P-AA);
+  weicht vom eingefrorenen Anker-Spec §3 ab, die Reference-Seite gilt —
+  Wartungsrunde, Commit `43f8df7`.
+- Unterparser und Dispatch-Tabelle entstehen aus einer Folge `COMMANDS`; ein
+  Test hält die Kommandos aus `previously --help` gegen sie (P-1b; AA §10
+  Punkt 11) — Wartungsrunde, Commit `d702007`.
+- `pip-audit` in der CI, als eigener Workflow `audit.yml`, wöchentlich und an
+  jedem Pull-Request (A §10.6; PP, A2) — Wartungsrunde, Commit `a5ac2db`.
+- Renovate konfiguriert, `renovate.json5`; die App muss der Betreuer noch auf
+  dem Repository installieren (A §10.7; PP, A2) — Wartungsrunde, Commit
+  `b36e715`.
