@@ -16,8 +16,6 @@ database — and the one that matters is the late arrival that happened
 earlier, where assignment and minimum part.
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from previously.contract.rows import SourceStatsRow
 from typing import TYPE_CHECKING

@@ -3,8 +3,6 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The projection worker ({ref}`projections`): batches, and the catch-up."""
 
-from __future__ import annotations
-
 from collections.abc import Mapping
 from collections.abc import Sequence
 from dataclasses import dataclass

@@ -9,8 +9,6 @@ by line, and how do I know". That is what makes it a projection and not a
 copy of `log` ({ref}`projections`).
 """
 
-from __future__ import annotations
-
 from dataclasses import dataclass
 from previously.contract.rows import ChronicleRow
 from typing import TYPE_CHECKING

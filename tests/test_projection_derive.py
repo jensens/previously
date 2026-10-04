@@ -4,8 +4,8 @@
 """The derivation functions, without a database.
 
 They take row types and return row types; that is the whole point of keeping
-the arithmetic in `core` ({ref}`projections` — frozen design record), and it is
-why these tests carry no `db` marker.
+the arithmetic in `core` ({ref}`projections`), and it is why these tests carry
+no `db` marker.
 """
 
 from datetime import datetime
@@ -62,9 +62,9 @@ def test_chronicle_leaves_source_null_for_an_event_without_a_key() -> None:
 
 def test_chronicle_still_derives_rows_for_an_erased_payload() -> None:
     """A tombstone empties the payload and leaves the units standing
-    ({ref}`projections` — frozen design record): the chronicle shows them, with
-    `evidence` NULL. Whoever builds an erasure that deletes units has to change
-    this test on purpose."""
+    ({ref}`projections`): the chronicle shows them, with `evidence` NULL.
+    Whoever builds an erasure that deletes units has to change this test on
+    purpose."""
     batch = Batch(
         events=(_event(1, T1, None),), units={1: [UnitRow(1, 1, "a")]}, keys={1: ("cli", "x")}
     )
@@ -107,11 +107,15 @@ def test_merge_adds_counts_and_keeps_the_extremes() -> None:
 
 
 def test_merge_keeps_the_earliest_first_seen_when_the_late_arrival_is_older() -> None:
-    """The regression case the spec names (§5.2 — frozen design record): an
-    event that *arrives* later but *happened* earlier. Assignment and minimum
-    agree on every in-order sequence and part here. Measured on 2026-10-04:
-    with `first_seen=addition.first_seen` this test fails and the one above
-    stays green — the one above is the control."""
+    """The regression case the stage 1b specification names ({ref}`projections`):
+    an event that *arrives* later but *happened* earlier. Never updating
+    `first_seen` agrees with the minimum on every in-order sequence and parts
+    here. Measured on 2026-10-04, two mutations of `merge`: with
+    `first_seen=existing.first_seen` (never update) this test fails alone and
+    `test_merge_adds_counts_and_keeps_the_extremes` stays green — that one is
+    the control. With `first_seen=addition.first_seen` (overwrite) the in-order
+    test fails and this one stays green, because an older late arrival happens
+    to be the minimum. The two tests together catch both natural mistakes."""
     existing = SourceStatsRow("email", 1, 1, T2, T2, 1)
     late_but_older = SourceStatsRow("email", 1, 1, T1, T1, 2)
     merged = source_stats.merge(existing, late_but_older)
