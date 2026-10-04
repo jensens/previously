@@ -38,6 +38,7 @@ from previously.core.hashing import unit_digest
 from previously.core.hashing import units_hash
 from previously.core.hashing import units_hash_v2
 from typing import cast
+from typing import Protocol
 from typing import TYPE_CHECKING
 
 
@@ -46,6 +47,7 @@ if TYPE_CHECKING:
     from collections.abc import Collection
     from collections.abc import Mapping
     from collections.abc import Sequence
+    from datetime import datetime
     from previously.contract.rows import EventRow
     from previously.contract.rows import UnitRow
     from previously.contract.store import LogStore
@@ -218,8 +220,28 @@ def _units_finding_v2(row: EventRow, units: Sequence[UnitRow]) -> Finding | None
     return None
 
 
+class _EventHash(Protocol):
+    """The signature `event_hash` and `event_hash_v2` share, spelled out so
+    that pyright checks every keyword at the call below; `Callable[..., bytes]`
+    would accept any arguments at all."""
+
+    def __call__(
+        self,
+        *,
+        event_id: int,
+        kind: str,
+        recorded_at: datetime,
+        occurred_at: datetime,
+        prev_hash: bytes | None,
+        payload_digest: bytes,
+        units_digest: bytes,
+        source: str | None,
+        external_id: str | None,
+    ) -> bytes: ...
+
+
 def _event_hash_finding(
-    row: EventRow, source_key: tuple[str, str] | None, compute: Callable[..., bytes]
+    row: EventRow, source_key: tuple[str, str] | None, compute: _EventHash
 ) -> Finding | None:
     """The event hash over the row's fields, computed by `compute`.
 

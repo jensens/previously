@@ -300,7 +300,7 @@ And its digests carry no salt, so whatever content it held stays guessable from 
 The format is built for an erasure that doesn't exist yet.
 `append` writes version 2, and a log can hold events of both versions side by side, but nothing erases anything.
 The salt protects content only once an erasure takes the salt away along with the content; until then, it's an input like any other.
-The database already holds an erasure to that: it refuses a payload set to `NULL` while its salt stays, and a unit without content that keeps its salt, its speaker or its timestamps.
+The database already holds any future erasure to that rule: it refuses a payload set to `NULL` while its salt stays, and a unit without content that keeps its salt, its speaker or its timestamps.
 
 ## Counting the rows the check has seen
 
@@ -343,7 +343,7 @@ The check used to raise there, so a single poisoned row blinded the check of the
 The same blinding has a smaller form, inside one row, and the check closes that one too.
 The payload digest and the units are recomputed one after the other, the payload inside a `try` block of its own, and every result is collected, so a row whose payload and whose units are both forged yields two findings rather than one.
 Share one block between them and the poisoned payload leaves it before the units are compared at all: whoever can make a payload non-canonicalizable could then rewrite the units of the same row at will, one forgery covering the other.
-`tests/test_verify.py` holds that separation down, and it had to, because reading the code didn't: every test stayed green when the two blocks were merged back into one.
+`tests/test_verify.py` holds that separation down, and it had to, because reading the code didn't: when the payload and the units were once recomputed inside one shared `try` block, every test stayed green.
 
 ## What the chain doesn't cover
 

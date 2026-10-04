@@ -473,19 +473,29 @@ def test_a_flipped_hash_version_fires(db: Engine) -> None:
 def test_an_unknown_hash_version_is_a_finding_and_the_check_goes_on(db: Engine) -> None:
     """A version the check doesn't know is reported and not computed in some
     version it does know, which would be guessing. The linkage is checked all
-    the same, and so is the next row."""
+    the same, and so is the next row.
+
+    The unknown version sits on row 2 of three, not on the first row, and its
+    `prev_hash` is forged as well: the first row's linkage is `NULL` and
+    checked by a branch of its own, so an unknown version there would leave
+    the linkage of an ordinary row unobserved. Row 3 carries a forgery of its
+    own, which shows that the pass went on."""
     storage = PostgresStorage(db)
-    append(storage, [_event("a"), _event("b")], recorded_at=NOW)
+    append(storage, [_event("a"), _event("b"), _event("c")], recorded_at=NOW)
     with db.begin() as c:
-        c.execute(text("UPDATE event SET hash_version = 3 WHERE id = 1"))
+        c.execute(
+            text("UPDATE event SET hash_version = 3, prev_hash = :p WHERE id = 2"),
+            {"p": b"\xff" * 32},
+        )
         c.execute(
             text(
-                "UPDATE event SET payload = jsonb_set(payload, '{note}', '\"forged\"') WHERE id = 2"
+                "UPDATE event SET payload = jsonb_set(payload, '{note}', '\"forged\"') WHERE id = 3"
             )
         )
     assert verify(storage) == [
-        Finding(1, "hash_version 3 is not known"),
-        Finding(2, "payload_hash does not match the payload"),
+        Finding(2, "prev_hash does not match the predecessor"),
+        Finding(2, "hash_version 3 is not known"),
+        Finding(3, "payload_hash does not match the payload"),
     ]
 
 

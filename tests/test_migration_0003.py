@@ -30,8 +30,9 @@ NOW = datetime(2026, 10, 4, 12, 0, 0, tzinfo=UTC)
 @pytest.mark.db
 def test_the_downgrade_refuses_once_version_2_is_written() -> None:
     """On an empty database the way down is open; with one event that
-    `append` wrote in version 2 it refuses with a sentence, and the database
-    stays at `head`."""
+    `append` wrote in version 2 it refuses with a sentence, with a unit
+    without content beside it the sentence gives both reasons, and the
+    database stays at `head`."""
     with PostgresContainer("postgres:17", driver="psycopg") as container:
         engine = create_engine(container.get_connection_url())
         config = Config("alembic.ini")
@@ -60,6 +61,18 @@ def test_the_downgrade_refuses_once_version_2_is_written() -> None:
             assert str(caught.value) == (
                 "refusing to downgrade below 0003_hash_version_2: the log holds events in "
                 "hash format 2, which cannot be verified without the salts this would drop"
+            )
+
+            # A unit without content is the second reason, and the sentence
+            # names both. Erased by hand: nothing in the tree erases a unit.
+            with engine.begin() as c:
+                c.execute(text("UPDATE unit SET content = NULL, salt = NULL WHERE event_id = 1"))
+            with pytest.raises(CommandError) as caught:
+                command.downgrade(config, "0002_projections")
+            assert str(caught.value) == (
+                "refusing to downgrade below 0003_hash_version_2: the log holds events in "
+                "hash format 2, which cannot be verified without the salts this would drop; "
+                "the log holds units without content, which cannot be NOT NULL again"
             )
 
             with engine.connect() as c:
