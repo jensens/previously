@@ -3,10 +3,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The store protocols: what `core` may ask of a store, and nothing more.
 
-`LogStore` is what `append` and `verify` call — eight methods, read off
-`storage/postgres.py` on 2026-10-04 with
-`grep -o 'storage\\.[a-z_]*(' src/previously/core/append.py src/previously/core/verify.py`,
-not copied from the method list of the implementation. Typing `core` against
+`LogStore` is what `append` and `verify` call — nine methods, counted on
+2026-10-04 as the distinct names
+`grep -o 'storage\\.[a-z_]*(' src/previously/core/append.py src/previously/core/verify.py`
+prints, not copied from the method list of the implementation. It was eight
+until the chain check took `snapshot` instead of `begin` for its reads;
+`append` still takes `begin`, so both stay. Typing `core` against
 this protocol instead of against `PostgresStorage` removes the edge
 `core -> storage.postgres`, and with it the two named exemptions in
 `.importlinter` and the test that guarded them ({ref}`module-boundaries`).
@@ -44,6 +46,7 @@ class LogStore[Conn](Protocol):
     """The append-only log: write once, read in chain order, never change."""
 
     def begin(self) -> AbstractContextManager[Conn]: ...
+    def snapshot(self) -> AbstractContextManager[Conn]: ...
     def tip(self, conn: Conn) -> Tip | None: ...
     def lookup(self, conn: Conn, source: str, external_id: str) -> int | None: ...
     def insert_event(

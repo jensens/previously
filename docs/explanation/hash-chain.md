@@ -278,7 +278,10 @@ The forgery needs some other, unused `prev_hash`.
 A test that reaches for `NULL` is testing the index, not the check.
 
 Two further properties of the check come from the same instinct of not trusting its own field of view.
-It runs in one transaction over the whole chain, because event, units and source attribution have to see one snapshot: read across several transactions, the report would be a statement about several points in time and none about the chain, and a forgery could travel between two reads and look consistent in each of them.
+It reads the whole chain in one snapshot, because event, units, source attribution and the count have to see one state: read across several points in time, the report would be a statement about several states and none about the chain, and a forgery could travel between two reads and look consistent in each of them.
+One transaction alone doesn't give that.
+Under the `READ COMMITTED` the rest of the store runs at, every statement sees a snapshot of its own, and an append that committed between the last read and the count made the check report rows it hadn't reached: 27 of 539 runs did, measured with appends running alongside.
+So the check reads in a read-only `REPEATABLE READ` transaction, which keeps the snapshot of its first statement to the end; {ref}`concurrency` explains why that leaves the appending procedure alone.
 And a payload that resists canonicalization produces a finding rather than an exception.
 The check used to raise there, so a single poisoned row blinded the check of the entire chain, which inverts what an integrity check is for: whoever can forge one row could have hidden every later forgery behind it.
 
@@ -289,7 +292,7 @@ Share one block between them and the poisoned payload leaves it before the units
 
 ## What the chain doesn't cover
 
-Three manipulations pass, and no change to the code can stop them.
+Three manipulations pass the chain, and no change to the chain check can stop them.
 Delete the tip.
 Append a self-hashed event.
 Rewrite the chain from the beginning.
@@ -313,9 +316,68 @@ Of the three, appending is the one to worry about.
 Deleting takes a statement away from the store; appending puts one into its mouth.
 A reader who finds an event missing has a chance of noticing the absence from somewhere else, from a mail client, a calendar, a memory.
 A reader who finds an event that was never recorded has nothing to notice it against, and the chain will vouch for it.
-An external anchor, such as publishing the tip's hash somewhere the store can't reach, is what closes all three at once, and stage 1a has none.
+An external anchor closes two of the three up to the newest anchor, and {ref}`the next section <external-anchor>` says which two and why not the third.
+Without one, the chain speaks for itself alone.
 
 So the promise, in full:
 
 *What the log says is unaltered.*
 *That it's complete, the log can't attest by itself.*
+
+(external-anchor)=
+
+## The external anchor
+
+An anchor is the tip of the chain at one moment, its `id` and its hash, written down as one line in a place the database's writer can't reach.
+That place is the whole point.
+An anchor kept in the database would be no anchor at all, because whoever rewrites the chain would rewrite the anchor along with it.
+The line carries no timestamp and no signature, because the place it's kept in supplies the time: a commit in another repository, a mail in another person's inbox, a sheet of paper.
+
+The hash alone would already pin the prefix.
+`event_hash` takes the `id` into the hashed object, and every hash covers its predecessor's through `prev_hash`, so a hash that matches at one position vouches for every event up to it.
+What the `id` adds beside the hash is length.
+It says how long the log was at least, and it tells the check which row the hash belongs to, which is exactly what comparing the tip with an anchor needs.
+
+An anchor pins a prefix, not the tip.
+Truncating the log below the anchor shows, because the anchored row is gone.
+Rewriting the chain up to the anchor shows, because the anchored row now carries a different hash, however consistent the new chain is in itself.
+An event appended after the anchor looks like growth, which is what a log is for, and the next anchor taken would pin the forgery together with everything legitimate.
+
+That leaves two ways to check against anchors.
+The first, *contains*, asks whether every anchored event still exists and carries the anchored hash.
+The second, *exact*, asks that as well, and in addition that the tip is the newest anchor, so that nothing came after it.
+Against the four forgeries, they compare like this:
+
+| Forgery | contains | exact |
+|---|---|---|
+| tip deleted, below the newest anchor | seen | seen |
+| chain rewritten up to an anchor | seen | seen |
+| tip deleted, above the newest anchor | not seen | not seen |
+| event appended | not seen | seen, while nothing legitimate was added since |
+
+The last row is why exact is no mode for a running log.
+Once a legitimate event arrives after the anchor, exact reports that one too, and it can't tell growth from forgery any better than contains can.
+Exact belongs to a moment of rest, when nothing should have been written since the anchor was taken.
+
+The interval between anchors is the gap.
+Whatever arrived since the newest anchor isn't anchored, and an event that arrived and was deleted again in that interval leaves no trace in either check.
+How often anchors get taken decides how wide that gap is, and no check can narrow it after the fact.
+
+A restore to an earlier point looks, to the anchors, exactly like a deleted tip, because it's one: the log ends earlier than it once did.
+So every anchor taken after that point reports its event missing, and the report is true.
+An anchor file describes one history, and after such a restore the history it describes has ended at an earlier line.
+The anchors up to that line still describe the restored log, and the ones after it now record what the restore gave up.
+
+So the promise, with an anchor, in full:
+
+*What the log says is unaltered.*
+*What it said up to the newest anchor is complete.*
+*That nothing was forged onto it since is attested only by comparing the tip with an anchor taken at rest.*
+
+What stays open is forged appending outside that moment of rest.
+Only a signature of the writer on every event would close it, so that an appended event could be told from a legitimate one by itself, and Previously has no such signature.
+
+The measurement from the previous section, three events with the tip deleted and the verdict `chain intact`, is a finding now.
+`tests/test_verify.py` holds both halves in one test.
+Without an anchor, the check of the remaining chain still finds nothing.
+Against the anchor taken before the deletion, it reports event 3 with `anchored event is missing (the log ends at 2)`.

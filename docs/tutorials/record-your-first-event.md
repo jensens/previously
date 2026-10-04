@@ -2,7 +2,7 @@
 
 # Record your first event
 
-In this tutorial, we will record our first event in Previously, read it back from the log, check that the chain holds, build the two derived views, read the chronicle and the counts per source, and prove all of it with the project's own test suite.
+In this tutorial, we will record our first event in Previously, read it back from the log, check that the chain holds, pin its tip outside the database, build the two derived views, read the chronicle and the counts per source, and prove all of it with the project's own test suite.
 Every command below is real: it was typed in a fresh checkout, against a real PostgreSQL 17 in a container like the one below.
 No output below names a directory, so nothing here depends on where you put yours.
 
@@ -83,7 +83,7 @@ This is the first event in the chain, so there's no predecessor to link to.
 
 ```console
 $ uv run previously log
-1	2026-10-04T04:53:01.069903+00:00	observation	b97c59a1f2c3
+1	2026-10-04T13:24:54.151385+00:00	observation	52a060a8734b
 ```
 
 Notice that the chain now has one event.
@@ -94,18 +94,36 @@ Each line carries the event's `id`, when it occurred, its kind, and the first tw
 ```console
 $ uv run previously verify
 chain intact
+no anchor given: verify attests that the log is unchanged, not that it is complete; see `previously anchor`
 ```
 
 `verify` walks every event, recomputing each hash and checking it against its predecessor.
-It found nothing wrong, so it printed exactly that one line.
+It found nothing wrong, so its first line says `chain intact`.
+Notice that a second line follows, and that it names a command we haven't run yet.
+That line goes to standard error, and the terminal shows it right below the first one.
+
+## Pin the tip
+
+Let's run that command, and save what it prints to a file.
+Then we check the chain again, this time against that file.
+
+```console
+$ uv run previously anchor > anchors.txt
+$ uv run previously verify --anchors anchors.txt
+chain intact, 1 anchor holds
+```
+
+Notice that the first line is now a different one: it counts the anchor it checked.
+Notice also that the second line is gone.
+This `anchors.txt` is this tutorial's alone, so delete it from your clone once you finish; {ref}`verify-the-chain` shows where a real one has to live.
 
 ## Look at the event in full
 
 ```console
 $ uv run previously show 1
 id=1 kind=observation
-occurred_at=2026-10-04T04:53:01.069903+00:00
-hash=b97c59a1f2c353abb0e96eb3e2858c7479798f7bd1fbb60c536256867011fcd7
+occurred_at=2026-10-04T13:24:54.151385+00:00
+hash=52a060a8734ba42c073985683adce79da3ba550a9d26902a6f7a60fb451f9f17
 evidence=recollection
 payload={"evidence": "recollection", "text": "The client approved the new homepage design.\n\nNext milestone: content migration starts Monday."}
   ¶1 The client approved the new homepage design.
@@ -149,8 +167,8 @@ There was nothing left to project.
 
 ```console
 $ uv run previously chronicle
-1	1	2026-10-04T04:53:01.069903+00:00	email	2026-10-03-kickoff@example.org	The client approved the new homepage design.
-1	2	2026-10-04T04:53:01.069903+00:00	email	2026-10-03-kickoff@example.org	Next milestone: content migration starts Monday.
+1	1	2026-10-04T13:24:54.151385+00:00	email	2026-10-03-kickoff@example.org	The client approved the new homepage design.
+1	2	2026-10-04T13:24:54.151385+00:00	email	2026-10-03-kickoff@example.org	Next milestone: content migration starts Monday.
 ```
 
 Notice that each line is one unit, and that each one carries `email` and the message identifier we passed to `append`.
@@ -160,7 +178,7 @@ That source attribution is what makes this a chronicle and not a copy of `log`.
 
 ```console
 $ uv run previously stats
-email	1	2	2026-10-04T04:53:01.069903+00:00	2026-10-04T04:53:01.069903+00:00
+email	1	2	2026-10-04T13:24:54.151385+00:00	2026-10-04T13:24:54.151385+00:00
 ```
 
 Notice that `email` stands at one event and two units, and that the two timestamps are the same moment: the log holds one event, so the first one seen and the last one seen are that event.
@@ -174,32 +192,33 @@ It raises its own PostgreSQL container and never touches the database above.
 $ uv run pytest
 ============================= test session starts ==============================
 platform linux -- Python 3.14.3, pytest-9.1.1, pluggy-1.6.0
-Using --randomly-seed=1705979683
+Using --randomly-seed=2070670601
 configfile: pyproject.toml
 testpaths: tests
-plugins: hypothesis-6.168.3, cov-7.1.0, randomly-5.0.0, platformdirs-4.12.2
-collected 232 items
+plugins: cov-7.1.0, randomly-5.0.0, platformdirs-4.12.2, hypothesis-6.168.3
+collected 271 items
 
-tests/test_projection_store.py ........                                  [  3%]
-tests/test_storage.py ..........................                         [ 14%]
-tests/test_contracts.py ..                                               [ 15%]
-tests/test_projection_derive.py .........                                [ 19%]
-tests/test_rows.py ....                                                  [ 21%]
-tests/test_docs_typed_output.py .                                        [ 21%]
-tests/test_verify.py .................                                   [ 28%]
-tests/test_projection_worker.py ............                             [ 34%]
-tests/test_schema.py .............                                       [ 39%]
-tests/test_migrations_dsn.py ...                                         [ 40%]
-tests/test_docs_build.py ......                                          [ 43%]
-tests/test_units.py .............                                        [ 49%]
-tests/test_canonical.py ...............                                  [ 55%]
-tests/test_properties.py .........                                       [ 59%]
-tests/test_docs_references.py .....                                      [ 61%]
-tests/test_hashing.py ........................                           [ 71%]
-tests/test_cli.py ...................................                    [ 87%]
-tests/test_append.py ..............................                      [100%]
+tests/test_docs_build.py ......                                          [  2%]
+tests/test_hashing.py ........................                           [ 11%]
+tests/test_properties.py .........                                       [ 14%]
+tests/test_projection_store.py ........                                  [ 17%]
+tests/test_schema.py .............                                       [ 22%]
+tests/test_cli.py .................................................      [ 40%]
+tests/test_verify.py ...........................                         [ 50%]
+tests/test_projection_worker.py ............                             [ 54%]
+tests/test_contracts.py ..                                               [ 55%]
+tests/test_docs_typed_output.py .                                        [ 55%]
+tests/test_docs_references.py .....                                      [ 57%]
+tests/test_rows.py ....                                                  [ 59%]
+tests/test_projection_derive.py .........                                [ 62%]
+tests/test_units.py .............                                        [ 67%]
+tests/test_append.py ..............................                      [ 78%]
+tests/test_migrations_dsn.py ...                                         [ 79%]
+tests/test_storage.py ............................                       [ 89%]
+tests/test_canonical.py ...............                                  [ 95%]
+tests/test_anchor.py .............                                       [100%]
 
-============================= 232 passed in 21.69s =============================
+============================= 271 passed in 21.87s =============================
 ```
 
 `pytest-randomly` reshuffles the file order on every run and prints its seed, so a hidden dependency between two tests surfaces instead of staying hidden.
@@ -207,7 +226,8 @@ Your run prints one line this page leaves out, a `rootdir:` naming your own chec
 
 ## Next steps
 
-You have now recorded your first event, confirmed the chain is intact, built the two derived views, read the chronicle and the counts per source, and proven all of it with the project's own test suite.
+You have now recorded your first event, confirmed the chain is intact, pinned its tip, built the two derived views, read the chronicle and the counts per source, and proven all of it with the project's own test suite.
 For the full command reference, see {ref}`cli-reference`.
 For why `log` and `chronicle` are two commands, see {ref}`projections`.
 For exactly what goes into the hash you saw above, see {ref}`hash-format`.
+For what the anchor in `anchors.txt` protects, and what it doesn't, see {ref}`external-anchor`.

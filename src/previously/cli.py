@@ -12,6 +12,8 @@ from datetime import datetime
 from datetime import UTC
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
+from previously.core.anchor import format_anchor
+from previously.core.anchor import parse_anchors
 from previously.core.append import append
 from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
@@ -21,13 +23,14 @@ from previously.core.projection import Outcome
 from previously.core.projection import PROJECTIONS
 from previously.core.projection import SOURCE_STATS
 from previously.core.units import split_plaintext
-from previously.core.verify import verify
+from previously.core.verify import examine
 from previously.storage.errors import StorageError
 from previously.storage.postgres import from_dsn
 from previously.storage.postgres import PostgresStorage
 from typing import TYPE_CHECKING
 
 import argparse
+import io
 import json
 import os
 import sys
@@ -36,6 +39,7 @@ import sys
 if TYPE_CHECKING:
     from collections.abc import Callable
     from collections.abc import Sequence
+    from previously.contract.types import Anchor
 
 MAX_TEXT_BYTES = 1_000_000
 
@@ -148,6 +152,43 @@ def _storage() -> PostgresStorage:
     return from_dsn(dsn)
 
 
+def _read_anchors(source: str) -> tuple[Anchor, ...]:
+    """The anchor file, or standard input for `-` ({ref}`external-anchor`).
+
+    Reading is all this function does; what a line has to look like is
+    `parse_anchors` in `core`, so that a second entry point reads the same
+    format without this file.
+
+    Both sources are read as bytes and decoded once, here, with
+    `utf-8-sig`, so that nothing can be true of a file and false of standard
+    input: a byte order mark is dropped from either, and bytes that are not
+    UTF-8 are an input error from either. Standard input is not decoded with
+    the terminal's settings, and a source that cannot be read or decoded
+    becomes `InvalidPayload` and with it exit code 2 — one sentence, not a
+    stack trace, and not the exit code 1 a scheduled job reads as a finding.
+
+    `io.StringIO(text, newline=None)` hands the parser lines the way a file
+    opened in text mode does: `\\r\\n` and `\\r` become `\\n`, and nothing else
+    ends a line. `str.splitlines()` would also break on a form feed and the
+    other Unicode line separators, and one bad line would then be reported
+    under two line numbers. The parser runs after the `try`, so an
+    `InvalidPayload` it raises never passes through the two handlers.
+    """
+    name = "standard input" if source == "-" else f"the anchor file {source!r}"
+    try:
+        if source == "-":
+            raw = sys.stdin.buffer.read()
+        else:
+            with open(source, "rb") as handle:
+                raw = handle.read()
+        text = raw.decode("utf-8-sig")
+    except OSError as error:
+        raise InvalidPayload(f"cannot read {name}: {error.strerror}") from error
+    except UnicodeDecodeError as error:
+        raise InvalidPayload(f"{name} is not UTF-8 text") from error
+    return parse_anchors(io.StringIO(text, newline=None))
+
+
 def _cmd_append(args: argparse.Namespace) -> int:
     # `surrogatepass`, not strict (finding W-1): a lone UTF-16 surrogate can
     # arrive out of `argv` — `argv` carries bytes, and Python decodes
@@ -195,24 +236,69 @@ def _cmd_log(args: argparse.Namespace) -> int:
     storage = _storage()
     # The reading methods take the connection in since review finding G4: the
     # transaction boundary belongs to the caller, who knows what has to be
-    # read together. For the chronicle that is a formality, for `show` it is
-    # not — there, event and units belong in the same snapshot.
+    # read together. Here that is a formality. `show` reads an event and its
+    # units in one transaction, but in two statements, which under the READ
+    # COMMITTED of `begin` are two snapshots. It still shows one state, and
+    # not because of a snapshot: `insert_event` writes an event and its units
+    # in the one transaction of `append`, so they commit together, and
+    # nothing in `src` rewrites or deletes either afterwards. Whoever sees the
+    # event sees its units.
     with storage.begin() as conn:
         for row in storage.read(conn, from_id=args.from_id, limit=args.limit):
             print(f"{row.id}\t{row.occurred_at.isoformat()}\t{row.kind}\t{row.hash.hex()[:12]}")
     return 0
 
 
-def _cmd_verify(_args: argparse.Namespace) -> int:
-    # The parameter is unused and named with a leading underscore so that every
-    # command function has the one signature the dispatch table in `main`
-    # stores. `verify` takes no argument of its own.
-    findings = verify(_storage())
-    for finding in findings:
+def _cmd_verify(args: argparse.Namespace) -> int:
+    # Refused before the database is asked for: there is nothing `--exact`
+    # could compare the tip with.
+    if args.exact and args.anchors is None:
+        raise InvalidPayload("--exact needs --anchors")
+    anchors = () if args.anchors is None else _read_anchors(args.anchors)
+    examination = examine(_storage(), anchors=anchors, exact=args.exact)
+    for finding in examination.findings:
         print(f"FINDING {finding.event_id}: {finding.reason}")
-    if not findings:
+    if examination.findings:
+        return 1
+    if not anchors:
+        # Standard output stays the one line scripts read. The limit of the
+        # statement goes to standard error, the way `chronicle` reports its
+        # lag ({ref}`external-anchor`): without an anchor the chain attests
+        # "unchanged" and nothing about "complete". Only on an intact chain —
+        # beside findings the sentence would be noise.
         print("chain intact")
-    return 1 if findings else 0
+        print(
+            "no anchor given: verify attests that the log is unchanged, "
+            "not that it is complete; see `previously anchor`",
+            file=sys.stderr,
+        )
+        return 0
+    count = len(anchors)
+    held = f"{_plural(count, 'anchor')} {'holds' if count == 1 else 'hold'}"
+    tail = ", the tip is the newest anchor" if args.exact else ""
+    print(f"chain intact, {held}{tail}")
+    return 0
+
+
+def _cmd_anchor(_args: argparse.Namespace) -> int:
+    """Prints the tip of an intact chain as an anchor line
+    ({ref}`external-anchor`).
+
+    The tip is the last row the pass saw, so the line describes exactly the
+    chain that was checked. Whether there is a line at all is
+    `Examination.anchor`'s decision, not this function's: on a finding the
+    core gives none, because an anchor on a broken chain would certify the
+    break. What is left here is formatting.
+    """
+    examination = examine(_storage())
+    for finding in examination.findings:
+        print(f"FINDING {finding.event_id}: {finding.reason}")
+    anchor = examination.anchor
+    if anchor is not None:
+        print(format_anchor(anchor))
+    elif not examination.findings:
+        print("the log is empty: nothing to anchor", file=sys.stderr)
+    return 1 if examination.findings else 0
 
 
 def _cmd_show(args: argparse.Namespace) -> int:
@@ -359,7 +445,15 @@ def main(argv: Sequence[str] | None = None) -> int:
     p_log.add_argument("--from", dest="from_id", type=int, default=1)
     p_log.add_argument("--limit", type=int, default=50)
 
-    sub.add_parser("verify", help="check the chain")
+    p_verify = sub.add_parser("verify", help="check the chain, and anchors if given")
+    p_verify.add_argument(
+        "--anchors", metavar="FILE", help="anchor lines to check against; - reads standard input"
+    )
+    p_verify.add_argument(
+        "--exact", action="store_true", help="the tip has to be the newest anchor"
+    )
+
+    sub.add_parser("anchor", help="print the tip of an intact chain as an anchor line")
 
     p_show = sub.add_parser("show", help="show one event with its units")
     p_show.add_argument("event_id", type=int)
@@ -381,14 +475,19 @@ def main(argv: Sequence[str] | None = None) -> int:
     #
     # It is not the gate that forces it, and the margin was measured twice
     # before that came out right. With `ruff check --select C901 --config
-    # 'lint.mccabe.max-complexity = N' src/previously/cli.py` on 2026-10-04:
-    # the chain puts `main` at 9 with these seven commands, at 10 with an
-    # eighth and at 11 with a ninth, while the table puts it at 2. `C901`
-    # fires strictly **above** its threshold, so against this project's 10 an
-    # eighth command would still pass and only a ninth would break the gate.
-    # Two branches of headroom — the plan had the chain sitting on the
-    # threshold, the first version of this comment had it one branch short,
-    # and both were wrong in the same direction.
+    # 'lint.mccabe.max-complexity = N' src/previously/cli.py` on 2026-10-04,
+    # while there were seven commands: the chain put `main` at 9 with seven,
+    # at 10 with an eighth and at 11 with a ninth, while the table put it at
+    # 2. The plan had the chain sitting on the threshold, the first version
+    # of this comment had it one branch short, and both were wrong in the
+    # same direction.
+    #
+    # `anchor` is the eighth command. Measured with `max-complexity = 1` on
+    # 2026-10-04 after it arrived, the table still puts `main` at 2. The
+    # chain was not rebuilt to be measured again; read off the series above,
+    # it would stand at 10 now. `C901` fires strictly **above** its
+    # threshold, so against this project's 10 that would still pass, and a
+    # ninth command would break the gate.
     #
     # The 13 this `main` is said to have measured once is a historical figure
     # from a version no longer in the tree, not re-measured here. It is why
@@ -397,6 +496,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         "append": _cmd_append,
         "log": _cmd_log,
         "verify": _cmd_verify,
+        "anchor": _cmd_anchor,
         "show": _cmd_show,
         "project": _cmd_project,
         "chronicle": _cmd_chronicle,
@@ -404,7 +504,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     }
     try:
         # No fallback below: `add_subparsers(..., required=True)` makes
-        # `parse_args` fail before this line without one of the seven keys, so
+        # `parse_args` fail before this line without one of the eight keys, so
         # the lookup cannot raise `KeyError` — and the `if` chain's unreachable
         # `return 2` went away with it, along with the `pragma: no cover` that
         # kept it out of the coverage figure.

@@ -257,6 +257,38 @@ def test_count_events_counts_what_read_does_not_see_too(db: Engine) -> None:
 
 
 @pytest.mark.db
+def test_a_snapshot_does_not_see_an_append_that_commits_inside_it(db: Engine) -> None:
+    """Every statement in `snapshot` sees the same state ({ref}`hash-chain`):
+    the chain check reads its batches and then counts, and an append that
+    commits in between must not make the two disagree. The append runs on its
+    own connection, the way a concurrent writer's does."""
+    storage = PostgresStorage(db)
+    with storage.begin() as c:
+        storage.insert_event(c, _row(1, None), [UnitRow(1, 1, "a")], ("cli", "x1"))
+    with storage.snapshot() as c:
+        before = storage.count_events(c)
+        with storage.begin() as writer:
+            storage.insert_event(writer, _row(2, b"\x01" * 32), [UnitRow(2, 1, "b")], ("cli", "x2"))
+        assert storage.count_events(c) == before == 1
+
+
+@pytest.mark.db
+def test_a_transaction_from_begin_sees_an_append_that_commits_inside_it(db: Engine) -> None:
+    """The control beside the snapshot test: the same sequence inside `begin`
+    counts one more, because READ COMMITTED gives every statement a snapshot
+    of its own. Without this, a green snapshot test would only show that no
+    append happened, not that the snapshot hid it."""
+    storage = PostgresStorage(db)
+    with storage.begin() as c:
+        storage.insert_event(c, _row(1, None), [UnitRow(1, 1, "a")], ("cli", "x1"))
+    with storage.begin() as c:
+        before = storage.count_events(c)
+        with storage.begin() as writer:
+            storage.insert_event(writer, _row(2, b"\x01" * 32), [UnitRow(2, 1, "b")], ("cli", "x2"))
+        assert storage.count_events(c) == before + 1 == 2
+
+
+@pytest.mark.db
 def test_source_keys_with_an_empty_batch(db: Engine) -> None:
     """`IN ()` is not valid SQL — the empty batch returns without a query."""
     storage = PostgresStorage(db)

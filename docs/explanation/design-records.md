@@ -2,8 +2,8 @@
 
 # About the frozen design records
 
-Four German documents under `docs/superpowers/specs/` hold how this project was decided: the design, the architecture, the detailed specification of stage 1a, and the one for stage 1b.
-The first three froze on 2026-10-03, the stage 1b specification on 2026-10-04, and nothing pulls any of them forward again.
+Five German documents under `docs/superpowers/specs/` hold how this project was decided: the design, the architecture, the detailed specification of stage 1a, the one for stage 1b, and the one for the external anchor.
+The first three froze on 2026-10-03, the other two on 2026-10-04, and nothing pulls any of them forward again.
 The reasoning that gets maintained along with the code lives in this quadrant instead, and where a specification and a page disagree, the page is what holds.
 
 Until this documentation existed, those first three documents were the only place a reason was written down, so the code cited them: 72 paragraph references across 21 files in `src/`, `tests/` and `migrations/`, pointing at 20 paragraphs.
@@ -22,6 +22,10 @@ A reader who takes the freeze for a prohibition would start the next stage witho
 Stage 1b is the first time that step ran as a step.
 Projections got their own German specification, dated 2026-10-04, and it froze the same day, because the pages its reasoning belongs on stood by then: {ref}`projections` for the derived tables and the worker that fills them, {ref}`module-boundaries` for the contracts that let `core` write them without importing storage.
 {ref}`database-schema` and {ref}`cli-reference` took the facts—the three tables, and the three commands that build and read them.
+
+The specification of the external anchor, dated 2026-10-04 as well, is no stage but a promise kept: the chain says nothing about completeness by itself, and the anchor is the one reference point outside the database that can, up to the newest anchor.
+It froze once its pages stood.
+{ref}`external-anchor` on the hash chain page carries its reasoning, {ref}`cli-reference` the facts of `anchor` and `verify --anchors`, and the two guides {ref}`verify-the-chain` and {ref}`restore-from-a-backup` the routines it implies for running the system.
 
 ## What a frozen record is still good for
 
@@ -83,6 +87,10 @@ Measured over `src/`, `tests/` and `migrations/`, the directories `tests/test_do
 Not one line points at the specification of its own stage.
 Stage 1b is the first stage whose code never had to: its pages were written in the same pull request as the code, so a reason had a page to name from the first draft, and `test_no_bare_paragraph_references_remain` in `tests/test_docs_references.py` turns that from a habit into a gate by refusing an unmarked paragraph sign.
 Two citations in the test suite did point at this specification, as `§6.2` and `§6.3`, and both carried the `(frozen design record)` marking while the specification was still a draft; fix round 1 of the freezing task sent them to the pages that hold the reasoning instead.
+
+No row names the specification of the external anchor either, for the same reason.
+Measured over the same three directories on 2026-10-04, every paragraph sign in them carries the `(frozen design record)` marking, and the fifteen lines that hold one are the same fifteen as before the anchor was built: the anchor's code and tests added none.
+Not one of them points at its specification.
 
 ## Two kinds of citation, and the code shows which is which
 

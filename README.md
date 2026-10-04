@@ -35,8 +35,13 @@ merely described.
   which they were recorded
 - **the per-source statistics** (`stats`): events, units, and the earliest and
   latest `occurred_at` per source
-- the seven commands `append`, `log`, `verify`, `show`, `project`, `chronicle`
-  and `stats`
+- **the external anchor** (`anchor`, `verify --anchors`): `anchor` prints the
+  tip of an intact chain as one line `<id> <hash>`, to be kept where the
+  database's writer cannot write; `verify --anchors` checks the log against
+  such lines, so that up to the newest anchor nothing can go missing or be
+  rewritten unseen
+- the eight commands `append`, `log`, `verify`, `anchor`, `show`, `project`,
+  `chronicle` and `stats`
 - the schema as an Alembic migration
 
 **What it does not do:** no header — a header rests on assertions, and those
@@ -47,11 +52,15 @@ e-mail or issue trackers (stage 2), no MCP interface, no language model and
 therefore no assertions or actions, no search, no erasure, no user
 administration and no network interface.
 
-And one limit that is not a gap but the nature of the thing: a hash chain
-without an **outer anchor** bears witness that what stands in the log is
-unchanged — not that it is complete. Deleting the tip, appending a
-self-computed event or rewriting the whole chain leaves a result that is
-consistent in itself.
+And one limit that is not a gap but the nature of the thing: a hash chain by
+itself bears witness that what stands in the log is unchanged — not that it is
+complete. Deleting the tip, appending a self-computed event or rewriting the
+whole chain leaves a result that is consistent in itself. An **external
+anchor**, kept where the database's writer cannot write, adds completeness up
+to the newest anchor: a deleted or rewritten event below it shows. What it
+does not add is the interval since: a tip deleted above the newest anchor
+shows nowhere, and a forged appended event shows only against an anchor taken
+at a moment of rest, when nothing legitimate should have been written since.
 [About the hash chain](docs/explanation/hash-chain.md) states which forgeries
 are covered and which are not.
 
@@ -64,7 +73,7 @@ lives under `docs/`. Build it locally with `make -C docs html`, then open
 session typed out against a real PostgreSQL 17, from a fresh checkout to a
 passing test suite.
 
-The four specifications below are **frozen design records**, in German and
+The five specifications below are **frozen design records**, in German and
 dated: they hold how and why a decision was taken, and the documentation under
 `docs/` carries the reasoning that is maintained with the code. Where the two
 disagree, the documentation wins. A new stage starts with a new German
@@ -77,6 +86,7 @@ the first one that went that way from the start.
 | [Architecture](docs/superpowers/specs/2026-10-01-architektur.md) | Frozen design record, 2026-10-03: modules and boundaries, schema, connector contract, process model, MCP, tooling |
 | [Stage 1a](docs/superpowers/specs/2026-10-02-stufe-1a-log.md) | Frozen design record, 2026-10-03: detailed specification of the append-only log with its hash chain |
 | [Stage 1b](docs/superpowers/specs/2026-10-04-stufe-1b-projektionen.md) | Frozen design record, 2026-10-04: detailed specification of the projections — the two derived tables, the worker, and the three commands; its reasoning is maintained in [About derived views](docs/explanation/projections.md) and [About the module boundaries](docs/explanation/module-boundaries.md) |
+| [External anchor](docs/superpowers/specs/2026-10-04-aeusserer-anker.md) | Frozen design record, 2026-10-04: detailed specification of the external anchor — the anchor line, `anchor`, and `verify --anchors`; its reasoning is maintained in [About the hash chain](docs/explanation/hash-chain.md), the routines in [How to check the chain in operation](docs/how-to/verify-the-chain.md) and [How to check how much of the chain a restore brought back](docs/how-to/restore-from-a-backup.md) |
 | [Execution records](docs/superpowers/sdd/) | Frozen working records, one directory per executed plan: the ledger of every decision taken while building it, and the target of the `ruling …` citations in the code |
 | [CLAUDE.md](CLAUDE.md) | The working agreements: language, attribution, dependencies, the six gates |
 | [DEPENDENCIES.md](DEPENDENCIES.md) | Every dependency with its purpose, the rejected alternative and the date it was last checked |

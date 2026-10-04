@@ -38,3 +38,18 @@ class RawEvent:
     # parameter is not carried over from the annotation. The generic alias is
     # callable and produces the origin type — no difference in behaviour.
     payload: Mapping[str, object] = field(default_factory=dict[str, object])
+
+
+@dataclass(frozen=True)
+class Anchor:
+    """The tip of the chain at one moment: its `id` and its hash
+    ({ref}`external-anchor`).
+
+    Input from outside, like `RawEvent`: the line was written down where the
+    database's writer cannot reach, and it comes back in to be checked. It
+    carries no time and no signature — the place it is kept supplies the
+    "when".
+    """
+
+    id: int
+    hash: bytes

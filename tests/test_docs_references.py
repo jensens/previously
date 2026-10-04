@@ -216,8 +216,9 @@ def test_no_program_output_cites_a_specification() -> None:
     Every module that can produce output is read, not the files that happened
     to carry a citation. Measured in fix round 1: with two files named, a
     marked message in `core/verify.py` and a `print` in `cli.py` both passed
-    -- and `cli.py`, with nineteen `print` calls since stage 1b, is the only
-    file in this tree that writes to the terminal. Measured in fix round 2:
+    -- and `cli.py`, with twenty-four `print` calls since `anchor` arrived
+    (measured on 2026-10-04), is the only file in this tree that writes to
+    the terminal. Measured in fix round 2:
     with only `src/` read, a marked citation in `migrations/dsn.py` passed as
     well, and that module raises its refusal as an implicitly concatenated
     f-string, which is the exact shape of the two the check was built for.
@@ -249,10 +250,11 @@ def _quoted_messages(page: str) -> set[str]:
     return quoted
 
 
-def _quoted_notices(page: str) -> list[str]:
-    """The two standard-error sentences `cli.md` quotes, in the page's order."""
-    after = page.split("Two notices go to standard error", 1)[1]
-    block = after.split("```text", 1)[1].split("```", 1)[0]
+def _quoted_block(page: str, after: str) -> list[str]:
+    """The lines of the first `text` block after the sentence `after`."""
+    assert after in page, f"cli.md no longer carries the sentence {after!r}"
+    rest = page.split(after, 1)[1]
+    block = rest.split("```text", 1)[1].split("```", 1)[0]
     return [line for line in block.splitlines() if line.strip()]
 
 
@@ -301,6 +303,20 @@ def _message_patterns(path: pathlib.Path) -> list[list[str]]:
         ):
             found.append(_static_parts(node.args[0]))
     return [parts for parts in found if parts and len("".join(parts)) >= 10]
+
+
+def _finding_patterns(path: pathlib.Path) -> list[list[str]]:
+    """The static parts of every reason a module hands to `Finding(...)`."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return [
+        parts
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "Finding"
+        and len(node.args) == 2
+        and (parts := _static_parts(node.args[1]))
+    ]
 
 
 def _is_the_same_sentence(parts: list[str], line: str) -> bool:
@@ -364,15 +380,24 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     five restrictions below" with a row missing. Deriving the payloads from
     the code is the fix and it is not built yet.
 
-    The second half holds the two standard-error sentences `cli.md` quotes
-    against the literals in `cli.py`. Those were quoted and covered by
-    nothing until 2026-10-04: the first half of this test reads the *Payload
-    range* table and nothing else, and the command line's notices reach no
-    other check. They cannot be produced by calling the code the way a
-    refusal can — the truncation sentence needs a cut window and the lag
-    sentence a projection that is behind — so this half matches the page's
-    line against the message's static parts instead, which is the strongest
-    form available without a database.
+    The second half holds the four standard-error sentences `cli.md` quotes,
+    in three blocks, against the literals in `cli.py`, and the three anchor
+    findings it quotes against the reasons `core/verify.py` hands to
+    `Finding`. The first two sentences were quoted and covered by nothing
+    until 2026-10-04: the first half of this test reads the *Payload range*
+    table and nothing else, and the command line's notices reach no other
+    check. They cannot be produced by calling the code the way a refusal can
+    — the truncation sentence needs a cut window and the lag sentence a
+    projection that is behind — so this half matches the page's line against
+    the message's static parts instead, which is the strongest form available
+    without a database.
+
+    Each of the four blocks is found by the sentence that introduces it, and
+    a sentence that vanishes from the page fails with a message naming it.
+    Until 2026-10-04 that was an `IndexError`. The direction is page to code
+    only, for both halves: a reason in `core/verify.py` that the page does not
+    quote is not looked for, and neither is a new `print(..., file=sys.stderr)`
+    in `cli.py` that the page does not quote.
     """
     produced = {
         _refusal(payload)
@@ -391,13 +416,40 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         f"only in the code:  {produced - _quoted_messages(page)}"
     )
 
+    page = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
     patterns = _message_patterns(ROOT / "src" / "previously" / "cli.py")
-    notices = _quoted_notices((DOCS / "reference" / "cli.md").read_text(encoding="utf-8"))
-    assert len(notices) == 2, f"cli.md quotes {len(notices)} notices, not two: {notices}"
-    for notice in notices:
-        assert any(_is_the_same_sentence(parts, notice) for parts in patterns), (
-            f"cli.md quotes {notice!r} on standard error and no message in cli.py "
-            "says that. Either the code's wording changed, or the page's did."
+    for after, expected in (
+        ("Two notices go to standard error", 2),
+        ("Without anchors, one notice goes to standard error", 1),
+        ("On an empty log, one notice goes to standard error", 1),
+    ):
+        notices = _quoted_block(page, after)
+        assert len(notices) == expected, f"{after!r}: {notices}"
+        for notice in notices:
+            assert any(_is_the_same_sentence(parts, notice) for parts in patterns), (
+                f"cli.md quotes {notice!r} on standard error and no message in cli.py "
+                "says that. Either the code's wording changed, or the page's did."
+            )
+
+    reasons = _finding_patterns(ROOT / "src" / "previously" / "core" / "verify.py")
+    findings = _quoted_block(page, "Three findings come from the anchors")
+    assert len(findings) == 3, findings
+    for line in findings:
+        # The prefix is held as well, or a page quoting `FINDINGS 42: ...`
+        # would pass on the strength of its reason. Its form is written down
+        # here rather than read from `cli.py`, where it is an f-string with
+        # nothing but `FINDING ` and `: ` around the id. The other end is held
+        # in `tests/test_cli.py`: `test_verify_reports_a_deleted_tip_against_the_anchor`
+        # and `test_anchor_prints_the_tip_and_verify_holds_it` compare whole
+        # finding lines exactly, so a change to the code's prefix fails there.
+        prefix, _, reason = line.partition(": ")
+        assert re.fullmatch(r"FINDING [0-9]+", prefix), (
+            f"cli.md quotes the finding line {line!r}, and its prefix is not "
+            "`FINDING <id>: `, which is what cli.py prints before a reason."
+        )
+        assert any(_is_the_same_sentence(parts, reason) for parts in reasons), (
+            f"cli.md quotes the finding {reason!r} and core/verify.py produces no such "
+            "reason. Either the code's wording changed, or the page's did."
         )
 
 

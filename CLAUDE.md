@@ -155,6 +155,28 @@ project than this one.
 Each stage must be **runnable**, even when that is briefly awkward. Running
 the thing by hand surfaces what reading it does not.
 
+### Operations are part of every design
+
+Every specification says what the change means for running the system: whether
+it touches operations at all, and if it does, how that gets solved. Two ways of
+hosting are the yardstick, and a design is held against both.
+
+- **The maintainer's own** is the kup6s environment: Kubernetes, with the
+  cdk8s charts, ArgoCD and the CloudNativePG operator the architecture record
+  names.
+- **Anybody else's** has to stay possible with something as plain as a
+  `docker-compose` file. That second way does not get built. It gets
+  considered, in the specification, in a paragraph of its own.
+
+The second one doubles as a check on simplicity. A design that cannot be
+explained for one host, a compose file and a cron line has probably grown a
+moving part it does not need.
+
+Stated by the maintainer on 2026-10-04, after a question about operations found
+a hole in the external-anchor specification: its restore check assumed one
+instant at which the backup was taken, and a backup with a write-ahead log
+archive has no such instant.
+
 ### Weigh the execution method per plan
 
 Do not default to one way of executing a plan. Weigh it, and say why.
