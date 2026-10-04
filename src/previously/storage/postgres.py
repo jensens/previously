@@ -693,9 +693,11 @@ def _event_row(row: Row[Any]) -> EventRow:
 def from_dsn(dsn: str) -> PostgresStorage:
     """Storage out of a connection string.
 
-    Creating the engine belongs here (ruling T9-a), not in the command line:
-    `cli` is to need to know neither that SQLAlchemy exists nor what a driver
-    URL looks like — only `storage` knows SQL.
+    Creating the engine belongs here, not in the command line: `cli` is to
+    need to know neither that SQLAlchemy exists nor what a driver URL looks
+    like — only `storage` knows SQL. That was ruling T9-a of the 2026-10-02
+    stage 1a plan, whose execution ledger was never shipped and is lost, so
+    the label is provenance and nothing more; the reason is this sentence.
 
     `create_engine` parses the DSN immediately, not only at the first
     connection attempt — an unparsable DSN raises `ArgumentError` here already

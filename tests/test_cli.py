@@ -22,6 +22,7 @@ import io
 import pytest
 import re
 import sys
+import time
 
 
 if TYPE_CHECKING:
@@ -1211,9 +1212,15 @@ def test_redact_event_prints_the_redaction_and_show_names_it(
     assert main(["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"]) == 0
     capsys.readouterr()
 
+    # Nothing was projected before, so the catch-up after the redaction
+    # builds both projections and says so on standard error.
     assert main(["redact", "event", "1", "--reason", "wrong recipient"]) == 0
     out, err = capsys.readouterr()
-    assert (out, err) == ("redacted by event 2\n", "")
+    assert (out, err) == (
+        "redacted by event 2\n",
+        "chronicle       built: 2 events, up_to_id 2\n"
+        "source-stats    built: 2 events, up_to_id 2\n",
+    )
 
     assert main(["show", "1"]) == 0
     output = capsys.readouterr().out
@@ -1247,7 +1254,13 @@ def test_redact_units_names_each_tombstone(
     assert main(["redact", "units", "1", "1", "3", "--reason", "r"]) == 0
     out, err = capsys.readouterr()
     assert out == "1\nredacted by event 2\nredacted by event 3\n"
-    assert err == "unit 3 was already erased\n"
+    # The first `redact` builds the projections, which nobody had built; the
+    # second only catches up and says nothing about it.
+    assert err == (
+        "chronicle       built: 2 events, up_to_id 2\n"
+        "source-stats    built: 2 events, up_to_id 2\n"
+        "unit 3 was already erased\n"
+    )
 
     assert main(["show", "1"]) == 0
     output = capsys.readouterr().out
@@ -1407,6 +1420,37 @@ def test_a_catch_up_that_fails_after_the_redaction_says_what_is_outstanding(
 
 
 @pytest.mark.db
+def test_redact_reports_a_rebuild_it_runs_on_standard_error(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `redact` that is the first catch-up after an upgrade rebuilds the
+    chronicle, and says so in the words of `project`, on standard error:
+    standard output stays the one line ({ref}`projections`). The `project`
+    after it has nothing left to rebuild. The control is
+    `test_after_redact_the_chronicle_no_longer_shows_it`, where the
+    projections are current and `redact` says nothing on standard error."""
+    from sqlalchemy import text
+
+    engine = _connect(db, monkeypatch)
+    _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
+    assert main(["project"]) == 0
+    with engine.begin() as c:
+        c.execute(text("UPDATE projection_state SET version = 1 WHERE name = 'chronicle'"))
+    capsys.readouterr()
+
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    assert capsys.readouterr() == (
+        "redacted by event 2\n",
+        "chronicle       rebuilt: version 1 -> 2, 2 events, up_to_id 2\n",
+    )
+    assert main(["project"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "chronicle       up to date, up_to_id 2",
+        "source-stats    up to date, up_to_id 2",
+    ]
+
+
+@pytest.mark.db
 def test_project_rebuilds_a_chronicle_built_at_version_1(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -1456,10 +1500,19 @@ def test_main_releases_the_connections_it_opened(
     so a process that calls `main` again and again holds no more connections
     at the end than at the start.
 
-    The garbage collector is switched off for the loop: an engine nobody
-    refers to any more lets go of its connections when it is collected, and a
-    collection that happened to run inside the loop would hide a missing
-    release. Measured on 2026-10-05: with the release, 1 connection before
+    The test relies on one property of SQLAlchemy's engines: an engine nobody
+    refers to any more is held in reference cycles, so it lets go of its
+    connections only when the garbage collector collects it, not when the
+    last reference goes. The collector is therefore switched off for the loop
+    and for the reading after it, since a collection in either would hide a
+    missing release. Were a later SQLAlchemy to free an engine by reference
+    counting alone, this test would stay green without the release and stop
+    proving anything.
+
+    The count is read until it is no higher than before, for at most five
+    seconds: a backend leaves `pg_stat_activity` only once it has processed
+    the client's terminate, which happens after `dispose` returns. The bound
+    itself stays where it was. Measured on 2026-10-05: with the release, 1 connection before
     the 33 calls and 1 after, so the bound needs no allowance. With
     `PostgresStorage.close` emptied, 34 after; with the release on success
     only, 4 after, one for each refused `redact`. Before the release existed,
@@ -1492,7 +1545,11 @@ def test_main_releases_the_connections_it_opened(
         for _ in range(3):
             for command in commands:
                 main(command)
+        deadline = time.monotonic() + 5
         after = _connections(engine)
+        while after > before and time.monotonic() < deadline:
+            time.sleep(0.05)
+            after = _connections(engine)
     finally:
         gc.enable()
     capsys.readouterr()

@@ -75,8 +75,16 @@ The first names the redaction it wrote.
 The second means that a redaction already covers the target and nothing was written; it names that redaction, or for units the newest of the redactions that cover them.
 In both cases the tombstones are set.
 
-After either line, `redact` brings every projection up to the tip of the log, the way `project` does, and prints nothing about it.
+After either line, `redact` brings every projection up to the tip of the log, the way `project` does.
 The chronicle then holds no row of what was erased, without a separate `project`.
+An ordinary catch-up prints nothing.
+A catch-up that builds a projection for the first time, or rebuilds it because its version changed, prints the line `project` prints for that projection, on standard error:
+
+```text
+chronicle       rebuilt: version 1 -> 2, 12000 events, up_to_id 12001
+```
+
+Standard output carries the one line either way.
 If that catch-up fails, the redaction stays recorded, the line on standard output stands, one sentence goes to standard error, and the exit code is 2:
 
 ```text
@@ -84,7 +92,8 @@ Error: the redaction is recorded as event 42, but it is not finished: projection
 ```
 
 The text in parentheses is the error the catch-up raised.
-Running the same command again finds the target covered, prints `already redacted by event 42`, and catches up.
+Once its cause is gone, running the same command again finds the target covered, prints `already redacted by event 42`, and catches up.
+The cause in the example, a gap in the log, doesn't go away by itself, so until it does the same command fails with the same sentence; a server that didn't answer for a moment is a cause that does go away.
 
 For each unit it skips, one notice goes to standard error:
 

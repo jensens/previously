@@ -115,7 +115,7 @@ def test_incremental_equals_rebuilt(db: Engine) -> None:
     pure test and to the pinned value, which is the whole reason this test
     exists.
 
-    All three remeasured on 2026-10-05, with fifteen tests in this file and
+    All three remeasured on 2026-10-05, with sixteen tests in this file and
     eleven in `test_projection_derive.py`, and each came out as above.
     """
     storage = PostgresStorage(db)
@@ -344,6 +344,37 @@ def test_incremental_equals_rebuilt_with_redactions_before_and_after_the_worker(
     _project_all(storage)
     incremental = _snapshot(db)
     assert _chronicle_keys(db) == [(2, 2), (3, 1), (3, 2), (7, 1), (7, 2)]
+
+    _force_rebuild(storage)
+    _project_all(storage)
+    assert _snapshot(db) == incremental
+
+
+@pytest.mark.db
+def test_an_order_without_its_execution_ends_alike_on_both_paths(db: Engine) -> None:
+    """A redaction whose target still carries what it erased — an order
+    without its execution, which `verify` reports — takes the rows on both
+    paths alike ({ref}`projections`).
+
+    The content of unit 1 is put back by hand after the redaction. The
+    incremental path built that unit's row in a batch before the redaction's;
+    the rebuild reads target and redaction in one batch. Only because `write`
+    inserts before it deletes does the redaction take the row in that one
+    batch too. Measured on 2026-10-05 with the two steps of `write` swapped:
+    this test goes red on the comparison, the rebuild keeping `(1, 1)`.
+    """
+    storage = PostgresStorage(db)
+    append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
+    _project_all(storage)
+    redact_units(storage, storage, 1, [1], reason="a third party", recorded_at=NOW)
+    with db.begin() as c:
+        # Content alone is enough to undo the tombstone: the check on `unit`
+        # constrains a unit without content, not one with it (ruling P-1 of
+        # the 2026-10-04 stage 1c plan names the other direction).
+        c.execute(text("UPDATE unit SET content = 'one' WHERE event_id = 1 AND seq = 1"))
+    _project_all(storage)
+    incremental = _snapshot(db)
+    assert _chronicle_keys(db) == [(1, 2)]
 
     _force_rebuild(storage)
     _project_all(storage)

@@ -156,11 +156,13 @@ def _storage() -> Generator[PostgresStorage]:
     """The storage a command works with, closed when the command is done,
     whether it returns or raises.
 
-    Creating the engine itself stands in `storage.postgres.from_dsn`
-    (ruling T9-a) — `cli` knows neither SQLAlchemy nor a driver URL, only
-    the environment variable. Closing it is `PostgresStorage.close`: `main`
-    may run many times in one process, and a storage left open keeps its
-    connections until the garbage collector finds it.
+    Creating the engine itself stands in `storage.postgres.from_dsn` — `cli`
+    knows neither SQLAlchemy nor a driver URL, only the environment variable
+    (ruling T9-a of the 2026-10-02 stage 1a plan, whose ledger is lost, so
+    the label resolves nowhere and this sentence is the reason). Closing it
+    is `PostgresStorage.close`: `main` may run many times in one process, and
+    a storage left open keeps its connections until the garbage collector
+    finds it.
     """
     dsn = os.environ.get("PREVIOUSLY_DSN")
     if not dsn:
@@ -447,16 +449,25 @@ def _catch_up_after(storage: PostgresStorage, redaction_id: int) -> None:
     the second call finds the target covered, writes nothing and catches up.
     Only the errors `main` turns into a sentence are caught; anything foreign
     goes through as a stack trace, as everywhere else.
+
+    A catch-up that builds a projection from scratch — the first build, or a
+    rebuild after a version change — is named on standard error, in the line
+    `project` prints for it. `project` names its path so that a rebuild is not
+    invisible, and the first `redact` after an upgrade would otherwise rebuild
+    without a word, for as long as the log takes. An ordinary catch-up says
+    nothing, and standard output stays the one line.
     """
     for projection in PROJECTIONS:
         try:
-            catch_up(storage, storage, projection)
+            outcome = catch_up(storage, storage, projection)
         except (PreviouslyError, StorageError) as error:
             raise PreviouslyError(
                 f"the redaction is recorded as event {redaction_id}, but it is not "
                 f"finished: projection {projection.name} is not caught up ({error}); "
                 "run the same command again"
             ) from error
+        if outcome.rebuilt_from is not None:
+            print(f"{outcome.name:<15} {_describe(outcome)}", file=sys.stderr)
 
 
 def _cmd_redact(args: argparse.Namespace) -> int:

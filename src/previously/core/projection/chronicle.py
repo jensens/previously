@@ -124,7 +124,8 @@ class ChronicleProjection:
         # redaction erased — an order without its execution, which `verify`
         # reports: the redaction takes those rows whether it shares a batch
         # with its target or not, so the batch boundaries, which differ
-        # between a catch-up and a rebuild, cannot change the result.
+        # between a catch-up and a rebuild, cannot change the result
+        # (`test_an_order_without_its_execution_ends_alike_on_both_paths`).
         store.insert_chronicle(conn, derive(batch))
         for event_id, seqs in erasures(batch):
             store.delete_chronicle(conn, event_id, seqs)

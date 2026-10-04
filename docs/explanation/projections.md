@@ -145,7 +145,7 @@ SourceStatsProjection.write merges None instead of the stored row
 ```
 
 That mutation is invisible to every test that runs without a database and to the pinned `first_seen` value as well, and it's the reason the comparison exists.
-The counts in both blocks were measured again on 2026-10-05, with eleven tests in `test_projection_derive.py` and fifteen in `test_projection_worker.py`, and each mutation failed the same tests as before.
+The counts in both blocks were measured again on 2026-10-05, with eleven tests in `test_projection_derive.py` and sixteen in `test_projection_worker.py`, and each mutation failed the same tests as before.
 
 Three layers, then, and none of them covers another.
 The pure tests in `test_projection_derive.py` pin the arithmetic where it lives, without a database.
@@ -160,7 +160,7 @@ A projection declares its version in the code, and a catch-up that meets a diffe
 The test poisons a row in `p_source_stats`, raises the version, and finds the poison gone.
 Its control sits right next to it: a catch-up at the unchanged version leaves the poison in place.
 Without that control the first half would show only that the worker writes, not that the version is what set it off.
-Dropping the version comparison from the worker turns both version tests red and leaves the other thirteen green.
+Dropping the version comparison from the worker turns both version tests red and leaves the other fourteen green.
 
 ## Two orders, two commands
 
@@ -198,6 +198,7 @@ Silence is therefore a statement: no notice means current and complete.
 
 The third is the one `project` answers.
 A catch-up that empties a table and builds it again looks, in the table, exactly like one that appended a few rows—so `project` names the path the run took, `built`, `caught up`, `rebuilt: version 1 -> 2` or `up to date`, and a version-triggered rebuild stops being invisible.
+`redact`, which catches up as well, names a build or a rebuild it runs in the same words, on standard error.
 What that line reports is the path *this* run took, and one case escapes it: if a run is interrupted after the version check has rewritten the state row but before its first batch commits, the next run finds the state row already at the new version and reports an ordinary catch-up, because the rebuild it continues was recorded nowhere that survived the interruption.
 That's a known limit rather than a bug to fix in the worker: the alternative is a second stored field whose only reader is a sentence on the terminal.
 
@@ -217,10 +218,12 @@ Both ways end in the same table, and a rebuild always takes the second, which is
 
 Two details keep the batch boundaries out of the result, and they matter because a catch-up and a rebuild cut the log into different batches.
 Within one batch the rows go in first and the deletions run after, so a redaction takes the rows of a target that still carries what it erased whether it shares a batch with that target or not—an order without its execution, which `verify` reports, but which shouldn't make the two paths part.
-A redaction that names an event behind it in the chain takes nothing, since it can only order the erasure of something before it; taken, it would delete rows in a rebuild and none on the incremental path.
+A redaction that names a later event than itself takes nothing, since it can only order the erasure of something before it; taken, it would delete rows in a rebuild and none on the incremental path.
 
 `redact` catches the projections up itself, after the erasure, so the chronicle stops showing what was erased without waiting for the next `project`.
-The derivation reads redactions now, so the chronicle's version went from 1 to 2, and the first `project` after the upgrade rebuilds it and says `rebuilt: version 1 -> 2`.
+The derivation reads redactions now, so the chronicle's version went from 1 to 2, and the first catch-up after the upgrade rebuilds it and says `rebuilt: version 1 -> 2`.
+That catch-up can be a `project` or a `redact`, since `redact` catches up too, and both name the rebuild: `project` on standard output, `redact` on standard error, where its one line on standard output stays alone.
+A rebuild takes as long as reading the whole log does, and a command that rebuilt without a word would look as if it hung.
 That rebuild isn't a formality: a table that version 1 built can still hold the rows of a unit erased since.
 
 The chronicle per unit is also what made this necessary.
