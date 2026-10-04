@@ -25,6 +25,7 @@ forge one row could have hidden every further forgery behind it.
 """
 
 from dataclasses import dataclass
+from previously.contract.types import Anchor
 from previously.core.errors import InvalidPayload
 from previously.core.hashing import event_hash
 from previously.core.hashing import payload_hash
@@ -33,6 +34,7 @@ from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from collections.abc import Sequence
     from previously.contract.rows import EventRow
     from previously.contract.rows import UnitRow
@@ -43,6 +45,19 @@ if TYPE_CHECKING:
 class Finding:
     event_id: int
     reason: str
+
+
+@dataclass(frozen=True)
+class Examination:
+    """What one pass over the chain found, and where the chain ended.
+
+    `tip` is the last row the pass saw, not the answer to a second query
+    after it ({ref}`external-anchor`): an anchor printed from it describes
+    exactly the chain that was checked. `None` for an empty log.
+    """
+
+    findings: tuple[Finding, ...]
+    tip: Anchor | None
 
 
 def _payload_finding(row: EventRow) -> Finding | None:
@@ -175,12 +190,38 @@ def _count_finding(checked: int, total: int) -> Finding | None:
     return Finding(0, f"event has {total} rows, {checked} checked — the rest is unreachable")
 
 
-def verify[Conn](storage: LogStore[Conn], *, batch: int = 1000) -> list[Finding]:
+def examine[Conn](
+    storage: LogStore[Conn],
+    *,
+    anchors: Sequence[Anchor] = (),
+    exact: bool = False,
+    batch: int = 1000,
+) -> Examination:
+    """The one pass: the chain, and the anchors against it.
+
+    Without anchors this is the chain check and nothing else. With anchors it
+    also checks that each anchored event exists and carries the anchored hash
+    — "contains" — and with `exact` that the tip is the newest anchor
+    ({ref}`external-anchor`). The anchors are checked as the pass comes by
+    them; there is no second read.
+
+    Returns structured results and no sentences: the command line formats
+    them today, and a second entry point formats them its own way.
+    """
+    if exact and not anchors:
+        raise InvalidPayload("exact needs at least one anchor to compare the tip with")
     findings: list[Finding] = []
     previous_hash: bytes | None = None
     next_id = 1
     expect_first = True
     checked = 0
+    tip: Anchor | None = None
+    # Anchors still waiting for their event, by `id`. A list per `id`, because
+    # a file may carry one position twice, and two lines that disagree are
+    # both checked.
+    pending: dict[int, list[bytes]] = {}
+    for anchor in anchors:
+        pending.setdefault(anchor.id, []).append(anchor.hash)
 
     # One transaction over the **whole** check (review finding G4 of the final
     # review): only that way do all the reads see the same snapshot. Read over
@@ -198,7 +239,7 @@ def verify[Conn](storage: LogStore[Conn], *, batch: int = 1000) -> list[Finding]
                 count_finding = _count_finding(checked, storage.count_events(conn))
                 if count_finding is not None:
                     findings.append(count_finding)
-                return findings
+                break
 
             # Source attributions **and** units of the whole batch, each in
             # one query. Asking per event would be two million queries with a
@@ -227,7 +268,48 @@ def verify[Conn](storage: LogStore[Conn], *, batch: int = 1000) -> list[Finding]
                         first=expect_first,
                     )
                 )
+                for anchored in pending.pop(row.id, ()):
+                    if anchored != row.hash:
+                        findings.append(Finding(row.id, "hash does not match the anchor"))
                 expect_first = False
                 previous_hash = row.hash
                 next_id = row.id + 1
                 checked += 1
+                tip = Anchor(row.id, row.hash)
+
+    findings.extend(_closing_findings(pending, anchors, tip, exact=exact))
+    return Examination(tuple(findings), tip)
+
+
+def _closing_findings(
+    pending: Mapping[int, Sequence[bytes]],
+    anchors: Sequence[Anchor],
+    tip: Anchor | None,
+    *,
+    exact: bool,
+) -> list[Finding]:
+    """The anchor findings that can only be stated once the pass has ended.
+
+    A function of its own for the reason `_check_event` is one: `examine`
+    walks the batches, and what is left to say after the walk does not need
+    the connection.
+    """
+    findings: list[Finding] = []
+    tip_id = 0 if tip is None else tip.id
+    # What is still pending never came by: the log ends before it, or the row
+    # is gone from the middle — and then the chain itself has a finding too.
+    findings.extend(
+        Finding(anchor_id, f"anchored event is missing (the log ends at {tip_id})")
+        for anchor_id in sorted(pending)
+    )
+    if exact:
+        newest = max(anchor.id for anchor in anchors)
+        if tip_id > newest:
+            findings.append(Finding(tip_id, f"the log continues past the newest anchor ({newest})"))
+    return findings
+
+
+def verify[Conn](storage: LogStore[Conn], *, batch: int = 1000) -> list[Finding]:
+    """The chain alone, as a list — what every caller asked for before there
+    were anchors. `examine` is the pass; this is its findings without any."""
+    return list(examine(storage, batch=batch).findings)

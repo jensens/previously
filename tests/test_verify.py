@@ -3,10 +3,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from datetime import datetime
 from datetime import UTC
+from previously.contract.types import Anchor
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
+from previously.core.errors import InvalidPayload
 from previously.core.units import split_plaintext
+from previously.core.verify import Examination
+from previously.core.verify import examine
+from previously.core.verify import Finding
 from previously.core.verify import verify
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import Engine
@@ -385,3 +390,145 @@ def test_b1_a_gapless_chain_reports_no_count_error(db: Engine) -> None:
     storage = PostgresStorage(db)
     append(storage, [_event("a"), _event("b"), _event("c")], recorded_at=NOW)
     assert verify(storage, batch=2) == []
+
+
+def _anchor_of(storage: PostgresStorage) -> Anchor:
+    """The tip of an intact chain, the way `previously anchor` prints it."""
+    examination = examine(storage)
+    assert examination.findings == ()
+    assert examination.tip is not None
+    return examination.tip
+
+
+def _delete_event(db: Engine, event_id: int) -> None:
+    """Forged with plain SQL: nothing in the append path can delete."""
+    with db.begin() as c:
+        c.execute(text("DELETE FROM source_key WHERE event_id = :id"), {"id": event_id})
+        c.execute(text("DELETE FROM unit WHERE event_id = :id"), {"id": event_id})
+        c.execute(text("DELETE FROM event WHERE id = :id"), {"id": event_id})
+
+
+@pytest.mark.db
+def test_a_deleted_tip_passes_without_an_anchor_and_fires_with_one(db: Engine) -> None:
+    """The case stage 1a measured and could not close ({ref}`external-anchor`):
+    three events, the tip deleted, and the chain that is left is consistent in
+    itself. The first assertion is the control — without an anchor nothing is
+    amiss — and the second is what the anchor adds."""
+    storage = PostgresStorage(db)
+    append(storage, [_event("a"), _event("b"), _event("c")], recorded_at=NOW)
+    anchor = _anchor_of(storage)
+    assert anchor.id == 3
+    _delete_event(db, 3)
+
+    assert verify(storage) == []
+    assert examine(storage, anchors=[anchor]).findings == (
+        Finding(3, "anchored event is missing (the log ends at 2)"),
+    )
+
+
+@pytest.mark.db
+def test_a_rewritten_chain_is_consistent_in_itself_and_fails_the_anchor(
+    db: Engine, truncate_statement: str
+) -> None:
+    """Rewriting the whole chain is the forgery in its purest form: the result
+    is a chain the append path itself produced. Emptied and filled again with
+    other events here, which is that."""
+    storage = PostgresStorage(db)
+    append(storage, [_event("a"), _event("b")], recorded_at=NOW)
+    anchor = _anchor_of(storage)
+    with db.begin() as c:
+        c.execute(text(truncate_statement))
+    append(storage, [_event("x"), _event("y")], recorded_at=NOW)
+
+    assert verify(storage) == []
+    assert examine(storage, anchors=[anchor]).findings == (
+        Finding(2, "hash does not match the anchor"),
+    )
+
+
+@pytest.mark.db
+def test_an_appended_event_passes_contains_and_fails_exact(db: Engine) -> None:
+    """An anchor pins a prefix ({ref}`external-anchor`). An event appended
+    after it looks like growth — and a forged one is not told apart from a
+    legitimate one, which is why it is appended the ordinary way here. Only
+    the comparison of the tip with the anchor sees it, and only while nothing
+    legitimate was added: the first assertion is that moment of rest."""
+    storage = PostgresStorage(db)
+    append(storage, [_event("a"), _event("b")], recorded_at=NOW)
+    anchor = _anchor_of(storage)
+    assert examine(storage, anchors=[anchor], exact=True).findings == ()
+
+    append(storage, [_event("c")], recorded_at=NOW)
+    assert examine(storage, anchors=[anchor]).findings == ()
+    assert examine(storage, anchors=[anchor], exact=True).findings == (
+        Finding(3, "the log continues past the newest anchor (2)"),
+    )
+
+
+@pytest.mark.db
+def test_a_tip_deleted_above_the_newest_anchor_is_seen_by_neither_check(db: Engine) -> None:
+    """The limit of every anchor, pinned ({ref}`external-anchor`): it attests
+    only what existed when it was taken. Event 3 arrived after the anchor and
+    was deleted again; nothing shows that it ever existed. Whoever closes this
+    later will see this test turn red."""
+    storage = PostgresStorage(db)
+    append(storage, [_event("a"), _event("b")], recorded_at=NOW)
+    anchor = _anchor_of(storage)
+    append(storage, [_event("c")], recorded_at=NOW)
+    _delete_event(db, 3)
+
+    assert examine(storage, anchors=[anchor]).findings == ()
+    assert examine(storage, anchors=[anchor], exact=True).findings == ()
+
+
+@pytest.mark.db
+def test_exact_without_an_anchor_is_refused(db: Engine) -> None:
+    """There is nothing to compare the tip with. Refused in the core and not
+    only at the command line, so that a second entry point gets the same
+    answer."""
+    with pytest.raises(InvalidPayload, match="at least one anchor"):
+        examine(PostgresStorage(db), exact=True)
+
+
+@pytest.mark.db
+def test_an_empty_log_has_no_tip_and_misses_every_anchor(db: Engine) -> None:
+    """Review focus 4."""
+    storage = PostgresStorage(db)
+    assert examine(storage) == Examination((), None)
+    stray = Anchor(1, b"\x11" * 32)
+    assert examine(storage, anchors=[stray]).findings == (
+        Finding(1, "anchored event is missing (the log ends at 0)"),
+    )
+
+
+@pytest.mark.db
+def test_two_lines_for_one_position_are_both_checked(db: Engine) -> None:
+    """The same line twice is harmless; two lines that disagree about one
+    position cannot both hold, and the one that does not is reported."""
+    storage = PostgresStorage(db)
+    append(storage, [_event("a")], recorded_at=NOW)
+    anchor = _anchor_of(storage)
+    wrong = Anchor(1, b"\x22" * 32)
+
+    assert examine(storage, anchors=[anchor, anchor]).findings == ()
+    assert examine(storage, anchors=[anchor, wrong]).findings == (
+        Finding(1, "hash does not match the anchor"),
+    )
+
+
+@pytest.mark.db
+def test_anchors_are_checked_across_a_batch_boundary(db: Engine) -> None:
+    """Review focus 3. Five events in batches of two: the anchor at 3 lies in
+    the second batch, the tip in the third."""
+    storage = PostgresStorage(db)
+    append(storage, [_event(str(n)) for n in range(5)], recorded_at=NOW)
+    tip = _anchor_of(storage)
+    assert tip.id == 5
+    with db.begin() as c:
+        third = c.execute(text("SELECT hash FROM event WHERE id = 3")).scalar_one()
+
+    anchors = [Anchor(3, bytes(third)), tip]
+    assert examine(storage, anchors=anchors, exact=True, batch=2) == Examination((), tip)
+    assert examine(storage, anchors=[Anchor(3, b"\x33" * 32)], batch=2).findings == (
+        Finding(3, "hash does not match the anchor"),
+    )
