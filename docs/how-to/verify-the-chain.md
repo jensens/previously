@@ -47,7 +47,7 @@ previously verify --anchors anchors.txt
 It prints `chain intact, 1 anchor holds` and exits `0` when the file holds an anchor.
 It exits `2` when the file holds none, and that happens in two cases.
 On an empty log, `previously anchor` prints nothing to standard output and exits `0`, so the file is empty.
-On a chain with a finding, it prints the `FINDING` lines to standard output and exits `1`, so those lines are in the file.
+On a chain with a finding, it prints the `FINDING` lines to standard error, nothing to standard output, and exits `1`, so the file is empty as well.
 In either case, delete the file and deal with the cause first.
 
 From then on, run this routine on a schedule, between fetching the anchor file from the place you keep it and putting it back there:
@@ -59,7 +59,7 @@ previously verify --anchors anchors.txt && previously anchor >> anchors.txt
 The first command checks the chain and every anchor taken so far.
 The second command appends the current tip as a new anchor, and runs only if the first one exited `0`.
 Treat any exit code other than `0` as an alarm.
-If the second command exits other than `0`, whatever it printed to standard output is now in the anchor file, and you have to remove those lines by hand before the next run.
+If the second command exits other than `0`, it printed nothing to standard output, so the anchor file is unchanged, and its findings or its error are on standard error.
 If no event arrived since the last run, the routine appends the same line again.
 That's harmless, and it means that the count in `chain intact, <n> anchors hold` counts lines, not events.
 Put the file back after every run: an anchor that hasn't left the database's host isn't an anchor yet.
@@ -77,7 +77,8 @@ Whatever starts the command inside the container has to meet two conditions, and
 - It has to pass standard input through, such as `-i` for `docker exec`.
   Without it, `--anchors -` receives nothing and reports that the input holds no anchor.
 - It must not allocate a terminal, such as `-T` for `docker compose exec`.
-  With a terminal, standard error is mixed into standard output, and on an empty log the notice `the log is empty: nothing to anchor` lands in the anchor file.
+  With a terminal, standard error is mixed into standard output, and whatever `previously anchor` prints to standard error lands in the anchor file: the notice `the log is empty: nothing to anchor` on an empty log, and the `FINDING` lines on a chain with a finding.
+  If that happened, remove those lines from the anchor file by hand before the next run.
 
 For the format of an anchor line and the three findings an anchor can produce, see {ref}`cli-reference`.
 For what an anchor closes, and what it leaves open, see {ref}`external-anchor`.

@@ -8,6 +8,8 @@ that is useful, but because being runnable drives out things one otherwise
 forgets.
 """
 
+from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import datetime
 from datetime import UTC
 from previously.contract.types import Evidence
@@ -37,7 +39,6 @@ import sys
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from collections.abc import Sequence
     from previously.contract.types import Anchor
 
@@ -189,6 +190,17 @@ def _read_anchors(source: str) -> tuple[Anchor, ...]:
     return parse_anchors(io.StringIO(text, newline=None))
 
 
+def _append_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--source", required=True)
+    parser.add_argument("--external-id", required=True)
+    parser.add_argument("--text", required=True)
+    parser.add_argument("--occurred-at")
+    # The default "recollection": the cautious assumption, and a submission by
+    # hand is mostly exactly that (review finding G3). No `choices=` — the
+    # invalid case is translated in `_parse_evidence`, see there.
+    parser.add_argument("--evidence", default="recollection")
+
+
 def _cmd_append(args: argparse.Namespace) -> int:
     # `surrogatepass`, not strict (finding W-1): a lone UTF-16 surrogate can
     # arrive out of `argv` — `argv` carries bytes, and Python decodes
@@ -219,6 +231,11 @@ def _cmd_append(args: argparse.Namespace) -> int:
     return 0
 
 
+def _log_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--from", dest="from_id", type=int, default=1)
+    parser.add_argument("--limit", type=int, default=50)
+
+
 def _cmd_log(args: argparse.Namespace) -> int:
     # The same guard as `chronicle`, in the same words and for the same
     # reason; see there for why it is `InvalidPayload` and not a `type=`
@@ -247,6 +264,13 @@ def _cmd_log(args: argparse.Namespace) -> int:
         for row in storage.read(conn, from_id=args.from_id, limit=args.limit):
             print(f"{row.id}\t{row.occurred_at.isoformat()}\t{row.kind}\t{row.hash.hex()[:12]}")
     return 0
+
+
+def _verify_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--anchors", metavar="FILE", help="anchor lines to check against; - reads standard input"
+    )
+    parser.add_argument("--exact", action="store_true", help="the tip has to be the newest anchor")
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:
@@ -289,16 +313,27 @@ def _cmd_anchor(_args: argparse.Namespace) -> int:
     `Examination.anchor`'s decision, not this function's: on a finding the
     core gives none, because an anchor on a broken chain would certify the
     break. What is left here is formatting.
+
+    The findings go to standard error, unlike `verify`'s. Standard output
+    of this command is a data channel: the routine appends it to the anchor
+    file with `>>`, and a finding printed there landed in that file, where
+    the next `verify --anchors` refused the line as an input error (exit
+    code 2) instead of reporting the finding (exit code 1). On standard
+    output there is an anchor line or nothing ({ref}`cli-reference`).
     """
     examination = examine(_storage())
     for finding in examination.findings:
-        print(f"FINDING {finding.event_id}: {finding.reason}")
+        print(f"FINDING {finding.event_id}: {finding.reason}", file=sys.stderr)
     anchor = examination.anchor
     if anchor is not None:
         print(format_anchor(anchor))
     elif not examination.findings:
         print("the log is empty: nothing to anchor", file=sys.stderr)
     return 1 if examination.findings else 0
+
+
+def _show_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("event_id", type=int)
 
 
 def _cmd_show(args: argparse.Namespace) -> int:
@@ -346,6 +381,12 @@ def _cmd_project(_args: argparse.Namespace) -> int:
         outcome = catch_up(storage, storage, projection)
         print(f"{outcome.name:<15} {_describe(outcome)}")
     return 0
+
+
+def _chronicle_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--since", help="ISO 8601 with a zone, inclusive")
+    parser.add_argument("--until", help="ISO 8601 with a zone, exclusive")
+    parser.add_argument("--limit", type=int, default=50)
 
 
 def _cmd_chronicle(args: argparse.Namespace) -> int:
@@ -425,90 +466,68 @@ def _cmd_stats(_args: argparse.Namespace) -> int:
     return 0
 
 
+def _no_arguments(_parser: argparse.ArgumentParser) -> None:
+    """For a command that takes no arguments."""
+
+
+@dataclass(frozen=True)
+class Command:
+    """One subcommand: its name, its help line, its arguments and its body."""
+
+    name: str
+    help: str
+    run: Callable[[argparse.Namespace], int]
+    arguments: Callable[[argparse.ArgumentParser], None] = _no_arguments
+
+
+# The one place a command is declared. `main` builds the subparsers and the
+# dispatch from this sequence, so a command cannot have a subparser and no
+# body, or a body nobody can call: until 2026-10-04 the two were written out
+# separately, and a subparser without its entry in the dispatch table would
+# have ended in a `KeyError` traceback. The order is the order
+# `previously --help` lists them in.
+#
+# Public because a test reads it: `tests/test_cli.py` holds the commands the
+# help names against these names.
+COMMANDS: tuple[Command, ...] = (
+    Command("append", "submit text", _cmd_append, _append_arguments),
+    # "print the chronicle" until stage 1b, which is now the other command:
+    # `log` is the chain order and `chronicle` the chronology ({ref}`projections`).
+    Command("log", "print the log in chain order", _cmd_log, _log_arguments),
+    Command("verify", "check the chain, and anchors if given", _cmd_verify, _verify_arguments),
+    Command("anchor", "print the tip of an intact chain as an anchor line", _cmd_anchor),
+    Command("show", "show one event with its units", _cmd_show, _show_arguments),
+    Command("project", "bring the projections up to the tip of the log", _cmd_project),
+    Command("chronicle", "print the chronicle in time order", _cmd_chronicle, _chronicle_arguments),
+    Command("stats", "print the per-source statistics", _cmd_stats),
+)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="previously")
     sub = parser.add_subparsers(dest="command", required=True)
-
-    p_append = sub.add_parser("append", help="submit text")
-    p_append.add_argument("--source", required=True)
-    p_append.add_argument("--external-id", required=True)
-    p_append.add_argument("--text", required=True)
-    p_append.add_argument("--occurred-at")
-    # The default "recollection": the cautious assumption, and a submission by
-    # hand is mostly exactly that (review finding G3). No `choices=` — the
-    # invalid case is translated in `_parse_evidence`, see there.
-    p_append.add_argument("--evidence", default="recollection")
-
-    # "print the chronicle" until stage 1b, which is now the other command:
-    # `log` is the chain order and `chronicle` the chronology ({ref}`projections`).
-    p_log = sub.add_parser("log", help="print the log in chain order")
-    p_log.add_argument("--from", dest="from_id", type=int, default=1)
-    p_log.add_argument("--limit", type=int, default=50)
-
-    p_verify = sub.add_parser("verify", help="check the chain, and anchors if given")
-    p_verify.add_argument(
-        "--anchors", metavar="FILE", help="anchor lines to check against; - reads standard input"
-    )
-    p_verify.add_argument(
-        "--exact", action="store_true", help="the tip has to be the newest anchor"
-    )
-
-    sub.add_parser("anchor", help="print the tip of an intact chain as an anchor line")
-
-    p_show = sub.add_parser("show", help="show one event with its units")
-    p_show.add_argument("event_id", type=int)
-
-    sub.add_parser("project", help="bring the projections up to the tip of the log")
-
-    p_chronicle = sub.add_parser("chronicle", help="print the chronicle in time order")
-    p_chronicle.add_argument("--since", help="ISO 8601 with a zone, inclusive")
-    p_chronicle.add_argument("--until", help="ISO 8601 with a zone, exclusive")
-    p_chronicle.add_argument("--limit", type=int, default=50)
-
-    sub.add_parser("stats", help="print the per-source statistics")
-
+    for command in COMMANDS:
+        command.arguments(sub.add_parser(command.name, help=command.help))
     args = parser.parse_args(argv)
 
-    # A table instead of an `if` chain, for the structure: the dispatch is the
-    # one place in this file that grows with every command, and a lookup adds
-    # no branch where each `if` adds one.
-    #
-    # It is not the gate that forces it, and the margin was measured twice
-    # before that came out right. With `ruff check --select C901 --config
-    # 'lint.mccabe.max-complexity = N' src/previously/cli.py` on 2026-10-04,
-    # while there were seven commands: the chain put `main` at 9 with seven,
-    # at 10 with an eighth and at 11 with a ninth, while the table put it at
-    # 2. The plan had the chain sitting on the threshold, the first version
-    # of this comment had it one branch short, and both were wrong in the
-    # same direction.
-    #
-    # `anchor` is the eighth command. Measured with `max-complexity = 1` on
-    # 2026-10-04 after it arrived, the table still puts `main` at 2. The
-    # chain was not rebuilt to be measured again; read off the series above,
-    # it would stand at 10 now. `C901` fires strictly **above** its
-    # threshold, so against this project's 10 that would still pass, and a
-    # ninth command would break the gate.
-    #
-    # The 13 this `main` is said to have measured once is a historical figure
-    # from a version no longer in the tree, not re-measured here. It is why
-    # the command bodies live in their own functions at all.
-    commands: dict[str, Callable[[argparse.Namespace], int]] = {
-        "append": _cmd_append,
-        "log": _cmd_log,
-        "verify": _cmd_verify,
-        "anchor": _cmd_anchor,
-        "show": _cmd_show,
-        "project": _cmd_project,
-        "chronicle": _cmd_chronicle,
-        "stats": _cmd_stats,
-    }
+    # A table instead of an `if` chain: a lookup adds no branch where each
+    # `if` adds one, so the number of commands does not move the complexity
+    # of `main`. Measured with `ruff check --select C901 --config
+    # 'lint.mccabe.max-complexity = 1' src/previously/cli.py` on 2026-10-04,
+    # once the subparsers and the table were built from `COMMANDS`: `main`
+    # stands at 3 — the 1 every function starts with, the loop and the
+    # `except`; the comprehension adds nothing — against the project's
+    # threshold of 10, ruff's default, which `C901` has to exceed. The `if`
+    # chain the table replaced was measured earlier that day at 9 with seven
+    # commands, 10 with eight and 11 with nine: a ninth command would have
+    # broken the gate.
+    run = {command.name: command.run for command in COMMANDS}
     try:
         # No fallback below: `add_subparsers(..., required=True)` makes
-        # `parse_args` fail before this line without one of the eight keys, so
-        # the lookup cannot raise `KeyError` — and the `if` chain's unreachable
-        # `return 2` went away with it, along with the `pragma: no cover` that
-        # kept it out of the coverage figure.
-        return commands[args.command](args)
+        # `parse_args` fail before this line without the name of a command,
+        # and every name it accepts came out of `COMMANDS`, so the lookup
+        # cannot raise `KeyError`.
+        return run[args.command](args)
     except (PreviouslyError, StorageError) as error:
         # Two kinds of error, one branch (review finding W2): `core` raises
         # `PreviouslyError`, `storage` raises `StorageError` — the two

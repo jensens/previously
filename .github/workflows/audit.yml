@@ -1,0 +1,72 @@
+# The dependency audit: `pip-audit` against the locked environment, which
+# the architecture record lists among the tools and which was never built
+# until 2026-10-04.
+#
+# A workflow of its own, not a seventh step in `gates.yml`, because it
+# answers a different question. The six gates judge the tree: their result
+# changes only when the tree does, so a commit that was green stays green.
+# An audit's result changes when an advisory is published, on a day when
+# nobody touched anything. As a gate it would turn a pull request red for a
+# reason that is not in the pull request, and run only when somebody pushes
+# it would miss the day the advisory arrives. Hence the weekly schedule
+# beside the two triggers it shares with the gates.
+#
+# The same care as `gates.yml`: read-only permissions, actions pinned by
+# commit, the locked dependencies, the versions named in the log.
+name: Audit
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    # Mondays at 05:17 UTC. Not on the hour: GitHub's documentation of the
+    # `schedule` event names the start of every hour as a time of high load,
+    # when a scheduled run can be delayed or dropped.
+    - cron: "17 5 * * 1"
+
+# Nothing here writes: the audit reads the environment and reports its exit
+# code.
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+
+    steps:
+      # The same pins as `gates.yml`, by commit with the version beside it.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Set up uv and Python 3.14
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.14"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install the locked dependencies
+        # `--locked`, so the run fails when `uv.lock` does not match
+        # `pyproject.toml` instead of auditing a fresh resolution.
+        # `--all-extras`, so every package the gates install is audited,
+        # and `pip-audit` itself, which lives in [dev].
+        run: uv sync --locked --all-extras
+
+      - name: Name the versions
+        run: |
+          uv --version
+          uv run python -VV
+          uv run pip-audit --version
+
+      - name: Audit the dependencies
+        # The installed environment, which is the locked one. The project
+        # itself is installed editable and is not on PyPI, so there is
+        # nothing to look it up against; `--skip-editable` leaves it out and
+        # names it as skipped in the log. `--strict` cannot be added: it
+        # fails the run on that very skip (measured on 2026-10-04, exit 1
+        # with "previously: distribution marked as editable").
+        #
+        # A finding fails this workflow. Nothing is suppressed here: a
+        # vulnerability is answered by a lock update, not by an ignore list.
+        run: uv run pip-audit --skip-editable --progress-spinner off

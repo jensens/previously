@@ -108,18 +108,20 @@ and three executions have borne it out.
 
 It was drawn up on 2026-10-04 with the checkpoint the architecture record asks
 for in its §12.3 (frozen design record); the record of that checkpoint is under
-`docs/superpowers/sdd/2026-10-04-pruefpunkt-teilprojekt-1/`. Measured on that
-day, the open points had been sitting in eight places — two sections of the
+`docs/superpowers/sdd/2026-10-04-pruefpunkt-teilprojekt-1/`. Until then the
+open points had been sitting in eight places — two sections of the
 architecture record, one each of the design and of the three stage
-specifications, and the indexes of two execution records — and the map lists
-them, with what the checkpoint itself found, as 73 entries:
+specifications, and the indexes of two execution records. When the map was
+drawn up, in commit `7fef06f`, it listed them, with what the checkpoint
+itself found, as 73 entries. This command counts what it lists today:
 
 ```
 awk '/^## Offene Punkte/{f=1} /^## Erledigt/{f=0} f && /^- /{n++} END{print n}' docs/superpowers/landkarte.md
 ```
 
-That number is the measurement of one day and moves with every point that is
-closed or found.
+The two numbers part ways with the first point that is closed or found, and
+they did so the same day: the maintenance round that followed struck three
+entries. That is the map working, not the sentence going stale.
 
 ## Attribution
 
@@ -170,6 +172,12 @@ version of anything to drift apart from.
 
 `pyproject.toml` carries floors (`ruff>=0.16`), not pins. Floors say what the
 code needs; the lock says what was tested.
+
+Updates arrive as pull requests from Renovate, configured in `renovate.json5`,
+once a week and never merged by itself. It moves `uv.lock`, the `rev:` of
+`pre-commit-hooks` and the pinned commits of the actions, and it leaves the
+floors in `pyproject.toml` alone: raising one is a statement about the code,
+and a person makes it.
 
 ## Working method
 
@@ -311,6 +319,12 @@ make -C docs html && make -C docs vale && make -C docs linkcheck
 The sixth is the documentation: `html` treats warnings as errors, `vale`
 checks style and American English, `linkcheck` resolves every link. What the
 pages themselves have to satisfy is under *Documentation* above.
+
+The dependency audit, `uv run pip-audit --skip-editable`, is not a seventh
+gate and runs in a workflow of its own, `.github/workflows/audit.yml`, on pull
+requests, on `main` and weekly. The six gates judge the tree, and their result
+changes only when the tree does; an audit's result changes when an advisory is
+published, on a day when nobody touched anything.
 
 **A dispatch, a check and a report name all six.** Copy the block above
 rather than listing a subset from memory: an incomplete list is worse than
