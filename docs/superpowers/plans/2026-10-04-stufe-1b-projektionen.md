@@ -2390,7 +2390,7 @@ In `main`, die Parser:
 
 Der Dispatch — **Tabelle statt `if`-Kette**, und der Grund steht schon in der Datei: `main` hat `C901` einmal gerissen (13 gegen 10). Sieben `if` plus `try/except` säßen genau auf der Schwelle.
 
-> **Korrektur 2026-10-04 (Ruling T6-a):** der letzte Satz ist falsch. Gemessen vom Umsetzer mit `ruff check --select C901 --config 'lint.mccabe.max-complexity = N' src/previously/cli.py`: die Kette brächte `main` auf **9** bei Schwelle 10, die Tabelle auf 2 — die Kette wäre grün durchgekommen, einen Zweig unter der Schwelle. Die Tabelle bleibt, aber als Abstandsargument (2 statt 9), nicht als abgewendete Torverletzung; Kommentar und Commit-Botschaft sagen die Messung. Die 13 aus der Vorgeschichte stammt aus einer Fassung, die es im Baum nicht mehr gibt, und wurde nicht neu gemessen. Ein Plan, der eine Komplexitätszahl behauptet, ohne sie gemessen zu haben, macht denselben Fehler, den `CLAUDE.md` unter *A comment is a claim* beschreibt.
+> **Korrektur 2026-10-04 (Ruling T6-a):** der letzte Satz ist falsch. Gemessen vom Umsetzer mit `ruff check --select C901 --config 'lint.mccabe.max-complexity = N' src/previously/cli.py`: die Kette brächte `main` auf **9** bei Schwelle 10, die Tabelle auf 2 — die Kette wäre grün durchgekommen, und zwar mit mehr Luft, als die erste Fassung dieser Korrektur sagte („einen Zweig unter der Schwelle"): `C901` feuert erst **oberhalb** der Schwelle, ein achtes Kommando (10) wäre noch grün, erst das neunte (11 > 10) risse das Tor. Das hat die Prüfung von Aufgabe 6 nachgemessen, nachdem der Kommentar im Baum „one branch short of breaking the gate" sagte — einen Zweig zu scharf, derselbe Fehlertyp noch einmal, eine Stufe kleiner. Die Tabelle bleibt, aber als Abstandsargument (2 statt 9), nicht als abgewendete Torverletzung; Kommentar und Commit-Botschaft sagen die Messung. Die 13 aus der Vorgeschichte stammt aus einer Fassung, die es im Baum nicht mehr gibt, und wurde nicht neu gemessen. Ein Plan, der eine Komplexitätszahl behauptet, ohne sie gemessen zu haben, macht denselben Fehler, den `CLAUDE.md` unter *A comment is a claim* beschreibt.
 
 ```python
     commands: dict[str, Callable[[argparse.Namespace], int]] = {
@@ -2421,7 +2421,9 @@ Erwartet: `All checks passed!` — insbesondere kein `C901` auf `main`.
 
 - [ ] **Schritt 5: `cli.md`**
 
-Die Exit-Code-Tabelle um drei Zeilen (`project`: 0 nachgezogen / 1 nicht benutzt / 2 Storage-Fehler; `chronicle` und `stats`: 0 gedruckt / 1 nicht benutzt / 2 ungültige Eingabe oder Storage-Fehler). Drei Abschnitte nach dem Muster von `## log`: Argumenttabelle, dann Ausgabeformat **als Tatsache**:
+Die Exit-Code-Tabelle um drei Zeilen (`project`: 0 nachgezogen / 1 nicht benutzt / 2 Storage-Fehler; `chronicle` und `stats`: 0 gedruckt / 1 nicht benutzt / 2 ungültige Eingabe oder Storage-Fehler).
+
+> **Korrektur 2026-10-04 (Prüfung von Aufgabe 6):** `stats` hat keine Argumente, also keine ungültige Eingabe — seine Zelle für 2 lautet wie bei `project` und `verify` nur „Storage raised an error." Der Satz oben hatte `chronicle` und `stats` in einen Topf geworfen; die Seite muss ihre eigene Konvention halten. Drei Abschnitte nach dem Muster von `## log`: Argumenttabelle, dann Ausgabeformat **als Tatsache**:
 
 - `project`: „Prints one line per projection: the name padded to 15 characters, a space, and the outcome — `built: …`, `caught up: …`, `rebuilt: version N -> M, …` or `up to date, …`, each ending in `up_to_id <id>`."
 - `chronicle`: die sechs Felder in Reihenfolge; die Ordnung `(occurred_at, event_id, seq)`; `--since` einschließlich, `--until` ausschließlich; die Entschärfung (vier Zeichen, je zwei Ausgabezeichen, Rückstrich zuerst); Rückstand und Kappung auf `stderr`, Rückgabecode 0.
