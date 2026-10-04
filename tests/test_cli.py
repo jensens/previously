@@ -11,8 +11,16 @@ from previously.contract.rows import EventRow
 from previously.contract.rows import UnitRow
 from previously.core.errors import InvalidPayload
 from previously.storage.postgres import PostgresStorage
+from typing import TYPE_CHECKING
 
+import io
 import pytest
+import re
+import sys
+
+
+if TYPE_CHECKING:
+    import pathlib
 
 
 def test_parse_moment_with_a_zone() -> None:
@@ -821,3 +829,239 @@ def test_stats_prints_one_line_per_source(
     ]
     assert [len(line.split("\t")) for line in out.splitlines()] == [5, 5, 5]
     assert err == ""
+
+
+_HINT = (
+    "no anchor given: verify attests that the log is unchanged, "
+    "not that it is complete; see `previously anchor`\n"
+)
+
+
+@pytest.mark.db
+def test_verify_without_an_anchor_says_what_it_does_not_attest(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Standard output stays the one line scripts read; the limit of the
+    statement goes to standard error ({ref}`external-anchor`). Beside a
+    finding the hint would be noise, so the second half has none."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    _setup(db, monkeypatch)
+    _append("email", "m1", "Hello", "2026-10-01T09:00:00Z")
+    capsys.readouterr()
+
+    assert main(["verify"]) == 0
+    out, err = capsys.readouterr()
+    assert out == "chain intact\n"
+    assert err == _HINT
+
+    with db.begin() as c:
+        c.execute(text("UPDATE event SET hash = :h WHERE id = 1"), {"h": b"\x00" * 32})
+    assert main(["verify"]) == 1
+    out, err = capsys.readouterr()
+    assert out.startswith("FINDING 1: ")
+    assert err == ""
+
+
+@pytest.mark.db
+def test_anchor_prints_the_tip_and_verify_holds_it(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """The routine end to end: anchor, check, grow, check again."""
+    _setup(db, monkeypatch)
+    _append("email", "m1", "one", "2026-10-01T09:00:00Z")
+    _append("email", "m2", "two", "2026-10-02T09:00:00Z")
+    capsys.readouterr()
+
+    assert main(["anchor"]) == 0
+    line, err = capsys.readouterr()
+    assert re.fullmatch(r"2 [0-9a-f]{64}\n", line)
+    assert err == ""
+    assert main(["show", "2"]) == 0
+    assert f"hash={line.split()[1]}\n" in capsys.readouterr().out  # the tip, not some hash
+
+    anchors = tmp_path / "anchors.txt"
+    anchors.write_text(line, encoding="utf-8")
+    assert main(["verify", "--anchors", str(anchors)]) == 0
+    out, err = capsys.readouterr()
+    assert (out, err) == ("chain intact, 1 anchor holds\n", "")
+    assert main(["verify", "--anchors", str(anchors), "--exact"]) == 0
+    out, err = capsys.readouterr()
+    assert (out, err) == ("chain intact, 1 anchor holds, the tip is the newest anchor\n", "")
+
+    _append("email", "m3", "three", "2026-10-03T09:00:00Z")
+    capsys.readouterr()
+    assert main(["verify", "--anchors", str(anchors), "--exact"]) == 1
+    assert capsys.readouterr().out == "FINDING 3: the log continues past the newest anchor (2)\n"
+
+    assert main(["anchor"]) == 0
+    with anchors.open("a", encoding="utf-8") as handle:
+        handle.write(capsys.readouterr().out)
+    assert main(["verify", "--anchors", str(anchors), "--exact"]) == 0
+    expected = "chain intact, 2 anchors hold, the tip is the newest anchor\n"
+    assert capsys.readouterr().out == expected
+
+
+@pytest.mark.db
+def test_verify_reports_a_deleted_tip_against_the_anchor(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """The case stage 1a measured, at the surface a cron job reads: without
+    an anchor exit code 0, with one exit code 1 and the finding."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    _setup(db, monkeypatch)
+    for n in (1, 2, 3):
+        _append("email", f"m{n}", f"text {n}", f"2026-10-0{n}T09:00:00Z")
+    capsys.readouterr()
+    assert main(["anchor"]) == 0
+    anchors = tmp_path / "anchors.txt"
+    anchors.write_text(capsys.readouterr().out, encoding="utf-8")
+
+    with db.begin() as c:
+        c.execute(text("DELETE FROM source_key WHERE event_id = 3"))
+        c.execute(text("DELETE FROM unit WHERE event_id = 3"))
+        c.execute(text("DELETE FROM event WHERE id = 3"))
+
+    assert main(["verify"]) == 0
+    assert capsys.readouterr().out == "chain intact\n"
+    assert main(["verify", "--anchors", str(anchors)]) == 1
+    out, err = capsys.readouterr()
+    assert out == "FINDING 3: anchored event is missing (the log ends at 2)\n"
+    assert err == ""
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("content", "fragment"),
+    [
+        (b"1 zz\n", "anchor line 1"),
+        (b"", "holds no anchor"),
+        (b"\xff\xfe\x00junk", "not UTF-8"),
+        (None, "cannot read the anchor file"),
+    ],
+)
+def test_a_broken_anchor_file_is_an_input_error(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    content: bytes | None,
+    fragment: str,
+) -> None:
+    """A file that is no anchor file is an input error: exit code 2 and one
+    sentence, never a traceback, and nothing on standard output — no half
+    result. `None` is the file that does not exist. (Review focus 2 of the
+    2026-10-04 external-anchor plan.)"""
+    _setup(db, monkeypatch)
+    _append("email", "m1", "Hello", "2026-10-01T09:00:00Z")
+    capsys.readouterr()
+    anchors = tmp_path / "anchors.txt"
+    if content is not None:
+        anchors.write_bytes(content)
+
+    assert main(["verify", "--anchors", str(anchors)]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.startswith("Error: ")
+    assert fragment in err
+
+
+@pytest.mark.db
+def test_a_directory_as_anchor_file_is_an_input_error(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """A directory is the third shape of "not a file", after the one that is
+    missing and the one that is not text: same exit code, same kind of
+    sentence. (Review focus 2 of the 2026-10-04 external-anchor plan.)"""
+    _setup(db, monkeypatch)
+    assert main(["verify", "--anchors", str(tmp_path)]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.startswith("Error: cannot read the anchor file")
+
+
+def test_exact_without_anchors_is_an_input_error(capsys: pytest.CaptureFixture[str]) -> None:
+    """Refused before the database is even asked for, which is why this test
+    needs none."""
+    assert main(["verify", "--exact"]) == 2
+    out, err = capsys.readouterr()
+    assert (out, err) == ("", "Error: --exact needs --anchors\n")
+
+
+@pytest.mark.db
+def test_anchor_says_nothing_on_an_empty_log_and_refuses_a_broken_chain(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An anchor on a broken chain would certify the break
+    ({ref}`external-anchor`)."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    _setup(db, monkeypatch)
+    assert main(["anchor"]) == 0
+    out, err = capsys.readouterr()
+    assert (out, err) == ("", "the log is empty: nothing to anchor\n")
+
+    _append("email", "m1", "Hello", "2026-10-01T09:00:00Z")
+    capsys.readouterr()
+    with db.begin() as c:
+        c.execute(text("UPDATE event SET hash = :h WHERE id = 1"), {"h": b"\x00" * 32})
+    assert main(["anchor"]) == 1
+    out, err = capsys.readouterr()
+    assert out.startswith("FINDING 1: ")
+    assert not re.search(r"^1 [0-9a-f]{64}$", out, flags=re.MULTILINE)
+
+
+@pytest.mark.db
+def test_verify_reads_the_anchors_from_standard_input(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`-` is not a convenience: it is how a host with docker-compose runs
+    the check without mounting the file into the container
+    ({ref}`external-anchor`)."""
+    _setup(db, monkeypatch)
+    _append("email", "m1", "Hello", "2026-10-01T09:00:00Z")
+    capsys.readouterr()
+    assert main(["anchor"]) == 0
+    line = capsys.readouterr().out
+
+    monkeypatch.setattr(sys, "stdin", io.StringIO(line))
+    assert main(["verify", "--anchors", "-"]) == 0
+    assert capsys.readouterr().out == "chain intact, 1 anchor holds\n"
+
+
+@pytest.mark.db
+def test_an_anchor_file_with_a_byte_order_mark_and_windows_line_ends_is_read(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """A byte order mark and Windows line ends are what an editor on another
+    system leaves behind, and the file is read all the same. (Review focus 1
+    of the 2026-10-04 external-anchor plan.)"""
+    _setup(db, monkeypatch)
+    _append("email", "m1", "Hello", "2026-10-01T09:00:00Z")
+    capsys.readouterr()
+    assert main(["anchor"]) == 0
+    line = capsys.readouterr().out.strip()
+
+    anchors = tmp_path / "anchors.txt"
+    anchors.write_bytes(b"\xef\xbb\xbf# kept outside\r\n" + line.encode() + b"\r\n")
+    assert main(["verify", "--anchors", str(anchors)]) == 0
+    assert capsys.readouterr().out == "chain intact, 1 anchor holds\n"

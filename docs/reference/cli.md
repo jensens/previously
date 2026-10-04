@@ -3,7 +3,7 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has seven subcommands: `append`, `log`, `verify`, `show`, `project`, `chronicle`, and `stats`.
+It has eight subcommands: `append`, `log`, `verify`, `anchor`, `show`, `project`, `chronicle`, and `stats`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
 
 ## Exit codes
@@ -12,7 +12,8 @@ Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see
 |---|---|---|---|
 | `append` | The event was recorded, or an event with the same `--source` and `--external-id` already existed. | Not used. | The input was invalid, or storage raised an error. |
 | `log` | The log was printed. | Not used. | The input was invalid, or storage raised an error. |
-| `verify` | The chain has no finding. | The chain has at least one finding. | Storage raised an error. |
+| `verify` | The chain has no finding, and every anchor holds. | The chain or an anchor has at least one finding. | The input was invalid, or storage raised an error. |
+| `anchor` | The anchor line was printed, or the log is empty. | The chain has at least one finding. | Storage raised an error. |
 | `show` | The event was printed. | No event exists at the given `event_id`. | The input was invalid, or storage raised an error. |
 | `project` | Every projection stands at the tip of the log. | Not used. | Storage raised an error, or the worker found a gap in the log. |
 | `chronicle` | The chronicle was printed, even when the window holds no row. | Not used. | The input was invalid, or storage raised an error. |
@@ -50,10 +51,73 @@ A `--limit` below 1 is refused before anything is read: `log` returns 2 and prin
 ## `verify`
 
 Checks the chain and reports every finding.
-It takes no arguments.
+With `--anchors`, it also checks the log against anchor lines kept outside the database; see {ref}`external-anchor`.
+
+| Argument | Required | Default | Description |
+|---|---|---|---|
+| `--anchors FILE` | No | — | A file of anchor lines to check against; `-` reads standard input. |
+| `--exact` | No | Off | The tip of the log has to be the newest anchor; requires `--anchors`. |
+
+An anchor line holds two fields separated by whitespace: an event `id`, a positive integer, and that event's `hash`, 64 hexadecimal characters.
+`anchor` prints lines in this format.
+
+The anchor file is read as UTF-8 text, with or without a byte order mark, and with Unix or Windows line ends.
+Blank lines and lines starting with `#` don't count.
+Any other line that isn't an anchor line is an input error, named by its line number.
+A file without a single anchor line, a file that can't be read, and a file that isn't UTF-8 text are input errors as well.
+`--exact` without `--anchors` is an input error, refused before the database is read.
+On an input error, `verify` prints nothing to standard output, prints one sentence to standard error, and returns 2.
+
+Every anchor is checked in the pass that checks the chain.
+An anchor holds when the log contains it: the event at the anchor's `id` exists and carries the anchor's `hash`.
+A file may name the same `id` on several lines, and each line is checked.
+With `--exact`, the log also must not continue past the newest anchor, the anchor with the highest `id`.
 
 Each finding prints as one line: `FINDING <event_id>: <reason>`.
-With no finding, `verify` prints the single line `chain intact`.
+Three findings come from the anchors:
+
+```text
+FINDING 42: hash does not match the anchor
+FINDING 42: anchored event is missing (the log ends at 40)
+FINDING 43: the log continues past the newest anchor (42)
+```
+
+The first two name the anchored `id`, the third names the tip.
+`the log ends at` names the `id` of the last event in the log, and `0` for an empty log.
+The number in parentheses in the third is the `id` of the newest anchor.
+
+With no finding, `verify` prints a single line, which depends on the arguments:
+
+| Arguments | Line |
+|---|---|
+| None | `chain intact` |
+| `--anchors` | `chain intact, <n> anchors hold` |
+| `--anchors` and `--exact` | `chain intact, <n> anchors hold, the tip is the newest anchor` |
+
+`<n>` is the number of anchor lines in the file, and a count of one prints as `1 anchor holds`.
+
+Without anchors, one notice goes to standard error, and the exit code stays 0:
+
+```text
+no anchor given: verify attests that the log is unchanged, not that it is complete; see `previously anchor`
+```
+
+`verify` prints the notice only with no finding.
+
+## `anchor`
+
+Checks the chain and prints its tip as an anchor line.
+It takes no arguments.
+
+On an intact chain, `anchor` prints exactly one line to standard output: `<id> <hash>`, the `id` of the last event in the log and its `hash` as 64 lowercase hexadecimal characters.
+The line describes the chain the same run checked.
+With a finding, `anchor` prints the `FINDING` lines in the format `verify` uses and no anchor line.
+
+On an empty log, one notice goes to standard error, and nothing goes to standard output:
+
+```text
+the log is empty: nothing to anchor
+```
 
 ## `show`
 

@@ -86,14 +86,16 @@ ban-relative-imports = "all"
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "T201"]
 # Printing to stdout is what this module is for — a `# noqa: T201` on each of
-# the nineteen `print` calls would be the same justification repeated nineteen
-# times (ruling T9-c). The count is measured against this configuration with
-# every per-file ignore emptied out, `ruff check --select T201 --config
-# 'lint.per-file-ignores = {}' src/previously/cli.py` — that also drops the
-# `tests/*` line above, which costs nothing here, since the command names one
-# file under `src/`. The count has been wrong twice: it read nine against
-# thirteen, which was a miscount and not a drift, and then thirteen until
-# stage 1b's three commands took it to nineteen on 2026-10-04.
+# the twenty-four `print` calls would be the same justification repeated
+# twenty-four times (ruling T9-c). The count is measured against this
+# configuration with every per-file ignore emptied out, `ruff check --select
+# T201 --config 'lint.per-file-ignores = {}' src/previously/cli.py` — that
+# also drops the `tests/*` line above, which costs nothing here, since the
+# command names one file under `src/`. The count has been wrong twice: it read
+# nine against thirteen, which was a miscount and not a drift, and then
+# thirteen until stage 1b's three commands took it to nineteen on 2026-10-04.
+# The same day `anchor` and the anchor check in `verify` took it to
+# twenty-four, measured with the command above.
 "src/previously/cli.py" = ["T201"]
 
 [tool.ruff.lint.flake8-type-checking]
