@@ -40,6 +40,8 @@ Aus `CLAUDE.md` und dem Spec, für jede Aufgabe verbindlich:
 - **Doku im selben Zweig**, nach `plone-doc-style:author`: ein Quadrant je Seite, ein Satz pro Zeile, Überschriften in Satzschreibung, amerikanisches Englisch, höchstens zwei Admonitions je Seite, keine Überschrift mit `SQL`/`NULL`/`JSON`/`FK`.
 - **Getippte Ausgabe ist eine Messung.** Der Testlauf im Tutorial wird aus einem echten `uv run pytest`-Lauf getippt, ohne die `rootdir:`-Zeile, sobald sich die Zahl ändert; `tests/test_docs_typed_output.py` hält `N passed` gegen den Baum.
 - **Stagen namentlich**, nie `git add -A`: vorher `git status --short`, nur die eigenen Dateien; alles andere melden.
+- **Mutationen im Baum sind erlaubt.** Der Betreuer hat es am 2026-10-04 ausdrücklich freigegeben, nachdem das Berechtigungssystem dem Umsetzer von Aufgabe 1 die erste Mutation als „Security Test Removal" verweigert hatte: eine Zeile ändern, die deckenden Tests fahren, die Datei zurücknehmen. Verweigert das System es einem Umsetzer wieder, sucht er keinen anderen Weg, sondern meldet es, und der Controller misst.
+- **Ein Label je Plan nennt seinen Plan** (Ruling T1-b). „Review focus N" und „ruling X" sind je Plan nummeriert; im Baum stehen sie als `review focus N of the 2026-10-04 external-anchor plan`, und der Grund steht im Satz daneben. Ein Docstring, der nur aus dem Label besteht, ist keiner.
 - **Betrieb mitdenken** (`CLAUDE.md`, *Operations are part of every design*): Anleitungen zeigen die Routine als einfache Shell-Kommandos, die in kup6s und auf einem Host mit `docker-compose` gleich aussehen. Nichts Hosting-Spezifisches wird gebaut.
 
 **Vertragliche Wortlaute** — exakt so, weil Tests und die Reference sie zitieren:
@@ -548,6 +550,14 @@ und nach `checked += 1`:
 
 Die drei Befundtexte **enden auf festem Text**, nicht auf einer eingesetzten Zahl. Das ist Absicht: der Test, der die Zitate der Reference gegen den Code hält, ordnet einen Satz über sein festes Ende zu (Aufgabe 2). Nicht umformulieren.
 
+> **Nachtrag 2026-10-04, nach der Umsetzung (Rulings T1-a und T1-b).** Zwei Dinge an diesem Schritt waren im Plan falsch.
+>
+> *Die Komplexität von `examine` war nicht gemessen.* Mit dem Rumpf, wie er hier steht, meldet `ruff` `C901` (11 gegen die Schwelle 10). Ein neues `# noqa` ist ausgeschlossen, also steht der Teil nach dem Durchlauf — die fehlenden Anker und die `exact`-Prüfung — im Baum in einer eigenen Funktion `_closing_findings(pending, anchors, tip, *, exact)`. Verhalten und Texte sind dieselben. Ein Plan, der eine Funktion um drei Zweige verlängert, misst ihre Komplexität, bevor er sie vorgibt.
+>
+> *Drei Docstrings der Tests oben zitieren „Review focus N" nackt* — ein Label, das je Plan nummeriert ist; einer besteht nur aus dem Label. Im Baum sagt jeder, was sein Test festnagelt, und nennt den Plan am Label (Commit `c7d8b47`). Dieselbe Klasse wie die `§`-Docstrings der Stufe 1b: was der Plantext vorgibt, landet im Baum. Die Docstrings der Aufgabe 2 sind im Plantext vor dem Dispatch korrigiert.
+>
+> Die Prüfung fand außerdem zwei Tabellenzellen der Seite ohne Test (die `exact`-Spalte für „Spitze gelöscht" und „umgeschrieben") und eine Grenze ohne sichtbare Kontrolle; beide Tests tragen jetzt je eine Zusicherung mehr, als hier steht. Die Testzahl bleibt 251.
+
 Und darunter, neu, die alte Signatur:
 
 ```python
@@ -804,9 +814,10 @@ def test_a_broken_anchor_file_is_an_input_error(
     content: bytes | None,
     fragment: str,
 ) -> None:
-    """Review focus 2. Exit code 2 and one sentence, never a traceback, and
-    nothing on standard output: no half result. `None` is the file that does
-    not exist."""
+    """A file that is no anchor file is an input error: exit code 2 and one
+    sentence, never a traceback, and nothing on standard output — no half
+    result. `None` is the file that does not exist. (Review focus 2 of the
+    2026-10-04 external-anchor plan.)"""
     _setup(db, monkeypatch)
     _append("email", "m1", "Hello", "2026-10-01T09:00:00Z")
     capsys.readouterr()
@@ -828,7 +839,9 @@ def test_a_directory_as_anchor_file_is_an_input_error(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
 ) -> None:
-    """Review focus 2, the third shape of "not a file"."""
+    """A directory is the third shape of "not a file", after the one that is
+    missing and the one that is not text: same exit code, same kind of
+    sentence. (Review focus 2 of the 2026-10-04 external-anchor plan.)"""
     _setup(db, monkeypatch)
     assert main(["verify", "--anchors", str(tmp_path)]) == 2
     out, err = capsys.readouterr()
@@ -894,7 +907,9 @@ def test_an_anchor_file_with_a_byte_order_mark_and_windows_line_ends_is_read(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
 ) -> None:
-    """Review focus 1: what an editor on another system leaves behind."""
+    """A byte order mark and Windows line ends are what an editor on another
+    system leaves behind, and the file is read all the same. (Review focus 1
+    of the 2026-10-04 external-anchor plan.)"""
     _setup(db, monkeypatch)
     _append("email", "m1", "Hello", "2026-10-01T09:00:00Z")
     capsys.readouterr()
