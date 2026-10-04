@@ -5,6 +5,13 @@
 
 from alembic import command
 from alembic.config import Config
+from previously.contract.rows import EventRow
+from previously.contract.rows import UnitRow
+from previously.core.hashing import event_hash
+from previously.core.hashing import HASH_VERSION_1
+from previously.core.hashing import payload_hash
+from previously.core.hashing import units_hash
+from previously.storage.postgres import PostgresStorage
 from previously.storage.schema import metadata
 from sqlalchemy import create_engine
 from sqlalchemy import Engine
@@ -16,7 +23,11 @@ import pytest
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from collections.abc import Iterator
+    from collections.abc import Sequence
+    from datetime import datetime
+    from previously.contract.types import RawEvent
 
 # Every table of the schema in one statement, derived from `metadata` rather
 # than typed out: the same list stood in seven places before, and a seventh
@@ -72,6 +83,84 @@ def truncate_statement() -> str:
     and no rule has to be loosened to keep one.
     """
     return TRUNCATE_ALL
+
+
+type WriteVersion1 = Callable[[PostgresStorage, Sequence[RawEvent], datetime], list[int]]
+
+
+@pytest.fixture
+def write_version_1() -> WriteVersion1:
+    """Writes events the way `append` did before stage 1c, in hash format 1.
+
+    `append` writes version 2 only, and version 1 stays verifiable for good
+    ({ref}`hash-version-2`), so a log can hold version 1 rows that nothing in
+    the tree writes any more. This fixture writes them by hand, with the
+    version 1 functions, as a sub-chain on the current tip: the payload with
+    the kind of evidence mixed in, the units without digest or salt, the
+    source attribution in the hash and in `source_key`. It returns the new
+    identifiers, like `append`, and does not look up existing keys.
+
+    Called as `write_version_1(storage, events, recorded_at)`. A test that
+    takes it annotates the parameter with a `type` alias of its own, spelled
+    like `WriteVersion1` above, for the reason `truncate_statement` gives:
+    hypothesis evaluates the annotations of a `@given` function, and a
+    `Callable` imported under `TYPE_CHECKING` is not defined then. A `type`
+    alias is a name that exists at runtime, and its value is evaluated only
+    when somebody asks for it — measured on 2026-10-04 with a `@given` test
+    that took a fixture annotated both ways: through the alias it passed,
+    with `Callable` written out it failed at collection with
+    `NameError: name 'Callable' is not defined`.
+    """
+
+    def write(
+        storage: PostgresStorage, events: Sequence[RawEvent], recorded_at: datetime
+    ) -> list[int]:
+        ids: list[int] = []
+        with storage.begin() as conn:
+            tip = storage.tip(conn)
+            next_id = 1 if tip is None else tip.id + 1
+            prev = None if tip is None else tip.hash
+            for event in events:
+                payload: dict[str, object] = {**event.payload, "evidence": event.evidence.value}
+                payload_digest = payload_hash(payload)
+                units_digest = units_hash(event.units)
+                this_hash = event_hash(
+                    event_id=next_id,
+                    kind="observation",
+                    recorded_at=recorded_at,
+                    occurred_at=event.occurred_at,
+                    prev_hash=prev,
+                    payload_digest=payload_digest,
+                    units_digest=units_digest,
+                    source=event.source,
+                    external_id=event.external_id,
+                )
+                storage.insert_event(
+                    conn,
+                    EventRow(
+                        id=next_id,
+                        kind="observation",
+                        recorded_at=recorded_at,
+                        occurred_at=event.occurred_at,
+                        prev_hash=prev,
+                        hash=this_hash,
+                        payload_hash=payload_digest,
+                        units_hash=units_digest,
+                        payload=payload,
+                        hash_version=HASH_VERSION_1,
+                    ),
+                    [
+                        UnitRow(next_id, u.seq, u.content, u.start_ms, u.end_ms, u.speaker)
+                        for u in event.units
+                    ],
+                    (event.source, event.external_id),
+                )
+                ids.append(next_id)
+                prev = this_hash
+                next_id += 1
+        return ids
+
+    return write
 
 
 @pytest.fixture(scope="session")

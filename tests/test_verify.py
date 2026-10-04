@@ -3,17 +3,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from datetime import datetime
 from datetime import UTC
-from previously.contract.rows import EventRow
-from previously.contract.rows import UnitRow
 from previously.contract.types import Anchor
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
 from previously.core.errors import InvalidPayload
-from previously.core.hashing import event_hash
-from previously.core.hashing import payload_hash
 from previously.core.hashing import unit_digest
-from previously.core.hashing import units_hash
 from previously.core.units import split_plaintext
 from previously.core.verify import Examination
 from previously.core.verify import examine
@@ -22,8 +17,14 @@ from previously.core.verify import verify
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import Engine
 from sqlalchemy import text
+from typing import TYPE_CHECKING
 
 import pytest
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from collections.abc import Sequence
 
 
 NOW = datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC)
@@ -62,49 +63,28 @@ def _message(external_id: str) -> RawEvent:
     )
 
 
-def _append_version_1(storage: PostgresStorage, events: list[RawEvent]) -> None:
-    """Writes events the way `append` did before stage 1c: by hand, with the
-    version 1 functions, so that a version 1 row exists to be checked."""
-    with storage.begin() as conn:
-        tip = storage.tip(conn)
-        next_id = 1 if tip is None else tip.id + 1
-        prev = None if tip is None else tip.hash
-        for event in events:
-            payload: dict[str, object] = {**event.payload, "evidence": event.evidence.value}
-            payload_digest = payload_hash(payload)
-            units_digest = units_hash(event.units)
-            this_hash = event_hash(
-                event_id=next_id,
-                kind="observation",
-                recorded_at=NOW,
-                occurred_at=event.occurred_at,
-                prev_hash=prev,
-                payload_digest=payload_digest,
-                units_digest=units_digest,
-                source=event.source,
-                external_id=event.external_id,
-            )
-            storage.insert_event(
-                conn,
-                EventRow(
-                    id=next_id,
-                    kind="observation",
-                    recorded_at=NOW,
-                    occurred_at=event.occurred_at,
-                    prev_hash=prev,
-                    hash=this_hash,
-                    payload_hash=payload_digest,
-                    units_hash=units_digest,
-                    payload=payload,
-                ),
-                [
-                    UnitRow(next_id, u.seq, u.content, u.start_ms, u.end_ms, u.speaker)
-                    for u in event.units
-                ],
-                (event.source, event.external_id),
-            )
-            prev = this_hash
-            next_id += 1
+# The `write_version_1` fixture from `conftest.py`, under a `type` alias for
+# the reason its docstring gives.
+type WriteVersion1 = Callable[[PostgresStorage, Sequence[RawEvent], datetime], list[int]]
+
+# The forgery tests whose finding is the same in both hash formats run once
+# per format: version 1 written by hand, as every event before stage 1c was,
+# and version 2 through `append`. Version 1 stays verifiable for good
+# ({ref}`hash-version-2`), and without its half every forgery test here would
+# exercise version 2 alone.
+WRITTEN_IN = pytest.mark.parametrize("version", [1, 2], ids=["version-1", "version-2"])
+
+
+def _write(
+    version: int,
+    storage: PostgresStorage,
+    events: list[RawEvent],
+    write_version_1: WriteVersion1,
+) -> None:
+    if version == 1:
+        write_version_1(storage, events, NOW)
+    else:
+        append(storage, events, recorded_at=NOW)
 
 
 @pytest.mark.db
@@ -119,14 +99,17 @@ def test_an_intact_chain_passes(db: Engine) -> None:
     assert verify(storage) == []
 
 
+@WRITTEN_IN
 @pytest.mark.db
-def test_a_manipulated_payload_fires(db: Engine) -> None:
+def test_a_manipulated_payload_fires(
+    db: Engine, write_version_1: WriteVersion1, version: int
+) -> None:
     """Exactly one finding: the self-hash check computes against the *stored*
     `payload_hash`, and that one stays unchanged, because only `payload` was
     manipulated. Event 2 links to the (unchanged) `hash` of event 1 and is
     therefore unaffected."""
     storage = PostgresStorage(db)
-    append(storage, [_event("a"), _event("b")], recorded_at=NOW)
+    _write(version, storage, [_event("a"), _event("b")], write_version_1)
     with db.begin() as c:
         c.execute(
             text("UPDATE event SET payload = CAST(:p AS jsonb) WHERE id = 1"),
@@ -137,11 +120,12 @@ def test_a_manipulated_payload_fires(db: Engine) -> None:
     assert "payload_hash" in findings[0].reason
 
 
+@WRITTEN_IN
 @pytest.mark.db
-def test_a_tombstone_passes(db: Engine) -> None:
+def test_a_tombstone_passes(db: Engine, write_version_1: WriteVersion1, version: int) -> None:
     """Setting payload to NULL does not break the chain."""
     storage = PostgresStorage(db)
-    append(storage, [_event("a"), _event("b")], recorded_at=NOW)
+    _write(version, storage, [_event("a"), _event("b")], write_version_1)
     with db.begin() as c:
         # The salt goes with the payload, or `event_payload_salt_check`
         # refuses the statement (ruling P-1 of the 2026-10-04 stage 1c plan).
@@ -149,8 +133,9 @@ def test_a_tombstone_passes(db: Engine) -> None:
     assert verify(storage) == []
 
 
+@WRITTEN_IN
 @pytest.mark.db
-def test_a_broken_linkage_fires(db: Engine) -> None:
+def test_a_broken_linkage_fires(db: Engine, write_version_1: WriteVersion1, version: int) -> None:
     """A manipulated `prev_hash` breaks two checks at once, not just one.
 
     `prev_hash` goes into the event hash itself (`core/hashing.py`, the key
@@ -164,7 +149,7 @@ def test_a_broken_linkage_fires(db: Engine) -> None:
     are wrong independently of each other (ruling T8-a).
     """
     storage = PostgresStorage(db)
-    append(storage, [_event("a"), _event("b")], recorded_at=NOW)
+    _write(version, storage, [_event("a"), _event("b")], write_version_1)
     with db.begin() as c:
         c.execute(text("UPDATE event SET prev_hash = :p WHERE id = 2"), {"p": b"\xff" * 32})
     findings = verify(storage)
@@ -178,20 +163,26 @@ def test_a_broken_linkage_fires(db: Engine) -> None:
     assert "hash" in self_hash[0]
 
 
+@WRITTEN_IN
 @pytest.mark.db
-def test_a_manipulated_event_hash_fires(db: Engine) -> None:
+def test_a_manipulated_event_hash_fires(
+    db: Engine, write_version_1: WriteVersion1, version: int
+) -> None:
     """Exactly one finding: there is only this one event, hence no successor
     whose linkage the manipulation could break."""
     storage = PostgresStorage(db)
-    append(storage, [_event("a")], recorded_at=NOW)
+    _write(version, storage, [_event("a")], write_version_1)
     with db.begin() as c:
         c.execute(text("UPDATE event SET hash = :h WHERE id = 1"), {"h": b"\xee" * 32})
     findings = verify(storage)
     assert [f.event_id for f in findings] == [1]
 
 
+@WRITTEN_IN
 @pytest.mark.db
-def test_a_first_event_with_a_prev_hash_fires(db: Engine) -> None:
+def test_a_first_event_with_a_prev_hash_fires(
+    db: Engine, write_version_1: WriteVersion1, version: int
+) -> None:
     """Covers the fourth checking branch, which none of the six tests of the
     extract exercises: the first row read having `prev_hash` set instead of
     NULL. As in `test_a_broken_linkage_fires` (ruling T8-a), two independent
@@ -201,7 +192,7 @@ def test_a_first_event_with_a_prev_hash_fires(db: Engine) -> None:
     while the stored `hash` was still computed with the original `prev_hash`
     (NULL)."""
     storage = PostgresStorage(db)
-    append(storage, [_event("a"), _event("b")], recorded_at=NOW)
+    _write(version, storage, [_event("a"), _event("b")], write_version_1)
     with db.begin() as c:
         c.execute(text("UPDATE event SET prev_hash = :p WHERE id = 1"), {"p": b"\xaa" * 32})
     findings = verify(storage)
@@ -261,12 +252,14 @@ def test_k1_f1_a_rewritten_unit_content_fires(db: Engine) -> None:
 
 
 @pytest.mark.db
-def test_k1_f1_a_rewritten_unit_content_fires_in_version_1(db: Engine) -> None:
+def test_k1_f1_a_rewritten_unit_content_fires_in_version_1(
+    db: Engine, write_version_1: WriteVersion1
+) -> None:
     """F1 on a version 1 event, which K1 was measured on and which stays
     verifiable for good: version 1 has no digest per unit, so the finding is
     the one over the units digest."""
     storage = PostgresStorage(db)
-    _append_version_1(storage, [_message("message-1")])
+    write_version_1(storage, [_message("message-1")], NOW)
     with db.begin() as c:
         c.execute(
             text("UPDATE unit SET content = :new WHERE event_id = 1 AND seq = 1"),
@@ -277,8 +270,11 @@ def test_k1_f1_a_rewritten_unit_content_fires_in_version_1(db: Engine) -> None:
     assert findings[0].reason == "units_hash does not match the units"
 
 
+@WRITTEN_IN
 @pytest.mark.db
-def test_k1_f2_a_deleted_unit_fires(db: Engine) -> None:
+def test_k1_f2_a_deleted_unit_fires(
+    db: Engine, write_version_1: WriteVersion1, version: int
+) -> None:
     """F2: one of two units is deleted.
 
     This is the forgery that no content comparison finds: what is missing
@@ -286,7 +282,7 @@ def test_k1_f2_a_deleted_unit_fires(db: Engine) -> None:
     units notices the missing unit.
     """
     storage = PostgresStorage(db)
-    append(storage, [_message("message-1")], recorded_at=NOW)
+    _write(version, storage, [_message("message-1")], write_version_1)
     with db.begin() as c:
         c.execute(text("DELETE FROM unit WHERE event_id = 1 AND seq = 1"))
     findings = verify(storage)
@@ -294,8 +290,11 @@ def test_k1_f2_a_deleted_unit_fires(db: Engine) -> None:
     assert findings[0].reason == "units_hash does not match the units"
 
 
+@WRITTEN_IN
 @pytest.mark.db
-def test_k1_f3_a_rewritten_source_attribution_fires(db: Engine) -> None:
+def test_k1_f3_a_rewritten_source_attribution_fires(
+    db: Engine, write_version_1: WriteVersion1, version: int
+) -> None:
     """F3: the source attribution is forged.
 
     `source` and `external_id` go into the event hash but have no digest of
@@ -304,7 +303,7 @@ def test_k1_f3_a_rewritten_source_attribution_fires(db: Engine) -> None:
     longer match its hash.
     """
     storage = PostgresStorage(db)
-    append(storage, [_message("message-1")], recorded_at=NOW)
+    _write(version, storage, [_message("message-1")], write_version_1)
     with db.begin() as c:
         c.execute(
             text("UPDATE source_key SET source = 'invented', external_id = 'x' WHERE event_id = 1")
@@ -314,15 +313,18 @@ def test_k1_f3_a_rewritten_source_attribution_fires(db: Engine) -> None:
     assert findings[0].reason == "hash does not match the fields"
 
 
+@WRITTEN_IN
 @pytest.mark.db
-def test_k1_a_deleted_source_attribution_fires(db: Engine) -> None:
+def test_k1_a_deleted_source_attribution_fires(
+    db: Engine, write_version_1: WriteVersion1, version: int
+) -> None:
     """Removing the source attribution entirely is no finding of its own but
     leads via the same hash comparison: `verify` reads `null`, but the values
     were hashed. A missing row and a rewritten row are both "the fields do not
     match the hash" — and the check need not distinguish more than that,
     because both have the same consequence."""
     storage = PostgresStorage(db)
-    append(storage, [_message("message-1")], recorded_at=NOW)
+    _write(version, storage, [_message("message-1")], write_version_1)
     with db.begin() as c:
         c.execute(text("DELETE FROM source_key WHERE event_id = 1"))
     findings = verify(storage)
@@ -337,16 +339,16 @@ def test_k1_a_deleted_source_attribution_fires(db: Engine) -> None:
 
 
 @pytest.mark.db
-def test_a_version_1_chain_still_passes(db: Engine) -> None:
+def test_a_version_1_chain_still_passes(db: Engine, write_version_1: WriteVersion1) -> None:
     storage = PostgresStorage(db)
-    _append_version_1(storage, [_event("a"), _message("m"), _event("c")])
+    write_version_1(storage, [_event("a"), _message("m"), _event("c")], NOW)
     assert verify(storage) == []
 
 
 @pytest.mark.db
-def test_a_chain_of_both_versions_passes(db: Engine) -> None:
+def test_a_chain_of_both_versions_passes(db: Engine, write_version_1: WriteVersion1) -> None:
     storage = PostgresStorage(db)
-    _append_version_1(storage, [_message("m")])
+    write_version_1(storage, [_message("m")], NOW)
     append(storage, [_event("b")], recorded_at=NOW)
     with storage.begin() as c:
         versions = [row.hash_version for row in storage.read(c, from_id=1, limit=10)]
@@ -355,12 +357,14 @@ def test_a_chain_of_both_versions_passes(db: Engine) -> None:
 
 
 @pytest.mark.db
-def test_v1_a_unit_without_content_is_the_units_hash_finding(db: Engine) -> None:
+def test_v1_a_unit_without_content_is_the_units_hash_finding(
+    db: Engine, write_version_1: WriteVersion1
+) -> None:
     """Version 1 takes the texts of all units into one digest, so a unit
     without content leaves it nothing to be computed from. That is a finding
     at the units digest, not a crash."""
     storage = PostgresStorage(db)
-    _append_version_1(storage, [_message("m")])
+    write_version_1(storage, [_message("m")], NOW)
     with db.begin() as c:
         c.execute(text("UPDATE unit SET content = NULL WHERE event_id = 1 AND seq = 1"))
     assert verify(storage) == [Finding(1, "units_hash does not match the units")]
@@ -505,9 +509,10 @@ def test_an_unknown_hash_version_is_a_finding_and_the_check_goes_on(db: Engine) 
         ("uppercase", '{"Note":"b","evidence":"recollection"}'),
     ],
 )
+@WRITTEN_IN
 @pytest.mark.db
 def test_w1_a_non_canonicalizable_payload_reports_and_does_not_break_off(
-    db: Engine, name: str, payload: str
+    db: Engine, write_version_1: WriteVersion1, version: int, name: str, payload: str
 ) -> None:
     """A chain of three events with the middle one poisoned: one finding for
     the middle one, no break-off, and event 3 is demonstrably still checked.
@@ -518,7 +523,7 @@ def test_w1_a_non_canonicalizable_payload_reports_and_does_not_break_off(
     the poisoned row and did not leave the chain.
     """
     storage = PostgresStorage(db)
-    append(storage, [_event("a"), _event("b"), _event("c")], recorded_at=NOW)
+    _write(version, storage, [_event("a"), _event("b"), _event("c")], write_version_1)
     with db.begin() as c:
         c.execute(
             text("UPDATE event SET payload = CAST(:p AS jsonb) WHERE id = 2"),
@@ -569,6 +574,31 @@ def test_w1_a_poisoned_payload_does_not_blind_the_unit_check(db: Engine) -> None
     # The unit's own digest since `append` writes version 2; in version 1 the
     # same forgery is the units digest's finding.
     assert findings[1].reason == "unit 1 does not match its digest"
+
+
+@pytest.mark.db
+def test_w1_a_poisoned_payload_does_not_blind_the_unit_check_in_version_1(
+    db: Engine, write_version_1: WriteVersion1
+) -> None:
+    """The same two forgeries in one version 1 row: the payload and the units
+    are recomputed one after the other there too, so the poisoned payload
+    does not keep the units digest from being compared."""
+    storage = PostgresStorage(db)
+    write_version_1(storage, [_message("message-1")], NOW)
+    with db.begin() as c:
+        c.execute(
+            text("UPDATE event SET payload = CAST(:p AS jsonb) WHERE id = 1"),
+            {"p": '{"Note":"poisoned"}'},
+        )
+        c.execute(
+            text("UPDATE unit SET content = :new WHERE event_id = 1 AND seq = 1"),
+            {"new": "Price remains 100000 Euro."},
+        )
+
+    findings = verify(storage)
+    assert [f.event_id for f in findings] == [1, 1], findings
+    assert findings[0].reason.startswith("payload not canonicalizable: $: key 'Note' ")
+    assert findings[1].reason == "units_hash does not match the units"
 
 
 # ---------------------------------------------------------------------------

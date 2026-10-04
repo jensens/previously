@@ -104,6 +104,16 @@ def test_link_without_a_key_hashes_no_source() -> None:
     )
 
 
+def test_prepare_refuses_a_seq_that_appears_twice() -> None:
+    """Two units under one `seq` would leave one digest in the mapping the
+    units digest is taken over, so the digest would attest fewer units than
+    the event carries. `prepare` refuses that itself rather than relying on
+    each caller to have checked."""
+    twice = (RawUnit(seq=1, content="a"), RawUnit(seq=1, content="b"))
+    with pytest.raises(InvalidPayload, match=r"^unit 1: seq is not unique within the event$"):
+        prepare(kind="observation", occurred_at=OCCURRED, payload=PAYLOAD, units=twice, key=None)
+
+
 def test_prepare_refuses_what_the_canonical_form_refuses() -> None:
     """The path in the message runs from the payload, as {ref}`payload-range`
     documents it, and not from the header the version 2 digest wraps it in."""

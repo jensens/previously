@@ -20,6 +20,7 @@ from datetime import datetime
 from previously.contract.rows import EventRow
 from previously.contract.rows import UnitRow
 from previously.core.canonical import canonical
+from previously.core.errors import InvalidPayload
 from previously.core.hashing import event_hash_v2
 from previously.core.hashing import HASH_VERSION_2
 from previously.core.hashing import new_salt
@@ -76,11 +77,13 @@ def prepare(
     digests. That is the point of the salt, and it is why `append` prepares
     an event once and keeps the result across its retries.
 
-    Raises `InvalidPayload` for whatever the canonical form refuses. The
-    units are expected to be checked already, as `append` does: a `seq` that
-    appears twice would leave one digest in the mapping the units digest is
-    taken over, and the store's primary key on `(event_id, seq)` refuses the
-    second row.
+    Raises `InvalidPayload` for whatever the canonical form refuses, and for
+    a `seq` that appears twice. That one is refused here although `append`
+    refuses it earlier, because `prepare` has more than one caller: two units
+    under one `seq` would leave one digest in the mapping the units digest is
+    taken over, so the digest would attest fewer units than the event
+    carries, and the store's primary key on `(event_id, seq)` would then
+    refuse the second row with an exception from the driver.
     """
     # The payload on its own first, before any salt is drawn, so that a
     # refusal names its path from the payload. `payload_hash_v2` wraps the
@@ -91,7 +94,11 @@ def prepare(
     payload_salt = new_salt()
     payload_digest = payload_hash_v2(payload, payload_salt)
     prepared_units: list[PreparedUnit] = []
+    seen: set[int] = set()
     for unit in units:
+        if unit.seq in seen:
+            raise InvalidPayload(f"unit {unit.seq}: seq is not unique within the event")
+        seen.add(unit.seq)
         salt = new_salt()
         prepared_units.append(
             PreparedUnit(
