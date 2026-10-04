@@ -1286,6 +1286,9 @@ def test_redacting_twice_says_already(
         pytest.param(
             ["event", "1", "--reason", ""], "--reason must not be empty", id="empty-reason"
         ),
+        pytest.param(
+            ["event", "1", "--reason", "   "], "--reason must not be empty", id="blank-reason"
+        ),
     ],
 )
 @pytest.mark.db

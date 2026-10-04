@@ -24,6 +24,7 @@ from previously.core.chain import link
 from previously.core.chain import prepare
 from previously.core.errors import ChainConflict
 from previously.core.errors import RedactionRefused
+from previously.core.hashing import HASH_VERSION_1
 from previously.core.hashing import HASH_VERSION_2
 from previously.core.hashing import iso_utc
 from previously.core.redaction import event_payload
@@ -69,8 +70,10 @@ class Redacted:
 
 def _check_input(reason: str, recorded_at: datetime) -> None:
     # The form of a redaction demands a reason (`redaction.parse`), so an
-    # empty one would be written as an action `verify` cannot read.
-    if not reason:
+    # empty one would be written as an action `verify` cannot read. Blanks
+    # alone are no reason either: the reason is the brake on an erasure, and
+    # one that says nothing brakes nothing.
+    if not reason.strip():
         raise RedactionRefused("a redaction needs a reason, and the reason is empty")
     iso_utc(recorded_at)  # fail early if naive
 
@@ -116,8 +119,11 @@ def _retrying[Conn](log: LogStore[Conn], once: Callable[[Conn], Redacted]) -> Re
     """Runs `once` in a transaction of its own until it gets a chain position.
 
     The policy is `append`'s ({ref}`concurrency`): a lost chain position rolls
-    the transaction back, tombstones included, and the next attempt starts
-    from the lock. Every other error rolls back as well and is not retried.
+    the transaction back and the next attempt starts from the lock. The
+    position is lost at `insert_event`, before any tombstone is set, so the
+    rollback undoes the lock and nothing else; the tombstones are only ever
+    written by the attempt that got its position. Every other error rolls
+    back as well and is not retried.
     """
     for attempt in range(MAX_RETRIES):
         try:
@@ -188,16 +194,23 @@ def redact_units[Conn](
     _check_input(reason, recorded_at)
     wanted = sorted(set(seqs))
     if not wanted:
-        raise ValueError("redact_units needs at least one seq")
+        raise RedactionRefused("a redaction of units needs at least one unit")
 
     def once(conn: Conn) -> Redacted:
         target = _target(eraser.lock_event(conn, event_id), event_id)
         # Version 1 attests all units of an event in one digest, so the units
         # left standing beside an erased one would be attested by nothing.
+        if target.hash_version == HASH_VERSION_1:
+            raise RedactionRefused(
+                f"event {event_id} was written in hash format 1, which attests its "
+                "units only together: use `previously redact event`"
+            )
+        # A format nobody knows says nothing about how its units are attested,
+        # so nothing can be claimed about it either — `verify` reports such a
+        # row as a finding of its own.
         if target.hash_version != HASH_VERSION_2:
             raise RedactionRefused(
-                f"event {event_id} was written in hash format {target.hash_version}, "
-                "which attests its units only together: use `previously redact event`"
+                f"event {event_id} names hash format {target.hash_version}, which is not known"
             )
         present = set(_seqs(log, conn, event_id))
         for seq in wanted:

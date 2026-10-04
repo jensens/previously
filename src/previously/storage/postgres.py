@@ -3,22 +3,22 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The storage interface against PostgreSQL.
 
-Deliberately narrow (architecture §5, frozen design record): no update, no
-delete, no transaction control to the outside, no SQL passthrough, no
-returning of database objects. Those five are the interface's own argument and
-have no page in `docs/`; {ref}`module-boundaries` settles which module may
-import which, not which methods this one has.
+Deliberately narrow (architecture §5, frozen design record): no delete on the
+log, no update on it beyond the two an erasure needs, no transaction control
+to the outside, no SQL passthrough, no returning of database objects. The
+architecture said "no update" without that qualification; since stage 1c
+the log has exactly two `UPDATE`s and still no `DELETE` — `erase_payload`
+and `erase_units`, both behind `RedactionStore`, the third protocol. What
+they may set is enumerated in them — the content and its salt, and on a
+unit the speaker and the timestamps — and every digest stays
+({ref}`erasure`). Nothing typed against `LogStore` reaches either. The five
+properties are the interface's own argument and have no page in `docs/`;
+{ref}`module-boundaries` settles which module may import which, not which
+methods this one has.
 
 The projection methods below delete and update, and that is the point: a
 projection is disposable, the log is not; the protocols in `contract.store`
 keep the two apart.
-
-On the log itself there are exactly two `UPDATE`s since stage 1c, and no
-`DELETE`: `erase_payload` and `erase_units`, both behind `RedactionStore`,
-the third protocol. What they may set is enumerated in them — the content
-and its salt, and on a unit the speaker and the timestamps — and every
-digest stays ({ref}`erasure`). Nothing typed against `LogStore` reaches
-either.
 """
 
 from contextlib import contextmanager

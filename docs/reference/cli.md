@@ -52,7 +52,7 @@ previously redact units ID SEQ [SEQ] --reason TEXT
 |---|---|---|---|
 | `ID` | Yes | — | The `id` of the event to erase from, as a positional argument. |
 | `SEQ` | Yes, for `units` | — | The `seq` of each unit to erase, as positional arguments, one or more. |
-| `--reason` | Yes | — | Why the erasure happens, not empty. It stays in the log for good and must not contain what's erased. |
+| `--reason` | Yes | — | Why the erasure happens, not empty and not blanks alone. It stays in the log for good and must not contain what's erased. |
 
 `redact event` erases the event's payload, and the content, speaker, timestamps and salt of every unit.
 `redact units` erases the content, speaker, timestamps and salt of the named units.
@@ -83,15 +83,19 @@ unit 3 was already erased
 
 `redact units` skips a unit that a redaction already covers, and names the remaining units in the redaction it writes.
 
-Five refusals print one sentence to standard error, print nothing to standard output, write nothing, and return 2:
+Six refusals print one sentence to standard error, print nothing to standard output, write nothing, and return 2:
 
 ```text
 Error: there is no event 9
 Error: event 3 is a redaction, and a redaction cannot be redacted
 Error: event 2 was written in hash format 1, which attests its units only together: use `previously redact event`
+Error: event 4 names hash format 3, which is not known
 Error: event 1 has no unit 7
 Error: --reason must not be empty
 ```
+
+The fourth refuses `redact units` on an event whose `hash_version` is neither 1 nor 2, which only a forged row can carry.
+`--reason` counts as empty when it holds nothing but blanks.
 
 ## `log`
 

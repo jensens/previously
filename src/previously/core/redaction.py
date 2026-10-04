@@ -130,8 +130,8 @@ def parse(event_id: int, payload: Mapping[str, object]) -> Redaction:
     if frozenset(payload) != _PAYLOAD_KEYS or action_name(payload) != REDACTION:
         raise MalformedAction("not the form of a redaction")
     reason = payload["reason"]
-    if not isinstance(reason, str) or not reason:
-        raise MalformedAction("the reason is not a non-empty text")
+    if not isinstance(reason, str) or not reason.strip():
+        raise MalformedAction("the reason is not a text with something in it besides blanks")
     scope = payload["scope"]
     target = payload["target"]
     if not isinstance(scope, str) or scope not in _TARGET_KEYS:

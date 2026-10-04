@@ -429,7 +429,8 @@ def _cmd_redact(args: argparse.Namespace) -> int:
     No question before it acts: the reason is the brake, and a command that
     asked would be no tool for a script.
     """
-    if not args.reason:
+    # Blanks alone count as empty: the reason is the brake ({ref}`erasure`).
+    if not args.reason.strip():
         raise RedactionRefused("--reason must not be empty")
     storage = _storage()
     now = datetime.now(UTC)

@@ -1014,3 +1014,36 @@ def test_tombstone_and_redaction_are_matched_across_batch_boundaries(db: Engine)
     append(storage, [_message("m"), _event("b"), _event("c"), _event("d")], recorded_at=NOW)
     redact_event(storage, storage, 1, reason="r", recorded_at=NOW)
     assert verify(storage, batch=2) == []
+
+
+@pytest.mark.parametrize(
+    "forgery",
+    [
+        pytest.param("DELETE FROM unit WHERE event_id = 1 AND seq = 2", id="a-tombstone-deleted"),
+        pytest.param(
+            "INSERT INTO unit (event_id, seq, digest) "
+            "SELECT 1, 9, digest FROM unit WHERE event_id = 1 AND seq = 1",
+            id="a-tombstone-added",
+        ),
+    ],
+)
+@WRITTEN_IN
+@pytest.mark.db
+def test_the_tombstone_rows_of_a_fully_erased_version_1_event_are_attested_by_nothing(
+    db: Engine, write_version_1: WriteVersion1, version: int, forgery: str
+) -> None:
+    """A measured limit, pinned so that whoever changes it does so knowingly
+    ({ref}`erasure`). Once every unit of a version 1 event is erased, nothing
+    is left to recompute its units digest from, so the number and the `seq`
+    of its tombstone rows are attested by nothing: a tombstone row deleted or
+    added passes. In version 2 the units digest runs over the stored unit
+    digests, and the same forgery is its finding — the control that the
+    forgery is one the check can see at all."""
+    storage = PostgresStorage(db)
+    _write(version, storage, [_message("m")], write_version_1)
+    redact_event(storage, storage, 1, reason="r", recorded_at=NOW)
+    assert verify(storage) == []
+    with db.begin() as c:
+        c.execute(text(forgery))
+    expected = [] if version == 1 else [Finding(1, "units_hash does not match the units")]
+    assert verify(storage) == expected

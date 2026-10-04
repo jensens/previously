@@ -56,6 +56,15 @@ def test_the_units_form_orders_and_deduplicates() -> None:
         pytest.param(
             {
                 "action": "redaction",
+                "scope": "event",
+                "target": {"event": 5, "blobs": []},
+                "reason": " \t",
+            },
+            id="reason-only-blanks",
+        ),
+        pytest.param(
+            {
+                "action": "redaction",
                 "scope": "unit",
                 "target": {"event": 5, "units": [1]},
                 "reason": "r",

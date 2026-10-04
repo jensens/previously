@@ -64,7 +64,10 @@ def test_the_downgrade_refuses_once_version_2_is_written() -> None:
             )
 
             # A unit without content is the second reason, and the sentence
-            # names both. Erased by hand: nothing in the tree erases a unit.
+            # names both. Erased by hand, because the downgrade asks only
+            # whether a unit without content exists, not who erased it; going
+            # through `redact` would add a redaction event this test does not
+            # need.
             with engine.begin() as c:
                 c.execute(text("UPDATE unit SET content = NULL, salt = NULL WHERE event_id = 1"))
             with pytest.raises(CommandError) as caught:

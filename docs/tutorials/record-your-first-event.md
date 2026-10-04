@@ -192,39 +192,39 @@ It raises its own PostgreSQL container and never touches the database above.
 $ uv run pytest
 ============================= test session starts ==============================
 platform linux -- Python 3.14.3, pytest-9.1.1, pluggy-1.6.0
-Using --randomly-seed=1341295757
+Using --randomly-seed=376457856
 configfile: pyproject.toml
 testpaths: tests
 plugins: randomly-5.0.0, platformdirs-4.12.2, cov-7.1.0, hypothesis-6.168.3
-collected 389 items
+collected 398 items
 
-tests/test_verify.py ................................................... [ 13%]
-..........                                                               [ 15%]
-tests/test_schema.py .................                                   [ 20%]
-tests/test_cli.py ...................................................... [ 33%]
-.....                                                                    [ 35%]
-tests/test_hashing.py ........................................           [ 45%]
-tests/test_migrations_dsn.py ...                                         [ 46%]
-tests/test_redaction.py .................                                [ 50%]
-tests/test_contracts.py ..                                               [ 51%]
-tests/test_migration_0003.py .                                           [ 51%]
-tests/test_projection_derive.py ..........                               [ 53%]
-tests/test_chain.py .......                                              [ 55%]
-tests/test_projection_worker.py ............                             [ 58%]
-tests/test_append.py ...............................                     [ 66%]
-tests/test_docs_references.py .....                                      [ 68%]
-tests/test_docs_typed_output.py .                                        [ 68%]
-tests/test_projection_store.py .........                                 [ 70%]
-tests/test_rows.py ......                                                [ 72%]
-tests/test_anchor.py .............                                       [ 75%]
-tests/test_properties.py ..........                                      [ 78%]
-tests/test_storage.py ...................................                [ 87%]
-tests/test_canonical.py ...............                                  [ 91%]
-tests/test_redact.py ................                                    [ 95%]
-tests/test_units.py .............                                        [ 98%]
-tests/test_docs_build.py ......                                          [100%]
+tests/test_chain.py .......                                              [  1%]
+tests/test_migration_0003.py .                                           [  2%]
+tests/test_append.py ...............................                     [  9%]
+tests/test_canonical.py ...............                                  [ 13%]
+tests/test_storage.py ...................................                [ 22%]
+tests/test_units.py .............                                        [ 25%]
+tests/test_anchor.py .............                                       [ 28%]
+tests/test_docs_references.py .....                                      [ 30%]
+tests/test_redact.py ...................                                 [ 34%]
+tests/test_schema.py .................                                   [ 39%]
+tests/test_properties.py ..........                                      [ 41%]
+tests/test_verify.py ................................................... [ 54%]
+..............                                                           [ 58%]
+tests/test_contracts.py ..                                               [ 58%]
+tests/test_redaction.py ..................                               [ 63%]
+tests/test_docs_build.py ......                                          [ 64%]
+tests/test_projection_derive.py ..........                               [ 67%]
+tests/test_projection_store.py .........                                 [ 69%]
+tests/test_hashing.py ........................................           [ 79%]
+tests/test_cli.py ...................................................... [ 92%]
+......                                                                   [ 94%]
+tests/test_migrations_dsn.py ...                                         [ 95%]
+tests/test_docs_typed_output.py .                                        [ 95%]
+tests/test_rows.py ......                                                [ 96%]
+tests/test_projection_worker.py ............                             [100%]
 
-============================= 389 passed in 32.17s =============================
+============================= 398 passed in 32.10s =============================
 ```
 
 `pytest-randomly` reshuffles the file order on every run and prints its seed, so a hidden dependency between two tests surfaces instead of staying hidden.

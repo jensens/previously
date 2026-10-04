@@ -14,7 +14,7 @@ An erasure has a target, and the target is either a whole event or some units of
 
 | Target | What disappears | What stays |
 |---|---|---|
-| An event | The payload with its salt, and with it the kind of evidence (`evidence`); the content, speaker, timestamps and salt of every unit | Every hash; `id`, `kind`, and both timestamps; the source key `(source, external_id)`; the rows of the units, as tombstones |
+| An event | The payload with its salt, and with it the kind of evidence (`evidence`); the content, speaker, timestamps and salt of every unit | Every hash; `id`, `kind`, and both timestamps; the source key `(source, external_id)`; the rows of the units, as tombstones—attested in hash format 2, and in hash format 1 by nothing, as the section on erasing in part explains |
 | Units | The content, speaker, timestamps and salt of the named units | Their `seq` and their digest; everything else about the event |
 
 A tombstone is what an erased row turns into: the row stays, and the columns that carried content hold SQL `NULL`.
@@ -66,6 +66,13 @@ Whatever has to go out of a payload—a file name, an address—takes the whole 
 Units are different because hash format 2 gives each unit a digest of its own.
 An event written in hash format 1 has one digest over the texts of all its units, so its units can only be erased all together, with the event.
 `redact units` refuses such an event and says so, and `verify` reports a version 1 event with only some of its units erased, whoever ordered it.
+
+Erasing all of them has a cost of its own, and version 1 carries it beside its unsalted digests.
+Once every text is gone, nothing is left to recompute the units digest from, so the check computes nothing for the units of that event.
+The rows stay as tombstones, but their number and their `seq` values are attested by nothing.
+A tombstone row deleted, or one added with an invented `seq`, passes the check without a finding.
+In hash format 2 the same forgery is a finding, because the units digest runs over the digests the tombstones keep.
+`test_the_tombstone_rows_of_a_fully_erased_version_1_event_are_attested_by_nothing` pins that limit, with the version 2 case beside it as the control.
 
 ## Why a redaction can't be redacted
 

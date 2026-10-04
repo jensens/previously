@@ -63,8 +63,9 @@ UNIT_DOMAIN = "previously/unit"
 # 32 random bytes go into every version 2 digest over content, and an erasure
 # takes them together with that content ({ref}`hash-version-2`,
 # {ref}`erasure`): a digest that stays behind must not let anybody guess what
-# it was computed from. `core.redact` erases both in one statement, and the
-# database refuses a tombstone that keeps its salt.
+# it was computed from. The store erases both in one statement
+# (`erase_payload` and `erase_units` behind `RedactionStore`, called by
+# `core.redact`), and the database refuses a tombstone that keeps its salt.
 SALT_BYTES = 32
 
 

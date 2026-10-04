@@ -10,8 +10,10 @@ from previously.contract.types import Anchor
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
+from previously.core.append import MAX_RETRIES
 from previously.core.chain import link
 from previously.core.chain import prepare
+from previously.core.errors import ChainConflict
 from previously.core.errors import RedactionRefused
 from previously.core.hashing import payload_hash_v2
 from previously.core.hashing import unit_digest
@@ -24,6 +26,7 @@ from previously.core.units import split_plaintext
 from previously.core.verify import examine
 from previously.core.verify import Finding
 from previously.core.verify import verify
+from previously.storage.errors import ChainPositionTaken
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import Connection
 from sqlalchemy import Engine
@@ -36,8 +39,13 @@ import threading
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from collections.abc import Iterator
     from collections.abc import Sequence
+    from contextlib import AbstractContextManager
     from previously.contract.rows import EventRow
+    from previously.contract.rows import Tip
+    from previously.contract.rows import UnitRow
+    from previously.contract.store import LogStore
 
 
 NOW = datetime(2026, 10, 4, 12, 0, 0, tzinfo=UTC)
@@ -450,11 +458,13 @@ def test_an_empty_reason_or_no_unit_is_refused_before_the_store_is_asked() -> No
     from sqlalchemy import create_engine
 
     nowhere = PostgresStorage(create_engine("postgresql+psycopg://x:y@localhost:1/z"))
-    with pytest.raises(RedactionRefused, match="reason is empty"):
-        redact_event(nowhere, nowhere, 1, reason="", recorded_at=LATER)
-    with pytest.raises(RedactionRefused, match="reason is empty"):
-        redact_units(nowhere, nowhere, 1, [1], reason="", recorded_at=LATER)
-    with pytest.raises(ValueError, match="at least one seq"):
+    # Blanks alone are no reason: the reason is the brake on an erasure.
+    for reason in ("", " \t\n"):
+        with pytest.raises(RedactionRefused, match="reason is empty"):
+            redact_event(nowhere, nowhere, 1, reason=reason, recorded_at=LATER)
+        with pytest.raises(RedactionRefused, match="reason is empty"):
+            redact_units(nowhere, nowhere, 1, [1], reason=reason, recorded_at=LATER)
+    with pytest.raises(RedactionRefused, match=r"^a redaction of units needs at least one unit$"):
         redact_units(nowhere, nowhere, 1, [], reason="r", recorded_at=LATER)
 
 
@@ -492,3 +502,108 @@ def test_read_index_passes_over_what_it_cannot_read(db: Engine) -> None:
         Finding(3, "action has no valid form"),
         Finding(5, "payload is erased without a redaction"),
     ]
+
+
+class _ContestedLog:
+    """The real store, except that `insert_event` raises `ChainPositionTaken`
+    for its first `losses` calls, or for every call when `losses` is `None` —
+    a lost chain position on demand, in the shape of `_FailingStore` in
+    `tests/test_projection_worker.py`. The waits between the attempts are the
+    real backoff, at most 0.715 s in all over eight attempts."""
+
+    def __init__(self, inner: PostgresStorage, losses: int | None) -> None:
+        self._inner = inner
+        self._losses = losses
+        self.inserts = 0
+
+    def begin(self) -> AbstractContextManager[Connection]:
+        return self._inner.begin()
+
+    def snapshot(self) -> AbstractContextManager[Connection]:
+        return self._inner.snapshot()
+
+    def tip(self, conn: Connection) -> Tip | None:
+        return self._inner.tip(conn)
+
+    def lookup(self, conn: Connection, source: str, external_id: str) -> int | None:
+        return self._inner.lookup(conn, source, external_id)
+
+    def insert_event(
+        self,
+        conn: Connection,
+        row: EventRow,
+        units: Sequence[UnitRow],
+        key: tuple[str, str] | None,
+    ) -> None:
+        self.inserts += 1
+        if self._losses is None or self.inserts <= self._losses:
+            raise ChainPositionTaken("event_prev_hash_idx")
+        self._inner.insert_event(conn, row, units, key)
+
+    def read(self, conn: Connection, from_id: int, limit: int) -> Iterator[EventRow]:
+        return self._inner.read(conn, from_id, limit)
+
+    def units_by_event(
+        self, conn: Connection, event_ids: Sequence[int]
+    ) -> dict[int, list[UnitRow]]:
+        return self._inner.units_by_event(conn, event_ids)
+
+    def count_events(self, conn: Connection) -> int:
+        return self._inner.count_events(conn)
+
+    def source_keys(self, conn: Connection, event_ids: Sequence[int]) -> dict[int, tuple[str, str]]:
+        return self._inner.source_keys(conn, event_ids)
+
+    def read_by_kind(self, conn: Connection, kind: str) -> Iterator[EventRow]:
+        return self._inner.read_by_kind(conn, kind)
+
+
+@pytest.mark.db
+def test_a_lost_chain_position_is_retried_and_leaves_nothing_behind(db: Engine) -> None:
+    """The first attempt loses its chain position at `insert_event`, the
+    second gets one: one redaction, the tombstones set, and nothing of the
+    first attempt in the log."""
+    storage = PostgresStorage(db)
+    append(storage, [_message("m")], recorded_at=NOW)
+    contested = _ContestedLog(storage, losses=1)
+    log: LogStore[Connection] = contested
+
+    result = redact_event(log, storage, 1, reason="r", recorded_at=LATER)
+
+    assert result == Redacted(redaction_id=2, written=True)
+    assert contested.inserts == 2
+    assert [r.kind for r in _rows(storage)] == ["observation", "action"]
+    assert all(erased for _, erased, _, _ in _unit_state(db, 1))
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_a_chain_position_never_won_ends_in_a_chain_conflict(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    append(storage, [_message("m")], recorded_at=NOW)
+    contested = _ContestedLog(storage, losses=None)
+    log: LogStore[Connection] = contested
+
+    with pytest.raises(ChainConflict, match=f"after {MAX_RETRIES} attempts"):
+        redact_units(log, storage, 1, [1], reason="r", recorded_at=LATER)
+
+    assert contested.inserts == MAX_RETRIES
+    rows = _rows(storage)
+    assert [r.kind for r in rows] == ["observation"]
+    assert rows[0].payload is not None
+    assert all(not erased for _, erased, _, _ in _unit_state(db, 1))
+
+
+@pytest.mark.db
+def test_units_of_an_event_in_an_unknown_hash_format_are_refused(db: Engine) -> None:
+    """A format nobody knows makes no claim about its units, so the refusal
+    does not borrow version 1's sentence for it."""
+    storage = PostgresStorage(db)
+    append(storage, [_message("m")], recorded_at=NOW)
+    with db.begin() as c:
+        c.execute(text("UPDATE event SET hash_version = 3 WHERE id = 1"))
+
+    with pytest.raises(RedactionRefused) as refused:
+        redact_units(storage, storage, 1, [1], reason="r", recorded_at=LATER)
+    assert str(refused.value) == "event 1 names hash format 3, which is not known"
+    assert len(_rows(storage)) == 1

@@ -409,7 +409,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
 
     The second half holds the five standard-error sentences and the two
     lines of `redact` on standard output that `cli.md` quotes, in five
-    blocks, against the literals in `cli.py`; the five refusals of `redact`
+    blocks, against the literals in `cli.py`; the six refusals of `redact`
     against the messages `core/redact.py` and `cli.py` raise as
     `RedactionRefused`; and the twelve findings it quotes, three from the
     anchors and nine from the hash formats and erasure, against the reasons
@@ -470,8 +470,8 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         *_raised_patterns(ROOT / "src" / "previously" / "core" / "redact.py", "RedactionRefused"),
         *_raised_patterns(ROOT / "src" / "previously" / "cli.py", "RedactionRefused"),
     ]
-    quoted = _quoted_block(page, "Five refusals")
-    assert len(quoted) == 5, quoted
+    quoted = _quoted_block(page, "Six refusals")
+    assert len(quoted) == 6, quoted
     for line in quoted:
         prefix, _, refusal = line.partition(": ")
         assert prefix == "Error", f"cli.md quotes the refusal {line!r} without `Error: `"

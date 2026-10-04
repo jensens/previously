@@ -297,12 +297,14 @@ The database holds every erasure to that rule: it refuses a payload set to `NULL
 
 ## Counting the rows the check has seen
 
-The check reads the chain in `id` order inside a single transaction and establishes five things; {ref}`cli-reference` gives the one line each of them prints as.
+The check reads the chain in `id` order inside a single transaction and establishes six things; {ref}`cli-reference` gives the lines they print as.
 Four belong to an event, and three of those four compare a digest against the thing it covers: the payload digest against the payload, the units digest against the units, and the event hash against the event's fields.
 In version 2 the units part runs in two steps: each unit that has content against its own digest, and the units digest against the stored unit digests.
+In version 1 the units digest is computed only while every unit of the event still has its text, since it runs over the texts; an event with erased units leaves it nothing to compute.
 The row's `hash_version` says which format the three are computed in, and a value the check doesn't know is reported in their place.
 The fourth compares one stored digest against another, `prev_hash` against the predecessor's `hash`, which makes it the link itself rather than a seal over content.
 The fifth belongs to no event at all, compares a number against a number, and exists because the check doesn't oversee its own reading window.
+The sixth is erasure: every tombstone against a redaction that ordered it, and every redaction against its target, matched once the pass has read the whole chain; {ref}`erasure` explains why, and what a version 1 event erased in full leaves unattested.
 
 The scan begins at `id = 1`, and the read filters `id >= from_id`.
 A row smuggled in below that lay outside the field of view:
