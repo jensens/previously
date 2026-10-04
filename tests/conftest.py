@@ -33,12 +33,14 @@ def engine() -> Iterator[Engine]:
 def db(engine: Engine) -> Iterator[Engine]:
     """An empty schema per test. TRUNCATE instead of re-creating: faster and sufficient.
 
-    All three tables stand in one statement, and it is not the order of the
+    All six tables stand in one statement, and it is not the order of the
     names that makes this compatible with the foreign keys: PostgreSQL does
     not check foreign keys against each other within a single joint TRUNCATE.
     """
     with engine.begin() as c:
-        c.execute(text("TRUNCATE source_key, unit, event"))
+        c.execute(
+            text("TRUNCATE p_source_stats, p_chronicle, projection_state, source_key, unit, event")
+        )
     yield engine
 
 

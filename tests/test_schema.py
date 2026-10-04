@@ -342,3 +342,23 @@ def test_the_declared_nulls_not_distinct_reaches_the_database(db: Engine) -> Non
         ).all()
     present = {name: flag for name, flag in rows if name in declared}
     assert present == declared
+
+
+@pytest.mark.db
+def test_the_projection_tables_exist(db: Engine) -> None:
+    """Stage 1b adds three tables ({ref}`projections`); the migration has to
+    create all three, the metadata has to declare all three, and the two
+    have to agree — `test_the_declared_indexes_exist` above covers the index
+    the same way."""
+    with db.connect() as c:
+        names = set(
+            c.execute(
+                text(
+                    "SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'"
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert {"projection_state", "p_chronicle", "p_source_stats"} <= names
+    assert {"projection_state", "p_chronicle", "p_source_stats"} <= set(metadata.tables)

@@ -9,6 +9,7 @@ hash-chain
 canonicalization
 concurrency
 module-boundaries
+projections
 backup-encryption
 silent-losses
 design-records

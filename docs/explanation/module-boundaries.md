@@ -268,9 +268,9 @@ previously.contract is not allowed to import previously.storage:
 So `storage/rows.py` became `contract/rows.py`, six import sites followed, and no re-export stayed behind: a module that exists only to forward a name is the kind of thing this project removes rather than keeps.
 `storage.postgres` imports the row types from `contract` now, which is where the page's sixth edge came from.
 
-A second protocol is coming, for the projection store, and it's a second one by design rather than more methods on this one.
+A second protocol is coming, for the projection store ({ref}`projections`), and it's a second one by design rather than more methods on this one.
 `LogStore` is append-only—write once, read in chain order, never change.
-A projection store empties, inserts and updates, because a projection is derivable and disposable by design.
+A projection store empties, inserts and updates, because a projection is derivable and disposable by design ({ref}`projections`).
 One protocol covering both would blur exactly the line that separates them: a projection carries no truth of its own, and a type that offers "append to the log" and "truncate the table" through the same interface stops saying so.
 
 The honest version of the old arrangement deserves saying plainly.

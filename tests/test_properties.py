@@ -166,7 +166,9 @@ def test_p1_every_sequence_passes_the_check(
 ) -> None:
     """P1: for every sequence of appends, verify passes."""
     with db.begin() as c:
-        c.execute(text("TRUNCATE source_key, unit, event"))
+        c.execute(
+            text("TRUNCATE p_source_stats, p_chronicle, projection_state, source_key, unit, event")
+        )
     storage = PostgresStorage(db)
     events = [
         RawEvent(
@@ -195,7 +197,9 @@ def test_p7_id_order_is_chain_order(db: Engine, count: int) -> None:
     them.
     """
     with db.begin() as c:
-        c.execute(text("TRUNCATE source_key, unit, event"))
+        c.execute(
+            text("TRUNCATE p_source_stats, p_chronicle, projection_state, source_key, unit, event")
+        )
     storage = PostgresStorage(db)
     events = [
         RawEvent(
@@ -223,7 +227,9 @@ def test_p7_id_order_is_chain_order(db: Engine, count: int) -> None:
 def test_p5_any_single_byte_change_fails_verification(db: Engine, position: int) -> None:
     """P5: checks the security property directly, not via a stand-in."""
     with db.begin() as c:
-        c.execute(text("TRUNCATE source_key, unit, event"))
+        c.execute(
+            text("TRUNCATE p_source_stats, p_chronicle, projection_state, source_key, unit, event")
+        )
     storage = PostgresStorage(db)
     append(
         storage,
@@ -278,7 +284,9 @@ def test_p2_idempotency_across_repeated_appends(db: Engine, repetitions: int) ->
     """P2: the same (source, external_id) twice → the same id, the number of
     events unchanged."""
     with db.begin() as c:
-        c.execute(text("TRUNCATE source_key, unit, event"))
+        c.execute(
+            text("TRUNCATE p_source_stats, p_chronicle, projection_state, source_key, unit, event")
+        )
     storage = PostgresStorage(db)
     event = RawEvent(
         source="hyp",
@@ -337,7 +345,9 @@ def test_p3_concurrent_writers_leave_one_gapless_chain_with_each_event_once(
     would not see.
     """
     with db.begin() as c:
-        c.execute(text("TRUNCATE source_key, unit, event"))
+        c.execute(
+            text("TRUNCATE p_source_stats, p_chronicle, projection_state, source_key, unit, event")
+        )
     storage = PostgresStorage(db)
 
     batches = [[f"w{writer}-{i}" for i in range(size)] for writer, size in enumerate(batch_sizes)]
