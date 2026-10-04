@@ -22,6 +22,7 @@ from previously.core.append import append
 from previously.core.canonical import canonical
 from previously.core.canonical import MAX_SAFE_INT
 from previously.core.errors import InvalidPayload
+from previously.core.hashing import SALT_BYTES
 from previously.core.units import split_plaintext
 from previously.core.verify import verify
 from previously.storage.postgres import PostgresStorage
@@ -270,6 +271,59 @@ def test_p5_any_single_byte_change_fails_verification(
             ),
             {"new": json.dumps(changed)},
         )
+    assert verify(storage) != []
+
+
+# The three byte strings of version 2 that no version 1 row has, each with the
+# statement that changes one byte of it. Written out rather than built from
+# the column names, so that no SQL is assembled from strings.
+_SALTS_AND_DIGESTS = {
+    "event.payload_salt": (
+        "UPDATE event SET payload_salt = set_byte(payload_salt, :i, "
+        "(get_byte(payload_salt, :i) + 1) % 256) WHERE id = 1"
+    ),
+    "unit.salt": (
+        "UPDATE unit SET salt = set_byte(salt, :i, (get_byte(salt, :i) + 1) % 256) "
+        "WHERE event_id = 1 AND seq = 1"
+    ),
+    "unit.digest": (
+        "UPDATE unit SET digest = set_byte(digest, :i, (get_byte(digest, :i) + 1) % 256) "
+        "WHERE event_id = 1 AND seq = 1"
+    ),
+}
+
+
+@pytest.mark.db
+@SLOW
+@given(
+    st.sampled_from(sorted(_SALTS_AND_DIGESTS)),
+    st.integers(min_value=0, max_value=SALT_BYTES - 1),
+)
+def test_p8_any_single_byte_change_in_a_salt_or_a_unit_digest_fails_verification(
+    db: Engine, truncate_statement: str, column: str, position: int
+) -> None:
+    """P5's property for what version 2 adds ({ref}`hash-version-2`): a salt
+    is an input of its digest, and a unit digest an input of the units
+    digest, so a change to any one byte of either is a finding."""
+    with db.begin() as c:
+        c.execute(text(truncate_statement))
+    storage = PostgresStorage(db)
+    append(
+        storage,
+        [
+            RawEvent(
+                source="hyp",
+                external_id="e1",
+                occurred_at=NOW,
+                evidence=Evidence.RECOLLECTION,
+                units=split_plaintext("content"),
+                payload={"text": SAMPLE_TEXT},
+            )
+        ],
+        recorded_at=NOW,
+    )
+    with db.begin() as c:
+        c.execute(text(_SALTS_AND_DIGESTS[column]), {"i": position})
     assert verify(storage) != []
 
 

@@ -39,8 +39,10 @@ erDiagram
 | `prev_hash` | `bytea` | Yes | The predecessor's `hash`; `NULL` for the first event in the chain. |
 | `hash` | `bytea` | No | This event's hash; see {ref}`hash-format`. |
 | `payload_hash` | `bytea` | No | The hash of `payload`; stays valid after an erasure. |
-| `units_hash` | `bytea` | No | The hash of this event's units. |
+| `units_hash` | `bytea` | No | The hash of this event's units; in hash format 2, over the units' `digest` values. |
 | `payload` | `jsonb` | Yes | The event's content; `NULL` after an erasure (a tombstone). |
+| `hash_version` | `smallint` | No | The hash format the row was written in, `1` or `2`; defaults to `1`. |
+| `payload_salt` | `bytea` | Yes | The salt of the payload hash in hash format 2; `NULL` in hash format 1 and after an erasure. |
 
 ### Constraints and indexes
 
@@ -51,6 +53,7 @@ erDiagram
 | `event_prev_hash_idx` | `prev_hash` | Unique, with `NULLS NOT DISTINCT`: at most one row has a `NULL` `prev_hash`. |
 | `event_kind_check` | `kind` | `kind IN ('observation', 'assertion', 'action')`. |
 | `event_payload_object_check` | `payload` | `payload IS NULL OR jsonb_typeof(payload) = 'object'`. |
+| `event_payload_salt_check` | `payload`, `payload_salt` | `payload IS NOT NULL OR payload_salt IS NULL`: a row without a payload has no payload salt. |
 | `event_occurred_idx` | `occurred_at` | Not unique; no constraint. |
 | `event_kind_occurred_idx` | `kind`, `occurred_at` | Not unique; no constraint. |
 
@@ -60,10 +63,12 @@ erDiagram
 |---|---|---|---|
 | `event_id` | `bigint` | No | The event this unit belongs to. |
 | `seq` | `integer` | No | The unit's position within its event, starting at 1. |
-| `content` | `text` | No | The unit's text. |
+| `content` | `text` | Yes | The unit's text; `NULL` after an erasure (a tombstone). |
 | `start_ms` | `integer` | Yes | Start offset in milliseconds; always `NULL` in stage 1a. |
 | `end_ms` | `integer` | Yes | End offset in milliseconds; always `NULL` in stage 1a. |
 | `speaker` | `text` | Yes | The speaker's name; always `NULL` in stage 1a. |
+| `digest` | `bytea` | Yes | The unit's own hash in hash format 2; stays valid after an erasure. `NULL` in hash format 1. |
+| `salt` | `bytea` | Yes | The salt of `digest`; `NULL` in hash format 1 and after an erasure. |
 
 ### Constraints and indexes
 
@@ -71,6 +76,7 @@ erDiagram
 |---|---|---|
 | `unit_pkey` | `event_id`, `seq` | Primary key. |
 | `unit_seq_check` | `seq` | `seq >= 1`. |
+| `unit_tombstone_check` | `content`, `salt`, `speaker`, `start_ms`, `end_ms` | `content IS NOT NULL OR (salt IS NULL AND speaker IS NULL AND start_ms IS NULL AND end_ms IS NULL)`: a unit without content keeps only `event_id`, `seq` and `digest`. |
 | `unit_event_id_fkey` | `event_id` | Foreign key to `event.id`. |
 
 ## `source_key`

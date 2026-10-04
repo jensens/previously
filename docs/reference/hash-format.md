@@ -41,11 +41,14 @@ Each digest carries its version in the field `v` of the hashed object, except th
 |---|---|
 | `HASH_VERSION_1` | `1` |
 | `HASH_VERSION_2` | `2` |
-| `HASH_VERSION` | `HASH_VERSION_2`, the version new events are meant to be written in. |
+| `HASH_VERSION` | `HASH_VERSION_2`, the version new events are written in. |
 
-`previously.core.append` and `previously.core.verify` call the version 1 functions.
-No module in `previously` calls the version 2 functions yet.
+`previously.core.append` writes every new event in version 2.
+`previously.core.verify` computes each row in the version that the row's `event.hash_version` names, and reports any other value as `hash_version <n> is not known`.
 The version 1 functions stay unchanged beside the version 2 functions, and version 1 stays verifiable.
+
+A version 2 event stores its payload salt in `event.payload_salt`, and each of its units stores its digest and its salt in `unit.digest` and `unit.salt`; see {ref}`database-schema`.
+A version 1 event leaves all three `NULL`.
 
 For why there are two versions, see {ref}`hash-version-2`.
 
@@ -140,7 +143,7 @@ A salt is `SALT_BYTES` random bytes, which is 32, and it enters the hashed objec
 | `units` | The unit digests as hexadecimal, sorted by `seq`. |
 
 `units_hash_v2` sorts the mapping by `seq` itself.
-`seq` doesn't stand in the list, because every unit digest covers its own.
+The list holds the digests only, without `seq`; each unit digest covers its own `seq`.
 An event without units has the units hash of an empty list.
 
 ### Event hash

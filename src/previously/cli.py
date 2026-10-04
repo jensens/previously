@@ -366,7 +366,10 @@ def _cmd_show(args: argparse.Namespace) -> int:
                 # not the order they were written in.
                 print(f"payload={json.dumps(row.payload, ensure_ascii=False, sort_keys=True)}")
             for unit in storage.units(conn, row.id):
-                print(f"  ¶{unit.seq} {unit.content}")
+                # An erased unit says so, like the payload above, rather than
+                # printing `None` where its text stood.
+                content = "<erased>" if unit.content is None else unit.content
+                print(f"  ¶{unit.seq} {content}")
             return 0
     print(f"No event {args.event_id}", file=sys.stderr)
     return 1

@@ -1,6 +1,7 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from dataclasses import replace
 from datetime import datetime
 from datetime import UTC
 from previously.contract.rows import EventRow
@@ -135,6 +136,31 @@ def test_payload_round_trip(db: Engine) -> None:
     assert read_back.payload == {"text": "Event 1"}
     assert read_back.prev_hash is None
     assert read_back.recorded_at == datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC)
+
+
+@pytest.mark.db
+def test_version_and_salt_round_trip(db: Engine) -> None:
+    """`insert_event` writes `hash_version` out of the row, not through the
+    column's default, and `read` gives both new fields back."""
+    storage = PostgresStorage(db)
+    row = replace(_row(1, None), hash_version=2, payload_salt=b"\x2a" * 32)
+    with storage.begin() as c:
+        storage.insert_event(c, row, [UnitRow(1, 1, "a")], ("cli", "x1"))
+    with storage.begin() as c:
+        read_back = next(iter(storage.read(c, from_id=1, limit=1)))
+    assert read_back.hash_version == 2
+    assert read_back.payload_salt == b"\x2a" * 32
+
+
+@pytest.mark.db
+def test_unit_digest_and_salt_round_trip_through_both_readers(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    unit = UnitRow(1, 1, "a", digest=b"\x3b" * 32, salt=b"\x4c" * 32)
+    with storage.begin() as c:
+        storage.insert_event(c, _row(1, None), [unit], ("cli", "x1"))
+    with storage.begin() as c:
+        assert storage.units(c, 1) == [unit]
+        assert storage.units_by_event(c, [1]) == {1: [unit]}
 
 
 @pytest.mark.db

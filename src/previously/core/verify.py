@@ -26,20 +26,30 @@ forge one row could have hidden every further forgery behind it.
 
 from dataclasses import dataclass
 from previously.contract.types import Anchor
+from previously.core.canonical import canonical
 from previously.core.errors import InvalidPayload
 from previously.core.hashing import event_hash
+from previously.core.hashing import event_hash_v2
+from previously.core.hashing import HASH_VERSION_1
+from previously.core.hashing import HASH_VERSION_2
 from previously.core.hashing import payload_hash
+from previously.core.hashing import payload_hash_v2
+from previously.core.hashing import unit_digest
 from previously.core.hashing import units_hash
+from previously.core.hashing import units_hash_v2
+from typing import cast
 from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from collections.abc import Collection
     from collections.abc import Mapping
     from collections.abc import Sequence
     from previously.contract.rows import EventRow
     from previously.contract.rows import UnitRow
     from previously.contract.store import LogStore
+    from previously.core.hashing import HashableUnit
 
 
 @dataclass(frozen=True)
@@ -74,7 +84,7 @@ class Examination:
 
 
 def _payload_finding(row: EventRow) -> Finding | None:
-    """`payload_hash` against the stored payload, or `None`.
+    """`payload_hash` against the stored payload in version 1, or `None`.
 
     Skipped on `payload IS NULL`: that is the tombstone, and `payload_hash`
     stays standing in that case ({ref}`tombstone-seam`).
@@ -91,15 +101,23 @@ def _payload_finding(row: EventRow) -> Finding | None:
 
 
 def _units_finding(row: EventRow, units: Sequence[UnitRow]) -> Finding | None:
-    """`units_hash` against the stored units, or `None`.
+    """`units_hash` against the stored units in version 1, or `None`.
 
     This is the check that correction K1 brought: without it, three permanent
     forgeries ran, as measured, silently through — the content of a unit
     rewritten, one of two units deleted, and both of them with the finding
     "chain intact".
+
+    Version 1 takes the texts of all units into one digest, so a unit without
+    content leaves nothing to compute it from ({ref}`hash-version-2`), and
+    that is this digest's finding.
     """
+    if any(unit.content is None for unit in units):
+        return Finding(row.id, "units_hash does not match the units")
     try:
-        computed = units_hash(units)
+        # Every unit carries content, which the line above established and
+        # the type of `UnitRow.content` cannot say: the cast states it.
+        computed = units_hash(cast("Sequence[HashableUnit]", units))
     except InvalidPayload as error:  # pragma: no cover
         # Unreachable out of the database, hence without test coverage — but
         # not removable. `unit.content` is `text` and in a UTF-8 database can
@@ -121,6 +139,154 @@ def _units_finding(row: EventRow, units: Sequence[UnitRow]) -> Finding | None:
     return None
 
 
+def _payload_finding_v2(row: EventRow) -> Finding | None:
+    """The version 2 payload digest against the stored payload, or `None`.
+
+    Skipped on the tombstone, as in version 1. A payload without its salt has
+    nothing to be computed with, which is the same statement as a digest that
+    does not match: the stored digest does not attest this payload.
+
+    The payload is canonicalized on its own first, so that the finding names
+    the path from the payload, as it does in version 1, and not from the
+    header the digest wraps it in — the reason `chain.prepare` gives.
+    """
+    if row.payload is None:
+        return None
+    if row.payload_salt is None:
+        return Finding(row.id, "payload_hash does not match the payload")
+    try:
+        canonical(row.payload)
+        computed = payload_hash_v2(row.payload, row.payload_salt)
+    except InvalidPayload as error:
+        return Finding(row.id, f"payload not canonicalizable: {error}")
+    if computed != row.payload_hash:
+        return Finding(row.id, "payload_hash does not match the payload")
+    return None
+
+
+def _unit_findings(row: EventRow, units: Sequence[UnitRow]) -> list[Finding]:
+    """Every unit **with content** against its own version 2 digest.
+
+    A unit without content is skipped: its digest stays standing for the units
+    digest, as `payload_hash` does for a tombstoned payload. A unit that kept
+    its content and lost its salt or its digest has nothing to be computed
+    against, and that is its finding.
+    """
+    findings: list[Finding] = []
+    for unit in units:
+        if unit.content is None:
+            continue
+        mismatch = Finding(row.id, f"unit {unit.seq} does not match its digest")
+        if unit.salt is None or unit.digest is None:
+            findings.append(mismatch)
+            continue
+        try:
+            computed = unit_digest(
+                seq=unit.seq,
+                content=unit.content,
+                start_ms=unit.start_ms,
+                end_ms=unit.end_ms,
+                speaker=unit.speaker,
+                salt=unit.salt,
+            )
+        except InvalidPayload as error:  # pragma: no cover
+            # Unreachable out of the database for the reason the same branch
+            # in `_units_finding` gives, and kept standing for the same reason.
+            findings.append(Finding(row.id, f"unit {unit.seq} not canonicalizable: {error}"))
+            continue
+        if computed != unit.digest:
+            findings.append(mismatch)
+    return findings
+
+
+def _units_finding_v2(row: EventRow, units: Sequence[UnitRow]) -> Finding | None:
+    """The version 2 units digest over the **stored** unit digests, or `None`.
+
+    Over the stored digests and not over recomputed ones, so that it holds for
+    an erased unit — and so that a unit rewritten together with its digest
+    still fails here: the unit agrees with itself, the set no longer agrees
+    with the row. A unit without a digest leaves the set incomplete, which is
+    this digest's finding and not a crash.
+    """
+    digests: dict[int, bytes] = {}
+    for unit in units:
+        if unit.digest is None:
+            return Finding(row.id, "units_hash does not match the units")
+        digests[unit.seq] = unit.digest
+    if units_hash_v2(digests) != row.units_hash:
+        return Finding(row.id, "units_hash does not match the units")
+    return None
+
+
+def _event_hash_finding(
+    row: EventRow, source_key: tuple[str, str] | None, compute: Callable[..., bytes]
+) -> Finding | None:
+    """The event hash over the row's fields, computed by `compute`.
+
+    The comparison uses the **stored** digests `payload_hash` and
+    `units_hash`, not the ones just recomputed. That is exactly what keeps the
+    two statements apart: "the content was altered" (the digest does not match
+    the content) against "the row was altered" (the fields do not match the
+    hash). And only that way does the erasure seam stay open — an erased
+    content leaves its digest standing, and the event hash remains valid.
+    """
+    source, external_id = source_key if source_key is not None else (None, None)
+    expected = compute(
+        event_id=row.id,
+        kind=row.kind,
+        recorded_at=row.recorded_at,
+        occurred_at=row.occurred_at,
+        prev_hash=row.prev_hash,
+        payload_digest=row.payload_hash,
+        units_digest=row.units_hash,
+        source=source,
+        external_id=external_id,
+    )
+    if expected != row.hash:
+        return Finding(row.id, "hash does not match the fields")
+    return None
+
+
+def _check_version_1(
+    row: EventRow, units: Sequence[UnitRow], source_key: tuple[str, str] | None
+) -> list[Finding]:
+    """Payload, units and event hash of a row written in version 1."""
+    found = (
+        _payload_finding(row),
+        _units_finding(row, units),
+        _event_hash_finding(row, source_key, event_hash),
+    )
+    return [finding for finding in found if finding is not None]
+
+
+def _check_version_2(
+    row: EventRow, units: Sequence[UnitRow], source_key: tuple[str, str] | None
+) -> list[Finding]:
+    """Payload, each unit, units and event hash of a row written in version 2.
+
+    Each in a function of its own and every result collected, for the reason
+    {ref}`hash-chain` gives: a forgery one recomputation trips over must not
+    keep the next recomputation from running.
+    """
+    payload = _payload_finding_v2(row)
+    findings = [] if payload is None else [payload]
+    findings.extend(_unit_findings(row, units))
+    found = (_units_finding_v2(row, units), _event_hash_finding(row, source_key, event_hash_v2))
+    findings.extend(finding for finding in found if finding is not None)
+    return findings
+
+
+# The versions the check knows, and how it computes each. A row is computed in
+# the version it names and in no other ({ref}`hash-version-2`): trying one
+# version after another would let a forger pick whichever one adds up.
+_CHECKS: Mapping[
+    int, Callable[[EventRow, Sequence[UnitRow], tuple[str, str] | None], list[Finding]]
+] = {
+    HASH_VERSION_1: _check_version_1,
+    HASH_VERSION_2: _check_version_2,
+}
+
+
 def _check_event(
     row: EventRow,
     units: Sequence[UnitRow],
@@ -135,6 +301,11 @@ def _check_event(
     once: walk over batches and check an event. The batch loop needs the
     connection, the check only rows — and the smaller the check, the easier it
     is to read as a whole.
+
+    The linkage is checked for every row, whatever its version: `prev_hash`
+    against the predecessor's `hash` needs no hash format. A version the check
+    does not know is a finding, nothing else is computed for that row, and the
+    pass goes on with the next one.
     """
     findings: list[Finding] = []
 
@@ -144,32 +315,11 @@ def _check_event(
     elif row.prev_hash != previous_hash:
         findings.append(Finding(row.id, "prev_hash does not match the predecessor"))
 
-    for finding in (_payload_finding(row), _units_finding(row, units)):
-        if finding is not None:
-            findings.append(finding)
-
-    # The hash comparison uses the **stored** digests `payload_hash` and
-    # `units_hash`, not the ones just recomputed. That is exactly what keeps
-    # the two statements apart: "the content was altered" (the digest does not
-    # match the content) against "the row was altered" (the fields do not
-    # match the hash). And only that way does the erasure seam stay open — an
-    # erased content leaves its digest standing, and the event hash remains
-    # valid.
-    source, external_id = source_key if source_key is not None else (None, None)
-    expected = event_hash(
-        event_id=row.id,
-        kind=row.kind,
-        recorded_at=row.recorded_at,
-        occurred_at=row.occurred_at,
-        prev_hash=row.prev_hash,
-        payload_digest=row.payload_hash,
-        units_digest=row.units_hash,
-        source=source,
-        external_id=external_id,
-    )
-    if expected != row.hash:
-        findings.append(Finding(row.id, "hash does not match the fields"))
-
+    check = _CHECKS.get(row.hash_version)
+    if check is None:
+        findings.append(Finding(row.id, f"hash_version {row.hash_version} is not known"))
+    else:
+        findings.extend(check(row, units, source_key))
     return findings
 
 

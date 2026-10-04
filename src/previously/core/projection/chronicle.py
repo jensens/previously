@@ -38,6 +38,11 @@ def derive(batch: Batch) -> list[ChronicleRow]:
         key = batch.keys.get(event.id)
         evidence = _evidence(event.payload)
         for unit in batch.units.get(event.id, ()):
+            # An erased unit gets no row: the chronicle shows what was said,
+            # and of an erased unit nothing is left to show. The projection's
+            # version stays 1, because nothing in the tree erases a unit yet.
+            if unit.content is None:
+                continue
             rows.append(
                 ChronicleRow(
                     event_id=event.id,

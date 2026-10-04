@@ -13,7 +13,7 @@ from previously.core.append import backoff_delay
 from previously.core.append import MAX_BATCH
 from previously.core.errors import BatchTooLarge
 from previously.core.errors import InvalidPayload
-from previously.core.hashing import payload_hash
+from previously.core.hashing import payload_hash_v2
 from previously.core.units import split_plaintext
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import Engine
@@ -47,6 +47,23 @@ def test_the_first_event_is_genesis(db: Engine) -> None:
     with storage.begin() as c:
         row = next(iter(storage.read(c, from_id=1, limit=1)))
     assert row.prev_hash is None
+
+
+@pytest.mark.db
+def test_append_writes_version_2_with_a_salt_for_the_payload_and_each_unit(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    append(storage, [_event("a", "First.\n\nSecond.")], recorded_at=NOW)
+    with storage.begin() as c:
+        row = next(iter(storage.read(c, from_id=1, limit=1)))
+        units = storage.units(c, 1)
+    assert row.hash_version == 2
+    assert row.payload_salt is not None
+    assert len(row.payload_salt) == 32
+    assert len(units) == 2
+    for unit in units:
+        assert unit.digest is not None
+        assert unit.salt is not None
+        assert (len(unit.digest), len(unit.salt)) == (32, 32)
 
 
 @pytest.mark.db
@@ -227,8 +244,11 @@ def test_the_kind_of_evidence_lands_in_the_payload(db: Engine) -> None:
     assert row.payload["evidence"] == "verbatim"
     assert row.payload["note"] == "Hello"
     # The property that task 8 needs for the chain check: payload and
-    # payload_hash have to mean the same payload.
-    assert payload_hash(row.payload) == row.payload_hash
+    # payload_hash have to mean the same payload. Computed in the hash format
+    # `append` writes, which is version 2 since stage 1c, with the row's salt.
+    assert row.hash_version == 2
+    assert row.payload_salt is not None
+    assert payload_hash_v2(row.payload, row.payload_salt) == row.payload_hash
 
 
 @pytest.mark.db

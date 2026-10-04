@@ -60,17 +60,19 @@ if TYPE_CHECKING:
 # Three indexes mark the same class of conflict. Ruling T6-b had excluded
 # event_hash_idx here, on the grounds that a duplicate `hash` means "the same
 # event was built twice" — recomputed (review finding W2, task 7, fix round 2)
-# that is wrong: `id` and `prev_hash` go into
-# `previously.core.hashing.event_hash`, so two concurrent writers can only
-# compute the same `hash` if they computed the same `id` and the same
-# `prev_hash` out of the same tip — that is, at the same chain position.
+# that is wrong: `id` and `prev_hash` go into the event hash of either version,
+# `event_hash` and `event_hash_v2` in `previously.core.hashing`, so two
+# concurrent writers can only compute the same `hash` if they computed the
+# same `id` and the same `prev_hash` out of the same tip — that is, at the
+# same chain position.
 # event_hash_idx is therewith the same incident as event_pkey and
 # event_prev_hash_idx, not an independent deterministic error. Which of the
 # three PostgreSQL reports depends on the physical order of the index OIDs,
 # not on a decision — all three therefore have to be translated alike, or else
 # a `REINDEX CONCURRENTLY`, a `pg_repack` or a future migration makes the
-# appending procedure dependent on the index order. Only event_kind_check
-# stays untranslated: it is independent of any chain position.
+# appending procedure dependent on the index order. The `CHECK` constraints
+# stay untranslated, `event_kind_check` among them: none of them depends on a
+# chain position.
 _CHAIN_POSITION_CONSTRAINTS = frozenset({"event_prev_hash_idx", "event_pkey", "event_hash_idx"})
 _SOURCE_KEY_CONSTRAINT = "source_key_pkey"
 
@@ -201,6 +203,12 @@ class PostgresStorage:
                     payload_hash=row.payload_hash,
                     units_hash=row.units_hash,
                     payload=row.payload,
+                    # Out of the row and never through the column's default:
+                    # the default is there for rows older than the column,
+                    # and a row written now says which format it was hashed
+                    # in ({ref}`hash-version-2`).
+                    hash_version=row.hash_version,
+                    payload_salt=row.payload_salt,
                 )
             )
             if units:
@@ -214,6 +222,8 @@ class PostgresStorage:
                             "start_ms": u.start_ms,
                             "end_ms": u.end_ms,
                             "speaker": u.speaker,
+                            "digest": u.digest,
+                            "salt": u.salt,
                         }
                         for u in units
                     ],
@@ -270,6 +280,8 @@ class PostgresStorage:
                 payload_hash=row.payload_hash,
                 units_hash=row.units_hash,
                 payload=row.payload,
+                hash_version=row.hash_version,
+                payload_salt=row.payload_salt,
             )
 
     def units(self, conn: Connection, event_id: int) -> list[UnitRow]:
@@ -281,6 +293,8 @@ class PostgresStorage:
                 start_ms=row.start_ms,
                 end_ms=row.end_ms,
                 speaker=row.speaker,
+                digest=row.digest,
+                salt=row.salt,
             )
             for row in conn.execute(
                 select(unit).where(unit.c.event_id == event_id).order_by(unit.c.seq)
@@ -326,6 +340,8 @@ class PostgresStorage:
                     start_ms=row.start_ms,
                     end_ms=row.end_ms,
                     speaker=row.speaker,
+                    digest=row.digest,
+                    salt=row.salt,
                 )
             )
         return grouped

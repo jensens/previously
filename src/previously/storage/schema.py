@@ -12,8 +12,10 @@ from sqlalchemy import Integer
 from sqlalchemy import LargeBinary
 from sqlalchemy import MetaData
 from sqlalchemy import PrimaryKeyConstraint
+from sqlalchemy import SmallInteger
 from sqlalchemy import Table
 from sqlalchemy import Text
+from sqlalchemy import text
 from sqlalchemy import UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import TIMESTAMP
@@ -37,10 +39,24 @@ event = Table(
     # Mirrors payload_hash: the digest stands in the row, the content in
     # `unit`. That makes the event hash cover the units without containing
     # them — and the erasure seam stays open for them ({ref}`tombstone-seam`).
+    # In version 2 it is taken over the stored `unit.digest`, so it stays
+    # computable for an event whose units have lost their content.
     Column("units_hash", LargeBinary, nullable=False),
     # NULL = tombstone after an erasure. payload_hash stays, the chain holds.
     Column("payload", JSONB),
+    # Which hash format the check computes for this row ({ref}`hash-version-2`).
+    # The default writes down what holds for every row older than the column:
+    # it is version 1, and no hash had to be computed again to say so.
+    Column("hash_version", SmallInteger, nullable=False, server_default=text("1")),
+    # The salt of the version 2 payload digest; NULL on a version 1 row.
+    Column("payload_salt", LargeBinary),
     CheckConstraint("kind IN ('observation','assertion','action')", name="event_kind_check"),
+    # A salt goes with its payload: a tombstone that kept the salt would leave
+    # a guesser everything but the content ({ref}`hash-version-2`).
+    CheckConstraint(
+        "payload IS NOT NULL OR payload_salt IS NULL",
+        name="event_payload_salt_check",
+    ),
     # Correction K-1: SQL `NULL` is the tombstone, JSON `null` must not be
     # able to pass for one.
     #
@@ -67,11 +83,12 @@ event = Table(
     # to enforce what the spec took for granted.
     #
     # The honest limit: *today* a forger gains nothing here that
-    # `payload = NULL` would not also give. The sharpness is that the
-    # disclosed limit ({ref}`tombstone-seam`) and the redemption it
-    # announces — a tombstone without an accompanying erasure event becomes a
-    # finding — do not catch this case, because it is no tombstone *in the
-    # sense of the query*.
+    # `payload = NULL` would not also give — on a version 2 row together with
+    # `payload_salt = NULL`, which `event_payload_salt_check` demands. The
+    # sharpness is that the disclosed limit ({ref}`tombstone-seam`) and the
+    # redemption it announces — a tombstone without an accompanying erasure
+    # event becomes a finding — do not catch this case, because it is no
+    # tombstone *in the sense of the query*.
     CheckConstraint(
         "payload IS NULL OR jsonb_typeof(payload) = 'object'",
         name="event_payload_object_check",
@@ -103,12 +120,25 @@ unit = Table(
     metadata,
     Column("event_id", BigInteger, ForeignKey("event.id"), nullable=False),
     Column("seq", Integer, nullable=False),
-    Column("content", Text, nullable=False),
+    # NULL = tombstone of an erased unit, the counterpart of `event.payload`.
+    Column("content", Text),
     Column("start_ms", Integer),
     Column("end_ms", Integer),
     Column("speaker", Text),
+    # The unit's own version 2 digest and its salt ({ref}`hash-version-2`);
+    # NULL on a version 1 unit.
+    Column("digest", LargeBinary),
+    Column("salt", LargeBinary),
     PrimaryKeyConstraint("event_id", "seq"),
     CheckConstraint("seq >= 1", name="unit_seq_check"),
+    # An erased unit keeps its `seq` and its `digest`, which the units hash
+    # needs, and nothing else: not the salt, which a guesser would need, and
+    # not speaker and timestamps, which say something of their own.
+    CheckConstraint(
+        "content IS NOT NULL OR "
+        "(salt IS NULL AND speaker IS NULL AND start_ms IS NULL AND end_ms IS NULL)",
+        name="unit_tombstone_check",
+    ),
 )
 
 source_key = Table(

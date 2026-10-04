@@ -10,7 +10,11 @@ future change of format into a version bump instead of a silent break.
 
 Payload and units go in as a **hash**, not as content — that is the erasure
 seam: once `payload` becomes a tombstone, the event hash stays valid, and the
-same holds for the units as soon as `unit.content` may be `NULL`.
+same holds for the units now that `unit.content` may be `NULL`. In version 1
+the units digest covers the texts of all units at once, so it holds for them
+only together; in version 2 it covers the stored digest of each unit, and one
+unit can lose its content while the others stay attested
+({ref}`hash-version-2`).
 
 The source attribution (`source`, `external_id`) and the units digest arrived
 with correction K1. Before that the event hash did not cover them, and three
@@ -35,14 +39,14 @@ if TYPE_CHECKING:
 
 # Two formats stand side by side ({ref}`hash-version-2`). Version 1 is what
 # every event written before stage 1c carries, and it stays verifiable for
-# good; version 2 is the one new events are meant to be written in. The check
-# must compute the version a row was written in and no other, so the row has
-# to name it; until it can, every row is version 1, because nothing calls the
-# version 2 functions yet.
+# good; version 2 is what `append` writes. The check must compute the version
+# a row was written in and no other, so the row names it in
+# `event.hash_version`, and `verify` picks the functions by that column.
 HASH_VERSION_1 = 1
 HASH_VERSION_2 = 2
-# The version new events are meant to be written in. Nothing reads this name
-# in order to verify.
+# The version new events are written in. `core.chain` writes version 2 by its
+# own name, `HASH_VERSION_2`, and nothing reads this one, in order to write or
+# to verify.
 HASH_VERSION = HASH_VERSION_2
 HASH_DOMAIN = "previously/event"
 
@@ -86,6 +90,11 @@ class HashableUnit(Protocol):
     Read-only properties, no mutable attributes: `RawUnit` and `UnitRow` are
     frozen dataclasses, and a protocol with writable attributes would not
     match them.
+
+    Since stage 1c `UnitRow.content` may be `None`, the tombstone of an erased
+    unit, so a `UnitRow` matches only once its content is known to be there:
+    `verify` establishes that for every unit before it hashes them, and says
+    so with a `cast`.
     """
 
     @property

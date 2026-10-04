@@ -289,7 +289,9 @@ def test_a_tombstoned_event_keeps_its_chronicle_rows_with_evidence_null(db: Engi
     storage = PostgresStorage(db)
     append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
     with db.begin() as c:
-        c.execute(text("UPDATE event SET payload = NULL WHERE id = 1"))
+        # The salt goes with the payload, or `event_payload_salt_check`
+        # refuses the statement (ruling P-1 of the 2026-10-04 stage 1c plan).
+        c.execute(text("UPDATE event SET payload = NULL, payload_salt = NULL WHERE id = 1"))
     catch_up(storage, storage, CHRONICLE)
     with db.begin() as c:
         rows = c.execute(text("SELECT content, evidence FROM p_chronicle ORDER BY seq")).all()

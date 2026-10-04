@@ -73,6 +73,17 @@ def test_chronicle_still_derives_rows_for_an_erased_payload() -> None:
     assert row.content == "a"
 
 
+def test_chronicle_derives_no_row_for_a_unit_without_content() -> None:
+    """An erased unit has nothing to show, and the chronicle is a view of what
+    was said: its neighbour keeps its row, the erased unit gets none."""
+    batch = Batch(
+        events=(_event(1, T1, {"evidence": "verbatim"}),),
+        units={1: [UnitRow(1, 1, None, digest=b"\x02" * 32), UnitRow(1, 2, "b")]},
+        keys={1: ("cli", "x")},
+    )
+    assert [(r.seq, r.content) for r in chronicle.derive(batch)] == [(2, "b")]
+
+
 def test_chronicle_derives_nothing_for_an_event_without_units() -> None:
     batch = Batch(events=(_event(1, T1, {"evidence": "recollection"}),), units={}, keys={})
     assert chronicle.derive(batch) == []

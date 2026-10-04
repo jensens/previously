@@ -19,9 +19,15 @@ from previously.core.hashing import SALT_BYTES
 from previously.core.hashing import unit_digest
 from previously.core.hashing import units_hash
 from previously.core.hashing import units_hash_v2
+from typing import cast
+from typing import TYPE_CHECKING
 
 import hashlib
 import pytest
+
+
+if TYPE_CHECKING:
+    from previously.core.hashing import HashableUnit
 
 
 RECORDED = datetime(2026, 10, 2, 14, 0, 0, tzinfo=UTC)
@@ -213,7 +219,9 @@ def test_units_hash_treats_rawunit_and_unitrow_alike() -> None:
     stands as `id` in the event hash."""
     from_the_contract = [RawUnit(seq=1, content="a", speaker="A")]
     from_the_row = [UnitRow(event_id=7, seq=1, content="a", speaker="A")]
-    assert units_hash(from_the_row) == units_hash(from_the_contract)
+    # `UnitRow.content` may be `None` since stage 1c; this one has content,
+    # and the cast says so, as it does in `verify`.
+    assert units_hash(cast("list[HashableUnit]", from_the_row)) == units_hash(from_the_contract)
 
 
 # ---------------------------------------------------------------------------

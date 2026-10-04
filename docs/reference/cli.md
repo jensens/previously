@@ -134,7 +134,7 @@ Prints one event with its units.
 
 On success, `show` opens with three lines, in this order: `id=<id> kind=<kind>`—both on the one line—then `occurred_at=<ISO 8601>`, then `hash=<64 hexadecimal characters>`.
 It then prints either `payload=<erased>`, or both `evidence=<verbatim|recollection>` and `payload=<JSON object, with sorted keys>`.
-It then prints one line per unit, in `seq` order: `  ¶<seq> <content>`.
+It then prints one line per unit, in `seq` order: `  ¶<seq> <content>`, or `  ¶<seq> <erased>` for a unit without content.
 Without an event at the given `event_id`, `show` prints `No event <event_id>` to standard error.
 
 ## `project`

@@ -2,8 +2,10 @@
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from previously.storage.schema import metadata
+from sqlalchemy import CheckConstraint
 from sqlalchemy import Engine
 from sqlalchemy import Index
+from sqlalchemy import Table
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 from typing import cast
@@ -193,7 +195,9 @@ def test_a_real_tombstone_stays_permitted_and_passes_verification(db: Engine) ->
         recorded_at=now,
     )
     with db.begin() as c:
-        c.execute(text("UPDATE event SET payload = NULL WHERE id = 1"))
+        # The salt goes with the payload, or `event_payload_salt_check`
+        # refuses the statement (ruling P-1 of the 2026-10-04 stage 1c plan).
+        c.execute(text("UPDATE event SET payload = NULL, payload_salt = NULL WHERE id = 1"))
         assert c.execute(text("SELECT count(*) FROM event WHERE payload IS NULL")).scalar_one() == 1
     assert verify(storage) == []
 
@@ -342,6 +346,147 @@ def test_the_declared_nulls_not_distinct_reaches_the_database(db: Engine) -> Non
         ).all()
     present = {name: flag for name, flag in rows if name in declared}
     assert present == declared
+
+
+def _violated_constraint(error: IntegrityError) -> object:
+    """The name of the constraint the database reports, out of the psycopg
+    diagnosis — by name and not by a substring of the message, for the reason
+    `test_a_json_null_payload_is_refused` gives."""
+    return getattr(getattr(error.orig, "diag", None), "constraint_name", None)
+
+
+_INSERT_EVENT = text(
+    "INSERT INTO event (id, kind, recorded_at, occurred_at, prev_hash, hash, "
+    "payload_hash, units_hash, payload, hash_version, payload_salt) VALUES "
+    "(1, 'observation', now(), now(), NULL, :h, :p, :u, '{}'::jsonb, 2, :salt)"
+)
+
+
+@pytest.mark.db
+def test_hash_version_defaults_to_1_for_a_row_that_does_not_say(db: Engine) -> None:
+    """The default is what makes the migration lossless: every row written
+    before the column existed is version 1, and `DEFAULT 1` says so without a
+    single hash being computed again ({ref}`hash-version-2`)."""
+    with db.begin() as c:
+        c.execute(
+            text(
+                "INSERT INTO event (id, kind, recorded_at, occurred_at, prev_hash, "
+                "hash, payload_hash, units_hash, payload) VALUES "
+                "(1, 'observation', now(), now(), NULL, :h, :p, :u, '{}'::jsonb)"
+            ),
+            {"h": b"\x01" * 32, "p": b"\x02" * 32, "u": b"\x05" * 32},
+        )
+        version = c.execute(text("SELECT hash_version FROM event WHERE id = 1")).scalar_one()
+    assert version == 1
+
+
+@pytest.mark.db
+def test_a_salt_beside_a_payload_tombstone_is_refused(db: Engine) -> None:
+    """A salt is erased together with its content, or the erasure leaves half
+    of what a guesser needs ({ref}`hash-version-2`). The constraint refuses
+    the half-done erasure; the whole one goes through."""
+    with db.begin() as c:
+        c.execute(
+            _INSERT_EVENT,
+            {"h": b"\x01" * 32, "p": b"\x02" * 32, "u": b"\x05" * 32, "salt": b"\x06" * 32},
+        )
+    with pytest.raises(IntegrityError) as caught, db.begin() as c:
+        c.execute(text("UPDATE event SET payload = NULL WHERE id = 1"))
+    assert _violated_constraint(caught.value) == "event_payload_salt_check"
+
+    with db.begin() as c:
+        c.execute(text("UPDATE event SET payload = NULL, payload_salt = NULL WHERE id = 1"))
+        assert c.execute(text("SELECT payload_hash FROM event WHERE id = 1")).scalar_one() == (
+            b"\x02" * 32
+        )
+
+
+@pytest.mark.db
+def test_a_unit_tombstone_keeps_nothing_but_its_seq_and_its_digest(db: Engine) -> None:
+    """An erased unit keeps `seq` and `digest`, which the units hash needs, and
+    nothing else: not the salt, which a guesser would need, and not speaker or
+    timestamps, which are content of their own. Each of the four left standing
+    alone is refused."""
+    with db.begin() as c:
+        c.execute(
+            _INSERT_EVENT,
+            {"h": b"\x01" * 32, "p": b"\x02" * 32, "u": b"\x05" * 32, "salt": b"\x06" * 32},
+        )
+        c.execute(
+            text(
+                "INSERT INTO unit (event_id, seq, content, start_ms, end_ms, speaker, "
+                "digest, salt) VALUES (1, 1, 'Text', 10, 20, 'Anna', :d, :s)"
+            ),
+            {"d": b"\x07" * 32, "s": b"\x08" * 32},
+        )
+    # One statement per column left standing, each written out in full: each
+    # is the erasure that forgot that one column.
+    half_done = {
+        "salt": "UPDATE unit SET content = NULL, speaker = NULL, start_ms = NULL, end_ms = NULL",
+        "speaker": "UPDATE unit SET content = NULL, salt = NULL, start_ms = NULL, end_ms = NULL",
+        "start_ms": "UPDATE unit SET content = NULL, salt = NULL, speaker = NULL, end_ms = NULL",
+        "end_ms": "UPDATE unit SET content = NULL, salt = NULL, speaker = NULL, start_ms = NULL",
+    }
+    for kept, statement in half_done.items():
+        with pytest.raises(IntegrityError) as caught, db.begin() as c:
+            c.execute(text(statement))
+        assert _violated_constraint(caught.value) == "unit_tombstone_check", kept
+
+    with db.begin() as c:
+        c.execute(
+            text(
+                "UPDATE unit SET content = NULL, salt = NULL, speaker = NULL, "
+                "start_ms = NULL, end_ms = NULL WHERE event_id = 1"
+            )
+        )
+        assert c.execute(text("SELECT digest FROM unit WHERE event_id = 1")).scalar_one() == (
+            b"\x07" * 32
+        )
+
+
+def _check_names(table: Table) -> set[str]:
+    """The names of the `CHECK` constraints `metadata` declares on `table`."""
+    return {
+        str(constraint.name)
+        for constraint in table.constraints
+        if isinstance(constraint, CheckConstraint)
+    }
+
+
+@pytest.mark.db
+def test_the_declared_columns_match_the_migrated_database(db: Engine) -> None:
+    """Every table in `metadata` against the migrated database: the column
+    names with their `NOT NULL`, and the names of the `CHECK` constraints.
+
+    Before this test only the index names were held against the database, so
+    a column declared in `schema.py` and missing from the migration reached no
+    gate: `metadata` is what the code reads, the migration is what the
+    database has, and nothing compared the two.
+    """
+    with db.connect() as c:
+        columns = c.execute(
+            text(
+                "SELECT table_name, column_name, is_nullable FROM information_schema.columns "
+                "WHERE table_schema = 'public'"
+            )
+        ).all()
+        checks = c.execute(
+            text(
+                "SELECT cl.relname, co.conname FROM pg_constraint co "
+                "JOIN pg_class cl ON cl.oid = co.conrelid "
+                "JOIN pg_namespace n ON n.oid = cl.relnamespace "
+                "WHERE n.nspname = 'public' AND co.contype = 'c'"
+            )
+        ).all()
+    for table in metadata.tables.values():
+        declared = {column.name: column.nullable for column in table.columns}
+        present = {
+            column: nullable == "YES" for name, column, nullable in columns if name == table.name
+        }
+        assert present == declared, table.name
+        assert {conname for relname, conname in checks if relname == table.name} == _check_names(
+            table
+        ), table.name
 
 
 @pytest.mark.db

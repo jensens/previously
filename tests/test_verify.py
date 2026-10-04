@@ -3,11 +3,17 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from datetime import datetime
 from datetime import UTC
+from previously.contract.rows import EventRow
+from previously.contract.rows import UnitRow
 from previously.contract.types import Anchor
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
 from previously.core.errors import InvalidPayload
+from previously.core.hashing import event_hash
+from previously.core.hashing import payload_hash
+from previously.core.hashing import unit_digest
+from previously.core.hashing import units_hash
 from previously.core.units import split_plaintext
 from previously.core.verify import Examination
 from previously.core.verify import examine
@@ -56,6 +62,51 @@ def _message(external_id: str) -> RawEvent:
     )
 
 
+def _append_version_1(storage: PostgresStorage, events: list[RawEvent]) -> None:
+    """Writes events the way `append` did before stage 1c: by hand, with the
+    version 1 functions, so that a version 1 row exists to be checked."""
+    with storage.begin() as conn:
+        tip = storage.tip(conn)
+        next_id = 1 if tip is None else tip.id + 1
+        prev = None if tip is None else tip.hash
+        for event in events:
+            payload: dict[str, object] = {**event.payload, "evidence": event.evidence.value}
+            payload_digest = payload_hash(payload)
+            units_digest = units_hash(event.units)
+            this_hash = event_hash(
+                event_id=next_id,
+                kind="observation",
+                recorded_at=NOW,
+                occurred_at=event.occurred_at,
+                prev_hash=prev,
+                payload_digest=payload_digest,
+                units_digest=units_digest,
+                source=event.source,
+                external_id=event.external_id,
+            )
+            storage.insert_event(
+                conn,
+                EventRow(
+                    id=next_id,
+                    kind="observation",
+                    recorded_at=NOW,
+                    occurred_at=event.occurred_at,
+                    prev_hash=prev,
+                    hash=this_hash,
+                    payload_hash=payload_digest,
+                    units_hash=units_digest,
+                    payload=payload,
+                ),
+                [
+                    UnitRow(next_id, u.seq, u.content, u.start_ms, u.end_ms, u.speaker)
+                    for u in event.units
+                ],
+                (event.source, event.external_id),
+            )
+            prev = this_hash
+            next_id += 1
+
+
 @pytest.mark.db
 def test_an_empty_chain_passes(db: Engine) -> None:
     assert verify(PostgresStorage(db)) == []
@@ -92,7 +143,9 @@ def test_a_tombstone_passes(db: Engine) -> None:
     storage = PostgresStorage(db)
     append(storage, [_event("a"), _event("b")], recorded_at=NOW)
     with db.begin() as c:
-        c.execute(text("UPDATE event SET payload = NULL WHERE id = 1"))
+        # The salt goes with the payload, or `event_payload_salt_check`
+        # refuses the statement (ruling P-1 of the 2026-10-04 stage 1c plan).
+        c.execute(text("UPDATE event SET payload = NULL, payload_salt = NULL WHERE id = 1"))
     assert verify(storage) == []
 
 
@@ -188,14 +241,32 @@ def test_the_check_continues_across_a_batch_boundary(db: Engine) -> None:
 def test_k1_f1_a_rewritten_unit_content_fires(db: Engine) -> None:
     """F1: the content of a unit is rewritten.
 
-    Exactly one finding, and that one over the units digest: the event hash
-    carries the **stored** `units_hash`, and that one stays unchanged, because
-    only `unit.content` was manipulated — the same distinction as with
-    `payload`/`payload_hash`. "The content was altered" and "the row was
-    altered" therewith stay two different statements.
+    Exactly one finding, and that one over the unit's own digest: `append`
+    writes version 2, where every unit has one ({ref}`hash-version-2`). The
+    units digest is taken over the **stored** unit digests, and those stay
+    unchanged, as does the event hash over the stored units digest — the same
+    distinction as with `payload`/`payload_hash`. "The content was altered"
+    and "the row was altered" therewith stay two different statements.
     """
     storage = PostgresStorage(db)
     append(storage, [_message("message-1")], recorded_at=NOW)
+    with db.begin() as c:
+        c.execute(
+            text("UPDATE unit SET content = :new WHERE event_id = 1 AND seq = 1"),
+            {"new": "Price remains 100000 Euro."},
+        )
+    findings = verify(storage)
+    assert [f.event_id for f in findings] == [1]
+    assert findings[0].reason == "unit 1 does not match its digest"
+
+
+@pytest.mark.db
+def test_k1_f1_a_rewritten_unit_content_fires_in_version_1(db: Engine) -> None:
+    """F1 on a version 1 event, which K1 was measured on and which stays
+    verifiable for good: version 1 has no digest per unit, so the finding is
+    the one over the units digest."""
+    storage = PostgresStorage(db)
+    _append_version_1(storage, [_message("message-1")])
     with db.begin() as c:
         c.execute(
             text("UPDATE unit SET content = :new WHERE event_id = 1 AND seq = 1"),
@@ -257,6 +328,161 @@ def test_k1_a_deleted_source_attribution_fires(db: Engine) -> None:
     findings = verify(storage)
     assert [f.event_id for f in findings] == [1]
     assert findings[0].reason == "hash does not match the fields"
+
+
+# ---------------------------------------------------------------------------
+# Hash format version 2 ({ref}`hash-version-2`): the check computes each row
+# in the version the row names, and a log may hold both.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.db
+def test_a_version_1_chain_still_passes(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    _append_version_1(storage, [_event("a"), _message("m"), _event("c")])
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_a_chain_of_both_versions_passes(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    _append_version_1(storage, [_message("m")])
+    append(storage, [_event("b")], recorded_at=NOW)
+    with storage.begin() as c:
+        versions = [row.hash_version for row in storage.read(c, from_id=1, limit=10)]
+    assert versions == [1, 2]
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_v1_a_unit_without_content_is_the_units_hash_finding(db: Engine) -> None:
+    """Version 1 takes the texts of all units into one digest, so a unit
+    without content leaves it nothing to be computed from. That is a finding
+    at the units digest, not a crash."""
+    storage = PostgresStorage(db)
+    _append_version_1(storage, [_message("m")])
+    with db.begin() as c:
+        c.execute(text("UPDATE unit SET content = NULL WHERE event_id = 1 AND seq = 1"))
+    assert verify(storage) == [Finding(1, "units_hash does not match the units")]
+
+
+@pytest.mark.db
+def test_v2_a_rewritten_unit_fires_on_that_unit_and_not_on_its_neighbour(db: Engine) -> None:
+    """The digest per unit names the unit: unit 2 rewritten, unit 2 reported,
+    and the units digest over the stored unit digests stays intact."""
+    storage = PostgresStorage(db)
+    append(storage, [_message("m")], recorded_at=NOW)
+    with db.begin() as c:
+        c.execute(text("UPDATE unit SET content = 'Please deny.' WHERE event_id = 1 AND seq = 2"))
+    assert verify(storage) == [Finding(1, "unit 2 does not match its digest")]
+
+
+@pytest.mark.db
+def test_v2_a_rewritten_salt_fires(db: Engine, truncate_statement: str) -> None:
+    """A salt needs no attestation of its own: it is an input of its digest,
+    and a rewritten salt breaks the digest like rewritten content would."""
+    storage = PostgresStorage(db)
+    append(storage, [_message("m")], recorded_at=NOW)
+    with db.begin() as c:
+        c.execute(text("UPDATE event SET payload_salt = :s WHERE id = 1"), {"s": b"\x01" * 32})
+    assert verify(storage) == [Finding(1, "payload_hash does not match the payload")]
+
+    with db.begin() as c:
+        c.execute(text(truncate_statement))
+    append(storage, [_message("m")], recorded_at=NOW)
+    with db.begin() as c:
+        c.execute(
+            text("UPDATE unit SET salt = :s WHERE event_id = 1 AND seq = 1"), {"s": b"\x01" * 32}
+        )
+    assert verify(storage) == [Finding(1, "unit 1 does not match its digest")]
+
+
+@pytest.mark.db
+def test_v2_a_missing_salt_or_digest_fires_and_does_not_break_off(db: Engine) -> None:
+    """A version 2 row that lost a salt or a digest beside its content has
+    nothing to compute against. That is a finding at the digest it belongs
+    to, never an exception: a payload salt set to NULL is the payload's
+    finding, a unit digest set to NULL is the unit's and the units digest's."""
+    storage = PostgresStorage(db)
+    append(storage, [_message("m"), _event("b")], recorded_at=NOW)
+    with db.begin() as c:
+        c.execute(text("UPDATE event SET payload_salt = NULL WHERE id = 1"))
+        c.execute(text("UPDATE unit SET digest = NULL WHERE event_id = 2 AND seq = 1"))
+    assert verify(storage) == [
+        Finding(1, "payload_hash does not match the payload"),
+        Finding(2, "unit 1 does not match its digest"),
+        Finding(2, "units_hash does not match the units"),
+    ]
+
+
+@pytest.mark.db
+def test_v2_a_deleted_unit_row_fires(db: Engine) -> None:
+    """The units digest still covers the whole set: a deleted unit has no
+    digest of its own left to fail, and the set it is missing from does."""
+    storage = PostgresStorage(db)
+    append(storage, [_message("m")], recorded_at=NOW)
+    with db.begin() as c:
+        c.execute(text("DELETE FROM unit WHERE event_id = 1 AND seq = 2"))
+    assert verify(storage) == [Finding(1, "units_hash does not match the units")]
+
+
+@pytest.mark.db
+def test_v2_a_unit_rewritten_together_with_its_digest_fires(db: Engine) -> None:
+    """Content, salt and digest of one unit rewritten so that they agree with
+    one another: the unit on its own holds, and the units digest, which the
+    event hash attests, does not."""
+    storage = PostgresStorage(db)
+    append(storage, [_message("m")], recorded_at=NOW)
+    salt = b"\x02" * 32
+    forged = unit_digest(
+        seq=1,
+        content="Price remains 100000 Euro.",
+        start_ms=None,
+        end_ms=None,
+        speaker=None,
+        salt=salt,
+    )
+    with db.begin() as c:
+        c.execute(
+            text(
+                "UPDATE unit SET content = 'Price remains 100000 Euro.', salt = :s, digest = :d "
+                "WHERE event_id = 1 AND seq = 1"
+            ),
+            {"s": salt, "d": forged},
+        )
+    assert verify(storage) == [Finding(1, "units_hash does not match the units")]
+
+
+@pytest.mark.db
+def test_a_flipped_hash_version_fires(db: Engine) -> None:
+    """The version stands in the row and in the hashed object. Flipped in the
+    row alone, the row is computed in a format it was not written in, and
+    nothing adds up — least of all the event hash."""
+    storage = PostgresStorage(db)
+    append(storage, [_message("m")], recorded_at=NOW)
+    with db.begin() as c:
+        c.execute(text("UPDATE event SET hash_version = 1 WHERE id = 1"))
+    assert Finding(1, "hash does not match the fields") in verify(storage)
+
+
+@pytest.mark.db
+def test_an_unknown_hash_version_is_a_finding_and_the_check_goes_on(db: Engine) -> None:
+    """A version the check doesn't know is reported and not computed in some
+    version it does know, which would be guessing. The linkage is checked all
+    the same, and so is the next row."""
+    storage = PostgresStorage(db)
+    append(storage, [_event("a"), _event("b")], recorded_at=NOW)
+    with db.begin() as c:
+        c.execute(text("UPDATE event SET hash_version = 3 WHERE id = 1"))
+        c.execute(
+            text(
+                "UPDATE event SET payload = jsonb_set(payload, '{note}', '\"forged\"') WHERE id = 2"
+            )
+        )
+    assert verify(storage) == [
+        Finding(1, "hash_version 3 is not known"),
+        Finding(2, "payload_hash does not match the payload"),
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -337,8 +563,12 @@ def test_w1_a_poisoned_payload_does_not_blind_the_unit_check(db: Engine) -> None
 
     findings = verify(storage)
     assert [f.event_id for f in findings] == [1, 1], findings
-    assert findings[0].reason.startswith("payload not canonicalizable: ")
-    assert findings[1].reason == "units_hash does not match the units"
+    # The path runs from the payload, as in version 1, and not from the header
+    # the version 2 digest wraps the payload in (`$.payload: key 'Note' …`).
+    assert findings[0].reason.startswith("payload not canonicalizable: $: key 'Note' ")
+    # The unit's own digest since `append` writes version 2; in version 1 the
+    # same forgery is the units digest's finding.
+    assert findings[1].reason == "unit 1 does not match its digest"
 
 
 # ---------------------------------------------------------------------------

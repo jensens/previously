@@ -167,12 +167,38 @@ def test_show_says_so_when_the_payload_is_erased(
     assert main(["append", "--source", "cli", "--external-id", "a", "--text", "Hello"]) == 0
     capsys.readouterr()
     with db.begin() as c:
-        c.execute(text("UPDATE event SET payload = NULL WHERE id = 1"))
+        # The salt goes with the payload, or `event_payload_salt_check`
+        # refuses the statement (ruling P-1 of the 2026-10-04 stage 1c plan).
+        c.execute(text("UPDATE event SET payload = NULL, payload_salt = NULL WHERE id = 1"))
 
     assert main(["show", "1"]) == 0
     output = capsys.readouterr().out
     assert "payload=<erased>" in output
     assert "evidence=" not in output
+
+
+@pytest.mark.db
+def test_show_says_so_when_a_unit_is_erased(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A unit without content prints as erased, and its neighbour as before.
+    The erasure is forged with plain SQL here: nothing in the tree erases a
+    unit yet."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
+    assert main(["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"]) == 0
+    capsys.readouterr()
+    with db.begin() as c:
+        c.execute(
+            text("UPDATE unit SET content = NULL, salt = NULL WHERE event_id = 1 AND seq = 1")
+        )
+
+    assert main(["show", "1"]) == 0
+    output = capsys.readouterr().out
+    assert "  ¶1 <erased>\n  ¶2 Two\n" in output
 
 
 @pytest.mark.db
