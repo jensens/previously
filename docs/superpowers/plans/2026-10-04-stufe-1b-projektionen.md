@@ -1383,12 +1383,23 @@ SOURCE_STATS = SourceStatsProjection()
 Run: `uv run pytest tests/test_projection_derive.py -v`
 Erwartet: neun `PASSED`.
 
-**Messung, nicht committen:** in `merge` `first_seen=min(existing.first_seen, addition.first_seen)` durch `first_seen=addition.first_seen` ersetzen.
+**Messung, nicht committen — zwei Mutationen, je eine Kontrolle.**
+
+(a) In `merge` `first_seen=min(existing.first_seen, addition.first_seen)` durch `first_seen=existing.first_seen` ersetzen (nie nachziehen).
 
 Run: `uv run pytest tests/test_projection_derive.py -v`
-Erwartet: **genau einer** rot — `test_merge_keeps_the_earliest_first_seen_when_the_late_arrival_is_older`; `test_merge_adds_counts_and_keeps_the_extremes` bleibt grün (die Kontrolle: in Zeitreihenfolge sind Zuweisung und Minimum gleich). Beide Ergebnisse in den Bericht und in den Docstring des Regressionstests („Measured on …" steht schon dort — Datum prüfen).
+Erwartet: **genau einer** rot — `test_merge_keeps_the_earliest_first_seen_when_the_late_arrival_is_older`; `test_merge_adds_counts_and_keeps_the_extremes` bleibt grün (die Kontrolle: in Zeitreihenfolge bleibt das erste das erste, Nie-Nachziehen und Minimum sind gleich).
 
-Zurücksetzen. Grün.
+(b) Zurücksetzen, dann durch `first_seen=addition.first_seen` ersetzen (immer überschreiben).
+
+Run: dasselbe.
+Erwartet: **genau einer** rot — `test_merge_adds_counts_and_keeps_the_extremes` (das Überschreiben setzt T3 statt T1); der Nachzügler-Test bleibt grün, weil der ältere Nachzügler zufällig das Minimum *ist*.
+
+Zurücksetzen. Alle neun grün. Beide Messungen in den Bericht und in den Docstring des Regressionstests — der muss sagen, **welche** Mutation ihn fallen lässt (a) und dass die andere (b) vom In-Order-Test gefangen wird. Zusammen fangen die zwei Tests beide natürlichen Fehler.
+
+> Die erste Fassung dieses Schritts hatte nur Mutation (b) und erwartete,
+> dass sie den Nachzügler-Test fällt. Gemessen vom Umsetzer der Aufgabe 4:
+> umgekehrt. Spec §5.2 trug dasselbe falsche Beispiel; dort korrigiert.
 
 - [ ] **Schritt 7: Alle sechs Tore, Commit**
 
@@ -1922,7 +1933,7 @@ Nach den zwei Abschnitten aus Aufgabe 2 anfügen:
 
 `## Why there are no gaps to worry about`: §4.2 des Specs — `id = predecessor.id + 1`, der Index auf `prev_hash`, und der Kontrast zur Sequenz, bei der ein Arbeiter 41 verliert, wenn er 42 schon gesehen hat. Verweis auf `{ref}`hash-chain``, wo begründet ist, warum es keine Sequenz gibt.
 
-`## The assurance, and the test that can actually fail`: der Kern (Spec §5.1/§5.2). Dass Bauen-Löschen-Neubauen nur Determinismus beweist; dass die Fehlerart der falsche inkrementelle Schritt ist; **das `first_seen`-Beispiel als Codeblock**, wörtlich aus dem Spec (Zuweisung gegen Minimum, grün nach einem Event, grün nach zehn in Reihenfolge, rot beim ersten Nachzügler); warum die Aggregation prüft, was die Chronik nicht kann; die Mutation aus Aufgabe 4 Schritt 6 als Messblock (**welcher** Test fiel, welcher grün blieb). Und der Versionstest mit seiner Kontrolle.
+`## The assurance, and the test that can actually fail`: der Kern (Spec §5.1/§5.2). Dass Bauen-Löschen-Neubauen nur Determinismus beweist; dass die Fehlerart der falsche inkrementelle Schritt ist; **das `first_seen`-Beispiel als Codeblock, in der korrigierten Fassung aus dem Spec** — die falsche Fassung ist das **Nie-Nachziehen** (`first_seen` bleibt), grün nach einem Event, grün nach zehn in Reihenfolge, rot beim ersten älteren Nachzügler; **nicht** das Überschreiben, das in Reihenfolge sofort fällt (der datierte Korrekturblock in Spec §5.2 erklärt die Verwechslung); warum die Aggregation prüft, was die Chronik nicht kann; **beide** Mutationen aus Aufgabe 4 Schritt 6 als Messblock (welche Mutation welchen Test fällt, und dass das Paar beide natürlichen Fehler fängt). Und der Versionstest mit seiner Kontrolle.
 
 Run: Doku-Tore. Erwartet: grün.
 

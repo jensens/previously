@@ -394,16 +394,33 @@ unterschiedlichen Zeilen.
 Regressionsfall im Test steht, nicht nur als Zufallstreffer:
 
 ```
-first_seen = occurred_at_des_neuen_events        # falsch
+first_seen = first_seen                          # falsch: nie nachziehen
 first_seen = min(first_seen, occurred_at_neu)    # richtig
 ```
 
 Beide Fassungen sind nach einem Event grün. Beide sind nach zehn Events in
-Zeitreihenfolge grün. Die falsche fällt erst auf, wenn ein Event mit
-**früherem** `occurred_at` nachkommt — und das ist der Normalfall, sobald eine
-Mail von gestern heute eingelesen wird, denn `occurred_at` ist, wann es
-geschah, nicht wann es ankam. Der Testfall: drei Events, deren `occurred_at`
-rückwärts läuft, inkrementell projiziert gegen neu gebaut.
+Zeitreihenfolge grün — das erste bleibt das erste. Die falsche fällt erst auf,
+wenn ein Event mit **früherem** `occurred_at` nachkommt — und das ist der
+Normalfall, sobald eine Mail von gestern heute eingelesen wird, denn
+`occurred_at` ist, wann es geschah, nicht wann es ankam. Der Testfall: drei
+Events, deren `occurred_at` rückwärts läuft, inkrementell projiziert gegen neu
+gebaut.
+
+> **Korrigiert beim Umsetzen, 2026-10-04 (Aufgabe 4, gemessen).** Hier stand
+> als falsche Fassung `first_seen = occurred_at_des_neuen_events` — immer
+> überschreiben. Das ist **nicht** die Fassung, die in Zeitreihenfolge grün
+> bleibt: nach zehn Events in Reihenfolge stünde dort das zehnte, nicht das
+> erste. Gemessen vom Umsetzer: diese Mutation lässt den In-Order-Test
+> fallen und den Nachzügler-Test **bestehen**, weil der ältere Nachzügler
+> zufällig das Minimum *ist*. Die Fassung, die das Argument meint — grün in
+> Reihenfolge, rot beim ersten älteren Nachzügler —, ist das Nie-Nachziehen
+> oben. Die spiegelbildliche natürliche Falschfassung für `last_seen` ist das
+> Überschreiben: `last_seen = occurred_at_neu` ist in Reihenfolge richtig und
+> senkt beim älteren Nachzügler das Maximum. Beide Fehler zusammen brauchen
+> beide Tests: der In-Order-Test fängt das Überschreiben, der Nachzügler-Test
+> das Nie-Nachziehen. Das Argument des Abschnitts bleibt; das Beispiel war
+> falsch, und ein falsches Beispiel in einer Explanation-Seite wäre
+> eingefroren worden.
 
 Bei `p_chronicle` ist dieser Unterschied nicht herstellbar — jede Zeile steht
 für sich, nichts wird zusammengerechnet. **Darum eine Aggregation als zweite
