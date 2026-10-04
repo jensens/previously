@@ -1008,7 +1008,10 @@ def test_postgres_storage_satisfies_both_protocols() -> None:
     storage = PostgresStorage(create_engine("postgresql+psycopg://x:y@localhost/z"))
     log: LogStore[Connection] = storage
     projections: ProjectionStore[Connection] = storage
-    assert log is projections
+    # The two assignments above are the proof; pyright rejects them if a
+    # method is missing. The isinstance checks only give the test a body.
+    assert isinstance(log, PostgresStorage)
+    assert isinstance(projections, PostgresStorage)
 ```
 
 (`create_engine` verbindet nicht; es parst nur.)
@@ -1724,10 +1727,18 @@ class Projection(Protocol):
     `projection_state` keys it, the version the code declares, and the write
     step. `write` is generic over the connection so that the protocol itself
     is not — a `Projection[Conn]` would be invariant in `Conn`, and a module
-    constant could not be both `Projection[Connection]` and anything else."""
+    constant could not be both `Projection[Connection]` and anything else.
 
-    name: str
-    version: int
+    `name` and `version` are read-only properties, not attributes: the
+    implementations are frozen dataclasses, whose fields pyright treats as
+    read-only, and a protocol attribute `name: str` is mutable — the two
+    would not match."""
+
+    @property
+    def name(self) -> str: ...
+
+    @property
+    def version(self) -> int: ...
 
     def write[Conn](self, store: ProjectionStore[Conn], conn: Conn, batch: Batch) -> None: ...
 
@@ -1987,25 +1998,42 @@ def _append(source: str, external_id: str, text: str, occurred_at: str) -> None:
 
 
 @pytest.mark.db
+def test_project_on_an_empty_log_is_up_to_date_at_zero(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review focus 5. Nothing was built, so it does not say `built`."""
+    _setup(db, monkeypatch)
+    assert main(["project"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "chronicle       up to date, up_to_id 0",
+        "source-stats    up to date, up_to_id 0",
+    ]
+
+
+@pytest.mark.db
 def test_project_says_which_path_it_took(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """First run on a log with events: `built`. Then `caught up`, then
+    `up to date`. The first run has to come *after* the first append — a run
+    on the empty log already writes the state row, and every later run is an
+    ordinary catch-up (found by the plan's pre-flight scan)."""
     _setup(db, monkeypatch)
-    assert main(["project"]) == 0
-    first = capsys.readouterr().out.splitlines()
-    assert first == ["chronicle       up to date, up_to_id 0", "source-stats    up to date, up_to_id 0"]
-
     _append("email", "m1", "Hello\n\nWorld", "2026-10-01T09:00:00Z")
     capsys.readouterr()
     assert main(["project"]) == 0
-    second = capsys.readouterr().out.splitlines()
-    assert second == ["chronicle       built: 1 event, up_to_id 1", "source-stats    built: 1 event, up_to_id 1"]
+    first = capsys.readouterr().out.splitlines()
+    assert first == ["chronicle       built: 1 event, up_to_id 1", "source-stats    built: 1 event, up_to_id 1"]
 
     _append("email", "m2", "Again", "2026-10-02T09:00:00Z")
     capsys.readouterr()
     assert main(["project"]) == 0
+    second = capsys.readouterr().out.splitlines()
+    assert second == ["chronicle       caught up: 1 event, up_to_id 2", "source-stats    caught up: 1 event, up_to_id 2"]
+
+    assert main(["project"]) == 0
     third = capsys.readouterr().out.splitlines()
-    assert third == ["chronicle       caught up: 1 event, up_to_id 2", "source-stats    caught up: 1 event, up_to_id 2"]
+    assert third == ["chronicle       up to date, up_to_id 2", "source-stats    up to date, up_to_id 2"]
 
 
 @pytest.mark.db
@@ -2147,15 +2175,21 @@ def _plural(n: int, noun: str) -> str:
 
 def _describe(outcome: Outcome) -> str:
     """Which path the worker took — a version-triggered rebuild is otherwise
-    invisible ({ref}`projections`)."""
+    invisible ({ref}`projections`).
+
+    Order matters. A version change is reported even when it processed no
+    event, because it changed the state row. A first run over an empty log
+    says `up to date`, not `built: 0 events`: nothing was built, and the
+    spec's reading of `up_to_id 0` is "nothing yet".
+    """
     tail = f"{_plural(outcome.events, 'event')}, up_to_id {outcome.up_to_id}"
-    if outcome.rebuilt_from is None:
-        if outcome.events == 0:
-            return f"up to date, up_to_id {outcome.up_to_id}"
-        return f"caught up: {tail}"
+    if outcome.rebuilt_from:  # a version the table was at before: 1, 2, …
+        return f"rebuilt: version {outcome.rebuilt_from} -> {outcome.version}, {tail}"
+    if outcome.events == 0:
+        return f"up to date, up_to_id {outcome.up_to_id}"
     if outcome.rebuilt_from == 0:
         return f"built: {tail}"
-    return f"rebuilt: version {outcome.rebuilt_from} -> {outcome.version}, {tail}"
+    return f"caught up: {tail}"
 
 
 def _report_lag(storage: PostgresStorage, conn: object, name: str) -> None:
