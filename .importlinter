@@ -27,11 +27,22 @@ forbidden_modules =
 # Until 2026-10-04 this contract carried two named exemptions,
 # `core.append -> storage.postgres` and `core.verify -> storage.postgres`,
 # because both modules typed their `storage` parameter as the concrete
-# `PostgresStorage` under `TYPE_CHECKING` (rulings T7-a and T8-c of stage 1a,
-# in docs/superpowers/sdd/). They were enumerated by name and not matched by
-# a wildcard, so that a third module following the same pattern would break
-# this contract until somebody granted it deliberately — measured with a
-# throwaway module, a wildcard let the new edge through silently.
+# `PostgresStorage` under `TYPE_CHECKING`. They were granted by ruling T7-a
+# and by ruling T8-c of the 2026-10-02 stage 1a plan, whose execution ledger
+# was never shipped and is lost, so both labels are provenance and nothing
+# more — the reasoning is the paragraph you are reading.
+#
+# There is no directory to follow them into, and until 2026-10-04 this
+# comment named one. Measured that day against the only record under
+# `docs/superpowers/sdd/`: `2026-10-03-dokumentation/progress.md` carries a
+# `Ruling T7-a` about an unrelated decision and no `Ruling T8-c` at all, so
+# the pointer sent a reader to the wrong decision — worse than a label with
+# no pointer, because the reader stops with an answer.
+#
+# The exemptions were enumerated by name and not matched by a wildcard, so
+# that a third module following the same pattern would break this contract
+# until somebody granted it deliberately — measured with a throwaway module,
+# a wildcard let the new edge through silently.
 #
 # Stage 1b typed `core` against `contract.store.LogStore[Conn]` instead, and
 # the edge is gone. There is nothing to exempt. Should an exemption ever come
@@ -48,10 +59,11 @@ forbidden_modules =
     sqlalchemy
     psycopg
 # Until 2026-10-04 this contract carried the same two named exemptions as
-# `core-is-clean` (see there for the reasoning, ruling T8-c): edges enumerated
-# one by one, no wildcard across `core`. Stage 1b typed `core` against
-# `contract.store.LogStore[Conn]`, the edge `core -> storage.postgres` is
-# gone, and there is nothing left to exempt here either.
+# `core-is-clean`: edges enumerated one by one, no wildcard across `core`. See
+# there for the reasoning, and for what the two stage 1a ruling labels are
+# worth. Stage 1b typed `core` against `contract.store.LogStore[Conn]`, the
+# edge `core -> storage.postgres` is gone, and there is nothing left to exempt
+# here either.
 
 [importlinter:contract:no-vendor-sdk]
 name = No vendor SDK in stage 1a

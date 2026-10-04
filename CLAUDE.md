@@ -69,12 +69,19 @@ numbers.
 
 Freezing is a step that repeats, not a state the project arrived at. Every new
 stage starts with a new German specification, and that one freezes the same
-way once its pages stand. So the three frozen records are the output of a step
-and not a rule against writing a fourth — read as a prohibition, they would
-cost the next stage the document it needs most. Each of the three says so in
-its own dated header, in German, and
+way once its pages stand. So the frozen records are the output of a repeating
+step and never a rule against writing the next one — read as a prohibition,
+they would cost the next stage the document it needs most. Three froze on
+2026-10-03 and the stage 1b specification on 2026-10-04, which is four; the
+number is going to keep moving, and each record says so in its own dated
+header, in German.
 [About the frozen design records](docs/explanation/design-records.md) says it
 at length.
+
+The paragraph above read "the three frozen records … not a rule against
+writing a fourth" until 2026-10-04, by which time the fourth had been in the
+tree since commit `fee6d2b`. Whoever adds the fifth does not have to come back
+here, and that is the point of wording it without a count.
 
 ## Attribution
 
@@ -353,27 +360,77 @@ claim anybody can check.
 ### A ruling citation is provenance, never the reason
 
 A third space exists and nothing here described it until 2026-10-03: `ruling
-T6-b`, `ruling T10-c` and nine more like them, sixteen citations across `src/`,
-`tests/` and `pyproject.toml`. They name decisions taken while a plan was being
-executed. Those live in a ledger, and until 2026-10-04 that ledger sat under
-`.superpowers/`, which `.gitignore` excludes — the target did not ship, which
-made a ruling label weaker than a `W2` or a frozen `§`: both of those can be
-looked up by whoever has the repository, and a ruling could not be looked up at
-all.
+T6-b`, `ruling T10-c` and a dozen more like them, across `src/`, `tests/`,
+`pyproject.toml` and `.importlinter`. They name decisions taken while a plan
+was being executed. Those live in a ledger, and until 2026-10-04 that ledger
+sat under `.superpowers/`, which `.gitignore` excludes — the target did not
+ship, which made a ruling label weaker than a `W2` or a frozen `§`: both of
+those can be looked up by whoever has the repository, and a ruling could not be
+looked up at all.
 
-It ships now, under `docs/superpowers/sdd/<plan date>-<plan name>/`, where
-`progress.md` is the ledger and holds every `Ruling …` of that execution.
-Freezing it is what made it citable, the same move the specifications made a
-day earlier.
+A ledger ships now, under `docs/superpowers/sdd/<plan date>-<plan name>/`,
+where `progress.md` holds every `Ruling …` of **that one** execution. Freezing
+it is what made it citable, the same move the specifications made a day
+earlier.
 
-The rule it existed to carry does not change: the label carries provenance and
-nothing else, and **the reason has to stand beside it, in the comment**.
-Measured on 2026-10-03, all sixteen do — the comment at
-`_CHAIN_POSITION_CONSTRAINTS` in `storage/postgres.py` is the model: it names
-the ruling, says what the ruling got wrong, and then argues the correction from
-`id` and `prev_hash` going into the event hash. Read without the label, it still
-holds, and that is the test. A comment that collapses without its citation is a
-bad comment even when the citation resolves.
+**Labels are assigned per plan, so a citation names the plan.** `T8-c` of one
+plan and `T8-c` of the next are two different decisions, the way `W3` and `W-3`
+are, and here there is no hyphen to carry the difference. Name the plan's
+**date**, because the record directory is named after it — `ruling P-1 of the
+2026-10-04 stage 1b plan`, with the path to its `progress.md` where the
+sentence has room. The older citations stay bare: they were unambiguous for as
+long as one execution's labels were the only ones in the tree, and rewriting
+them all would be a change nobody can check. Whoever touches one qualifies it.
+
+Two statements got run together here until 2026-10-04, and they have to stay
+apart. The first — a shipped `progress.md` holds every ruling of its own
+execution — is true. The second — the labels cited from the tree resolve
+there — is not. Measured on 2026-10-04 with the census below, and each label
+against `grep -c 'Ruling <label>'` in
+`docs/superpowers/sdd/2026-10-03-dokumentation/progress.md`, the one record
+that ships at that point: of the fourteen distinct labels cited in the tree,
+**not one** resolves to the decision it names. Thirteen of them were in the
+tree before stage 1b, and eleven of those thirteen have no line of that name
+in the shipped record at all. The ledger that would hold the oldest of them,
+the stage 1a execution's, is **lost** — not misplaced, not pending, gone, and
+not reconstructible, so nobody should go looking for it. The fourteenth label
+is `P-1`, whose record ships with stage 1b.
+
+The remaining two are worse than unresolvable: `T5-b` and `T7-a` do find a
+line of that name in the 2026-10-03 record, and both times it is a different
+decision — `Ruling T5-b` there is about `Vale.Terms`, while the citation in
+`tests/test_schema.py` is about an index that has to be declared in the
+metadata. A pointer that resolves to the wrong decision is worse than a label
+with no pointer, because the reader stops with an answer.
+
+The census, as a command, because a number here would go stale the way the
+last one did:
+
+```
+grep -rnioE 'ruling (P|T[0-9]+)-[a-z0-9]+' src tests pyproject.toml .importlinter | sort -u
+```
+
+`.importlinter` belongs in that path list and was missing from it until
+2026-10-04, which is how a pointer to the wrong decision survived two reviews
+in the one file the gate prints from. `-i` belongs there too, although the
+`W`/`G`/`B`/`K`/`N` census above forbids it for itself: there the label stands
+alone and ignoring case catches test names, while here the word `ruling` has to
+precede it, so a sentence-initial `Ruling T6-b` is a citation and nothing else
+matches. What the pattern cannot catch is a citation folded into a plural or
+shared between two labels — `rulings T7-a and T8-c` hid from it in
+`.importlinter` for exactly that reason. So write one `ruling` per label.
+
+The rule all of this existed to carry does not change: the label carries
+provenance and nothing else, and **the reason has to stand beside it, in the
+comment**. This sentence carried "all sixteen do" until 2026-10-04 and no
+longer carries a count, because a figure from a day the tree no longer has
+cannot be rechecked against the tree — take the census above and read the
+sites. The comment at `_CHAIN_POSITION_CONSTRAINTS` in `storage/postgres.py`
+is the model: it names the ruling, says what the ruling got wrong, and then
+argues the correction from `id` and `prev_hash` going into the event hash.
+Read without the label, it still holds, and that is the test. A comment that
+collapses without its citation is a bad comment even when the citation
+resolves.
 
 Write them that way, and when a reason outgrows its comment, give it a page and
 point at the page instead. The execution record is where a reason too small for
