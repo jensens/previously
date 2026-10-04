@@ -236,8 +236,13 @@ def _cmd_log(args: argparse.Namespace) -> int:
     storage = _storage()
     # The reading methods take the connection in since review finding G4: the
     # transaction boundary belongs to the caller, who knows what has to be
-    # read together. For the chronicle that is a formality, for `show` it is
-    # not — there, event and units belong in the same snapshot.
+    # read together. Here that is a formality. `show` reads an event and its
+    # units in one transaction, but in two statements, which under the READ
+    # COMMITTED of `begin` are two snapshots. It still shows one state, and
+    # not because of a snapshot: `insert_event` writes an event and its units
+    # in the one transaction of `append`, so they commit together, and
+    # nothing in `src` rewrites or deletes either afterwards. Whoever sees the
+    # event sees its units.
     with storage.begin() as conn:
         for row in storage.read(conn, from_id=args.from_id, limit=args.limit):
             print(f"{row.id}\t{row.occurred_at.isoformat()}\t{row.kind}\t{row.hash.hex()[:12]}")

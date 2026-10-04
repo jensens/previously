@@ -121,8 +121,10 @@ class PostgresStorage:
 
         It is safe beside the appending procedure because, as PostgreSQL's
         documentation on transaction isolation says, a read-only transaction
-        never has a serialization conflict, and under MVCC reading never blocks
-        writing.
+        at REPEATABLE READ never has a serialization conflict, and under MVCC
+        reading never blocks writing. The level is part of that sentence: at
+        SERIALIZABLE, the same page says, what even a read-only transaction
+        reads is valid only once it commits, unless it is deferrable.
         """
         return self._transaction(self._snapshot_engine)
 

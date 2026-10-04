@@ -46,7 +46,8 @@ def test_reading_tolerates_comments_blank_lines_case_and_whitespace() -> None:
         (f"0 {HASH}", "positive integer"),
         (f"-3 {HASH}", "positive integer"),
         (f"² {HASH}", "positive integer"),
-        pytest.param(f"{'9' * 5000} {HASH}", "more than 19 digits", id="5000-digit-id"),
+        pytest.param(f"{'9' * 5000} {HASH}", "longer than 19 characters", id="5000-digit-id"),
+        pytest.param(f"{'x' * 5000} {HASH}", "longer than 19 characters", id="5000-letter-id"),
         (f"1 {HASH[:-1]}", "64 hex characters"),
         (f"1 {'zz' * 32}", "not hexadecimal"),
     ],
@@ -58,8 +59,10 @@ def test_a_broken_line_is_refused_with_its_line_number(line: str, message: str) 
     not let through to a `ValueError`: `str.isdigit()` takes it for a number
     and `int()` does not (review focus 5 of the 2026-10-04 external-anchor
     plan). The 5000 digits pin the same for a different `ValueError`, the one
-    `int()` raises beyond its digit limit, and the length bound on the
-    message pins that a damaged line is not echoed back whole."""
+    `int()` raises beyond its digit limit; the 5000 letters, that a long
+    field which is not a number is refused by the same check, in a sentence
+    true of it too. The length bound on the message pins that a damaged line
+    is not echoed back whole."""
     with pytest.raises(InvalidPayload, match=re.escape(message)) as caught:
         parse_anchors([f"1 {HASH}", line])
     assert "anchor line 2" in str(caught.value)

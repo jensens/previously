@@ -16,7 +16,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 # `len(str(2**63 - 1))`: the largest `bigint`, which the `id` column is.
-_MAX_ID_DIGITS = 19
+_MAX_ID_LENGTH = 19
 
 
 def format_anchor(anchor: Anchor) -> str:
@@ -47,11 +47,14 @@ def parse_anchors(lines: Iterable[str]) -> tuple[Anchor, ...]:
         # The length before `int()`, for the same reason as `isascii` below:
         # beyond 4300 digits `int()` raises a `ValueError` nobody translated.
         # 19 digits is the length of the largest `bigint`, so no event `id`
-        # is longer; the digits are not echoed, a damaged file can hold
-        # thousands of them.
-        if len(id_text) > _MAX_ID_DIGITS:
+        # is longer. The check stands before anything is echoed, so that no
+        # long field of any kind comes back in a message — a damaged file can
+        # hold thousands of characters there, digits or not — and its sentence
+        # therefore speaks of characters, which is true of every field it
+        # refuses.
+        if len(id_text) > _MAX_ID_LENGTH:
             raise InvalidPayload(
-                f"anchor line {number}: the id has more than {_MAX_ID_DIGITS} digits, "
+                f"anchor line {number}: the id is longer than {_MAX_ID_LENGTH} characters, "
                 "longer than any event id"
             )
         # `isascii` first: `str.isdigit()` is true for `²`, and `int()` then

@@ -220,12 +220,19 @@ def test_an_unreachable_server_shows_one_sentence(
 ) -> None:
     """Case 2 out of review finding W2. The DSN carries a password — the
     message must not show it, which is checked along here, not only in
-    `test_storage.py`."""
+    `test_storage.py`.
+
+    `verify` is in it because it reads through a different entrance to the
+    storage than `log` does: `snapshot`, not `begin`. A `snapshot` that
+    skipped the shared translation would bring back a traceback and exit code
+    1 — the code of a finding — for a server that is down."""
     monkeypatch.setenv("PREVIOUSLY_DSN", "postgresql+psycopg://user:SECRET123@localhost:1/db")
     assert main(["log"]) == 2
     sentence = _single_line(capsys.readouterr().err)
     assert "Traceback" not in sentence
     assert "SECRET123" not in sentence
+    assert main(["verify"]) == 2
+    assert _single_line(capsys.readouterr().err) == sentence
 
 
 @pytest.mark.db
@@ -234,7 +241,11 @@ def test_a_missing_table_shows_one_sentence(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Case 3 out of review finding W2: `log` before `alembic upgrade head`."""
+    """Case 3 out of review finding W2: `log` before `alembic upgrade head`.
+
+    `verify` is in it because it reads through a different entrance to the
+    storage than `log` does: `snapshot`, not `begin`, and the translation has
+    to hold for both."""
     from sqlalchemy import Engine
 
     assert isinstance(unmigrated_engine, Engine)
@@ -245,6 +256,8 @@ def test_a_missing_table_shows_one_sentence(
     sentence = _single_line(capsys.readouterr().err)
     assert "Traceback" not in sentence
     assert "alembic upgrade head" in sentence
+    assert main(["verify"]) == 2
+    assert _single_line(capsys.readouterr().err) == sentence
 
 
 # --- Finding G3: --evidence instead of being fixed to RECOLLECTION -------

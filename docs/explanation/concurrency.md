@@ -45,7 +45,7 @@ Building on a default here would be a trap: whoever changed it later would chang
 
 One reader runs at a different level, and on purpose.
 The chain check needs every statement of its pass to see the same state, which `READ COMMITTED` doesn't give, so it reads in a read-only `REPEATABLE READ` transaction of its own; {ref}`hash-chain` says what went wrong without it.
-That leaves the procedure above untouched, for two reasons PostgreSQL's documentation on transaction isolation states: a read-only transaction never has a serialization conflict, and under MVCC reading never blocks writing.
+That leaves the procedure above untouched, for two reasons PostgreSQL's documentation on transaction isolation states: a read-only transaction at `REPEATABLE READ` never has a serialization conflict, and under MVCC reading never blocks writing.
 A check running alongside the busiest code path neither fails because of it nor makes it wait.
 
 The loser rolls back, waits, reads the tip again and starts over from the top.
