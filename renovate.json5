@@ -1,0 +1,76 @@
+// Renovate proposes dependency updates as pull requests. The architecture
+// record names it for updates; this file is what the app reads once the
+// maintainer installs it on the repository.
+//
+// What it has to respect is written in CLAUDE.md under "One source of truth
+// for tool versions": `uv.lock` pins every version, and `pyproject.toml`
+// carries floors that say what the code needs, not what is newest. Beside
+// those, a version is written down in two places: the one external
+// pre-commit repository, and the actions in `.github/workflows/`, pinned by
+// commit with the version in a comment. All three are kept current here.
+{
+  $schema: "https://docs.renovatebot.com/renovate-schema.json",
+
+  extends: [
+    // Renovate's own baseline: the dependency dashboard issue, grouping of
+    // packages released together, changelog links. It enables no automerge.
+    "config:recommended",
+    // The actions in `.github/workflows/` are pinned by commit with the
+    // version in a comment, `uses: owner/action@<sha> # v1.2.3`. The
+    // github-actions manager updates such a commit along the tag in its
+    // comment and rewrites the comment to match. This preset also pins any
+    // action a later change adds by tag, so a new workflow cannot slip back
+    // to a reference that can be moved.
+    "helpers:pinGitHubActionDigests",
+  ],
+
+  // Spelled out although it is Renovate's default: a merge into `main` is
+  // the maintainer's acceptance (CLAUDE.md, "Working method"), so nothing
+  // merges itself, however small the update.
+  automerge: false,
+
+  // A weekly rhythm, so the maintainer is not flooded: branches are created
+  // on Monday mornings only. Renovate recommends a window of at least three
+  // to four hours, because the schedule does not trigger a run, it only
+  // admits one; six hours, in UTC since no timezone is set.
+  schedule: ["* 0-5 * * 1"],
+
+  // Transitive dependencies sit in `uv.lock` and in no manifest, so no
+  // ordinary update reaches them. Lock file maintenance regenerates the lock
+  // once a week, in a pull request of its own, on Renovate's default for it,
+  // before 4am on Monday. That is the only route by which a vulnerable
+  // transitive package gets replaced without somebody running `uv lock
+  // --upgrade` by hand.
+  lockFileMaintenance: {
+    enabled: true,
+  },
+
+  // The pre-commit manager is disabled by default in Renovate and has to be
+  // opted into. It keeps `rev:` of `pre-commit-hooks` current; the local
+  // hooks call the project's own tools through `uv run` and carry no version
+  // Renovate could touch.
+  "pre-commit": {
+    enabled: true,
+  },
+
+  packageRules: [
+    {
+      // `pyproject.toml` is read by the pep621 manager, which also updates
+      // `uv.lock`. `update-lockfile` moves the lock to the new version and
+      // leaves the range alone as long as the new version satisfies it;
+      // every floor here is `>=`, which every newer version satisfies, so a
+      // floor is never raised just because a release exists. When the code
+      // needs a newer version, a person raises the floor.
+      matchManagers: ["pep621"],
+      rangeStrategy: "update-lockfile",
+    },
+    {
+      // One pull request a week for everything that is not a major update,
+      // across Python packages, actions and the pre-commit hooks. Majors
+      // stay separate, one each, because they are the ones worth reading on
+      // their own.
+      matchUpdateTypes: ["minor", "patch", "digest"],
+      groupName: "non-major dependencies",
+    },
+  ],
+}

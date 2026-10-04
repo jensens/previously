@@ -171,6 +171,12 @@ version of anything to drift apart from.
 `pyproject.toml` carries floors (`ruff>=0.16`), not pins. Floors say what the
 code needs; the lock says what was tested.
 
+Updates arrive as pull requests from Renovate, configured in `renovate.json5`,
+once a week and never merged by itself. It moves `uv.lock`, the `rev:` of
+`pre-commit-hooks` and the pinned commits of the actions, and it leaves the
+floors in `pyproject.toml` alone: raising one is a statement about the code,
+and a person makes it.
+
 ## Working method
 
 Work in a git worktree, never directly on `main`.
