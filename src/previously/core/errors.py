@@ -28,3 +28,11 @@ class BatchTooLarge(PreviouslyError, ValueError):
     A very large transaction holds for a long time and loses the conflict
     against every small submission that commits meanwhile — starvation.
     """
+
+
+class ProjectionGap(PreviouslyError):
+    """The log has a gap above `up_to_id` — which {ref}`projections` says it
+    cannot have: `id = predecessor.id + 1` and the unique index on `prev_hash`
+    leave no room for one. Raised rather than skipped over, because a worker
+    that silently moved past a gap would turn an impossible state into a
+    silent loss."""
