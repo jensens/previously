@@ -4,7 +4,7 @@
 
 Stage 1b adds three tables that carry no truth of their own: `projection_state`, `p_chronicle`, and `p_source_stats`.
 This page explains what that promise means in practice and why the two content-bearing tables look the way they do.
-Three sections follow on the worker that keeps them current: how it catches up in batches, why it never has to worry about a gap in the log, and which test makes the promise more than a claim.
+Three sections follow on the worker that keeps them current: how it catches up in batches, why a gap in the log can't arise and is checked for all the same, and which test makes the promise more than a claim.
 
 ## Derivable and disposable
 
@@ -25,6 +25,7 @@ That's the difference from `log`, which reads the chain one event at a time: a c
 `evidence` is nullable on purpose.
 The kind of evidence lives in the payload, and an erased payload is `NULL`, so a `NOT NULL` column here would mean the chronicle can't show an erased event's units at all—a row from the log disappearing rather than showing up with its evidence missing.
 `source` is nullable for a different reason: `source_key` enforces at most one source attribution per event, not at least one, so an event with no attribution still gets a chronicle row, just with an empty `source` and `external_id`.
+From `p_source_stats` that same event is absent altogether, because there's no source it could be attributed to, and the chronicle is where it stays visible.
 
 `p_source_stats` aggregates the same log, one row per source, and its content is plain on purpose: a count of events, a count of units, and the earliest and latest `occurred_at`.
 The plainness is beside the point; what makes this aggregation worth building is its **form**.
@@ -71,9 +72,10 @@ Sequence values are handed out before a transaction commits, so the transaction 
 A worker that has stored 42 as its bookmark then reads from 43 and loses 41 for good, with nothing to show that a row was skipped.
 Stage 1b is the first place where the absence of a sequence pays for itself outside the chain check.
 
-Because the gap can't arise, the worker doesn't step over one either.
-A tip above `up_to_id` with no event in between raises `ProjectionGap`.
-Treating the empty read as "nothing to do" would turn an impossible state into exactly the kind of quiet loss {ref}`silent-losses` is about.
+The gap can't arise, and the worker checks for one anyway, because a check that can't fire is a comment rather than a check.
+The first version of it checked the batch read for emptiness, and measured, that version could never fire for a gap at all: the tip is itself a row with an identifier above `up_to_id`, and the read filters on the same bound, so an empty result means a `batch_size` below one and nothing else.
+With id 5 deleted by hand at `up_to_id` 4, the worker read 6 to 10, projected them and stored `up_to_id = 10`—the quiet loss {ref}`silent-losses` is about, out of the code that claimed to refuse it.
+The check now compares the identifiers the batch read against the run that has to start at `up_to_id + 1`, and raises `ProjectionGap` at any difference, and a test forges the gap with plain SQL so that the check has to stay able to fire.
 
 ## The assurance, and the test that can actually fail
 
@@ -84,6 +86,7 @@ That failure is a wrong incremental step: a catch-up that reaches a different an
 Seeing it requires both paths at once.
 
 The central test therefore walks the incremental path in full—append one event, catch up, append the next, catch up—then forces a rebuild from zero and compares the two results row by row.
+Forcing the rebuild takes one of two paths, a version the table doesn't match or an emptied table with `up_to_id = 0` at an unchanged version, and the test takes the second one, so that the version trigger keeps a measurement of its own.
 Rows, not a digest: a digest says that something differs, rows say which field moved.
 That's the lesson of the pinned hash vector from stage 1a.
 
@@ -108,7 +111,9 @@ Which test fails for which mistake was measured, and the pair of tests is what c
 ```text
 merge with first_seen = existing.first_seen  (never catch up)
   -> test_merge_keeps_the_earliest_first_seen_when_the_late_arrival_is_older
-     fails, and alone
+     fails, alone among the pure tests
+  -> test_incremental_equals_rebuilt fails as well, on its pinned first_seen
+     value and not on the comparison between the two paths
 
 merge with first_seen = addition.first_seen  (overwrite)
   -> test_merge_adds_counts_and_keeps_the_extremes fails
@@ -134,7 +139,13 @@ SourceStatsProjection.write merges None instead of the stored row
 ```
 
 That mutation is invisible to every test that runs without a database and to the pinned `first_seen` value as well, and it's the reason the comparison exists.
-Beside it stands a property that interleaves "append some events" and "catch up" in an order drawn at random and compares the result against one rebuild at the end.
+
+Three layers, then, and none of them covers another.
+The pure tests in `test_projection_derive.py` pin the arithmetic where it lives, without a database.
+The pinned `first_seen` value inside the central test catches that same arithmetic end to end: the never-catch-up mutation turns the central test red on that value, and not on the comparison.
+The comparison and the property catch the step that goes wrong on one path only, which neither of the other two layers can see.
+
+Beside the comparison stands a property that interleaves "append some events" and "catch up" in an order drawn at random and compares the result against one rebuild at the end.
 Twenty-five examples per run, with `occurred_at` drawn at random as well and sources from a set of three, so that something is aggregated at all.
 
 The version trigger gets the same treatment.
@@ -142,4 +153,4 @@ A projection declares its version in the code, and a catch-up that meets a diffe
 The test poisons a row in `p_source_stats`, raises the version, and finds the poison gone.
 Its control sits right next to it: a catch-up at the unchanged version leaves the poison in place.
 Without that control the first half would show only that the worker writes, not that the version is what set it off.
-Dropping the version comparison from the worker turns both version tests red and leaves the other seven green.
+Dropping the version comparison from the worker turns both version tests red and leaves the other ten green.

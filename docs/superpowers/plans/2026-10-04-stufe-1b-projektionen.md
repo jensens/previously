@@ -2429,7 +2429,7 @@ Run: Doku-Tore. Erwartet: grün.
 
 - [ ] **Schritt 7: Alle sechs Tore, Commit**
 
-Erwartet: `pytest` **231 passed** (223 + 8).
+Erwartet: `pytest` **232 passed** (223 + 9).
 
 ```bash
 git add -A
@@ -2490,7 +2490,7 @@ Erwartet entweder `0 errors`, oder Treffer auf Wörter wie `upsert`, `denormaliz
 
 - [ ] **Schritt 5: Alle sechs Tore, Commit**
 
-Erwartet: `pytest` **231 passed** (unverändert), Vale **22 files**.
+Erwartet: `pytest` **232 passed** (unverändert), Vale **22 files**.
 
 ```bash
 git add -A
@@ -2558,7 +2558,7 @@ Nach dem Abschnitt `## Look at the event in full` drei neue Abschnitte, **als ec
 
 `## Count per source` — `uv run previously stats`, eine Zeile.
 
-Dann den Testlauf **neu abtippen** — die Zahl ist jetzt 231 und `test_docs_typed_output.py` hält sie gegen den Baum. **Ohne** die `rootdir:`-Zeile (die Seite sagt am Ende des Blocks, dass sie ausgelassen ist). Kein Maschinenpfad.
+Dann den Testlauf **neu abtippen** — die Zahl ist jetzt 232 und `test_docs_typed_output.py` hält sie gegen den Baum. **Ohne** die `rootdir:`-Zeile (die Seite sagt am Ende des Blocks, dass sie ausgelassen ist). Kein Maschinenpfad.
 
 Run: `uv run pytest tests/test_docs_typed_output.py -v`
 Erwartet: `PASSED`.
@@ -2579,7 +2579,7 @@ to the next stage's spec by rule.
 line of stage 1b code cites a paragraph of this spec, because the pages
 were written alongside the code and the gate refuses a bare paragraph
 sign. The tutorial gains project, chronicle and stats as a typed run, and
-the test run is retyped last at 231.
+the test run is retyped last at 232.
 
 Assisted-By: Claude <Modell> <noreply@anthropic.com>
 MSG
@@ -2595,7 +2595,7 @@ MSG
 
 **2. Platzhalter.** Kein „TBD", kein „analog zu Aufgabe N". Die Doku-Schritte tragen Seitenspezifikationen (Abschnitte mit Muss-Inhalt und Messung) — die Form, die der Doku-Plan vom 2026-10-03 etabliert hat.
 
-**3. Namenskonsistenz.** `escape_field` (nicht `_escape`) in Aufgabe 6 Test und Code — der Test oben zeigt die Falle und löst sie im Text; `Outcome.rebuilt_from` mit den drei Bedeutungen in Aufgabe 5 definiert und in `_describe` (6) genau so gelesen; `ProjectionState(name, up_to_id, version, built_at)` positional in Tests, benannt im Worker — gleiche Reihenfolge wie die Dataclass; `_PROJECTION_TABLES`-Schlüssel `"chronicle"`/`"source-stats"` = `ChronicleProjection.name`/`SourceStatsProjection.name` = `projection_state.name` in den CLI-Reads. Testzahlen je Aufgabe: 193, 194, 202, 211, 223, 231, 231, 231 — jede eine Vorhersage, die der Umsetzer **nachzählt**. (Die erste Fassung dieses Plans sagte 229 für Aufgabe 6; nachgezählt sind es acht Tests, nicht neun. Aufgabe 5 bekam in Fixrunde 1 drei Tests dazu, weil `ProjectionGap` gemessen für keine Lücke feuern konnte — die drei Zahlen danach wandern mit.)
+**3. Namenskonsistenz.** `escape_field` (nicht `_escape`) in Aufgabe 6 Test und Code — der Test oben zeigt die Falle und löst sie im Text; `Outcome.rebuilt_from` mit den drei Bedeutungen in Aufgabe 5 definiert und in `_describe` (6) genau so gelesen; `ProjectionState(name, up_to_id, version, built_at)` positional in Tests, benannt im Worker — gleiche Reihenfolge wie die Dataclass; `_PROJECTION_TABLES`-Schlüssel `"chronicle"`/`"source-stats"` = `ChronicleProjection.name`/`SourceStatsProjection.name` = `projection_state.name` in den CLI-Reads. Testzahlen je Aufgabe: 193, 194, 202, 211, 223, 232, 232, 232 — jede eine Vorhersage, die der Umsetzer **nachzählt**. (Die erste Fassung dieses Plans sagte 229 für Aufgabe 6, zählte nach und fand acht — dann brachte der Vorab-Scan den Test für das leere Log, und es sind wieder neun; die Zahl im Plan blieb zwei Commits lang bei 228 stehen, bis sie beim Nachführen der Aufgabe-5-Zahlen gegen die `def test_` im Text gezählt wurde. Aufgabe 5 bekam in Fixrunde 1 drei Tests dazu, weil `ProjectionGap` gemessen für keine Lücke feuern konnte. Beides zusammen: 223 und 232.)
 
 **4. Review Focus.** Alle fünf haben einen Test: 1 → A6 (`…empty_window_is_not_truncated`), 2 → A6 (`…rejects_a_naive_since`), 3 → A6 (`escape_field`-Test), 4 → A5 (`…lower_code_version_rebuilds_too`), 5 → A5 (`…empty_log…`) und A6 (`project` auf leerem Log).
 

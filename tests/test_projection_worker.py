@@ -17,11 +17,14 @@ from hypothesis import HealthCheck
 from hypothesis import settings
 from hypothesis import strategies as st
 from previously.contract.rows import ChronicleRow
+from previously.contract.rows import EventRow
 from previously.contract.rows import ProjectionState
 from previously.contract.rows import SourceStatsRow
+from previously.contract.rows import UnitRow
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
+from previously.core.errors import ProjectionGap
 from previously.core.projection import PROJECTIONS
 from previously.core.projection.chronicle import CHRONICLE
 from previously.core.projection.chronicle import ChronicleProjection
@@ -169,9 +172,9 @@ def test_a_lower_code_version_rebuilds_too(db: Engine) -> None:
 class _FailingStore:
     """A `ProjectionStore` that raises on the n-th `insert_chronicle`.
 
-    Everything else delegates. That this wrapper is twenty lines and no mock
-    is the dividend of the protocol ({ref}`module-boundaries`): typed against
-    the concrete `PostgresStorage` there would be no such thing.
+    Everything else delegates. That this is a wrapper of a few dozen lines
+    and no mock is the dividend of the protocol ({ref}`module-boundaries`):
+    typed against the concrete `PostgresStorage` there would be no such thing.
     """
 
     def __init__(self, inner: PostgresStorage, fail_on_call: int) -> None:
@@ -260,9 +263,6 @@ def test_an_event_without_a_source_is_in_the_chronicle_and_not_in_the_stats(db: 
     connector for assertions would."""
     storage = PostgresStorage(db)
     append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
-    from previously.contract.rows import EventRow
-    from previously.contract.rows import UnitRow
-
     with storage.begin() as c:
         tip = storage.tip(c)
         assert tip is not None
@@ -294,6 +294,75 @@ def test_a_tombstoned_event_keeps_its_chronicle_rows_with_evidence_null(db: Engi
     with db.begin() as c:
         rows = c.execute(text("SELECT content, evidence FROM p_chronicle ORDER BY seq")).all()
     assert [tuple(r) for r in rows] == [("one", None), ("two", None)]
+
+
+@pytest.mark.db
+def test_a_gap_in_the_log_raises_instead_of_being_skipped(db: Engine) -> None:
+    """The log cannot have a gap ({ref}`projections`), and the worker checks
+    anyway, because a check that cannot fire is a comment. Measured before this
+    test existed: with id 5 deleted by hand at `up_to_id` 4, the worker
+    projected 6..10 and set `up_to_id = 10` — the silent loss `ProjectionGap` is
+    named after. The gap is forged here with plain SQL; nothing in the append
+    path can produce it."""
+    storage = PostgresStorage(db)
+    append(storage, [_raw(n, "email", NOW) for n in range(1, 11)], recorded_at=NOW)
+    failing: ProjectionStore[Connection] = _FailingStore(storage, fail_on_call=3)
+    with pytest.raises(RuntimeError, match="injected"):
+        catch_up(storage, failing, CHRONICLE, batch_size=2)
+    with db.begin() as c:
+        c.execute(text("DELETE FROM source_key WHERE event_id = 5"))
+        c.execute(text("DELETE FROM unit WHERE event_id = 5"))
+        c.execute(text("DELETE FROM event WHERE id = 5"))
+
+    with pytest.raises(ProjectionGap, match="above id 4"):
+        catch_up(storage, storage, CHRONICLE, batch_size=2)
+
+    with db.begin() as c:
+        highest = c.execute(text("SELECT max(event_id) FROM p_chronicle")).scalar_one()
+        rows = c.execute(text("SELECT count(*) FROM p_chronicle")).scalar_one()
+    state = _state(storage, "chronicle")
+    assert state is not None
+    assert (state.up_to_id, highest, rows) == (4, 4, 8)  # nothing moved past the gap
+
+
+@pytest.mark.db
+def test_batch_size_below_one_is_a_caller_error_not_a_gap(db: Engine) -> None:
+    """Measured before the guard: `batch_size=0` ran `LIMIT 0` into an empty
+    read and reported a gap in the log that was not there; `-1` surfaced a raw
+    `DataError` from the driver. A caller error is named as one, before any
+    transaction opens."""
+    storage = PostgresStorage(db)
+    for bad in (0, -1):
+        with pytest.raises(ValueError, match="batch_size"):
+            catch_up(storage, storage, CHRONICLE, batch_size=bad)
+
+
+@pytest.mark.db
+def test_a_batch_without_any_source_leaves_the_stats_untouched(db: Engine) -> None:
+    """The early return in `SourceStatsProjection.write`: a batch in which no
+    event carries a source attribution writes nothing — not even an upsert of
+    unchanged rows. The sourceless event has to arrive in a batch of its own,
+    after a first catch-up, or it shares a batch with a sourced one and the
+    return is never reached; that is why the other sourceless test did not
+    cover this line."""
+    storage = PostgresStorage(db)
+    append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
+    _project_all(storage)
+    before = _snapshot(db)[1]
+    with storage.begin() as c:
+        tip = storage.tip(c)
+        assert tip is not None
+        storage.insert_event(
+            c,
+            EventRow(
+                2, "observation", NOW, NOW, tip.hash, b"\x02" * 32, b"\x00" * 32, b"\x01" * 32, {}
+            ),
+            [UnitRow(2, 1, "orphan")],
+            None,
+        )
+    outcome = catch_up(storage, storage, SOURCE_STATS)
+    assert outcome.events == 1
+    assert _snapshot(db)[1] == before
 
 
 SLOW = settings(
