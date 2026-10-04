@@ -108,18 +108,20 @@ and three executions have borne it out.
 
 It was drawn up on 2026-10-04 with the checkpoint the architecture record asks
 for in its §12.3 (frozen design record); the record of that checkpoint is under
-`docs/superpowers/sdd/2026-10-04-pruefpunkt-teilprojekt-1/`. Measured on that
-day, the open points had been sitting in eight places — two sections of the
+`docs/superpowers/sdd/2026-10-04-pruefpunkt-teilprojekt-1/`. Until then the
+open points had been sitting in eight places — two sections of the
 architecture record, one each of the design and of the three stage
-specifications, and the indexes of two execution records — and the map lists
-them, with what the checkpoint itself found, as 73 entries:
+specifications, and the indexes of two execution records. When the map was
+drawn up, in commit `7fef06f`, it listed them, with what the checkpoint
+itself found, as 73 entries. This command counts what it lists today:
 
 ```
 awk '/^## Offene Punkte/{f=1} /^## Erledigt/{f=0} f && /^- /{n++} END{print n}' docs/superpowers/landkarte.md
 ```
 
-That number is the measurement of one day and moves with every point that is
-closed or found.
+The two numbers part ways with the first point that is closed or found, and
+they did so the same day: the maintenance round that followed struck three
+entries. That is the map working, not the sentence going stale.
 
 ## Attribution
 

@@ -237,6 +237,15 @@ Zeile seines Belegberichts.
   gebaut; es gibt nur den Alarm. Kein Grund aufgeschrieben (PP, A2).
 - Zwei gleichzeitig laufende Anker-Routinen hängen beide an; folgenlos, aber
   ohne Sperre (P-AA).
+- GitHub schaltet geplante Workflows in einem öffentlichen Repository nach 60
+  Tagen ohne Aktivität ab; die wöchentliche Prüfung mit `pip-audit` kann dann
+  still aufhören (Prüfung der Wartungsrunde, 2026-10-04).
+- Die Renovate-App ist auf dem Repository noch nicht installiert; ohne sie tut
+  `renovate.json5` nichts. Validiert ist die Konfiguration mit Renovate
+  42.99.0, nicht mit der aktuellen Hauptversion, und ob Renovate den
+  Versionskommentar neben einem gepinnten Action-Commit mitzieht, steht nicht
+  in seiner Dokumentation — am ersten solchen Pull-Request nachsehen (Prüfung
+  der Wartungsrunde, 2026-10-04).
 
 ### Kette und Anker
 
