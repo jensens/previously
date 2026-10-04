@@ -66,7 +66,7 @@ forbidden_modules =
 # here either.
 
 [importlinter:contract:no-vendor-sdk]
-name = No vendor SDK in stage 1a
+name = No vendor SDK in the package
 type = forbidden
 source_modules =
     previously

@@ -20,6 +20,7 @@ from previously.contract.rows import EventRow
 from previously.contract.rows import ProjectionState
 from previously.contract.rows import SourceStatsRow
 from previously.contract.rows import Tip
+from previously.contract.rows import TipAndBookmark
 from previously.contract.rows import UnitRow
 from previously.storage.errors import ChainPositionTaken
 from previously.storage.errors import InvalidDsn
@@ -451,6 +452,44 @@ class PostgresStorage:
     # --- Reads for the command line, outside the protocols -------------------
     # Like `units`: only `cli` calls these. The protocols hold what `core`
     # needs, and `core` never reads a projection back.
+
+    def tip_and_bookmark(self, conn: Connection, name: str) -> TipAndBookmark:
+        """Both numbers out of **one** statement, for the lag of one projection.
+
+        One transaction is not enough here, and that is the whole reason this
+        method exists instead of a call to `tip` followed by one to
+        `projection_state`. `__init__` sets the isolation level to READ
+        COMMITTED on purpose, and under READ COMMITTED PostgreSQL gives *each
+        statement* its own snapshot (PostgreSQL's documentation on transaction
+        isolation says so in those words). Two statements in one transaction
+        therefore still see two moments, and their difference is a number that
+        was never true at either of them. One statement sees one snapshot, so
+        the difference is a difference.
+
+        The property is **structural** and has no test of its own: nothing
+        observable tells one snapshot from two here, because a concurrent
+        append can only make the lag larger and a concurrent catch-up only
+        smaller, so both readings stay plausible. What guards it is the shape
+        of the body — one `conn.execute`, two scalar subqueries — and whoever
+        splits it into two statements takes the assurance back without any
+        gate noticing. {ref}`projections` carries the argument.
+
+        `coalesce` in SQL rather than `or 0` in Python: an empty log and a
+        projection without a state row both yield NULL, and the reading of
+        both is "nothing yet".
+        """
+        row = conn.execute(
+            select(
+                func.coalesce(select(func.max(event.c.id)).scalar_subquery(), 0).label("tip_id"),
+                func.coalesce(
+                    select(projection_state.c.up_to_id)
+                    .where(projection_state.c.name == name)
+                    .scalar_subquery(),
+                    0,
+                ).label("up_to_id"),
+            )
+        ).one()
+        return TipAndBookmark(tip_id=row.tip_id, up_to_id=row.up_to_id)
 
     def read_chronicle(
         self,

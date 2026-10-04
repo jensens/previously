@@ -11,10 +11,10 @@ Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see
 | Command | 0 | 1 | 2 |
 |---|---|---|---|
 | `append` | The event was recorded, or an event with the same `--source` and `--external-id` already existed. | Not used. | The input was invalid, or storage raised an error. |
-| `log` | The log was printed. | Not used. | Storage raised an error. |
+| `log` | The log was printed. | Not used. | The input was invalid, or storage raised an error. |
 | `verify` | The chain has no finding. | The chain has at least one finding. | Storage raised an error. |
 | `show` | The event was printed. | No event exists at the given `event_id`. | The input was invalid, or storage raised an error. |
-| `project` | Every projection stands at the tip of the log. | Not used. | Storage raised an error. |
+| `project` | Every projection stands at the tip of the log. | Not used. | Storage raised an error, or the worker found a gap in the log. |
 | `chronicle` | The chronicle was printed, even when the window holds no row. | Not used. | The input was invalid, or storage raised an error. |
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
 
@@ -41,9 +41,11 @@ Prints the log in chain order, one line per event.
 | Argument | Required | Default | Description |
 |---|---|---|---|
 | `--from` | No | `1` | The lowest event `id` to print. |
-| `--limit` | No | `50` | The maximum number of events to print. |
+| `--limit` | No | `50` | The maximum number of events to print, at least 1. |
 
 Each line holds four tab-separated fields, in this order: `id`, `occurred_at` (ISO 8601), `kind`, and the first 12 hexadecimal characters of `hash`.
+
+A `--limit` below 1 is refused before anything is read: `log` returns 2 and prints one sentence naming `--limit` to standard error.
 
 ## `verify`
 
@@ -99,20 +101,21 @@ Each line holds six tab-separated fields, in this order: `event_id`, `seq`, `occ
 An event with no source attribution prints two empty fields in place of `source` and `external_id`.
 Lines come out ordered by `occurred_at`, then `event_id`, then `seq`.
 
-Four characters in `content` print as two characters each: a tab as `\t`, a newline as `\n`, a carriage return as `\r`, and a backslash as `\\`.
+Four characters print as two characters each, in every field and not in `content` alone: a tab as `\t`, a newline as `\n`, a carriage return as `\r`, and a backslash as `\\`.
+`source` and `external_id` carry whatever `append` was given, and a tab there would otherwise add a field and a newline would break the record in two.
 The backslash is escaped first, so the escaping is reversible.
-The stored content is unchanged; the escaping is part of the output format.
+The stored values are unchanged; the escaping is part of the output format.
 
 `--since` and `--until` form a half-open window, so a `--since` equal to or later than `--until` selects nothing.
 Both need a UTC offset; without one, `chronicle` returns 2 and prints one sentence to standard error.
 A `--limit` below 1 is refused the same way, before anything is read.
 
 Two notices go to standard error, and both leave the exit code at 0.
-The first prints when the projection stands behind the tip of the log, the second when `--limit` cuts the output:
+The first prints when `--limit` cuts the output, the second when the projection stands behind the tip of the log, and a single run can print both in that order:
 
 ```text
-projection is 12 events behind; run `previously project`
 output truncated at 50 lines; raise --limit or narrow --since/--until
+projection is 12 events behind; run `previously project`
 ```
 
 A lag of one event prints as `1 event behind`.
@@ -126,6 +129,7 @@ Prints the per-source statistics, one line per source.
 It takes no arguments.
 
 Each line holds five tab-separated fields, in this order: `source`, `events`, `units`, `first_seen` (ISO 8601), and `last_seen` (ISO 8601).
+`source` is escaped the way `chronicle` escapes its fields, so a tab in a source name can't add a sixth field.
 Lines come out ordered by `source`.
 An event with no source attribution appears in no line.
 

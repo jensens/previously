@@ -50,6 +50,19 @@ def test_append_log_and_verify_together(
     output = capsys.readouterr().out
     assert "1" in output
 
+    # `log --limit` is bolted the way `chronicle --limit` is, and until
+    # 2026-10-04 it was not. Measured then against this container: `--limit 0`
+    # returned 0 with nothing on stdout and nothing on stderr, so a refused
+    # limit looked exactly like an empty log, and `--limit -2` came back as
+    # `sqlalchemy.exc.DataError: (psycopg.errors.InvalidRowCountInLimitClause)
+    # LIMIT must not be negative` — a stack trace and exit code 1 instead of
+    # 2, which is the shape of review finding W2.
+    for limit in ("0", "-2"):
+        assert main(["log", "--limit", limit]) == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err.strip() == f"Error: --limit must be at least 1, got {limit}"
+
 
 @pytest.mark.db
 def test_appending_twice_gives_the_same_id(
@@ -501,9 +514,11 @@ def test_project_on_an_empty_log_is_up_to_date_at_zero_but_still_names_a_rebuild
 ) -> None:
     """Review focus 5. Nothing was built, so it does not say `built`.
 
-    The second half pins the order inside `_describe` (ruling P-1): a version
-    change is reported even when the run projected no event, because it
-    changed the state row all the same. Measured by mutation — with the
+    The second half pins the order inside `_describe` (ruling P-1 of the
+    2026-10-04 stage 1b plan, recorded in
+    `docs/superpowers/sdd/2026-10-04-stufe-1b-projektionen/progress.md`): a
+    version change is reported even when the run projected no event, because
+    it changed the state row all the same. Measured by mutation — with the
     `events == 0` branch moved above the version branch, the second half goes
     red and the first stays green.
     """
@@ -595,6 +610,15 @@ def test_chronicle_prints_one_line_per_unit_in_time_order_with_the_source(
     promises: `append` always writes a `source_key`, so the sourceless event
     goes in through `insert_event` with no key, the way
     `test_projection_worker.py` builds one.
+
+    Event 4 carries a tab in `--source` and a newline in `--external-id`, and
+    both are reachable over the command line: `core.append` refuses a null
+    byte and a lone surrogate there, nothing else. Measured on 2026-10-04
+    with `escape_field` applied to `content` alone, as it was until then: that
+    one unit came out as **two** lines with six and two tab-separated fields
+    instead of one line with six, so a consumer splitting on tabs read one
+    unit as two records with the fields shifted. Hence the field count below,
+    which is the assurance the reference page makes.
     """
     from sqlalchemy import Engine
 
@@ -626,6 +650,7 @@ def test_chronicle_prints_one_line_per_unit_in_time_order_with_the_source(
             [UnitRow(3, 1, "orphan")],
             None,
         )
+    _append("de\tsk", "id\nx", "raw", "2026-10-03T09:00:00Z")
     main(["project"])
     capsys.readouterr()
     assert main(["chronicle"]) == 0
@@ -634,7 +659,10 @@ def test_chronicle_prints_one_line_per_unit_in_time_order_with_the_source(
         "2\t1\t2026-10-01T09:00:00+00:00\tchat\tc1\tearly\\ttab",
         "3\t1\t2026-10-01T12:00:00+00:00\t\t\torphan",
         "1\t1\t2026-10-02T09:00:00+00:00\temail\tm1\tlate",
+        "4\t1\t2026-10-03T09:00:00+00:00\tde\\tsk\tid\\nx\traw",
     ]
+    # One record is one line with six fields, whatever the fields carry.
+    assert [len(line.split("\t")) for line in out.splitlines()] == [6, 6, 6, 6]
     assert err == ""  # up to date: silence
 
 
@@ -712,6 +740,12 @@ def test_chronicle_window_is_half_open_and_an_empty_window_is_not_truncated(
 def test_chronicle_limit_warns_on_stderr_when_it_cuts_and_not_otherwise(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The truncation notice, its absence, the `--limit` bolt — and the order.
+
+    The third part is the only place where both notices fire in one run, and
+    until it existed the order in which `chronicle` prints them was unchecked;
+    {ref}`cli-reference` had them the other way round and nothing noticed.
+    """
     _setup(db, monkeypatch)
     for n in range(1, 4):
         _append("email", f"m{n}", f"u{n}", f"2026-10-0{n}T09:00:00Z")
@@ -724,6 +758,19 @@ def test_chronicle_limit_warns_on_stderr_when_it_cuts_and_not_otherwise(
     assert main(["chronicle", "--limit", "3"]) == 0
     out, err = capsys.readouterr()
     assert (len(out.splitlines()), err) == (3, "")
+
+    # A fourth event, appended and deliberately not projected: the window is
+    # cut *and* the projection is behind, so both notices fire in one run and
+    # their order can be checked. The truncation comes first.
+    _append("email", "m4", "u4", "2026-10-04T09:00:00Z")
+    capsys.readouterr()
+    assert main(["chronicle", "--limit", "2"]) == 0
+    out, err = capsys.readouterr()
+    assert len(out.splitlines()) == 2
+    assert err.splitlines() == [
+        "output truncated at 2 lines; raise --limit or narrow --since/--until",
+        "projection is 1 event behind; run `previously project`",
+    ]
 
     # A limit below one is refused before the read, through the same path as
     # every other user error: exit code 2, one sentence, nothing on stdout.
@@ -752,16 +799,25 @@ def test_chronicle_rejects_a_naive_since(
 def test_stats_prints_one_line_per_source(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    """The fourth source carries a tab in its name, for the reason
+    `test_chronicle_prints_one_line_per_unit_in_time_order_with_the_source`
+    gives. Measured on 2026-10-04 with `stats` escaping nothing, as it was
+    until then: that line came out with **six** tab-separated fields instead
+    of five.
+    """
     _setup(db, monkeypatch)
     _append("email", "m1", "a\n\nb", "2026-10-02T09:00:00Z")
     _append("email", "m2", "c", "2026-10-01T09:00:00Z")
     _append("chat", "c1", "d", "2026-10-03T09:00:00Z")
+    _append("de\tsk", "d1", "e", "2026-10-04T09:00:00Z")
     main(["project"])
     capsys.readouterr()
     assert main(["stats"]) == 0
     out, err = capsys.readouterr()
     assert out.splitlines() == [
         "chat\t1\t1\t2026-10-03T09:00:00+00:00\t2026-10-03T09:00:00+00:00",
+        "de\\tsk\t1\t1\t2026-10-04T09:00:00+00:00\t2026-10-04T09:00:00+00:00",
         "email\t2\t3\t2026-10-01T09:00:00+00:00\t2026-10-02T09:00:00+00:00",
     ]
+    assert [len(line.split("\t")) for line in out.splitlines()] == [5, 5, 5]
     assert err == ""

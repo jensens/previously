@@ -74,7 +74,7 @@ What `.importlinter` holds, in the words the gate prints:
 Layers: core above storage, contract below both KEPT
 core knows no foreign system and no model KEPT
 Only storage imports sqlalchemy KEPT
-No vendor SDK in stage 1a KEPT
+No vendor SDK in the package KEPT
 
 Contracts: 4 kept, 0 broken.
 ```
@@ -176,7 +176,7 @@ Measured against the project configuration on 2026-10-03, with the import out of
 
 ```text
 uv run ruff check .           All checks passed!
-uv run ruff format --check .  39 files already formatted   (40 today)
+uv run ruff format --check .  39 files already formatted
 uv run pyright                0 errors, 0 warnings, 0 informations
 uv run lint-imports           Contracts: 4 kept, 0 broken.
 uv run pytest -q              1 failed, 193 passed         (194 tests then)
@@ -187,9 +187,11 @@ make -C docs vale             0 errors, 0 warnings and 0 suggestions in 20 files
 make -C docs linkcheck        build succeeded.
 ```
 
-The first, second and fifth lines carry numbers that have moved since, and only one of them is a coincidence worth clearing up.
-`193` reads the same here and in today's test run for a reason rather than by accident: the 193 that passed then are the 193 that remain, because the one that failed is the one stage 1b deleted.
-The file count went from 39 to 40 with `contract/store.py`.
+Every number above is the number of 2026-10-03, and the block keeps it that way rather than tracking the tree.
+Three of the lines have moved since.
+Measured on 2026-10-04: `uv run ruff format --check .` reports `48 files already formatted`, `uv run pytest` reports `232 passed`, and `make -C docs vale` reads 22 files.
+The file count moved by one on the day of the measurement itself, with `contract/store.py`, and by the rest with stage 1b's modules.
+The fifth line is the one worth reading twice: the test that failed there is the test stage 1b deleted, so a run today has nothing to put in its place, and that's why the failure can't be reproduced from the current tree.
 
 The first line and the fourth are the whole case for the test.
 `ruff` passed and `lint-imports` passed while `core` loaded SQLAlchemy at runtime, and the fifth line is the only gate that noticed.
@@ -203,7 +205,7 @@ src/previously/core/verify.py:179:12 - error: Unnecessary isinstance call;
 (reportUnnecessaryIsInstance)
 ```
 
-That measurement was the whole argument for the test's existence, and without it written down the test looked like redundancy beside `lint-imports` and `TC001`, and somebody would delete it.
+The six-gate block further up, not the `pyright` line right above, is the measurement that argued for the test's existence, and without it written down the test looked like redundancy beside `lint-imports` and `TC001`, and somebody would delete it.
 It was green on the day it was written, so it held a state that already obtained rather than uncovering an error—which is what it was for, because the exemptions were the one place in this tree where a correct decision and a wrong one looked exactly alike in the configuration.
 
 Somebody did, and for the other reason: there's no exempted edge left to pull out of a `TYPE_CHECKING` block, because there's no import of `PostgresStorage` in `core` at all.
@@ -253,7 +255,7 @@ Note where the errors land: at the call sites, in `cli` and in the tests, and no
 That's the shape of the change as much as a consequence of it.
 `core` no longer mentions a store implementation, so it has nothing left to be wrong about; whoever passes a store is the one who has to own something that fits.
 
-The row types had to move for this, and that's the part worth knowing when a second protocol follows.
+The row types had to move for this, and that's the part worth knowing before another protocol is added.
 `contract.store` names `Tip`, `EventRow` and `UnitRow` in its signatures, and `contract` is the bottom layer, so it may import nothing above itself.
 Leaving the types in `storage/rows.py` would have meant a `contract → storage` import, and the first contract on this page is the one that forbids it.
 Measured on 2026-10-04, with a throwaway import from `storage` in `contract/store.py`:

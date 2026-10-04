@@ -162,13 +162,11 @@ def test_p6b_a_too_large_integer_is_rejected(value: int) -> None:
 @SLOW
 @given(st.lists(payloads, min_size=1, max_size=6))
 def test_p1_every_sequence_passes_the_check(
-    db: Engine, payload_sequence: list[dict[str, object]]
+    db: Engine, truncate_statement: str, payload_sequence: list[dict[str, object]]
 ) -> None:
     """P1: for every sequence of appends, verify passes."""
     with db.begin() as c:
-        c.execute(
-            text("TRUNCATE p_source_stats, p_chronicle, projection_state, source_key, unit, event")
-        )
+        c.execute(text(truncate_statement))
     storage = PostgresStorage(db)
     events = [
         RawEvent(
@@ -188,7 +186,7 @@ def test_p1_every_sequence_passes_the_check(
 @pytest.mark.db
 @SLOW
 @given(st.integers(min_value=2, max_value=5))
-def test_p7_id_order_is_chain_order(db: Engine, count: int) -> None:
+def test_p7_id_order_is_chain_order(db: Engine, truncate_statement: str, count: int) -> None:
     """P7: the property that permits checking in id order at all.
 
     Over a **sequential** writer: one `append` with a sub-chain. The
@@ -197,9 +195,7 @@ def test_p7_id_order_is_chain_order(db: Engine, count: int) -> None:
     them.
     """
     with db.begin() as c:
-        c.execute(
-            text("TRUNCATE p_source_stats, p_chronicle, projection_state, source_key, unit, event")
-        )
+        c.execute(text(truncate_statement))
     storage = PostgresStorage(db)
     events = [
         RawEvent(
@@ -224,12 +220,12 @@ def test_p7_id_order_is_chain_order(db: Engine, count: int) -> None:
 @pytest.mark.db
 @SLOW
 @given(st.integers(min_value=0, max_value=len(SAMPLE_TEXT) - 1))
-def test_p5_any_single_byte_change_fails_verification(db: Engine, position: int) -> None:
+def test_p5_any_single_byte_change_fails_verification(
+    db: Engine, truncate_statement: str, position: int
+) -> None:
     """P5: checks the security property directly, not via a stand-in."""
     with db.begin() as c:
-        c.execute(
-            text("TRUNCATE p_source_stats, p_chronicle, projection_state, source_key, unit, event")
-        )
+        c.execute(text(truncate_statement))
     storage = PostgresStorage(db)
     append(
         storage,
@@ -280,13 +276,13 @@ def test_p5_any_single_byte_change_fails_verification(db: Engine, position: int)
 @pytest.mark.db
 @SLOW
 @given(st.integers(min_value=2, max_value=4))
-def test_p2_idempotency_across_repeated_appends(db: Engine, repetitions: int) -> None:
+def test_p2_idempotency_across_repeated_appends(
+    db: Engine, truncate_statement: str, repetitions: int
+) -> None:
     """P2: the same (source, external_id) twice → the same id, the number of
     events unchanged."""
     with db.begin() as c:
-        c.execute(
-            text("TRUNCATE p_source_stats, p_chronicle, projection_state, source_key, unit, event")
-        )
+        c.execute(text(truncate_statement))
     storage = PostgresStorage(db)
     event = RawEvent(
         source="hyp",
@@ -306,7 +302,7 @@ def test_p2_idempotency_across_repeated_appends(db: Engine, repetitions: int) ->
 @CONCURRENT
 @given(st.lists(st.integers(min_value=1, max_value=2), min_size=2, max_size=4))
 def test_p3_concurrent_writers_leave_one_gapless_chain_with_each_event_once(
-    db: Engine, batch_sizes: list[int]
+    db: Engine, truncate_statement: str, batch_sizes: list[int]
 ) -> None:
     """P3, and the concurrent half of P7 (§10.2, frozen design record; finding W4).
 
@@ -345,9 +341,7 @@ def test_p3_concurrent_writers_leave_one_gapless_chain_with_each_event_once(
     would not see.
     """
     with db.begin() as c:
-        c.execute(
-            text("TRUNCATE p_source_stats, p_chronicle, projection_state, source_key, unit, event")
-        )
+        c.execute(text(truncate_statement))
     storage = PostgresStorage(db)
 
     batches = [[f"w{writer}-{i}" for i in range(size)] for writer, size in enumerate(batch_sizes)]

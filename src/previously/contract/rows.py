@@ -62,6 +62,20 @@ class ProjectionState:
 
 
 @dataclass(frozen=True)
+class TipAndBookmark:
+    """The two numbers a lag is the difference of, read in one statement.
+
+    Not a lag: the difference is formed where it is printed, because the
+    reading command decides what to do with a zero. Both numbers are 0 when
+    the log is empty or the projection has no state row yet — the reading of
+    `up_to_id 0` is "nothing yet", and the two cases give the same lag.
+    """
+
+    tip_id: int
+    up_to_id: int
+
+
+@dataclass(frozen=True)
 class ChronicleRow:
     event_id: int
     seq: int

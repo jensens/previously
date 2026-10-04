@@ -17,7 +17,7 @@ Each command reports the lag of the projection it read as one line on standard e
 Without that line, the projection stands at the tip of the log.
 Both commands return 0 whether the projection is behind or not, so read standard error rather than the exit code.
 `previously chronicle` can print a second line there, about a window cut by `--limit`; see {ref}`cli-reference` for the exact wording of both.
-Each command reports the lag of its own projection, so run both if you want to know about both.
+Run both commands if you want to know about both projections.
 
 Then bring every projection up to the tip.
 

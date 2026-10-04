@@ -179,7 +179,11 @@ Three things a reader can't see from the output alone, and the commands say all 
 
 A projection can stand behind the tip of the log, and a chronicle that's missing yesterday looks exactly like one where nothing happened yesterday.
 So both reading commands compare the tip against the `up_to_id` of the projection they read and say the difference in one sentence, which {ref}`cli-reference` quotes along with the command that fixes it.
-They read the tip and the bookmark in **one** transaction, because two transactions give a difference between two moments—a number that was never true at any single moment.
+They read the tip and the bookmark in **one statement**, because two numbers read at two moments give a difference that was never true at either of them.
+One transaction doesn't buy that, and the first version of this page claimed it did.
+The reading connection runs at READ COMMITTED, which the appending procedure needs so that the unique indexes do the serializing, and under READ COMMITTED PostgreSQL gives every statement a snapshot of its own.
+Two statements inside one transaction therefore still see two moments.
+One statement that asks for both numbers at once sees one moment, and then the difference is a difference.
 Each command reads the bookmark of its own projection, since a rebuild of one of the two leaves the two bookmarks apart.
 
 A window cut by `--limit` looks like a complete one, which is the same thought a second time, so it gets the same treatment: a second sentence naming the limit that cut and the two ways to widen the view.

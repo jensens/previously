@@ -101,7 +101,7 @@ def test_incremental_equals_rebuilt(db: Engine) -> None:
     `assert incremental == rebuilt`: `merge` folds the batch *and* merges the
     fold with the stored row, so that mutation moves both paths alike and
     they stay equal. Replacing it by `addition.first_seen` — overwriting —
-    leaves all nine tests in this file green, for the reason the dated
+    leaves all twelve tests in this file green, for the reason the dated
     correction in the specification gives: the older late arrival happens to
     be the minimum.
 
@@ -400,14 +400,12 @@ steps = st.lists(
 @SLOW
 @given(steps=steps)
 def test_property_any_interleaving_of_append_and_catch_up_equals_a_rebuild(
-    db: Engine, steps: list[list[tuple[str, datetime]]]
+    db: Engine, truncate_statement: str, steps: list[list[tuple[str, datetime]]]
 ) -> None:
     """Random interleavings of "append k events" and "catch up", against one
     rebuild at the end ({ref}`projections`)."""
     with db.begin() as c:
-        c.execute(
-            text("TRUNCATE p_source_stats, p_chronicle, projection_state, source_key, unit, event")
-        )
+        c.execute(text(truncate_statement))
     storage = PostgresStorage(db)
     n = 0
     for step in steps:

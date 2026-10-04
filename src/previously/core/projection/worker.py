@@ -86,7 +86,9 @@ def catch_up[Conn](
 
     `batch_size` is 500 for no stronger reason than that `MAX_BATCH` in
     `append` is 500 and one number is easier to keep than two. It is not
-    load-bearing; the abort test sets it to 2 on purpose.
+    load-bearing; the abort test sets it to 2 on purpose. A `batch_size`
+    below 1 is a caller error and is refused with `ValueError` before the
+    first transaction opens, so a bad argument changes nothing at all.
 
     Reading from `up_to_id + 1` skips nothing, because the log has no gaps:
     `id = predecessor.id + 1` and the unique index on `prev_hash` leave no
@@ -127,7 +129,7 @@ def catch_up[Conn](
             expected = list(range(state.up_to_id + 1, state.up_to_id + 1 + len(ids)))
             if ids != expected:
                 raise ProjectionGap(
-                    f"expected events {expected[:1]}.. above id {state.up_to_id}, "
+                    f"expected events {expected[0]}.. above id {state.up_to_id}, "
                     f"read {ids[:3]}{'…' if len(ids) > 3 else ''}; the tip is {tip.id}"
                 )
             batch = Batch(

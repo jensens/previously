@@ -16,8 +16,10 @@ from previously.core.append import append
 from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
 from previously.core.projection import catch_up
+from previously.core.projection import CHRONICLE
 from previously.core.projection import Outcome
 from previously.core.projection import PROJECTIONS
+from previously.core.projection import SOURCE_STATS
 from previously.core.units import split_plaintext
 from previously.core.verify import verify
 from previously.storage.errors import StorageError
@@ -73,11 +75,21 @@ def _parse_evidence(value: str) -> Evidence:
 
 
 def escape_field(text: str) -> str:
-    """One unit is one line of `chronicle` ({ref}`projections`), so tab,
-    newline, carriage return and the backslash itself come out as two
+    """One row is one line of a tab-separated stream ({ref}`projections`), so
+    tab, newline, carriage return and the backslash itself come out as two
     characters each. Backslash first, or the other escapes would be escaped
     again and the mapping would stop being reversible. Output format, not
     data: `p_chronicle` holds the content unchanged.
+
+    Applied to **every** string field both reading commands print, not to
+    `content` alone. `source` and `external_id` come from `--source` and
+    `--external-id`, and `core.append` refuses only a null byte and a lone
+    surrogate there — a tab and a newline are reachable from the command
+    line. Measured on 2026-10-04 with the escaping on `content` only, one
+    appended event carrying a tab in `--source` and a newline in
+    `--external-id`: `chronicle` printed that one unit as two lines with six
+    and two fields instead of one line with six, and `stats` printed six
+    fields instead of five.
 
     Public rather than `_escape` because a test calls it directly, and a
     direct test earns a public name instead of a suppressed private-usage
@@ -115,8 +127,10 @@ def _lag_line(tip_id: int, up_to_id: int) -> str | None:
     Takes the two numbers rather than a connection, because `cli` is not to
     know that SQLAlchemy exists (ruling T9-a): over `storage` it stands for
     `from_dsn` and `PostgresStorage`, and a `Connection` in this signature
-    would add a third name. The caller reads `tip` and `projection_state` in
-    **one** transaction, or the difference is one that never existed.
+    would add a third name. The caller reads the two numbers in **one
+    statement**, through `tip_and_bookmark`, or the difference is one that
+    never existed — one transaction does not do it under READ COMMITTED, see
+    that method.
     """
     lag = tip_id - up_to_id
     if lag <= 0:
@@ -165,6 +179,19 @@ def _cmd_append(args: argparse.Namespace) -> int:
 
 
 def _cmd_log(args: argparse.Namespace) -> int:
+    # The same guard as `chronicle`, in the same words and for the same
+    # reason; see there for why it is `InvalidPayload` and not a `type=`
+    # callable. `log` had been open since stage 1a, and measured against a
+    # real PostgreSQL 17 on 2026-10-04 the two halves failed differently:
+    # `--limit 0` returned 0 with nothing on stdout and nothing on stderr, so
+    # an empty log and a refused limit looked alike, and `--limit -2` passed
+    # `LIMIT -2` to the driver and came back as `sqlalchemy.exc.DataError:
+    # (psycopg.errors.InvalidRowCountInLimitClause) LIMIT must not be
+    # negative` — a foreign exception this command line does not catch, so a
+    # stack trace and the interpreter's exit code 1 instead of 2. Two
+    # commands, the same option, two error shapes.
+    if args.limit < 1:
+        raise InvalidPayload(f"--limit must be at least 1, got {args.limit}")
     storage = _storage()
     # The reading methods take the connection in since review finding G4: the
     # transaction boundary belongs to the caller, who knows what has to be
@@ -259,18 +286,21 @@ def _cmd_chronicle(args: argparse.Namespace) -> int:
     until = parse_moment(args.until) if args.until else None
     storage = _storage()
     with storage.begin() as conn:
-        # Tip and state in the reader's own transaction: out of two
-        # transactions the difference would be one that never existed.
-        tip = storage.tip(conn)
-        state = storage.projection_state(conn, "chronicle")
+        # Tip and bookmark in one statement, not in two: a transaction is not
+        # a moment under READ COMMITTED (see `tip_and_bookmark`).
+        position = storage.tip_and_bookmark(conn, CHRONICLE.name)
         # One more than the limit: if that extra row comes back, the window was
         # cut. Counting the printed lines against the limit cannot tell a
         # window that ends exactly at the limit from one that was cut there.
         rows = storage.read_chronicle(conn, since=since, until=until, limit=args.limit + 1)
+    # Every string field through `escape_field`, not `content` alone: a tab or
+    # a newline in `source` or `external_id` would otherwise add a field or
+    # break the record in two (see `escape_field`).
     for row in rows[: args.limit]:
         print(
             f"{row.event_id}\t{row.seq}\t{row.occurred_at.isoformat()}\t"
-            f"{row.source or ''}\t{row.external_id or ''}\t{escape_field(row.content)}"
+            f"{escape_field(row.source or '')}\t{escape_field(row.external_id or '')}\t"
+            f"{escape_field(row.content)}"
         )
     # Both notices go to stderr, not into the stream: in stdout either one
     # would be a line every consumer reads as a record. Silence means current
@@ -280,7 +310,7 @@ def _cmd_chronicle(args: argparse.Namespace) -> int:
             f"output truncated at {args.limit} lines; raise --limit or narrow --since/--until",
             file=sys.stderr,
         )
-    lag = _lag_line(0 if tip is None else tip.id, 0 if state is None else state.up_to_id)
+    lag = _lag_line(position.tip_id, position.up_to_id)
     if lag:
         print(lag, file=sys.stderr)
     return 0
@@ -289,18 +319,21 @@ def _cmd_chronicle(args: argparse.Namespace) -> int:
 def _cmd_stats(_args: argparse.Namespace) -> int:
     storage = _storage()
     with storage.begin() as conn:
-        # `source-stats`, not `chronicle`: after a rebuild of one of the two the
-        # bookmarks differ, and the lag a reader is told has to be the lag of
-        # the table they are reading.
-        tip = storage.tip(conn)
-        state = storage.projection_state(conn, "source-stats")
+        # `SOURCE_STATS.name`, not `CHRONICLE.name`: after a rebuild of one of
+        # the two the bookmarks differ, and the lag a reader is told has to be
+        # the lag of the table they are reading. The name comes off the
+        # projection object rather than being typed as a literal, so that
+        # renaming a projection cannot leave this read silently pointing at a
+        # missing state row — which `tip_and_bookmark` would report as "the
+        # whole log is behind".
+        position = storage.tip_and_bookmark(conn, SOURCE_STATS.name)
         rows = storage.read_source_stats(conn)
     for row in rows:
         print(
-            f"{row.source}\t{row.events}\t{row.units}\t"
+            f"{escape_field(row.source)}\t{row.events}\t{row.units}\t"
             f"{row.first_seen.isoformat()}\t{row.last_seen.isoformat()}"
         )
-    lag = _lag_line(0 if tip is None else tip.id, 0 if state is None else state.up_to_id)
+    lag = _lag_line(position.tip_id, position.up_to_id)
     if lag:
         print(lag, file=sys.stderr)
     return 0

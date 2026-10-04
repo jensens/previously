@@ -119,9 +119,9 @@ Three more tables hold projections derived from the tables above.
 | `evidence` | `text` | Yes | The evidence kind from the payload; `NULL` after an erasure (a tombstone). |
 | `source` | `text` | Yes | The system the event came from; `NULL` when the event carries no source attribution. |
 | `external_id` | `text` | Yes | The event's identifier within that source; `NULL` under the same condition as `source`. |
-| `speaker` | `text` | Yes | The speaker's name; always `NULL` in stage 1a. |
-| `start_ms` | `integer` | Yes | Start offset in milliseconds; always `NULL` in stage 1a. |
-| `end_ms` | `integer` | Yes | End offset in milliseconds; always `NULL` in stage 1a. |
+| `speaker` | `text` | Yes | The speaker's name; always `NULL` until stage 2. |
+| `start_ms` | `integer` | Yes | Start offset in milliseconds; always `NULL` until stage 2. |
+| `end_ms` | `integer` | Yes | End offset in milliseconds; always `NULL` until stage 2. |
 
 ### Constraints and indexes
 
