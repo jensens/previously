@@ -31,8 +31,8 @@ any root file added later: it gets read beside the others, so it is English.
 
 **German is fine** — specifications (`docs/superpowers/specs/`), plans
 (`docs/superpowers/plans/`), execution records (`docs/superpowers/sdd/`), the
-brainstorming notes in `NOTIZEN.md`, and analyses or working notes under
-`.superpowers/`.
+map (`docs/superpowers/landkarte.md`), the brainstorming notes in
+`NOTIZEN.md`, and analyses or working notes under `.superpowers/`.
 
 `docs/superpowers/sdd/` joined that list on 2026-10-04, when the ledger of a
 plan's execution moved out of the git-ignored scratch directory and into the
@@ -82,6 +82,44 @@ The paragraph above read "the three frozen records … not a rule against
 writing a fourth" until 2026-10-04, by which time the fourth had been in the
 tree since commit `fee6d2b`. Whoever adds the fifth does not have to come back
 here, and that is the point of wording it without a count.
+
+### Open points live in the map
+
+Every specification ends with a section on what stays open, and freezing takes
+that section's upkeep away. Until 2026-10-04 the points travelled by copying:
+the stage 1b specification handed its list to the anchor specification, which
+froze the same day, and two execution records kept lists of their own. A point
+that nobody copied was gone, and nothing said so.
+
+`docs/superpowers/landkarte.md` is where they live now. It is German, and it
+is the one document under `docs/superpowers/` that is **maintained** rather
+than frozen:
+
+- Whoever freezes a specification moves its open points into the map, each
+  under the unit of work it belongs to.
+- Whoever closes a point strikes it there and names the commit.
+- A new specification starts from the map, not from the last section of its
+  predecessor.
+
+The map also says where the project stands, what comes next, and what has to
+come before what. It does not plan the stages after the next one: the
+architecture record calls that fiction in its §12.2 (frozen design record),
+and three executions have borne it out.
+
+It was drawn up on 2026-10-04 with the checkpoint the architecture record asks
+for in its §12.3 (frozen design record); the record of that checkpoint is under
+`docs/superpowers/sdd/2026-10-04-pruefpunkt-teilprojekt-1/`. Measured on that
+day, the open points had been sitting in eight places — two sections of the
+architecture record, one each of the design and of the three stage
+specifications, and the indexes of two execution records — and the map lists
+them, with what the checkpoint itself found, as 73 entries:
+
+```
+awk '/^## Offene Punkte/{f=1} /^## Erledigt/{f=0} f && /^- /{n++} END{print n}' docs/superpowers/landkarte.md
+```
+
+That number is the measurement of one day and moves with every point that is
+closed or found.
 
 ## Attribution
 
