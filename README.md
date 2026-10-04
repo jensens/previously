@@ -35,6 +35,11 @@ merely described.
   which they were recorded
 - **the per-source statistics** (`stats`): events, units, and the earliest and
   latest `occurred_at` per source
+- **the external anchor** (`anchor`, `verify --anchors`): `anchor` prints the
+  tip of an intact chain as one line `<id> <hash>`, to be kept where the
+  database's writer cannot write; `verify --anchors` checks the log against
+  such lines, so that up to the newest anchor nothing can go missing or be
+  rewritten unseen
 - the eight commands `append`, `log`, `verify`, `anchor`, `show`, `project`,
   `chronicle` and `stats`
 - the schema as an Alembic migration

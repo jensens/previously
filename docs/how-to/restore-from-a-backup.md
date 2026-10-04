@@ -1,8 +1,8 @@
 (restore-from-a-backup)=
 
-# How to check that a restore brought the chain back
+# How to check how much of the chain a restore brought back
 
-This guide shows you how to confirm, after any restore, that you got the chain back.
+This guide shows you how to check, after a restore, how much of the chain you got back.
 
 :::{important}
 A restore that was never rehearsed isn't a backup.
@@ -30,24 +30,75 @@ previously verify --anchors anchors.txt
 ```
 
 Exit code `0` means that up to the newest anchor, nothing is lost and nothing is rewritten.
-The events after the newest anchor came back from the write-ahead log, and this check doesn't vouch for them.
-Don't add `--exact` here: it would report those events as a finding although nothing is missing.
+Whatever the restored log holds after the newest anchor, this check doesn't vouch for it.
+Whatever it should hold there and doesn't, this check doesn't see.
+Don't add `--exact` here: any event after the newest anchor would be reported as a finding, although nothing is missing.
 
-## Restore to a fixed point that coincides with an anchor
+## Restore to an earlier point
 
-If you restored to a fixed point, and an anchor was taken at exactly that point, add `--exact`:
+If you restored to a point earlier than the newest anchor, first run the same check against the whole anchor file:
 
 ```shell
-previously verify --anchors anchors.txt --exact
+previously verify --anchors anchors.txt
 ```
 
-Exit code `0` means, in addition, that the tip of the restored log is exactly that anchor.
-This fits a named restore point set right after an anchor was taken, or a logical dump taken together with its anchor.
+Each anchor taken after the restore point reports a finding of this form, with exit code `1`:
+
+```text
+FINDING 3: anchored event is missing (the log ends at 2)
+```
+
+Expect these findings here: those lines anchor events that this restore gave up.
+Don't discard the instance because of them.
+For why a restore looks like this to the anchors, see {ref}`external-anchor`.
+
+Check the restore against the anchor file as it stood at the restore point instead:
+
+1.  Read the tip of the restored log from the finding: the number after `the log ends at`.
+
+2.  Number the lines of the anchor file:
+
+    ```shell
+    cat -n anchors.txt
+    ```
+
+    Find the last anchor line whose `id`, the first field, isn't above that tip.
+
+3.  Copy the file up to and including that line into a new file.
+    For that line as line 2:
+
+    ```shell
+    head -n 2 anchors.txt > anchors-restored.txt
+    ```
+
+4.  Check against the new file.
+    If the `id` of its last anchor is the tip of the restored log, add `--exact`:
+
+    ```shell
+    previously verify --anchors anchors-restored.txt --exact
+    ```
+
+    Exit code `0` means that up to that anchor, nothing is lost and nothing is rewritten, and that the tip is exactly that anchor.
+
+    If the tip is above that anchor, run the check without `--exact`:
+
+    ```shell
+    previously verify --anchors anchors-restored.txt
+    ```
+
+    Exit code `0` then means the same as in the first case, and it vouches for nothing after the newest anchor in the new file.
+
+From now on, run the routine from {ref}`verify-the-chain` against `anchors-restored.txt`.
+Against `anchors.txt`, it would raise the alarm on every run.
+Keep `anchors.txt` unchanged: it records what the restore gave up.
 
 ## Read the result
 
-If `previously verify` exits `1`, the restore failed, even if PostgreSQL itself started without complaint.
+If `previously verify` exits `1` against the anchor file that fits your case, the restored instance doesn't hold what the anchors say it should, even if PostgreSQL itself started without complaint.
 Discard the instance and restore again.
+
+If `previously verify` exits `2`, it didn't check anything: the anchor file is missing or unreadable, or a line in it isn't an anchor line, or storage raised an error.
+The message on standard error names the problem; see {ref}`cli-reference` for what counts as an input error.
 
 If you have no anchor file, `previously verify` without `--anchors` is the only check left.
 Its exit code `0` means that the restored chain is consistent in itself, and nothing more: a restore from an older state is a shorter chain that passes as well.

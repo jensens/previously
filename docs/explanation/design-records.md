@@ -23,7 +23,7 @@ Stage 1b is the first time that step ran as a step.
 Projections got their own German specification, dated 2026-10-04, and it froze the same day, because the pages its reasoning belongs on stood by then: {ref}`projections` for the derived tables and the worker that fills them, {ref}`module-boundaries` for the contracts that let `core` write them without importing storage.
 {ref}`database-schema` and {ref}`cli-reference` took the facts—the three tables, and the three commands that build and read them.
 
-The specification of the external anchor, dated 2026-10-04 as well, is no stage but a promise kept: the chain says nothing about completeness by itself, and the anchor is the one reference point outside the database that can.
+The specification of the external anchor, dated 2026-10-04 as well, is no stage but a promise kept: the chain says nothing about completeness by itself, and the anchor is the one reference point outside the database that can, up to the newest anchor.
 It froze once its pages stood.
 {ref}`external-anchor` on the hash chain page carries its reasoning, {ref}`cli-reference` the facts of `anchor` and `verify --anchors`, and the two guides {ref}`verify-the-chain` and {ref}`restore-from-a-backup` the routines it implies for running the system.
 

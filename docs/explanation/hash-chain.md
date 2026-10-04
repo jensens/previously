@@ -360,6 +360,11 @@ The interval between anchors is the gap.
 Whatever arrived since the newest anchor isn't anchored, and an event that arrived and was deleted again in that interval leaves no trace in either check.
 How often anchors get taken decides how wide that gap is, and no check can narrow it after the fact.
 
+A restore to an earlier point looks, to the anchors, exactly like a deleted tip, because it's one: the log ends earlier than it once did.
+So every anchor taken after that point reports its event missing, and the report is true.
+An anchor file describes one history, and after such a restore the history it describes has ended at an earlier line.
+The anchors up to that line still describe the restored log, and the ones after it now record what the restore gave up.
+
 So the promise, with an anchor, in full:
 
 *What the log says is unaltered.*

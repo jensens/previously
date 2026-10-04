@@ -38,6 +38,12 @@ Once the log holds at least one event, take the first anchor:
 previously anchor > anchors.txt
 ```
 
+Check that `previously anchor` exited `0` and that `anchors.txt` holds exactly one line.
+It doesn't in two cases.
+On an empty log, `previously anchor` prints nothing to standard output and exits `0`, so the file is empty.
+On a chain with a finding, it prints the `FINDING` lines to standard output and exits `1`, so those lines are in the file.
+In either case, delete the file and deal with the cause first.
+
 From then on, run this routine on a schedule:
 
 ```shell
@@ -47,6 +53,7 @@ previously verify --anchors anchors.txt && previously anchor >> anchors.txt
 The first command checks the chain and every anchor taken so far.
 The second command appends the current tip as a new anchor, and runs only if the first one exited `0`.
 Treat any exit code other than `0` as an alarm.
+If the second command exits other than `0`, whatever it printed to standard output is now in the anchor file, and you have to remove those lines by hand before the next run.
 
 If the command runs inside a container and the anchor file lives outside it, pass `-` to read the anchors from standard input:
 
