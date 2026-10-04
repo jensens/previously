@@ -115,7 +115,8 @@ It takes no arguments.
 
 On an intact chain, `anchor` prints exactly one line to standard output: `<id> <hash>`, the `id` of the last event in the log and its `hash` as 64 lowercase hexadecimal characters.
 The line describes the chain the same run checked.
-With a finding, `anchor` prints the `FINDING` lines in the format `verify` uses and no anchor line.
+With a finding, `anchor` prints the `FINDING` lines in the format `verify` uses to standard error, and nothing to standard output.
+Unlike `verify`, `anchor` never prints a finding to standard output: its standard output holds an anchor line or nothing.
 
 On an empty log, one notice goes to standard error, and nothing goes to standard output:
 

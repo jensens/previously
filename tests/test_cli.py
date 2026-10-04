@@ -1020,7 +1020,14 @@ def test_anchor_says_nothing_on_an_empty_log_and_refuses_a_broken_chain(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """An anchor on a broken chain would certify the break
-    ({ref}`external-anchor`)."""
+    ({ref}`external-anchor`).
+
+    On a broken chain, standard output stays empty and the finding goes to
+    standard error. The routine appends standard output to the anchor file
+    with `previously anchor >> anchors.txt`, so a finding printed there would
+    become a line of that file, and the next `verify --anchors` would refuse
+    the file as an input error, exit code 2, instead of reporting the finding
+    with exit code 1."""
     from sqlalchemy import Engine
     from sqlalchemy import text
 
@@ -1036,8 +1043,9 @@ def test_anchor_says_nothing_on_an_empty_log_and_refuses_a_broken_chain(
         c.execute(text("UPDATE event SET hash = :h WHERE id = 1"), {"h": b"\x00" * 32})
     assert main(["anchor"]) == 1
     out, err = capsys.readouterr()
-    assert out.startswith("FINDING 1: ")
-    assert not re.search(r"^1 [0-9a-f]{64}$", out, flags=re.MULTILINE)
+    assert out == ""
+    assert err.startswith("FINDING 1: ")
+    assert not re.search(r"^1 [0-9a-f]{64}$", err, flags=re.MULTILINE)
 
 
 @pytest.mark.db

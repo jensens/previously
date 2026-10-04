@@ -289,10 +289,17 @@ def _cmd_anchor(_args: argparse.Namespace) -> int:
     `Examination.anchor`'s decision, not this function's: on a finding the
     core gives none, because an anchor on a broken chain would certify the
     break. What is left here is formatting.
+
+    The findings go to standard error, unlike `verify`'s. Standard output
+    of this command is a data channel: the routine appends it to the anchor
+    file with `>>`, and a finding printed there landed in that file, where
+    the next `verify --anchors` refused the line as an input error (exit
+    code 2) instead of reporting the finding (exit code 1). On standard
+    output there is an anchor line or nothing ({ref}`cli-reference`).
     """
     examination = examine(_storage())
     for finding in examination.findings:
-        print(f"FINDING {finding.event_id}: {finding.reason}")
+        print(f"FINDING {finding.event_id}: {finding.reason}", file=sys.stderr)
     anchor = examination.anchor
     if anchor is not None:
         print(format_anchor(anchor))
