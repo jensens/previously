@@ -48,8 +48,8 @@ Kette bricht.
   (Architektur §11, Nachtrag vom 2026-10-03), und die gibt es erst mit dem
   Piloten.
 - **Ein Schlüssel je Betroffenem** und damit das Krypto-Schreddern. Die
-  Architektur baut es ausdrücklich später (§4.6); `key_id` in jeder
-  Blob-Referenz hält den Weg offen.
+  Architektur baut es ausdrücklich später (§4.6); die `key_id` an jedem
+  Objekt hält den Weg offen.
 - **Textextraktion aus Blobs.** Ein Blob ist in dieser Stufe ein Beleg, kein
   durchsuchbarer Inhalt.
 - **Buckets, Zugangsdaten, Tresor.** §7 sagt, was diese Stufe dem Betrieb
@@ -71,7 +71,8 @@ Kette bricht.
    (§2.2): ein Standardformat statt eines eigenen, stückweise und damit ohne
    Größengrenze, und im Notfall mit einem verbreiteten Werkzeug lesbar, ohne
    diese Software. Der Grundsatz der Architektur bleibt — clientseitig,
-   der Anbieter sieht den Schlüssel nie, `key_id` in der Referenz.
+   der Anbieter sieht den Schlüssel nie, und jeder Blob nennt seinen
+   Schlüssel; wo er ihn nennt, ändert Punkt 8.
 3. **`hash_version` (1a-Spec §3.1, §12).** Die Fassungsangabe je Zeile, dort
    „mit dem ersten v=2" vorgesehen, kommt jetzt (§3).
 4. **`unit.content` wird `NULL`-fähig (1a-Spec §2, §3.1).** Stufe 1a kannte
@@ -89,6 +90,15 @@ Kette bricht.
    darum eine neue Version (§6). Die Vorgabe des 1b-Specs in §10 Punkt 2 ist
    damit eingelöst, und sein Test „Getilgtes Event" (§5.4 dort) wird bewusst
    geändert — er sagt selbst, dass das dann fällig ist.
+8. **`key_id` steht am Objekt, nicht in der Referenz (Architektur §4.6,
+   §10.3).** Die Architektur will in der Referenz „den tatsächlich verwendeten
+   Schlüssel". Unter „erster gewinnt" kennt ihn der zweite Schreiber nicht: er
+   lädt nicht hoch, und sein eigener Empfänger ist nach einem Schlüsselwechsel
+   ein anderer als der, an den das liegende Objekt versiegelt ist. Laden zwei
+   zugleich hoch, bleibt nur ein Chiffretext stehen, und der Verlierer hätte
+   den falschen Schlüssel ins Log geschrieben (§2.7). Eine Referenz in der
+   Nutzlast ist bezeugt und lässt sich nie berichtigen. Der Schlüssel ist eine
+   Eigenschaft des Objekts und steht darum dort (§2.2).
 
 ---
 
@@ -104,13 +114,14 @@ Ein Event nennt seine Blobs in der Nutzlast, unter dem reservierten Namen
 `blobs`, als Liste:
 
 ```
-{"sha256": <hex>, "size": <Bytes>, "media_type": <…>, "key_id": <…>, "filename": <… oder null>}
+{"sha256": <hex>, "size": <Bytes>, "media_type": <…>, "filename": <… oder null>}
 ```
 
 Damit deckt der `payload_hash` die Referenzen, und die Kette bezeugt, **welche**
 Bytes zu einem Event gehören — nicht die Bytes, aber ihre Identität
 (Architektur §10.3). `filename` gehört zur Verwendung, nicht zum Blob:
-derselbe Inhalt kann in zwei Events zwei Namen tragen.
+derselbe Inhalt kann in zwei Events zwei Namen tragen. Den Schlüssel nennt die
+Referenz nicht; er steht am Objekt (§1.1 Punkt 8, §2.2).
 
 Daneben steht jede Referenz in einer Tabelle `event_blob` (`event_id`,
 `sha256`), damit sich fragen lässt, welche Events einen Blob benutzen (§4.1).
@@ -124,12 +135,18 @@ Jeder Blob wird vor dem Hochladen im Format **`age`** verschlüsselt, an einen
 X25519-Empfänger. Der Speicher sieht nur Chiffretext.
 
 - **`key_id` ist der Empfänger** in seiner öffentlichen Schreibweise
-  (`age1…`). Er sagt, mit welchem Schlüssel ein Blob geschrieben wurde, und
-  ist kein Geheimnis.
+  (`age1…`). Er sagt, an welchen Schlüssel ein Objekt versiegelt ist, und ist
+  kein Geheimnis.
+- **Er steht als Metadatum am Objekt**, in derselben Anfrage geschrieben wie
+  der Chiffretext, und der Leser nimmt ihn von dort. Er ist ein Hinweis, kein
+  Beweis: wer ihn fälscht, erreicht, dass sich das Objekt nicht öffnet — und
+  wer das kann, kann es auch löschen.
 - **Schreiben braucht nur den Empfänger, Lesen die Identität** (den geheimen
   Schlüssel). Ein Dienst, der nur aufnimmt, kommt ohne das Geheimnis aus.
-- **Schlüsselwechsel:** ein neuer Empfänger für neue Blobs; alte bleiben
-  lesbar, solange ihre Identität aufbewahrt wird.
+- **Schlüsselwechsel:** ein neuer Empfänger für neue Objekte; alte bleiben
+  lesbar, solange ihre Identität aufbewahrt wird. Ein Objekt, das schon liegt,
+  bleibt an seinen alten Schlüssel versiegelt, auch wenn ein neues Event
+  darauf zeigt.
 - **Stückweise, mit begrenztem Speicher, und darum ohne Größengrenze.** Die
   Messung steht in §2.6.
 - **Die Adresse wird beim Lesen geprüft.** `age` bindet den Chiffretext nicht
@@ -151,19 +168,20 @@ Ein Protokoll `BlobStore` in `contract`, eine Umsetzung in `storage` für S3:
 
 ```python
 class BlobStore(Protocol):
-    def exists(self, address: str) -> bool: ...
-    def put(self, address: str, sealed: BinaryIO) -> None: ...
+    def stat(self, address: str) -> StoredBlob | None: ...
+    def put(self, address: str, sealed: BinaryIO, *, key_id: str) -> None: ...
     def get(self, address: str) -> BinaryIO: ...
     def delete(self, address: str) -> None: ...
 ```
 
 Der Speicher bekommt und gibt **nur Chiffretext**; versiegelt und geöffnet
-wird in `core`.
+wird in `core`. `stat` sagt, ob ein Objekt liegt und an welche `key_id` es
+versiegelt ist.
 
 - **Erster gewinnt** (Architektur §4.6). Vor dem Hochladen fragt der
-  Schreibweg, ob das Objekt existiert, und lädt dann nicht. Zwei Schreiber
-  zugleich können beide hochladen; beide Objekte öffnen sich zum selben
-  Klartext, und das zweite überschreibt das erste folgenlos.
+  Schreibweg, ob das Objekt liegt, und lädt dann nicht. Das ist Nachsehen und
+  dann Handeln, kein Schloss; was dazwischen geschehen kann und was es
+  kostet, steht in §2.7.
 - **Zwei Durchgänge über die Quelle.** Die Adresse ist der Hash des Klartexts
   und muss vor dem Hochladen feststehen: erst hashen, dann versiegeln und
   hochladen. Die Quelle muss sich darum zweimal lesen lassen; eine Datei kann
@@ -178,7 +196,7 @@ wird in `core`.
 
 ### 2.4 Ein Blob am Event
 
-`RawEvent` bekommt `blobs: tuple[BlobRef, ...]`, wobei `BlobRef` die fünf
+`RawEvent` bekommt `blobs: tuple[BlobRef, ...]`, wobei `BlobRef` die vier
 Felder aus §2.1 trägt. Wer ein Event mit Anhang einwirft, **speichert erst den
 Blob und fügt dann das Event an**. Schlägt das Anfügen fehl, bleibt ein Blob
 ohne Event zurück — harmlos, weil niemand auf ihn zeigt, und in §12 als
@@ -225,6 +243,52 @@ Vor diesem Spec, mit Wegwerf-Skripten, auf der Entwicklungsmaschine:
 
 **Nicht gemessen:** der Notfallweg mit dem Werkzeug `age` selbst — es ist auf
 der Entwicklungsmaschine nicht installiert. Er ist Abnahmebedingung 14.
+
+### 2.7 Zwei Schreiber zugleich
+
+„Erster gewinnt" ist Nachsehen und dann Handeln, und dazwischen liegt die
+Zeit, die Versiegeln und Hochladen dauern. Wollen zwei Schreiber denselben
+neuen Inhalt zur selben Zeit ablegen, sehen beide nichts liegen, und beide
+laden hoch.
+
+Gemessen am 2026-10-04 an RustFS 1.0.1, zwanzig Durchgänge mit 64 MiB. Die
+zwei Chiffretexte waren an verschiedene Empfänger versiegelt, damit sich
+sagen lässt, welcher stehen blieb, und ein Leser holte das Objekt währenddessen
+in einer Schleife:
+
+- **Das Objekt ist nie zerrissen.** Jedes Mal blieb genau einer der beiden
+  Chiffretexte stehen, ganz — zwölfmal der eine, achtmal der andere —, und er
+  öffnete sich zur Adresse.
+- **Das Metadatum gehört zum Chiffretext**, in allen zwanzig Durchgängen:
+  `key_id` und Inhalt werden zusammen ersetzt. Darum steht der Schlüssel dort
+  und nicht in der Referenz (§1.1 Punkt 8) — die des Verlierers bliebe sonst
+  für immer falsch.
+- **Ein Leser, der gerade liest, während das zweite Hochladen das Objekt
+  ersetzt, bekommt einen Fehler**, keine falschen Bytes: in neunzehn der
+  zwanzig Durchgänge brach sein Lesen ab. Hinter dem Abbruch stünde noch die
+  Prüfung der Adresse. Ein zweiter Versuch gelingt.
+
+Was daraus folgt:
+
+- Beide Events entstehen und zeigen auf dasselbe Objekt. `verify --blobs`
+  meldet nichts.
+- Der Schaden ist ein abgebrochenes Lesen, und es trifft nur einen Leser, der
+  einen Inhalt in dem Augenblick holt, in dem er zum ersten Mal und gleich
+  zweimal abgelegt wird.
+- **Schließen ließe sich das Fenster mit einem bedingten Schreiben**
+  (`If-None-Match: *`). RustFS kennt es: ein zweites `PutObject` wurde mit
+  `PreconditionFailed` abgewiesen. Das Hochladen in Teilen von `boto3`
+  1.43.108 reicht es nicht durch — es weist `IfNoneMatch` als Argument ab —,
+  und ob Hetzner es kennt, ist nicht gemessen. Der Entwurf braucht es nicht
+  und baut es nicht; offener Punkt (§12).
+
+**Der Preis von „erster gewinnt"**, auch ohne Wettlauf: der Schreiber vertraut
+dem, was liegt. Prüfen kann er es nicht — er hat keine Identität. Liegt unter
+einer Adresse ein beschädigtes Objekt, zeigt jedes spätere Event mit diesem
+Inhalt darauf, und erst `verify --blobs` meldet es. Ersetzen heißt heute, das
+Objekt von Hand zu löschen und den Inhalt neu abzulegen; offener Punkt (§12).
+
+Der dritte Wettlauf, Aufnehmen gegen Tilgen, steht in §12 Punkt 2.
 
 ---
 
@@ -373,7 +437,9 @@ Nutzlast:
 
 1. In **einer** Transaktion: das Ziel prüfen (es existiert; es ist kein
    Tilgungs-Event; bei Einheiten ist das Event v=2), das Tilgungs-Event
-   anfügen, die Grabsteine setzen.
+   anfügen, die Grabsteine setzen. Die Zeile des Ziels ist dabei gesperrt,
+   damit zwei Tilgungen desselben Ziels nacheinander laufen und die zweite
+   sieht, was die erste getan hat.
 2. **Danach** jeden Blob löschen, der nach der Regel aus §4.1 nicht mehr zu
    liegen hat. Der Speicher nimmt an keiner Datenbank-Transaktion teil.
 3. **Zuletzt** die Projektionen nachziehen, auf dem Weg von `project`. Bis
@@ -473,7 +539,7 @@ nach der Regel aus §4.1 zu liegen hat, und fragt nach jedem, der es nicht hat:
 |---|---|
 | `blob <hex> is missing` | hat zu liegen, liegt nicht |
 | `blob <hex> does not match its address` | öffnet sich, aber der SHA-256 des Klartexts ist ein anderer |
-| `blob <hex> cannot be opened` | keine Identität für seine `key_id`, oder der Chiffretext ist beschädigt |
+| `blob <hex> cannot be opened` | keine Identität für die `key_id` am Objekt, oder der Chiffretext ist beschädigt |
 | `blob <hex> is erased and still present` | hat nicht zu liegen, liegt aber |
 
 Jeder steht unter der `id` des ersten Events, das den Blob nennt. Der
@@ -655,6 +721,12 @@ echten S3-Server im Container; kein Mock für Zeit, Datenbank oder Zufall.
 18. **Kein Geheimnis in einer Ausgabe**: weder das des Speichers noch eine
     Identität.
 19. **Was die Reference zitiert**, wird gegen den Code gehalten.
+20. **Zwei Schreiber zugleich, derselbe Inhalt, zwei Empfänger:** es bleibt
+    ein ganzes Objekt, beide Events holen ihren Blob, und `verify --blobs`
+    meldet nichts. Mutation: der Leser nimmt die `key_id` vom Empfänger des
+    Schreibers statt vom Objekt.
+21. **Nach einem Schlüsselwechsel** zeigt ein neues Event auf ein Objekt, das
+    an den alten Schlüssel versiegelt ist, und holt es.
 
 ---
 
@@ -740,3 +812,8 @@ Landkarte.
     seinem Schlüssel bekannt bleibt und nicht wieder aufgenommen wird, gehört
     zum Einwurf-Vertrag des Piloten und ist dort entworfen. Der Hash, an dem
     er Inhalt wiedererkennt, trüge kein Salz; das ist dort abzuwägen.
+13. **Bedingtes Schreiben** (`If-None-Match: *`) machte aus „erster gewinnt"
+    ein Schloss statt eines Nachsehens (§2.7). Dafür müsste das Hochladen in
+    Teilen von Hand gebaut und an Hetzner gemessen werden.
+14. **Ein beschädigtes Objekt ersetzen.** „Erster gewinnt" lässt es liegen
+    (§2.7); ein Kommando, das einen Inhalt bewusst neu ablegt, gibt es nicht.
