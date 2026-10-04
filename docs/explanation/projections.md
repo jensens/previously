@@ -5,6 +5,7 @@
 Stage 1b adds three tables that carry no truth of their own: `projection_state`, `p_chronicle`, and `p_source_stats`.
 This page explains what that promise means in practice and why the two content-bearing tables look the way they do.
 Three sections follow on the worker that keeps them current: how it catches up in batches, why a gap in the log can't arise and is checked for all the same, and which test makes the promise more than a claim.
+Two more follow on the commands that read them: why `log` and `chronicle` are two commands rather than one with more options, and what the commands say about what they don't know.
 
 ## Derivable and disposable
 
@@ -154,3 +155,38 @@ The test poisons a row in `p_source_stats`, raises the version, and finds the po
 Its control sits right next to it: a catch-up at the unchanged version leaves the poison in place.
 Without that control the first half would show only that the worker writes, not that the version is what set it off.
 Dropping the version comparison from the worker turns both version tests red and leaves the other ten green.
+
+## Two orders, two commands
+
+`occurred_at` doesn't run parallel to `id`.
+A mail from last week, read in today, gets the next `id` in the chain and an `occurred_at` earlier than that of the event before it.
+The architecture's §4.1 (frozen design record) keeps the two apart on purpose: `id` is the chain order, and `occurred_at` is when the thing happened.
+{ref}`timestamps` draws the third line in that picture, the one for `recorded_at`, and says what follows from it—a reader who sorts a chronicle by `recorded_at` is sorting by something the chain never promised.
+
+Two orders means two commands.
+`--from` and `--limit` count along `id`; `--since` and `--until` cut a window out of `occurred_at`.
+A single command carrying both would answer in an order that depends on which options were passed, and output nobody can explain is worse than output that leaves something out.
+So `log` stays the chain order and shows the log as the chain carries it, while `chronicle` is the chronology and shows what happened in the order it happened.
+
+The split falls along the grain of the data rather than along taste.
+`log` reads `event` and can answer from the chain alone, because the chain is what it prints.
+`chronicle` reads a projection, which is the only place where unit, source attribution and evidence stand together in time order—and that's also why the chronicle can be behind, while `log` never is.
+
+## Saying what it doesn't know
+
+Three things a reader can't see from the output alone, and the commands say all three rather than leave them to be noticed.
+
+A projection can stand behind the tip of the log, and a chronicle that's missing yesterday looks exactly like one where nothing happened yesterday.
+So both reading commands compare the tip against the `up_to_id` of the projection they read and say the difference in one sentence, which {ref}`cli-reference` quotes along with the command that fixes it.
+They read the tip and the bookmark in **one** transaction, because two transactions give a difference between two moments—a number that was never true at any single moment.
+Each command reads the bookmark of its own projection, since a rebuild of one of the two leaves the two bookmarks apart.
+
+A window cut by `--limit` looks like a complete one, which is the same thought a second time, so it gets the same treatment: a second sentence naming the limit that cut and the two ways to widen the view.
+Both notices go to standard error and leave the exit code at 0.
+In standard output either one would be a line every consumer reads as a record, and the chronicle is a stream meant to be read by tools as much as by people.
+Silence is therefore a statement: no notice means current and complete.
+
+The third is the one `project` answers.
+A catch-up that empties a table and builds it again looks, in the table, exactly like one that appended a few rows—so `project` names the path the run took, `built`, `caught up`, `rebuilt: version 1 -> 2` or `up to date`, and a version-triggered rebuild stops being invisible.
+What that line reports is the path *this* run took, and one case escapes it: if a run is interrupted after the version check has rewritten the state row but before its first batch commits, the next run finds the state row already at the new version and reports an ordinary catch-up, because the rebuild it continues was recorded nowhere that survived the interruption.
+That's a known limit rather than a bug to fix in the worker: the alternative is a second stored field whose only reader is a sentence on the terminal.

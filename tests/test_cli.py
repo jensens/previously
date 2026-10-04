@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from datetime import datetime
 from datetime import UTC
+from previously.cli import escape_field
 from previously.cli import main
 from previously.cli import MAX_TEXT_BYTES
 from previously.cli import parse_moment
@@ -465,3 +466,255 @@ def test_an_unrepresentable_character_in_argv_gives_one_sentence(
     sentence = _single_line(capsys.readouterr().err)
     assert "Traceback" not in sentence
     assert expected in sentence
+
+
+# --- Stage 1b: the three projection commands -------------------------------
+
+
+def test_escape_field_folds_tab_newline_return_and_backslash_into_two_characters_each() -> None:
+    """Spec §6.3 (frozen design record) plus review focus 3: one unit is one line.
+
+    The escaping is reversible because the backslash is escaped first.
+    """
+    assert escape_field("a\tb\nc\rd\\e") == "a\\tb\\nc\\rd\\\\e"
+    assert escape_field("plain") == "plain"
+
+
+def _setup(db: object, monkeypatch: pytest.MonkeyPatch) -> None:
+    from sqlalchemy import Engine
+
+    assert isinstance(db, Engine)
+    monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
+
+
+def _append(source: str, external_id: str, text: str, occurred_at: str) -> None:
+    argv = ["append", "--source", source, "--external-id", external_id, "--text", text]
+    assert main([*argv, "--occurred-at", occurred_at]) == 0
+
+
+@pytest.mark.db
+def test_project_on_an_empty_log_is_up_to_date_at_zero_but_still_names_a_rebuild(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review focus 5. Nothing was built, so it does not say `built`.
+
+    The second half pins the order inside `_describe` (ruling P-1): a version
+    change is reported even when the run projected no event, because it
+    changed the state row all the same. Measured by mutation — with the
+    `events == 0` branch moved above the version branch, the second half goes
+    red and the first stays green.
+    """
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    _setup(db, monkeypatch)
+    assert main(["project"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "chronicle       up to date, up_to_id 0",
+        "source-stats    up to date, up_to_id 0",
+    ]
+
+    with db.begin() as c:
+        c.execute(text("UPDATE projection_state SET version = 2 WHERE name = 'chronicle'"))
+    assert main(["project"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "chronicle       rebuilt: version 2 -> 1, 0 events, up_to_id 0",
+        "source-stats    up to date, up_to_id 0",
+    ]
+
+
+@pytest.mark.db
+def test_project_says_which_path_it_took(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """All four paths: `built`, `caught up`, `up to date`, `rebuilt`.
+
+    The first run has to come *after* the first append — a run on the empty
+    log already writes the state row, and every later run is an ordinary
+    catch-up (found by the plan's pre-flight scan).
+    """
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    _setup(db, monkeypatch)
+    _append("email", "m1", "Hello\n\nWorld", "2026-10-01T09:00:00Z")
+    capsys.readouterr()
+    assert main(["project"]) == 0
+    first = capsys.readouterr().out.splitlines()
+    assert first == [
+        "chronicle       built: 1 event, up_to_id 1",
+        "source-stats    built: 1 event, up_to_id 1",
+    ]
+
+    _append("email", "m2", "Again", "2026-10-02T09:00:00Z")
+    capsys.readouterr()
+    assert main(["project"]) == 0
+    second = capsys.readouterr().out.splitlines()
+    assert second == [
+        "chronicle       caught up: 1 event, up_to_id 2",
+        "source-stats    caught up: 1 event, up_to_id 2",
+    ]
+
+    assert main(["project"]) == 0
+    third = capsys.readouterr().out.splitlines()
+    assert third == [
+        "chronicle       up to date, up_to_id 2",
+        "source-stats    up to date, up_to_id 2",
+    ]
+
+    # The fourth path, and the only one invisible in the table itself: the
+    # stored version is raised past the one the code declares, the way a
+    # rolled-back release leaves it, and the next run empties `p_chronicle` and
+    # builds it again. Without this line `rebuilt:` would be a format the
+    # reference page promises and nothing produces. `source-stats` is left
+    # alone, so the two projections report different paths in the same run.
+    with db.begin() as c:
+        c.execute(text("UPDATE projection_state SET version = 2 WHERE name = 'chronicle'"))
+    capsys.readouterr()
+    assert main(["project"]) == 0
+    fourth = capsys.readouterr().out.splitlines()
+    assert fourth == [
+        "chronicle       rebuilt: version 2 -> 1, 2 events, up_to_id 2",
+        "source-stats    up to date, up_to_id 2",
+    ]
+
+
+@pytest.mark.db
+def test_chronicle_prints_one_line_per_unit_in_time_order_with_the_source(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Spec §6.2 (frozen design record): time order, not chain order.
+
+    Event 2 happened before event 1.
+    """
+    _setup(db, monkeypatch)
+    _append("email", "m1", "late", "2026-10-02T09:00:00Z")
+    _append("chat", "c1", "early\ttab", "2026-10-01T09:00:00Z")
+    main(["project"])
+    capsys.readouterr()
+    assert main(["chronicle"]) == 0
+    out, err = capsys.readouterr()
+    assert out.splitlines() == [
+        "2\t1\t2026-10-01T09:00:00+00:00\tchat\tc1\tearly\\ttab",
+        "1\t1\t2026-10-02T09:00:00+00:00\temail\tm1\tlate",
+    ]
+    assert err == ""  # up to date: silence
+
+
+@pytest.mark.db
+def test_both_reading_commands_report_the_lag_on_stderr_and_only_there(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One event appended and nothing projected, so both commands are behind.
+
+    The second half pulls the two bookmarks apart by hand, because that is the
+    only state in which a command reading the **other** projection's bookmark
+    looks any different: with both projections current, and with both at zero
+    as in the first half, the wrong bookmark gives the right number.
+    """
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    _setup(db, monkeypatch)
+    _append("email", "m1", "x", "2026-10-01T09:00:00Z")
+    capsys.readouterr()
+    assert main(["chronicle"]) == 0
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.strip() == "projection is 1 event behind; run `previously project`"
+    assert main(["stats"]) == 0
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.strip() == "projection is 1 event behind; run `previously project`"
+
+    main(["project"])
+    capsys.readouterr()
+    with db.begin() as c:
+        c.execute(text("UPDATE projection_state SET up_to_id = 0 WHERE name = 'source-stats'"))
+    assert main(["chronicle"]) == 0
+    assert capsys.readouterr().err == ""
+    assert main(["stats"]) == 0
+    assert capsys.readouterr().err.strip() == (
+        "projection is 1 event behind; run `previously project`"
+    )
+
+
+@pytest.mark.db
+def test_chronicle_window_is_half_open_and_an_empty_window_is_not_truncated(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review focus 1 folded in: `--since` at or after `--until` prints nothing.
+
+    It returns 0 and says nothing on standard error — an empty window is not a
+    cut one, and the truncation notice would read as though it were.
+    """
+    _setup(db, monkeypatch)
+    for n, day in enumerate(("01", "02", "03"), start=1):
+        _append("email", f"m{n}", f"day {day}", f"2026-10-{day}T09:00:00Z")
+    main(["project"])
+    capsys.readouterr()
+    inside = ["chronicle", "--since", "2026-10-01T09:00:00Z", "--until", "2026-10-03T09:00:00Z"]
+    assert main(inside) == 0
+    out, err = capsys.readouterr()
+    assert [line.split("\t")[-1] for line in out.splitlines()] == ["day 01", "day 02"]
+    assert err == ""
+    backward = ["chronicle", "--since", "2026-10-05T00:00:00Z", "--until", "2026-10-01T00:00:00Z"]
+    assert main(backward) == 0
+    out, err = capsys.readouterr()
+    assert (out, err) == ("", "")
+    # `since == until`: the half-open window of zero length, carried over from
+    # the Task 3 review. Half-open means it holds nothing, not everything.
+    empty = ["chronicle", "--since", "2026-10-02T09:00:00Z", "--until", "2026-10-02T09:00:00Z"]
+    assert main(empty) == 0
+    out, err = capsys.readouterr()
+    assert (out, err) == ("", "")
+
+
+@pytest.mark.db
+def test_chronicle_limit_warns_on_stderr_when_it_cuts_and_not_otherwise(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    for n in range(1, 4):
+        _append("email", f"m{n}", f"u{n}", f"2026-10-0{n}T09:00:00Z")
+    main(["project"])
+    capsys.readouterr()
+    assert main(["chronicle", "--limit", "2"]) == 0
+    out, err = capsys.readouterr()
+    assert len(out.splitlines()) == 2
+    assert err.strip() == "output truncated at 2 lines; raise --limit or narrow --since/--until"
+    assert main(["chronicle", "--limit", "3"]) == 0
+    out, err = capsys.readouterr()
+    assert (len(out.splitlines()), err) == (3, "")
+
+
+@pytest.mark.db
+def test_chronicle_rejects_a_naive_since(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review focus 2: the same `parse_moment` as `--occurred-at`."""
+    _setup(db, monkeypatch)
+    assert main(["chronicle", "--since", "2026-10-01T09:00:00"]) == 2
+    assert "time zone" in capsys.readouterr().err
+
+
+@pytest.mark.db
+def test_stats_prints_one_line_per_source(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    _append("email", "m1", "a\n\nb", "2026-10-02T09:00:00Z")
+    _append("email", "m2", "c", "2026-10-01T09:00:00Z")
+    _append("chat", "c1", "d", "2026-10-03T09:00:00Z")
+    main(["project"])
+    capsys.readouterr()
+    assert main(["stats"]) == 0
+    out, err = capsys.readouterr()
+    assert out.splitlines() == [
+        "chat\t1\t1\t2026-10-03T09:00:00+00:00\t2026-10-03T09:00:00+00:00",
+        "email\t2\t3\t2026-10-01T09:00:00+00:00\t2026-10-02T09:00:00+00:00",
+    ]
+    assert err == ""

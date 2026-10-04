@@ -193,11 +193,11 @@ def test_no_program_output_cites_a_specification() -> None:
     Every module that can produce output is read, not the files that happened
     to carry a citation. Measured in fix round 1: with two files named, a
     marked message in `core/verify.py` and a `print` in `cli.py` both passed
-    -- and `cli.py`, with thirteen `print` calls, is the only file in this
-    tree that writes to the terminal. Measured in fix round 2: with only
-    `src/` read, a marked citation in `migrations/dsn.py` passed as well, and
-    that module raises its refusal as an implicitly concatenated f-string,
-    which is the exact shape of the two the check was built for.
+    -- and `cli.py`, with nineteen `print` calls since stage 1b, is the only
+    file in this tree that writes to the terminal. Measured in fix round 2:
+    with only `src/` read, a marked citation in `migrations/dsn.py` passed as
+    well, and that module raises its refusal as an implicitly concatenated
+    f-string, which is the exact shape of the two the check was built for.
     """
     offenders = {
         str(path.relative_to(ROOT)): found
