@@ -200,6 +200,7 @@ What the shape leaves alone is `unit`.
 The units stand in a table of their own, and emptying a payload doesn't reach them—so a chronicle built one row per unit goes on showing the content of an erased event, with its `evidence` column empty beside the content.
 
 The architecture's §4.6 (frozen design record) describes that tombstone and overlooks the units: nothing in it reaches `unit`, and nothing had to, because no reader at unit level existed yet.
+What it does say is the sharper evidence—an erasure takes the proof and not the derived facts, and what disappears is the wording—because the wording is what `unit.content` holds, and a chronicle per unit goes on printing it.
 Stage 1b builds the first one, and the finding comes with it.
 A chronicle per unit means that whoever erases has to erase the units along with the payload, or the content was never erased at all—a demand on the erasure event rather than a decision for this stage to take.
 A projection one row per event would have hidden the question behind an empty payload column, which is worth noticing about findings of this kind: this one comes out of the shape of the projection and not out of any change to the log.
