@@ -1719,7 +1719,79 @@ def test_a_tombstoned_event_keeps_its_chronicle_rows_with_evidence_null(db: Engi
     with db.begin() as c:
         rows = c.execute(text("SELECT content, evidence FROM p_chronicle ORDER BY seq")).all()
     assert [tuple(r) for r in rows] == [("one", None), ("two", None)]
+
+
+@pytest.mark.db
+def test_a_gap_in_the_log_raises_instead_of_being_skipped(db: Engine) -> None:
+    """The log cannot have a gap ({ref}`projections`), and the worker checks
+    anyway, because a check that cannot fire is a comment. Measured before this
+    test existed: with id 5 deleted by hand at `up_to_id` 4, the worker
+    projected 6..10 and set `up_to_id = 10` — the silent loss `ProjectionGap` is
+    named after. The gap is forged here with plain SQL; nothing in the append
+    path can produce it."""
+    storage = PostgresStorage(db)
+    append(storage, [_raw(n, "email", NOW) for n in range(1, 11)], recorded_at=NOW)
+    failing: ProjectionStore[Connection] = _FailingStore(storage, fail_on_call=3)
+    with pytest.raises(RuntimeError, match="injected"):
+        catch_up(storage, failing, CHRONICLE, batch_size=2)
+    with db.begin() as c:
+        c.execute(text("DELETE FROM source_key WHERE event_id = 5"))
+        c.execute(text("DELETE FROM unit WHERE event_id = 5"))
+        c.execute(text("DELETE FROM event WHERE id = 5"))
+
+    with pytest.raises(ProjectionGap, match="above id 4"):
+        catch_up(storage, storage, CHRONICLE, batch_size=2)
+
+    with db.begin() as c:
+        highest = c.execute(text("SELECT max(event_id) FROM p_chronicle")).scalar_one()
+        rows = c.execute(text("SELECT count(*) FROM p_chronicle")).scalar_one()
+    state = _state(storage, "chronicle")
+    assert state is not None
+    assert (state.up_to_id, highest, rows) == (4, 4, 8)  # nothing moved past the gap
+
+
+@pytest.mark.db
+def test_batch_size_below_one_is_a_caller_error_not_a_gap(db: Engine) -> None:
+    """Measured before the guard: `batch_size=0` ran `LIMIT 0` into an empty
+    read and reported a gap in the log that was not there; `-1` surfaced a raw
+    `DataError` from the driver. A caller error is named as one, before any
+    transaction opens."""
+    storage = PostgresStorage(db)
+    for bad in (0, -1):
+        with pytest.raises(ValueError, match="batch_size"):
+            catch_up(storage, storage, CHRONICLE, batch_size=bad)
+
+
+@pytest.mark.db
+def test_a_batch_without_any_source_leaves_the_stats_untouched(db: Engine) -> None:
+    """The early return in `SourceStatsProjection.write`: a batch in which no
+    event carries a source attribution writes nothing — not even an upsert of
+    unchanged rows. The sourceless event has to arrive in a batch of its own,
+    after a first catch-up, or it shares a batch with a sourced one and the
+    return is never reached; that is why the other sourceless test did not
+    cover this line."""
+    storage = PostgresStorage(db)
+    append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
+    _project_all(storage)
+    before = _snapshot(db)[1]
+    with storage.begin() as c:
+        tip = storage.tip(c)
+        assert tip is not None
+        storage.insert_event(
+            c,
+            EventRow(2, "observation", NOW, NOW, tip.hash, b"\x02" * 32, b"\x00" * 32, b"\x01" * 32, {}),
+            [UnitRow(2, 1, "orphan")],
+            None,
+        )
+    outcome = catch_up(storage, storage, SOURCE_STATS)
+    assert outcome.events == 1
+    assert _snapshot(db)[1] == before
 ```
+
+> Die drei letzten Tests kamen in Fixrunde 1 dazu (Prüfbefunde F1, F2 und
+> das Bedenken 4 des Umsetzers). Der Lückentest war **gegen den alten Code
+> grün**, obwohl id 5 fehlte — die Messung, die ihn rechtfertigt. `EventRow`
+> und `UnitRow` gehören dafür an den Dateikopf.
 
 Die Reihenfolge der Spalten in `_snapshot` ist die der Tabelle: `p_chronicle` hat `source` an Position 6 (0-basiert), `p_source_stats` hat `events` an 1 und `first_seen` an 3. Wer die Tabelle ändert, ändert die Indizes hier mit — darum stehen die Kommentare daneben.
 
@@ -1875,7 +1947,7 @@ __all__ = ["CHRONICLE", "PROJECTIONS", "SOURCE_STATS", "Batch", "Outcome", "Proj
 - [ ] **Schritt 5: Laufen lassen — grün**
 
 Run: `uv run pytest tests/test_projection_worker.py -v`
-Erwartet: acht `PASSED`.
+Erwartet: elf `PASSED` (acht aus der ersten Fassung, drei aus Fixrunde 1).
 
 Run: `uv run pyright`
 Erwartet: `0 errors`. Meldet pyright, `_FailingStore` erfülle `ProjectionStore[Connection]` nicht, fehlt eine Methode im Wrapper — **den Wrapper** ergänzen, nicht das Protokoll kürzen.
@@ -1952,7 +2024,7 @@ Run: Doku-Tore. Erwartet: grün.
 
 - [ ] **Schritt 8: Alle sechs Tore, Commit**
 
-Erwartet: `pytest` **220 passed** (211 + 9).
+Erwartet: `pytest` **223 passed** (211 + 12; die erste Fassung sagte 220 mit neun Tests, Fixrunde 1 brachte drei dazu).
 
 ```bash
 git add -A
@@ -2357,7 +2429,7 @@ Run: Doku-Tore. Erwartet: grün.
 
 - [ ] **Schritt 7: Alle sechs Tore, Commit**
 
-Erwartet: `pytest` **228 passed** (220 + 8).
+Erwartet: `pytest` **231 passed** (223 + 8).
 
 ```bash
 git add -A
@@ -2418,7 +2490,7 @@ Erwartet entweder `0 errors`, oder Treffer auf Wörter wie `upsert`, `denormaliz
 
 - [ ] **Schritt 5: Alle sechs Tore, Commit**
 
-Erwartet: `pytest` **228 passed** (unverändert), Vale **22 files**.
+Erwartet: `pytest` **231 passed** (unverändert), Vale **22 files**.
 
 ```bash
 git add -A
@@ -2486,7 +2558,7 @@ Nach dem Abschnitt `## Look at the event in full` drei neue Abschnitte, **als ec
 
 `## Count per source` — `uv run previously stats`, eine Zeile.
 
-Dann den Testlauf **neu abtippen** — die Zahl ist jetzt 228 und `test_docs_typed_output.py` hält sie gegen den Baum. **Ohne** die `rootdir:`-Zeile (die Seite sagt am Ende des Blocks, dass sie ausgelassen ist). Kein Maschinenpfad.
+Dann den Testlauf **neu abtippen** — die Zahl ist jetzt 231 und `test_docs_typed_output.py` hält sie gegen den Baum. **Ohne** die `rootdir:`-Zeile (die Seite sagt am Ende des Blocks, dass sie ausgelassen ist). Kein Maschinenpfad.
 
 Run: `uv run pytest tests/test_docs_typed_output.py -v`
 Erwartet: `PASSED`.
@@ -2507,7 +2579,7 @@ to the next stage's spec by rule.
 line of stage 1b code cites a paragraph of this spec, because the pages
 were written alongside the code and the gate refuses a bare paragraph
 sign. The tutorial gains project, chronicle and stats as a typed run, and
-the test run is retyped last at 228.
+the test run is retyped last at 231.
 
 Assisted-By: Claude <Modell> <noreply@anthropic.com>
 MSG
@@ -2523,7 +2595,7 @@ MSG
 
 **2. Platzhalter.** Kein „TBD", kein „analog zu Aufgabe N". Die Doku-Schritte tragen Seitenspezifikationen (Abschnitte mit Muss-Inhalt und Messung) — die Form, die der Doku-Plan vom 2026-10-03 etabliert hat.
 
-**3. Namenskonsistenz.** `escape_field` (nicht `_escape`) in Aufgabe 6 Test und Code — der Test oben zeigt die Falle und löst sie im Text; `Outcome.rebuilt_from` mit den drei Bedeutungen in Aufgabe 5 definiert und in `_describe` (6) genau so gelesen; `ProjectionState(name, up_to_id, version, built_at)` positional in Tests, benannt im Worker — gleiche Reihenfolge wie die Dataclass; `_PROJECTION_TABLES`-Schlüssel `"chronicle"`/`"source-stats"` = `ChronicleProjection.name`/`SourceStatsProjection.name` = `projection_state.name` in den CLI-Reads. Testzahlen je Aufgabe: 193, 194, 202, 211, 220, 228, 228, 228 — jede eine Vorhersage, die der Umsetzer **nachzählt**. (Die erste Fassung dieses Plans sagte 229 für Aufgabe 6; nachgezählt sind es acht Tests, nicht neun.)
+**3. Namenskonsistenz.** `escape_field` (nicht `_escape`) in Aufgabe 6 Test und Code — der Test oben zeigt die Falle und löst sie im Text; `Outcome.rebuilt_from` mit den drei Bedeutungen in Aufgabe 5 definiert und in `_describe` (6) genau so gelesen; `ProjectionState(name, up_to_id, version, built_at)` positional in Tests, benannt im Worker — gleiche Reihenfolge wie die Dataclass; `_PROJECTION_TABLES`-Schlüssel `"chronicle"`/`"source-stats"` = `ChronicleProjection.name`/`SourceStatsProjection.name` = `projection_state.name` in den CLI-Reads. Testzahlen je Aufgabe: 193, 194, 202, 211, 223, 231, 231, 231 — jede eine Vorhersage, die der Umsetzer **nachzählt**. (Die erste Fassung dieses Plans sagte 229 für Aufgabe 6; nachgezählt sind es acht Tests, nicht neun. Aufgabe 5 bekam in Fixrunde 1 drei Tests dazu, weil `ProjectionGap` gemessen für keine Lücke feuern konnte — die drei Zahlen danach wandern mit.)
 
 **4. Review Focus.** Alle fünf haben einen Test: 1 → A6 (`…empty_window_is_not_truncated`), 2 → A6 (`…rejects_a_naive_since`), 3 → A6 (`escape_field`-Test), 4 → A5 (`…lower_code_version_rebuilds_too`), 5 → A5 (`…empty_log…`) und A6 (`project` auf leerem Log).
 
