@@ -61,7 +61,8 @@ def test_the_downgrade_refuses_once_version_2_is_written() -> None:
                 command.downgrade(config, "0002_projections")
             assert str(caught.value) == (
                 "refusing to downgrade below 0003_hash_version_2: the log holds events in "
-                "hash format 2, which cannot be verified without the salts this would drop"
+                "a hash format other than 1, which cannot be verified without the version "
+                "and the salts this would drop"
             )
 
             # A unit without content is the second reason, and the sentence
@@ -75,7 +76,8 @@ def test_the_downgrade_refuses_once_version_2_is_written() -> None:
                 command.downgrade(config, "0002_projections")
             assert str(caught.value) == (
                 "refusing to downgrade below 0003_hash_version_2: the log holds events in "
-                "hash format 2, which cannot be verified without the salts this would drop; "
+                "a hash format other than 1, which cannot be verified without the version "
+                "and the salts this would drop; "
                 "the log holds units without content, which cannot be NOT NULL again"
             )
 
@@ -87,5 +89,49 @@ def test_the_downgrade_refuses_once_version_2_is_written() -> None:
             # transaction, so the refusal rolls those back as well.
             assert revision == ScriptDirectory.from_config(config).get_current_head()
             assert salts == 1
+        finally:
+            engine.dispose()
+
+
+@pytest.mark.db
+def test_the_downgrade_refuses_on_any_version_other_than_1() -> None:
+    """A row in a hash format this software does not write — a later one
+    might — would lose its version and its salt on the way down just as a
+    version 2 row would. The version is set by hand, with raw SQL, since
+    nothing in the tree writes it. Measured on 2026-10-05 with the downgrade
+    asking for `hash_version = 2`: it went through and stripped the row."""
+    with PostgresContainer("postgres:17", driver="psycopg") as container:
+        engine = create_engine(container.get_connection_url())
+        config = Config("alembic.ini")
+        config.set_main_option("sqlalchemy.url", container.get_connection_url())
+        try:
+            command.upgrade(config, "head")
+            append(
+                PostgresStorage(engine),
+                [
+                    RawEvent(
+                        source="cli",
+                        external_id="a",
+                        occurred_at=NOW,
+                        evidence=Evidence.RECOLLECTION,
+                        units=split_plaintext("Hello"),
+                        payload={},
+                    )
+                ],
+                recorded_at=NOW,
+            )
+            with engine.begin() as c:
+                c.execute(text("UPDATE event SET hash_version = 3 WHERE id = 1"))
+
+            with pytest.raises(CommandError) as caught:
+                command.downgrade(config, "0002_projections")
+            assert str(caught.value) == (
+                "refusing to downgrade below 0003_hash_version_2: the log holds events in "
+                "a hash format other than 1, which cannot be verified without the version "
+                "and the salts this would drop"
+            )
+            with engine.connect() as c:
+                revision = c.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            assert revision == ScriptDirectory.from_config(config).get_current_head()
         finally:
             engine.dispose()

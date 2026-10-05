@@ -61,10 +61,15 @@ def downgrade() -> None:
     # instead of a traceback.
     bind = op.get_bind()
     reasons: list[str] = []
-    if bind.execute(sa.text("SELECT EXISTS (SELECT 1 FROM event WHERE hash_version = 2)")).scalar():
+    # `<> 1` and not `= 2`: below this revision every row reads as version 1,
+    # so a row of any other version, one a later release may write, would
+    # lose what it was hashed in as surely as a version 2 row.
+    if bind.execute(
+        sa.text("SELECT EXISTS (SELECT 1 FROM event WHERE hash_version <> 1)")
+    ).scalar():
         reasons.append(
-            "the log holds events in hash format 2, which cannot be verified "
-            "without the salts this would drop"
+            "the log holds events in a hash format other than 1, which cannot be verified "
+            "without the version and the salts this would drop"
         )
     if bind.execute(sa.text("SELECT EXISTS (SELECT 1 FROM unit WHERE content IS NULL)")).scalar():
         reasons.append("the log holds units without content, which cannot be NOT NULL again")
