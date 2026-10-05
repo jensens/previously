@@ -4,6 +4,7 @@
 
 Previously computes three SHA-256 digests for every event: one over the payload, one over the units, and one over the event's own fields.
 That third digest names the predecessor's hash, and the naming is the chain.
+Version 2 of the hash format, which every new event is written in, adds one digest per unit, and {ref}`hash-version-2` says why.
 {ref}`hash-format` lists which fields go into each digest.
 This page explains why those fields and not others, and where the chain's promise ends.
 
@@ -31,34 +32,29 @@ graph LR
     units_hash --> event_hash
 ```
 
-The detour exists for one purpose, and the purpose lies in the future: erasure.
-An append-only store and a right to erasure don't get along on their own, and the mechanism for it isn't built yet.
+The detour exists for one purpose: erasure.
+An append-only store and a right to erasure don't get along on their own, and the mechanism that reconciles them arrived only in stage 1c, long after the chain's format was fixed; {ref}`erasure` describes it.
 But a chain that hashes the payload inline would break on every erasure, over all old data at once, and no later change could repair that.
 Through `payload_hash` the chain survives it: an erasure replaces `payload` with a tombstone and keeps `payload_hash` standing.
 The check runs through unchanged, and it stays provable *what* stood there without holding it any more.
 The cost today is one column.
 The cost of adding it afterward would be the whole chain.
 
-The same seam stays open for the units, although stage 1a has no erasure of units and therefore no skip for them either.
-`unit.content` is `NOT NULL` today, because skip logic for a behavior that doesn't exist is dead code.
-Opening the seam later takes `ALTER COLUMN content DROP NOT NULL` and the same skip that `payload IS NULL` already gets, and it breaks nothing: no existing row and no existing hash changes.
+The same seam stays open for the units.
+Stage 1a kept `unit.content` `NOT NULL`, because skip logic for a behavior that didn't exist would have been dead code.
+Stage 1c opened the seam with the migration that brought version 2: `unit.content` accepts `NULL` now, and that change broke nothing, because no existing row and no existing hash changed.
+In version 1 of the hash format that seam opens only for all units of an event at once, because one digest covers all their texts; {ref}`hash-version-2` explains why version 2 gives every unit a digest of its own.
 
-:::{important}
-The seam has a price, and whoever uses it should know the price.
-**A tombstone is indistinguishable from a forgery.**
-`UPDATE event SET payload = NULL` leaves the check satisfied, measured as `verify() -> []`, and that result is the behavior the acceptance condition for stage 1a demands.
-The check can't do better: it sees that `payload` is missing, and whether a warranted erasure or a quiet deletion took it stands nowhere.
+The seam had a price, and for two stages the log paid it.
+**A tombstone was indistinguishable from a forgery.**
+`UPDATE event SET payload = NULL` left the check satisfied, measured as `verify() -> []`, and that result was the behavior the acceptance condition for stage 1a demanded.
+The check couldn't do better: it saw that `payload` was missing, and whether a warranted erasure or a quiet deletion had taken it stood nowhere.
+Stages 1a and 1b had no erasure at all, so every `NULL` in `payload` was a forgery, and the check reported none of them.
 
-Stage 1a has no erasure at all.
-So today *every* `NULL` in `payload` is a forgery, and the check reports none of them.
-That's a gap in the bookkeeping, not a defect in the code.
-
-The price gets paid off by making an erasure an event in the log itself.
-Then the warrant stands *in* the chain, with its time, its cause and its author, hashed like everything else and as unchangeable as everything else.
-The check can demand from that point on: every tombstone has an erasure event that ordered it.
-A tombstone without that event becomes a finding, and the seam costs nothing further.
-Until that event exists, the gap stands.
-:::
+Stage 1c paid the price off the way it had been announced, by making an erasure an event in the log itself.
+The warrant now stands *in* the chain, hashed like everything else, and the check demands that every tombstone has a redaction that ordered it.
+The same statement is a finding today, and the seam costs nothing further.
+{ref}`erasure` explains the redaction event and what the check holds it to.
 
 ## The tombstone that wasn't one
 
@@ -79,7 +75,7 @@ verify() -> []
 ```
 
 Row 2 was erased as far as the check could tell, and invisible to any bookkeeping that looks for tombstones at the SQL level.
-The announced way of paying off the seam's price slips exactly here: a tombstone without an erasure event would become a finding, but this row is no tombstone *in the sense of that query*.
+The way the seam's price was later paid off would have slipped exactly here: a tombstone without a redaction is a finding now, but this row was no tombstone *in the sense of that query*.
 
 The fix sits in the schema and not in the check: `CHECK (payload IS NULL OR jsonb_typeof(payload) = 'object')`, listed in {ref}`database-schema` as `event_payload_object_check`.
 Two things are worth saying about it.
@@ -90,7 +86,7 @@ So the database enforces what the specification already presupposed, and *that* 
 The code wasn't bent toward the specification, and the specification wasn't bent toward the code.
 
 And the finding deserves no inflation.
-A forger gains nothing today from JSON `null` that plain `payload = NULL` wouldn't also give, since both leave the check satisfied.
+A forger gained nothing then from JSON `null` that plain `payload = NULL` wouldn't also have given, since both left the check satisfied.
 The sharpness lies in the fact that a disclosed boundary and an announced remedy both failed to catch this one case.
 
 ## The identifier comes from the predecessor, not from a sequence
@@ -170,6 +166,7 @@ Three smaller decisions follow from the same reasoning.
 
 The digest runs over the whole set of units and not over each unit on its own.
 A deleted unit is the forgery that no entry-by-entry comparison finds, since whatever is gone can't be checked against itself.
+Version 2 adds a digest per unit and keeps this one over the whole set, now taken over the unit digests.
 
 The set enters the digest sorted by `seq`, and the sorting belongs to `units_hash` rather than to its caller.
 The order goes into the hash, so the order has to be fixed somewhere; and if it weren't fixed in one single place, `append` would hash a connector's arbitrary order while the check hashes `seq` order, and every event would fail.
@@ -227,34 +224,87 @@ Whoever drops the unique constraint without reading this far appears to loosen a
 
 ## Separating the domains
 
-Both of the wrapped digests carry a version and a domain of their own, and {ref}`hash-format` holds both pairs.
+Every wrapped digest carries a version and a domain, two digests in version 1 and all four in version 2, and {ref}`hash-format` holds every pair; the units digest of version 2 keeps the domain of version 1 on purpose, and its version tells the two apart.
 The pair keeps a digest from another context out.
 A units digest, in particular, must never be able to count as an event digest, which is why the units get a domain of their own rather than riding along in the event's.
 
-The version promises something that today's columns can't deliver, and the promise deserves spelling out rather than quiet repetition.
+The version promises something that the columns of stage 1a couldn't deliver, and the promise deserves spelling out rather than quiet repetition.
 A format change, so the promise goes, becomes a version increase instead of a silent break.
-But `v` stands only inside the hashed object and not in the row: the `event` table has no version column.
-While every row is version 1 that's enough, because the check never has to guess.
+But `v` stood only inside the hashed object and not in the row: the `event` table had no version column.
+While every row was version 1 that was enough, because the check never had to guess.
 With mixed versions the check wouldn't know which domain to recompute a given row under, and guessing—try version 2 first, then version 1—would be no check at all but an offer to the forger, who could then pick whichever version makes a row add up.
 
-A version 2 therefore needs a per-row version first: `ALTER TABLE event ADD COLUMN hash_version smallint NOT NULL DEFAULT 1`, after which the check picks the hash domain row by row.
-And that migration still works at the moment it's needed, because every row written until then is version 1 by definition.
-`DEFAULT 1` enters the right value for every old row, and not one hash gets recomputed.
+Version 2 therefore came with a per-row version: `event.hash_version`, a `smallint NOT NULL DEFAULT 1`, and the check picks the hash format row by row.
+A version the check doesn't know is a finding, and the check computes that row in no version at all rather than in one it does know.
+The migration that added the column worked at the moment it was needed, because every row written until then was version 1 by definition.
+`DEFAULT 1` entered the right value for every old row, and not one hash got recomputed.
 
 The contrast with the correction that widened the hash is the point.
 There a retrofit was impossible, because the hashes themselves would have had to be recomputed, and recomputing the hashes means rewriting the chain, which is the one thing an append-only log must never be able to do.
 A column with a default invents no statement; it writes down a statement that already holds.
 
-Hence no column today.
-It would have exactly one possible value, and a column that distinguishes nothing is readiness cost without readiness benefit.
-`HASH_VERSION` stays 1 for the same kind of reason: version 1 was never written to a production database, so version 1 is still being defined here, not departed from.
+Stage 1a added no such column, and that was right while nothing wrote any other version.
+The column would have had exactly one possible value, and a column that distinguishes nothing is readiness cost without readiness benefit.
+It arrived together with the second value.
+
+The corrections of stage 1a, among them the widening above, went into version 1 rather than into a version 2.
+That was right at the time: none of it had reached `main` yet, so version 1 was still being defined, not departed from.
+Stage 1a reached `main` on 2026-10-03, and from then on version 1 is a format that a log outside this repository may hold.
+Redefining it would make every such row fail the check while nothing about the row had changed, and it would turn the pinned vector of version 1 into a recomputed one.
+So the next change of format became a version of its own, and the next section says why there had to be one.
+
+(hash-version-2)=
+
+## Version 2, with a digest per unit and a salt
+
+Version 2 changes two things about the digests over content, and both exist for erasure.
+{ref}`hash-format` lists the fields of each version 2 digest.
+
+The first change is a digest per unit.
+In version 1 the content of every unit of an event goes into one hash: `units_hash` runs over one canonical object that holds each unit together with its text.
+Take the text of one unit away and that hash can't be computed any more.
+The other units of the event would still be readable, and nothing would attest them.
+In version 2 every unit gets a digest of its own, and the units hash runs over those digests rather than over the texts.
+An erased unit keeps its digest, so the hash over the digests stays computable, and the units that remain stay attested.
+The property from earlier on this page survives the change: the units hash still covers the whole set, so a deleted unit still breaks it.
+
+The second change is a salt.
+An erasure leaves the digests standing, because the chain depends on them.
+But a digest over short content can be searched.
+Measured on 2026-10-04 with `docs/superpowers/plans/2026-10-04-stufe-1c-anlagen/measure_guessing.py`, on one core in plain Python: a unit made of a phone number with seven unknown digits came back from its unsalted digest after 1,234,568 candidates in 0.76 to 0.79 seconds, about 1.6 million candidates per second, over four runs.
+Short content is exactly what gets erased: a name, a number, one sentence.
+An erasure that leaves its content guessable from what stays behind isn't an erasure.
+
+A salt is 32 random bytes that go into the digest, and the salt is meant to be erased together with the content.
+As long as the content stands, the salt stands beside it, and the check has every part of the input.
+Once both are gone, whoever tries candidates against the digest is missing 32 random bytes of what went into it as well as the content.
+A salt needs no attestation of its own: it's an input of the digest, and a forged salt breaks the digest like forged content would.
+The payload gets the same treatment, a salt and a domain of its own, where version 1 hashed the payload and nothing else.
+
+Neither change can be retrofitted.
+A digest without a salt stays one for good, and so does a units hash over texts.
+Giving an old event a salt or a per-unit digest would mean computing its hashes again, and computing the hashes again means rewriting the chain, the one thing the log must never be able to do.
+That's why version 1 stays verifiable for good instead of being converted.
+
+Version 1 keeps a cost, and an event written in it carries that cost for as long as it exists.
+Its units are attested only together, so it can only be erased as a whole.
+And its digests carry no salt, so whatever content it held stays guessable from them.
+
+`append` writes version 2, and a log can hold events of both versions side by side.
+The salt protects content only once an erasure takes the salt away along with the content; until then, it's an input like any other.
+The database holds every erasure to that rule: it refuses a payload set to `NULL` while its salt stays, and a unit without content that keeps its salt, its speaker or its timestamps.
+{ref}`erasure` describes the erasure the format was built for.
 
 ## Counting the rows the check has seen
 
-The check reads the chain in `id` order inside a single transaction and establishes five things; {ref}`cli-reference` gives the one line each of them prints as.
+The check reads the chain in `id` order inside a single transaction and establishes six things; {ref}`cli-reference` gives the lines they print as.
 Four belong to an event, and three of those four compare a digest against the thing it covers: the payload digest against the payload, the units digest against the units, and the event hash against the event's fields.
+In version 2 the units part runs in two steps: each unit that has content against its own digest, and the units digest against the stored unit digests.
+In version 1 the units digest is computed only while every unit of the event still has its text, since it runs over the texts; an event with erased units leaves it nothing to compute.
+The row's `hash_version` says which format the three are computed in, and a value the check doesn't know is reported in their place.
 The fourth compares one stored digest against another, `prev_hash` against the predecessor's `hash`, which makes it the link itself rather than a seal over content.
 The fifth belongs to no event at all, compares a number against a number, and exists because the check doesn't oversee its own reading window.
+The sixth is erasure: every tombstone against a redaction that ordered it, and every redaction against its target, matched once the pass has read the whole chain; {ref}`erasure` explains why, and what a version 1 event erased in full leaves unattested.
 
 The scan begins at `id = 1`, and the read filters `id >= from_id`.
 A row smuggled in below that lay outside the field of view:
@@ -286,9 +336,9 @@ And a payload that resists canonicalization produces a finding rather than an ex
 The check used to raise there, so a single poisoned row blinded the check of the entire chain, which inverts what an integrity check is for: whoever can forge one row could have hidden every later forgery behind it.
 
 The same blinding has a smaller form, inside one row, and the check closes that one too.
-The payload digest and the units digest are recomputed in two `try` blocks of their own, and both results are collected, so a row whose payload and whose units are both forged yields two findings rather than one.
+The payload digest and the units are recomputed one after the other, the payload inside a `try` block of its own, and every result is collected, so a row whose payload and whose units are both forged yields two findings rather than one.
 Share one block between them and the poisoned payload leaves it before the units are compared at all: whoever can make a payload non-canonicalizable could then rewrite the units of the same row at will, one forgery covering the other.
-`tests/test_verify.py` holds that separation down, and it had to, because reading the code didn't: every test stayed green when the two blocks were merged back into one.
+`tests/test_verify.py` holds that separation down, and it had to, because reading the code didn't: when the payload and the units were once recomputed inside one shared `try` block, every test stayed green.
 
 ## What the chain doesn't cover
 

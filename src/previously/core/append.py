@@ -11,10 +11,10 @@ Two classes of conflict, two recoveries:
 
 - `event_prev_hash_idx`, `event_pkey` and `event_hash_idx` are the **same
   incident**: two writers computed the same `id` and the same `prev_hash` out
-  of the same tip — and therewith, because both go into the event hash,
-  inevitably the same `hash` as well. Which of the three indexes fires first
-  is undetermined. Re-read the tip, retry. `storage` translates all three
-  into `ChainPositionTaken`.
+  of the same tip — and because both go into the event hash, a duplicate
+  `hash` can only come from such a pair. Which of the three indexes fires
+  first is undetermined. Re-read the tip, retry. `storage` translates all
+  three into `ChainPositionTaken`.
 - `source_key_pkey` is **idempotency in the race**: the source event exists
   already. Re-read `lookup` for the whole batch; are **all** of them found,
   return their identifiers and do not retry. Is only part of them found, the
@@ -31,15 +31,12 @@ and version. This module sees only the two translated exceptions, no driver
 error.
 """
 
-from previously.contract.rows import EventRow
-from previously.contract.rows import UnitRow
+from previously.core.chain import link
+from previously.core.chain import prepare
 from previously.core.errors import BatchTooLarge
 from previously.core.errors import ChainConflict
 from previously.core.errors import InvalidPayload
-from previously.core.hashing import event_hash
 from previously.core.hashing import iso_utc
-from previously.core.hashing import payload_hash
-from previously.core.hashing import units_hash
 from previously.storage.errors import ChainPositionTaken
 from previously.storage.errors import SourceKeyTaken
 from typing import TYPE_CHECKING
@@ -55,6 +52,7 @@ if TYPE_CHECKING:
     from previously.contract.store import LogStore
     from previously.contract.types import RawEvent
     from previously.contract.types import RawUnit
+    from previously.core.chain import Prepared
 
 
 MAX_RETRIES = 8
@@ -65,10 +63,13 @@ MAX_RETRIES = 8
 MAX_BATCH = 500
 
 # Fixed to "observation": everything that comes out of connectors and the
-# command line is an observation. Assertions come from the model and therefore
-# only in a later stage. A constant instead of the same literal in two places
-# (hash and row) — the same danger of divergence that the payload further down
-# is forced into a single place against.
+# command line through `append` is an observation. Assertions come from the
+# model and therefore only in a later stage; actions are what the system does
+# itself, and the one it does so far, a redaction, is written by
+# `core/redact.py` and not through here ({ref}`erasure`). A constant instead
+# of the same literal in two places (hash and row) — the same danger of
+# divergence that the payload further down is forced into a single place
+# against.
 _KIND = "observation"
 
 # Backing off between the attempts ({ref}`concurrency`, review finding W3):
@@ -222,6 +223,18 @@ def _check_units(units: Sequence[RawUnit]) -> None:
         seen_seqs.add(unit.seq)
         if "\x00" in unit.content:
             raise InvalidPayload(f"unit {unit.seq} contains a null byte")
+        # The unit digest would refuse a lone surrogate as well, but its
+        # canonicalisation names the path inside the digest's own header,
+        # `$.content`, and not the unit. Until `append --text` stopped copying
+        # the text into the payload, the payload check got there first and
+        # named `$.text`; now this check is the first, and it names the unit.
+        try:
+            unit.content.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise InvalidPayload(
+                f"unit {unit.seq}: not representable as UTF-8 ({error.reason}) — "
+                "a lone UTF-16 surrogate, for instance"
+            ) from error
         for field, value in (("start_ms", unit.start_ms), ("end_ms", unit.end_ms)):
             if value is not None and not (_UNIT_INT_MIN <= value <= _UNIT_INT_MAX):
                 raise InvalidPayload(
@@ -236,7 +249,7 @@ def _check_units(units: Sequence[RawUnit]) -> None:
 
 def _prepare(
     events: Sequence[RawEvent],
-) -> list[tuple[RawEvent, Mapping[str, object], bytes, bytes]]:
+) -> list[tuple[RawEvent, Prepared]]:
     """Checks every event and computes what stays invariant across retries.
 
     A function of its own since finding N-5 added one more branch and `append`
@@ -247,15 +260,21 @@ def _prepare(
     no behaviour, only the structure, exactly as it did for `cli.main` before.
 
     Everything here runs **once**, before the first attempt. That is not a
-    saving but a requirement for two of the three results: were the kind of
-    evidence mixed in at two places (once for the hash, once for the row),
-    the two could drift apart — and then one would hash something other than
-    what one stores. The chain check ({ref}`hash-chain`) computes
-    `payload_hash(row.payload)` against `row.payload_hash` and would uncover
-    that, but only there. The units digest is invariant for the same reason:
-    the units of an event never change between two attempts.
+    saving but a requirement: were the kind of evidence mixed in at two
+    places (once for the hash, once for the row), the two could drift apart —
+    and then one would hash something other than what one stores. The chain
+    check ({ref}`hash-chain`) computes the payload digest of `row.payload`
+    against `row.payload_hash` and would uncover that, but only there.
+    The references to blobs are mixed in once for the same reason, by
+    `chain.prepare`, which every write path shares ({ref}`blobs`).
+    The salts are drawn once as well, in `chain.prepare`, before the first
+    attempt: what a retry repeats is the chain position, not the event, so
+    the digests over its content are computed once and kept, and only
+    `chain.link` runs on every attempt. The units digest is invariant for
+    the same reason: the units of an event never change between two
+    attempts.
     """
-    prepared: list[tuple[RawEvent, Mapping[str, object], bytes, bytes]] = []
+    prepared: list[tuple[RawEvent, Prepared]] = []
     # The idempotency keys already seen in **this** batch, with the index they
     # first appeared at — see the refusal below (finding N-5).
     seen_keys: dict[tuple[str, str], int] = {}
@@ -316,7 +335,19 @@ def _prepare(
             **event.payload,
             "evidence": event.evidence.value,
         }
-        prepared.append((event, payload, payload_hash(payload), units_hash(event.units)))
+        prepared.append(
+            (
+                event,
+                prepare(
+                    kind=_KIND,
+                    occurred_at=event.occurred_at,
+                    payload=payload,
+                    units=event.units,
+                    key=(event.source, event.external_id),
+                    blobs=event.blobs,
+                ),
+            )
+        )
 
     return prepared
 
@@ -348,51 +379,20 @@ def append[Conn](
                 next_id = 1 if tip is None else tip.id + 1
                 prev = None if tip is None else tip.hash
 
-                for event, payload, payload_digest, units_digest in prepared:
+                for event, ready in prepared:
                     existing = storage.lookup(conn, event.source, event.external_id)
                     if existing is not None:
                         ids.append(existing)
                         continue
 
-                    this_hash = event_hash(
-                        event_id=next_id,
-                        kind=_KIND,
-                        recorded_at=recorded_at,
-                        occurred_at=event.occurred_at,
-                        prev_hash=prev,
-                        payload_digest=payload_digest,
-                        units_digest=units_digest,
-                        source=event.source,
-                        external_id=event.external_id,
+                    row, units = link(
+                        ready, event_id=next_id, prev_hash=prev, recorded_at=recorded_at
                     )
-                    storage.insert_event(
-                        conn,
-                        EventRow(
-                            id=next_id,
-                            kind=_KIND,
-                            recorded_at=recorded_at,
-                            occurred_at=event.occurred_at,
-                            prev_hash=prev,
-                            hash=this_hash,
-                            payload_hash=payload_digest,
-                            units_hash=units_digest,
-                            payload=payload,
-                        ),
-                        [
-                            UnitRow(
-                                event_id=next_id,
-                                seq=u.seq,
-                                content=u.content,
-                                start_ms=u.start_ms,
-                                end_ms=u.end_ms,
-                                speaker=u.speaker,
-                            )
-                            for u in event.units
-                        ],
-                        (event.source, event.external_id),
-                    )
+                    # The register rows in the same transaction as the event
+                    # that names them ({ref}`blobs`).
+                    storage.insert_event(conn, row, units, ready.key, ready.blobs)
                     ids.append(next_id)
-                    prev = this_hash
+                    prev = row.hash
                     next_id += 1
                 return ids
 

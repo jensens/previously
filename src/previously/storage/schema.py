@@ -12,8 +12,10 @@ from sqlalchemy import Integer
 from sqlalchemy import LargeBinary
 from sqlalchemy import MetaData
 from sqlalchemy import PrimaryKeyConstraint
+from sqlalchemy import SmallInteger
 from sqlalchemy import Table
 from sqlalchemy import Text
+from sqlalchemy import text
 from sqlalchemy import UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import TIMESTAMP
@@ -37,10 +39,24 @@ event = Table(
     # Mirrors payload_hash: the digest stands in the row, the content in
     # `unit`. That makes the event hash cover the units without containing
     # them — and the erasure seam stays open for them ({ref}`tombstone-seam`).
+    # In version 2 it is taken over the stored `unit.digest`, so it stays
+    # computable for an event whose units have lost their content.
     Column("units_hash", LargeBinary, nullable=False),
     # NULL = tombstone after an erasure. payload_hash stays, the chain holds.
     Column("payload", JSONB),
+    # Which hash format the check computes for this row ({ref}`hash-version-2`).
+    # The default writes down what holds for every row older than the column:
+    # it is version 1, and no hash had to be computed again to say so.
+    Column("hash_version", SmallInteger, nullable=False, server_default=text("1")),
+    # The salt of the version 2 payload digest; NULL on a version 1 row.
+    Column("payload_salt", LargeBinary),
     CheckConstraint("kind IN ('observation','assertion','action')", name="event_kind_check"),
+    # A salt goes with its payload: a tombstone that kept the salt would leave
+    # a guesser everything but the content ({ref}`hash-version-2`).
+    CheckConstraint(
+        "payload IS NOT NULL OR payload_salt IS NULL",
+        name="event_payload_salt_check",
+    ),
     # Correction K-1: SQL `NULL` is the tombstone, JSON `null` must not be
     # able to pass for one.
     #
@@ -66,12 +82,15 @@ event = Table(
     # column. The code is not being bent to fit the spec; the database is made
     # to enforce what the spec took for granted.
     #
-    # The honest limit: *today* a forger gains nothing here that
-    # `payload = NULL` would not also give. The sharpness is that the
-    # disclosed limit ({ref}`tombstone-seam`) and the redemption it
-    # announces — a tombstone without an accompanying erasure event becomes a
-    # finding — do not catch this case, because it is no tombstone *in the
-    # sense of the query*.
+    # The limit this closed: until stage 1c a forger gained nothing here that
+    # `payload = NULL` would not also give, since both left the check
+    # satisfied. The sharpness was that the disclosed limit
+    # ({ref}`tombstone-seam`) and the redemption it announced — a tombstone
+    # without a redaction becomes a finding — would not have caught this case,
+    # because it was no tombstone *in the sense of the query*. That redemption
+    # exists now ({ref}`erasure`), and `payload = NULL` without a redaction is
+    # a finding; this constraint is what keeps JSON `null` from slipping past
+    # it.
     CheckConstraint(
         "payload IS NULL OR jsonb_typeof(payload) = 'object'",
         name="event_payload_object_check",
@@ -83,9 +102,18 @@ Index("event_kind_occurred_idx", event.c.kind, event.c.occurred_at)
 Index("event_hash_idx", event.c.hash, unique=True)
 
 # Together with event_pkey this carries the entire concurrency control for
-# append ({ref}`concurrency`): no advisory lock, no FOR UPDATE, but two
-# unique indexes decide which writer gets the chain position. The loser
-# re-reads the tip and retries.
+# the chain position ({ref}`concurrency`): no advisory lock, no FOR UPDATE on
+# the tip, but two unique indexes decide which writer gets the position —
+# `append` and an erasure alike. The loser re-reads the tip and retries. The
+# row locks in the system order other things, never the chain. An erasure
+# locks `FOR NO KEY UPDATE` the events whose redactions it is about to read:
+# for `redact units` its target, for `redact event` its target and every
+# event that shares a blob with it, for `redact blob` every event that uses
+# the blob, each set in ascending `id`. So two erasures whose sets overlap
+# run one after the other, and the foreign-key checks of the projection
+# tables on `event` wait for neither. A catch-up locks the state row of its
+# projection in `projection_state`, so that two catch-ups of one projection
+# take turns.
 #
 # NULLS NOT DISTINCT is not optional: without it several NULL count as
 # distinct, and every process could write its own genesis entry
@@ -103,12 +131,25 @@ unit = Table(
     metadata,
     Column("event_id", BigInteger, ForeignKey("event.id"), nullable=False),
     Column("seq", Integer, nullable=False),
-    Column("content", Text, nullable=False),
+    # NULL = tombstone of an erased unit, the counterpart of `event.payload`.
+    Column("content", Text),
     Column("start_ms", Integer),
     Column("end_ms", Integer),
     Column("speaker", Text),
+    # The unit's own version 2 digest and its salt ({ref}`hash-version-2`);
+    # NULL on a version 1 unit.
+    Column("digest", LargeBinary),
+    Column("salt", LargeBinary),
     PrimaryKeyConstraint("event_id", "seq"),
     CheckConstraint("seq >= 1", name="unit_seq_check"),
+    # An erased unit keeps its `seq` and its `digest`, which the units hash
+    # needs, and nothing else: not the salt, which a guesser would need, and
+    # not speaker and timestamps, which say something of their own.
+    CheckConstraint(
+        "content IS NOT NULL OR "
+        "(salt IS NULL AND speaker IS NULL AND start_ms IS NULL AND end_ms IS NULL)",
+        name="unit_tombstone_check",
+    ),
 )
 
 source_key = Table(
@@ -126,6 +167,26 @@ source_key = Table(
     # holds instead of leaving it to the whim of future callers.
     UniqueConstraint("event_id", name="source_key_event_id_key"),
 )
+
+# The register of blobs ({ref}`blobs`): which event names which blob, so that
+# "which events use this blob" is a query and not a pass over every payload.
+# It carries no truth of its own — the reference in `payload.blobs` is what
+# the event hash covers — and `verify` holds it against the payload. One row
+# per distinct blob of an event: the same content attached twice is two
+# references in the payload and one row here.
+event_blob = Table(
+    "event_blob",
+    metadata,
+    Column("event_id", BigInteger, ForeignKey("event.id"), nullable=False),
+    # The SHA-256 of the plaintext, as bytes; the payload names it in hex.
+    Column("sha256", LargeBinary, nullable=False),
+    PrimaryKeyConstraint("event_id", "sha256"),
+    CheckConstraint("octet_length(sha256) = 32", name="event_blob_sha256_check"),
+)
+
+# The primary key answers "the blobs of an event"; this index answers the
+# other direction.
+Index("event_blob_sha256_idx", event_blob.c.sha256)
 
 # --- Projections ({ref}`projections`) ---------------------------------------
 #
@@ -155,9 +216,12 @@ p_chronicle = Table(
     Column("content", Text, nullable=False),
     Column("occurred_at", TIMESTAMP(timezone=True), nullable=False),
     Column("kind", Text, nullable=False),
-    # NULL when the payload was erased: the kind of evidence lives in the
-    # payload, and a tombstone has none. NOT NULL here would mean the chronicle
-    # cannot show an erased event at all — a row in the log, silently missing.
+    # NULL when the payload is a tombstone that no redaction ordered: the kind
+    # of evidence lives in the payload, and a tombstone has none. An event a
+    # redaction erased has no row here at all, because its units are erased
+    # with it; the tombstone without an order keeps its units, which `verify`
+    # reports, and NOT NULL here would mean the chronicle could not show them —
+    # rows in the log, silently missing.
     Column("evidence", Text),
     # NULL when the event carries no source attribution; `source_key` enforces
     # at most one per event, not at least one.

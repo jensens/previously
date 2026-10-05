@@ -1,14 +1,32 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The store protocols: what `core` may ask of a store, and nothing more.
+r"""The store protocols: what `core` may ask of a store, and nothing more.
 
-`LogStore` is what `append` and `verify` call — nine methods, counted on
-2026-10-04 as the distinct names
-`grep -o 'storage\\.[a-z_]*(' src/previously/core/append.py src/previously/core/verify.py`
-prints, not copied from the method list of the implementation. It was eight
-until the chain check took `snapshot` instead of `begin` for its reads;
-`append` still takes `begin`, so both stay. Typing `core` against
+`LogStore` is what the modules of `core` that write or read the log call —
+thirteen methods, counted on 2026-10-05, after the final fixes of stage 1c,
+by this command, run from the root of the repository in bash or fish:
+
+    grep -ohE '(storage|log)\.[a-z_]*\(' src/previously/core/append.py \
+        src/previously/core/verify.py src/previously/core/redact.py \
+        src/previously/core/redaction.py src/previously/core/projection/worker.py \
+        | sed 's/.*\.//' | sort -u | wc -l
+
+The files are the five modules that name `LogStore` today, and the count is
+not copied from the method list of the implementation. The docstring is raw
+so that the text in this file is the command, backslashes as they stand.
+Without the `sed` stage, as the command stood here until then, `sort -u`
+leaves 21 lines, a name once for each of the two prefixes it is called
+through, and the claim was a count of those by hand. It was eight
+until the chain
+check took `snapshot` instead of `begin` for its reads, and `append` still
+takes `begin`, so both stay; it was nine until stage 1c, whose redactions
+are read with `read_by_kind`, and ten until `verify` and `redact` read the
+blob register with `blobs_by_event`. The erasure of blobs took it to
+thirteen: `redact` asks `events_by_blob`, which until then only the command
+line asked, and `verify --blobs` reads the whole register with
+`blob_references`. Every method the protocol declares is called by `core`
+on that day. Typing `core` against
 this protocol instead of against `PostgresStorage` removes the edge
 `core -> storage.postgres`, and with it the two named exemptions in
 `.importlinter` and the test that guarded them ({ref}`module-boundaries`).
@@ -16,10 +34,12 @@ this protocol instead of against `PostgresStorage` removes the edge
 `Conn` is the connection type. Only `storage` knows what it is; `core` passes
 it back to the store it came from and never looks inside.
 
-Nothing imports this module at runtime, and the coverage report says so: both
-importers name `LogStore` only under `TYPE_CHECKING`, so the module never
-reaches `sys.modules` and stands at 0%. Measured on 2026-10-04 by importing
-`previously.cli`, `core.append` and `core.verify` and looking. That is the
+Nothing imports this module at runtime, and the coverage report says so:
+every importer names a protocol only under `TYPE_CHECKING`, so the module
+never reaches `sys.modules` and stands at 0%. Measured on 2026-10-04, after
+`RedactionStore` arrived, by importing `previously.cli`, `core.append`,
+`core.verify`, `core.redact`, `core.redaction` and `core.projection.worker`
+and looking. That is the
 protocol working as intended rather than something left untested — the method
 bodies are `...` and have nothing to execute; what has to hold is that
 `PostgresStorage` satisfies the protocol, and pyright checks that at every
@@ -43,7 +63,12 @@ if TYPE_CHECKING:
 
 
 class LogStore[Conn](Protocol):
-    """The append-only log: write once, read in chain order, never change."""
+    """The append-only log: write once, read in chain order, never change.
+
+    That holds for this protocol and is its point: what may change in the log
+    since erasure exists is a type of its own, `RedactionStore`, and a caller
+    typed against this one cannot reach it ({ref}`erasure`).
+    """
 
     def begin(self) -> AbstractContextManager[Conn]: ...
     def snapshot(self) -> AbstractContextManager[Conn]: ...
@@ -55,11 +80,37 @@ class LogStore[Conn](Protocol):
         row: EventRow,
         units: Sequence[UnitRow],
         key: tuple[str, str] | None,
+        blobs: Sequence[bytes] = (),
     ) -> None: ...
     def read(self, conn: Conn, from_id: int, limit: int) -> Iterator[EventRow]: ...
     def units_by_event(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, list[UnitRow]]: ...
     def count_events(self, conn: Conn) -> int: ...
     def source_keys(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, tuple[str, str]]: ...
+    def read_by_kind(self, conn: Conn, kind: str) -> Iterator[EventRow]: ...
+    def blobs_by_event(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, list[bytes]]: ...
+    def events_by_blob(self, conn: Conn, sha256: bytes) -> list[int]: ...
+    def blob_references(self, conn: Conn) -> Iterator[tuple[bytes, int]]: ...
+
+
+class RedactionStore[Conn](Protocol):
+    """What an erasure may change in the log, and nothing more ({ref}`erasure`).
+
+    A protocol of its own, so that "the log never changes" stays a statement
+    about `LogStore` and the exception is a type: nothing typed against
+    `LogStore` can erase, and what can erase is listed here.
+
+    `lock_event` reads the row with `FOR NO KEY UPDATE`, so that two erasures
+    that lock the same event run one after the other, while a foreign-key
+    check on that event does not wait for either. `erase_payload` sets
+    `payload` and `payload_salt` to `NULL` in one `UPDATE`; `erase_units` sets
+    `content`, `salt`, `speaker`, `start_ms` and `end_ms` of the named units
+    to `NULL` in one `UPDATE`, and an empty sequence is no statement. Every
+    digest stays: the chain depends on them.
+    """
+
+    def lock_event(self, conn: Conn, event_id: int) -> EventRow | None: ...
+    def erase_payload(self, conn: Conn, event_id: int) -> None: ...
+    def erase_units(self, conn: Conn, event_id: int, seqs: Sequence[int]) -> None: ...
 
 
 class ProjectionStore[Conn](Protocol):
@@ -69,6 +120,21 @@ class ProjectionStore[Conn](Protocol):
     (architecture §4.4, frozen design record) stays a type and not a
     comment: nothing typed against `LogStore` can truncate, and nothing typed
     against this protocol can append to the log.
+
+    `lock_projection_state` reads the state row of one projection and locks
+    it until the transaction ends, so that two catch-ups of the same
+    projection run one after the other and each takes `up_to_id` and the
+    version from the row, never from what it read before. Without a row it
+    writes one in its place, at `up_to_id` 0 and version 0, holds that the
+    same way, and returns `None`: a second transaction asking meanwhile
+    waits until the first ends and then finds the row the first committed.
+    Version 0 is no version a projection declares, so a placeholder that
+    were ever committed as it is would only make the next catch-up rebuild.
+
+    `delete_chronicle` takes the chronicle rows of one event: those of the
+    named units, or with `None` every row of the event; an empty sequence is
+    no statement. It is how the chronicle follows an erasure
+    ({ref}`projections`).
 
     `upsert_source_stats` writes the rows it is given. The arithmetic that
     merges an existing row with a batch — count plus count, earliest of two
@@ -80,9 +146,10 @@ class ProjectionStore[Conn](Protocol):
     """
 
     def begin(self) -> AbstractContextManager[Conn]: ...
-    def projection_state(self, conn: Conn, name: str) -> ProjectionState | None: ...
+    def lock_projection_state(self, conn: Conn, name: str) -> ProjectionState | None: ...
     def set_projection_state(self, conn: Conn, state: ProjectionState) -> None: ...
     def truncate_projection(self, conn: Conn, name: str) -> None: ...
     def insert_chronicle(self, conn: Conn, rows: Sequence[ChronicleRow]) -> None: ...
+    def delete_chronicle(self, conn: Conn, event_id: int, seqs: Sequence[int] | None) -> None: ...
     def source_stats(self, conn: Conn, sources: Sequence[str]) -> dict[str, SourceStatsRow]: ...
     def upsert_source_stats(self, conn: Conn, rows: Sequence[SourceStatsRow]) -> None: ...

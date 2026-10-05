@@ -5,7 +5,7 @@
 A hash is a function of bytes, and a payload is a structure.
 Something has to turn the structure into bytes, and it has to turn the same structure into the same bytes every time, on every machine, in every language that might ever check the chain.
 That something is the canonicalization, and in Previously it follows RFC 8785, the canonicalization scheme for JSON: sorted keys, no whitespace, UTF-8, a fixed rendering of numbers.
-{ref}`hash-format` says what the resulting bytes look like for each of the three digests.
+{ref}`hash-format` says what the resulting bytes look like for each digest.
 This page says why the scheme is a scheme at all, and why the payloads it has to canonicalize are kept so plain.
 
 ## Concatenation is ambiguous, a canonical object isn't
@@ -16,9 +16,10 @@ Two different events could therefore carry one hash, and a forger who can choose
 A canonicalized object has no such freedom, because the structure survives into the bytes: the keys stay, the delimiters stay, and a value that moves from one field to another changes the bytes.
 
 The choice has a side effect worth noticing, and it argues for the same decision from a different direction.
-The canonicalizer gets used three times, not once: for `payload_hash`, for the wrapped object behind `units_hash`, and for the wrapped object behind the event hash.
-One piece of machinery, three uses, and the same guarantee in all three.
-A concatenation scheme would have needed three hand-written field orders instead, each one its own chance to disagree with the check that reads it back.
+The canonicalizer gets used three times in version 1 of the hash format, not once: for `payload_hash`, for the wrapped object behind `units_hash`, and for the wrapped object behind the event hash.
+Version 2 adds a fourth use, the digest of a single unit.
+One piece of machinery, several uses, and the same guarantee in all of them.
+A concatenation scheme would have needed a hand-written field order for each instead, each one its own chance to disagree with the check that reads it back.
 
 The restricted range below is what makes this affordable.
 With no floating point numbers and keys in lower-case ASCII, `json.dumps` with fixed flags already meets RFC 8785, so no foreign library carries any of this: `sort_keys` sorts by code point, which for ASCII keys is the same order as the scheme's sorting by UTF-16 code units, `separators` removes every bit of whitespace, and `ensure_ascii=False` yields the minimally escaped UTF-8 the scheme asks for.
@@ -100,7 +101,7 @@ After the correction the batch raises `InvalidPayload`, the message names the ke
 
 ## The pinned test vector
 
-The test suite pins a vector for all three digests, and it pins more than the three hexadecimal values.
+The test suite pins a vector for each version of the hash format, and each vector pins more than its hexadecimal values.
 It also holds the canonical bytes, verbatim, for each digest; {ref}`hash-format` reproduces both halves.
 
 The second half is the one that earns its keep.
@@ -111,5 +112,6 @@ The bytes turn a one-bit verdict into a diff.
 There's a discipline attached, and it's the kind that has to be said out loud because the shortcut is so tempting.
 A failing pinned vector is almost never fixed by recomputing it.
 The value exists to prove that the hash is reproducible, and a value recomputed from the current code proves only that the current code agrees with itself.
-The one exception never arrives alone: a change to the hash range made on purpose raises `HASH_VERSION` with it, so the new vector and the new version reach a reader together.
-A recomputed vector beside an unchanged version is therefore the signature of the shortcut.
+Not even a change to the hash range made on purpose recomputes a vector.
+It gets a version of its own and a second vector beside the first, the way version 2 did, and the first vector stays for as long as rows of its version can exist, which is for good.
+A vector whose values changed is therefore the signature of the shortcut, whatever version it names.

@@ -9,6 +9,7 @@ rebuild-only test proves determinism; only the comparison catches a wrong
 incremental step, and that is the failure that kills projections.
 """
 
+from dataclasses import dataclass
 from datetime import datetime
 from datetime import timedelta
 from datetime import UTC
@@ -25,12 +26,15 @@ from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
 from previously.core.errors import ProjectionGap
+from previously.core.errors import ProjectionRebuilt
 from previously.core.projection import PROJECTIONS
 from previously.core.projection.chronicle import CHRONICLE
 from previously.core.projection.chronicle import ChronicleProjection
 from previously.core.projection.source_stats import SOURCE_STATS
 from previously.core.projection.source_stats import SourceStatsProjection
 from previously.core.projection.worker import catch_up
+from previously.core.redact import redact_event
+from previously.core.redact import redact_units
 from previously.core.units import split_plaintext
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import Connection
@@ -39,12 +43,16 @@ from sqlalchemy import text
 from typing import TYPE_CHECKING
 
 import pytest
+import threading
+import time
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from collections.abc import Sequence
     from contextlib import AbstractContextManager
     from previously.contract.store import ProjectionStore
+    from previously.core.projection.worker import Outcome
 
 NOW = datetime(2026, 10, 4, 12, 0, 0, tzinfo=UTC)
 
@@ -101,16 +109,19 @@ def test_incremental_equals_rebuilt(db: Engine) -> None:
     `assert incremental == rebuilt`: `merge` folds the batch *and* merges the
     fold with the stored row, so that mutation moves both paths alike and
     they stay equal. Replacing it by `addition.first_seen` — overwriting —
-    leaves all twelve tests in this file green, for the reason the dated
+    leaves every test in this file green, for the reason the dated
     correction in the specification gives: the older late arrival happens to
     be the minimum.
 
     What the comparison catches is a wrong *incremental* step, and that was
     measured too. With `SourceStatsProjection.write` merging `None` instead
-    of the stored row, this test and the property fail and all nine tests in
-    `test_projection_derive.py` stay green — a mutation invisible to every
+    of the stored row, this test and the property fail and every test in
+    `test_projection_derive.py` stays green — a mutation invisible to every
     pure test and to the pinned value, which is the whole reason this test
     exists.
+
+    All three remeasured on 2026-10-05, with sixteen tests in this file and
+    eleven in `test_projection_derive.py`, and each came out as above.
     """
     storage = PostgresStorage(db)
     moments = [NOW, NOW + timedelta(days=1), NOW - timedelta(days=5)]
@@ -185,8 +196,8 @@ class _FailingStore:
     def begin(self) -> AbstractContextManager[Connection]:
         return self._inner.begin()
 
-    def projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
-        return self._inner.projection_state(conn, name)
+    def lock_projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
+        return self._inner.lock_projection_state(conn, name)
 
     def set_projection_state(self, conn: Connection, state: ProjectionState) -> None:
         self._inner.set_projection_state(conn, state)
@@ -199,6 +210,9 @@ class _FailingStore:
         if self._calls == self._fail_on:
             raise RuntimeError("injected failure")
         self._inner.insert_chronicle(conn, rows)
+
+    def delete_chronicle(self, conn: Connection, event_id: int, seqs: Sequence[int] | None) -> None:
+        self._inner.delete_chronicle(conn, event_id, seqs)
 
     def source_stats(self, conn: Connection, sources: Sequence[str]) -> dict[str, SourceStatsRow]:
         return self._inner.source_stats(conn, sources)
@@ -282,18 +296,127 @@ def test_an_event_without_a_source_is_in_the_chronicle_and_not_in_the_stats(db: 
 
 
 @pytest.mark.db
-def test_a_tombstoned_event_keeps_its_chronicle_rows_with_evidence_null(db: Engine) -> None:
-    """Erasing the payload does not erase the units ({ref}`projections`).
-    Pinned, so that an erasure which deletes units has to change this on
-    purpose."""
+def test_a_payload_erased_without_a_redaction_keeps_its_chronicle_rows_with_evidence_null(
+    db: Engine,
+) -> None:
+    """A payload set to `NULL` by hand, units left standing: a tombstone
+    without an order, which `verify` reports, and not an erasure `redact`
+    writes — that one takes the units as well and records the redaction that
+    takes the rows out ({ref}`projections`). For the tombstone without an
+    order the chronicle shows the units it still finds, with `evidence` NULL.
+    `test_a_redacted_event_leaves_no_chronicle_row` is the test about the
+    erasure that has an order."""
     storage = PostgresStorage(db)
     append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
     with db.begin() as c:
-        c.execute(text("UPDATE event SET payload = NULL WHERE id = 1"))
+        # The salt goes with the payload, or `event_payload_salt_check`
+        # refuses the statement (ruling P-1 of the 2026-10-04 stage 1c plan).
+        c.execute(text("UPDATE event SET payload = NULL, payload_salt = NULL WHERE id = 1"))
     catch_up(storage, storage, CHRONICLE)
     with db.begin() as c:
         rows = c.execute(text("SELECT content, evidence FROM p_chronicle ORDER BY seq")).all()
     assert [tuple(r) for r in rows] == [("one", None), ("two", None)]
+
+
+def _chronicle_keys(db: Engine) -> list[tuple[int, int]]:
+    with db.begin() as c:
+        rows = c.execute(text("SELECT event_id, seq FROM p_chronicle ORDER BY event_id, seq"))
+        return [(r.event_id, r.seq) for r in rows]
+
+
+@pytest.mark.db
+def test_incremental_equals_rebuilt_with_redactions_before_and_after_the_worker(
+    db: Engine,
+) -> None:
+    """Both ways an erasure reaches the chronicle end alike ({ref}`projections`).
+
+    Events 1 to 3 are projected, then event 1 is redacted (4) and unit 1 of
+    event 2 (5): the worker has rows for both and takes them out when it reads
+    the redactions. Events 6 and 7 are appended and 6 is redacted (8) before
+    the worker has seen it: its units are tombstones by the time it reads
+    them, so it builds no row, and the deletion meets nothing. The rebuild
+    goes the second way for all three, and has to arrive at the same rows.
+    """
+    storage = PostgresStorage(db)
+    append(
+        storage, [_raw(n, "email", NOW + timedelta(hours=n)) for n in (1, 2, 3)], recorded_at=NOW
+    )
+    _project_all(storage)
+    redact_event(storage, storage, 1, reason="wrong recipient", recorded_at=NOW)
+    redact_units(storage, storage, 2, [1], reason="a third party", recorded_at=NOW)
+    append(storage, [_raw(n, "chat", NOW - timedelta(days=n)) for n in (6, 7)], recorded_at=NOW)
+    redact_event(storage, storage, 6, reason="never meant for the log", recorded_at=NOW)
+    _project_all(storage)
+    incremental = _snapshot(db)
+    assert _chronicle_keys(db) == [(2, 2), (3, 1), (3, 2), (7, 1), (7, 2)]
+
+    _force_rebuild(storage)
+    _project_all(storage)
+    assert _snapshot(db) == incremental
+
+
+@pytest.mark.db
+def test_an_order_without_its_execution_ends_alike_on_both_paths(db: Engine) -> None:
+    """A redaction whose target still carries what it erased — an order
+    without its execution, which `verify` reports — takes the rows on both
+    paths alike ({ref}`projections`).
+
+    The content of unit 1 is put back by hand after the redaction. The
+    incremental path built that unit's row in a batch before the redaction's;
+    the rebuild reads target and redaction in one batch. Only because `write`
+    inserts before it deletes does the redaction take the row in that one
+    batch too. Measured on 2026-10-05 with the two steps of `write` swapped:
+    this test goes red on the comparison, the rebuild keeping `(1, 1)`.
+    """
+    storage = PostgresStorage(db)
+    append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
+    _project_all(storage)
+    redact_units(storage, storage, 1, [1], reason="a third party", recorded_at=NOW)
+    with db.begin() as c:
+        # Content alone is enough to undo the tombstone: the check on `unit`
+        # constrains a unit without content, not one with it (ruling P-1 of
+        # the 2026-10-04 stage 1c plan names the other direction).
+        c.execute(text("UPDATE unit SET content = 'one' WHERE event_id = 1 AND seq = 1"))
+    _project_all(storage)
+    incremental = _snapshot(db)
+    assert _chronicle_keys(db) == [(1, 2)]
+
+    _force_rebuild(storage)
+    _project_all(storage)
+    assert _snapshot(db) == incremental
+
+
+@pytest.mark.db
+def test_a_redacted_event_leaves_no_chronicle_row(db: Engine) -> None:
+    """From an empty projection: the worker reads the event after its
+    redaction, finds tombstones and builds no row ({ref}`projections`). The
+    event beside it keeps its rows."""
+    storage = PostgresStorage(db)
+    append(storage, [_raw(n, "email", NOW) for n in (1, 2)], recorded_at=NOW)
+    redact_event(storage, storage, 1, reason="wrong recipient", recorded_at=NOW)
+    catch_up(storage, storage, CHRONICLE)
+    assert _chronicle_keys(db) == [(2, 1), (2, 2)]
+
+
+@pytest.mark.db
+def test_the_stats_keep_counting_an_erased_unit(db: Engine) -> None:
+    """`units` counts the units recorded, erased ones included: an erasure
+    leaves the rows of its units standing as tombstones ({ref}`projections`),
+    so the count the log supports does not move, incrementally or rebuilt."""
+    storage = PostgresStorage(db)
+    append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
+    _project_all(storage)
+    before = _snapshot(db)[1]
+    assert [(r[0], r[2]) for r in before] == [("email", 2)]
+
+    redact_units(storage, storage, 1, [1], reason="a third party", recorded_at=NOW)
+    redact_event(storage, storage, 1, reason="wrong recipient", recorded_at=NOW)
+    _project_all(storage)
+    assert _snapshot(db)[1] == before
+
+    _force_rebuild(storage)
+    _project_all(storage)
+    assert _snapshot(db)[1] == before
 
 
 @pytest.mark.db
@@ -375,47 +498,321 @@ SLOW = settings(
 WINDOW_FROM = datetime(2026, 1, 1, tzinfo=UTC).replace(tzinfo=None)
 WINDOW_UNTIL = datetime(2026, 12, 31, tzinfo=UTC).replace(tzinfo=None)
 
-# Steps: each is one to three events from a handful of sources, with
-# `occurred_at` drawn at random and therefore out of order — the case that
-# tells a minimum from an assignment.
-steps = st.lists(
+
+@dataclass(frozen=True)
+class _Append:
+    """One to three events from a handful of sources, with `occurred_at`
+    drawn at random and therefore out of order — the case that tells a
+    minimum from an assignment."""
+
+    events: tuple[tuple[str, datetime], ...]
+
+
+@dataclass(frozen=True)
+class _CatchUp:
+    """Every projection brought up to the tip."""
+
+
+@dataclass(frozen=True)
+class _Redact:
+    """An erasure of one of the events appended so far, picked by position
+    modulo their number: the whole event for `units` None, else those units
+    of its two. A target already covered is the ordinary `already` path."""
+
+    pick: int
+    units: tuple[int, ...] | None
+
+
+_appends = st.builds(
+    _Append,
     st.lists(
         st.tuples(
             st.sampled_from(["email", "chat", "cli"]),
-            st.datetimes(
-                min_value=WINDOW_FROM,
-                max_value=WINDOW_UNTIL,
-                timezones=st.just(UTC),
-            ),
+            st.datetimes(min_value=WINDOW_FROM, max_value=WINDOW_UNTIL, timezones=st.just(UTC)),
         ),
         min_size=1,
         max_size=3,
-    ),
-    min_size=1,
-    max_size=6,
+    ).map(tuple),
 )
+_redactions = st.builds(
+    _Redact,
+    st.integers(min_value=0, max_value=20),
+    st.one_of(st.none(), st.sampled_from([(1,), (2,), (1, 2)])),
+)
+steps = st.lists(st.one_of(_appends, st.just(_CatchUp()), _redactions), min_size=1, max_size=8)
 
 
 @pytest.mark.db
 @SLOW
 @given(steps=steps)
 def test_property_any_interleaving_of_append_and_catch_up_equals_a_rebuild(
-    db: Engine, truncate_statement: str, steps: list[list[tuple[str, datetime]]]
+    db: Engine, truncate_statement: str, steps: list[_Append | _CatchUp | _Redact]
 ) -> None:
-    """Random interleavings of "append k events" and "catch up", against one
-    rebuild at the end ({ref}`projections`)."""
+    """Random interleavings of "append k events", "catch up" and "redact",
+    against one rebuild at the end ({ref}`projections`). A redaction lands
+    before or after the worker has read its target, depending on the draw,
+    and both ways have to end in the rows the rebuild derives."""
     with db.begin() as c:
         c.execute(text(truncate_statement))
     storage = PostgresStorage(db)
     n = 0
+    appended: list[int] = []
     for step in steps:
-        events: list[RawEvent] = []
-        for source, moment in step:
-            n += 1
-            events.append(_raw(n, source, moment))
-        append(storage, events, recorded_at=NOW)
-        _project_all(storage)
+        match step:
+            case _Append(events=drawn):
+                raws: list[RawEvent] = []
+                for source, moment in drawn:
+                    n += 1
+                    raws.append(_raw(n, source, moment))
+                appended.extend(append(storage, raws, recorded_at=NOW))
+            case _CatchUp():
+                _project_all(storage)
+            case _Redact(pick=pick, units=units):
+                if not appended:
+                    continue
+                target = appended[pick % len(appended)]
+                if units is None:
+                    redact_event(storage, storage, target, reason="r", recorded_at=NOW)
+                else:
+                    redact_units(storage, storage, target, units, reason="r", recorded_at=NOW)
+    _project_all(storage)
     incremental = _snapshot(db)
     _force_rebuild(storage)
     _project_all(storage)
     assert _snapshot(db) == incremental
+
+
+# --- Two catch-ups of one projection ({ref}`projections`) ---------------------
+#
+# A scheduled `project` and the catch-up every `redact` runs are two workers
+# on the same projection. The tests below pause one of them between real calls
+# and let the other run against what it holds; nothing stands in for the
+# database, and no sleep hopes for an order. A paused worker goes on once the
+# other has finished or is waiting on a lock, which `pg_stat_activity` says.
+
+
+def _waiting_on_a_lock(db: Engine) -> bool:
+    with db.connect() as c:
+        return bool(
+            c.execute(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                )
+            ).scalar_one()
+        )
+
+
+def _wait_until(condition: Callable[[], bool]) -> None:
+    deadline = time.monotonic() + 10
+    while not condition():
+        assert time.monotonic() < deadline, "the other worker never came"
+        time.sleep(0.01)
+
+
+class _PausingStore(PostgresStorage):
+    """The real store, except that a catch-up through it stops twice in the
+    first batch that reads an event: once it has read the batch, until
+    `go_on` is set, and once it has written the rows and the new `up_to_id`,
+    until `may_commit()` is true. `holding` says it is at the second stop,
+    with its rows uncommitted."""
+
+    def __init__(self, engine: Engine, may_commit: Callable[[], bool]) -> None:
+        super().__init__(engine)
+        self.has_read = threading.Event()
+        self.go_on = threading.Event()
+        self.holding = threading.Event()
+        self._may_commit = may_commit
+
+    def source_keys(self, conn: Connection, event_ids: Sequence[int]) -> dict[int, tuple[str, str]]:
+        keys = super().source_keys(conn, event_ids)
+        if event_ids and not self.has_read.is_set():
+            self.has_read.set()
+            assert self.go_on.wait(timeout=10)
+        return keys
+
+    def set_projection_state(self, conn: Connection, state: ProjectionState) -> None:
+        super().set_projection_state(conn, state)
+        if state.up_to_id > 0 and not self.holding.is_set():
+            self.holding.set()
+            _wait_until(self._may_commit)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("appended", [True, False], ids=["appended-meanwhile", "control"])
+def test_two_catch_ups_of_one_projection_take_turns(db: Engine, appended: bool) -> None:
+    """A `project` reads event 1, a redaction of it commits, and with
+    `appended` another event arrives; then the catch-up of `redact` runs while
+    the `project` holds event 1's rows uncommitted.
+
+    Each batch locks the state row and reads `up_to_id` from it, so the
+    second catch-up waits for the first, starts at `up_to_id` 1, reads the
+    redaction, and takes the rows out. Measured on 2026-10-05 with the lock
+    taken out of `lock_projection_state`: with the append, the second
+    catch-up started at 0 from memory, inserted event 3's rows, deleted none
+    of event 1's, which it could not see yet, and committed `up_to_id` 3
+    after the first; the first then failed on event 3's rows with an
+    `IntegrityError`, and the chronicle kept the erased text. The control,
+    without the append, ends clean with and without the lock: the first
+    catch-up's own next batch reads the redaction."""
+    storage = PostgresStorage(db)
+    catch_up(storage, storage, CHRONICLE)
+    erased = "secret line one.\n\nsecret line two."
+    append(storage, [_raw(1, "email", NOW, erased)], recorded_at=NOW)
+    second_done = threading.Event()
+    first = _PausingStore(db, lambda: second_done.is_set() or _waiting_on_a_lock(db))
+    errors: list[BaseException] = []
+
+    def project() -> None:
+        try:
+            catch_up(first, first, CHRONICLE)
+        except BaseException as e:
+            errors.append(e)
+
+    def redact_catch_up() -> None:
+        try:
+            assert first.holding.wait(timeout=10)
+            catch_up(storage, storage, CHRONICLE)
+        except BaseException as e:
+            errors.append(e)
+        finally:
+            second_done.set()
+
+    threads = [threading.Thread(target=project), threading.Thread(target=redact_catch_up)]
+    for t in threads:
+        t.start()
+    assert first.has_read.wait(timeout=10)
+    redact_event(storage, storage, 1, reason="wrong list", recorded_at=NOW)
+    if appended:
+        append(storage, [_raw(2, "email", NOW)], recorded_at=NOW)
+    first.go_on.set()
+    for t in threads:
+        t.join(timeout=20)
+        assert not t.is_alive(), "thread is hanging"
+
+    assert errors == []
+    assert _chronicle_keys(db) == ([(3, 1), (3, 2)] if appended else [])
+    again = catch_up(storage, storage, CHRONICLE)
+    assert (again.events, again.up_to_id) == (0, 3 if appended else 2)
+    incremental = _snapshot(db)[0]
+    _force_rebuild(storage)
+    catch_up(storage, storage, CHRONICLE)
+    assert _snapshot(db)[0] == incremental
+
+
+class _HoldingFirstLock(PostgresStorage):
+    """The real store, except that the first `lock_projection_state` through
+    it, once it holds the lock, waits until `may_go_on()` is true, and the
+    `stop`-th one waits until `resume` is set, before it locks."""
+
+    def __init__(self, engine: Engine, may_go_on: Callable[[], bool], stop: int = 0) -> None:
+        super().__init__(engine)
+        self.holding = threading.Event()
+        self.stopped = threading.Event()
+        self.resume = threading.Event()
+        self._may_go_on = may_go_on
+        self._stop = stop
+        self._calls = 0
+
+    def lock_projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
+        self._calls += 1
+        if self._calls == self._stop:
+            self.stopped.set()
+            assert self.resume.wait(timeout=10)
+        state = super().lock_projection_state(conn, name)
+        if self._calls == 1:
+            self.holding.set()
+            _wait_until(self._may_go_on)
+        return state
+
+
+@pytest.mark.db
+def test_two_first_builds_build_once(db: Engine) -> None:
+    """No state row yet, and two catch-ups start at once: the first holds the
+    placeholder row its lock wrote, the second waits at it, and finds the row
+    the first committed. One of them builds, the other catches up from where
+    the first got to. Measured on 2026-10-05 with the lock taken out of
+    `lock_projection_state`, so that it only read: both found no row, and
+    both reported a first build."""
+    storage = PostgresStorage(db)
+    append(storage, [_raw(n, "email", NOW) for n in (1, 2)], recorded_at=NOW)
+    second_done = threading.Event()
+    first = _HoldingFirstLock(db, lambda: second_done.is_set() or _waiting_on_a_lock(db))
+    outcomes: dict[str, Outcome] = {}
+    errors: list[BaseException] = []
+
+    def build_first() -> None:
+        try:
+            outcomes["first"] = catch_up(first, first, CHRONICLE)
+        except BaseException as e:
+            errors.append(e)
+
+    def build_second() -> None:
+        try:
+            assert first.holding.wait(timeout=10)
+            outcomes["second"] = catch_up(storage, storage, CHRONICLE)
+        except BaseException as e:
+            errors.append(e)
+        finally:
+            second_done.set()
+
+    threads = [threading.Thread(target=build_first), threading.Thread(target=build_second)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+        assert not t.is_alive(), "thread is hanging"
+
+    assert errors == []
+    assert (outcomes["first"].rebuilt_from, outcomes["second"].rebuilt_from) == (0, None)
+    assert outcomes["first"].events + outcomes["second"].events == 2
+    assert _chronicle_keys(db) == [(1, 1), (1, 2), (2, 1), (2, 2)]
+
+
+def _catch_up_beside(db: Engine, other: ChronicleProjection | None) -> list[BaseException]:
+    """A catch-up of the chronicle from nothing, stopped between its first
+    transaction and its first batch; meanwhile, with `other`, a catch-up at
+    that projection's version runs to its end. Returns what the first
+    raised."""
+    with db.begin() as c:
+        c.execute(text("DELETE FROM p_chronicle"))
+        c.execute(text("DELETE FROM projection_state"))
+    storage = PostgresStorage(db)
+    first = _HoldingFirstLock(db, lambda: True, stop=2)
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            catch_up(first, first, CHRONICLE)
+        except BaseException as e:
+            errors.append(e)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert first.stopped.wait(timeout=10)
+    if other is not None:
+        assert catch_up(storage, storage, other).rebuilt_from == CHRONICLE.version
+    first.resume.set()
+    thread.join(timeout=20)
+    assert not thread.is_alive(), "thread is hanging"
+    return errors
+
+
+@pytest.mark.db
+def test_a_catch_up_stops_when_another_release_rebuilds_under_it(db: Engine) -> None:
+    """Between the first transaction of one catch-up and its first batch, a
+    catch-up at another version rebuilds the table. The first stops with a
+    sentence instead of projecting at a version the table no longer has, or
+    rebuilding back, which two releases would do to each other for good.
+    The control: the same pause without the other release ends normally.
+    Measured on 2026-10-05 with the batch checking only for a missing row:
+    the first raised nothing."""
+    append(PostgresStorage(db), [_raw(1, "email", NOW)], recorded_at=NOW)
+
+    assert _catch_up_beside(db, None) == []
+    (error,) = _catch_up_beside(db, ChronicleProjection(version=3))
+    assert isinstance(error, ProjectionRebuilt)
+    assert str(error) == (
+        "projection chronicle was rebuilt while this catch-up ran: it stands at "
+        "version 3, and this code declares version 2"
+    )

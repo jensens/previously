@@ -4,6 +4,7 @@
 from datetime import datetime
 from datetime import UTC
 from itertools import pairwise
+from previously.contract.types import BlobRef
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.contract.types import RawUnit
@@ -13,8 +14,9 @@ from previously.core.append import backoff_delay
 from previously.core.append import MAX_BATCH
 from previously.core.errors import BatchTooLarge
 from previously.core.errors import InvalidPayload
-from previously.core.hashing import payload_hash
+from previously.core.hashing import payload_hash_v2
 from previously.core.units import split_plaintext
+from previously.core.verify import verify
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import Engine
 from sqlalchemy import text
@@ -47,6 +49,23 @@ def test_the_first_event_is_genesis(db: Engine) -> None:
     with storage.begin() as c:
         row = next(iter(storage.read(c, from_id=1, limit=1)))
     assert row.prev_hash is None
+
+
+@pytest.mark.db
+def test_append_writes_version_2_with_a_salt_for_the_payload_and_each_unit(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    append(storage, [_event("a", "First.\n\nSecond.")], recorded_at=NOW)
+    with storage.begin() as c:
+        row = next(iter(storage.read(c, from_id=1, limit=1)))
+        units = storage.units(c, 1)
+    assert row.hash_version == 2
+    assert row.payload_salt is not None
+    assert len(row.payload_salt) == 32
+    assert len(units) == 2
+    for unit in units:
+        assert unit.digest is not None
+        assert unit.salt is not None
+        assert (len(unit.digest), len(unit.salt)) == (32, 32)
 
 
 @pytest.mark.db
@@ -227,8 +246,11 @@ def test_the_kind_of_evidence_lands_in_the_payload(db: Engine) -> None:
     assert row.payload["evidence"] == "verbatim"
     assert row.payload["note"] == "Hello"
     # The property that task 8 needs for the chain check: payload and
-    # payload_hash have to mean the same payload.
-    assert payload_hash(row.payload) == row.payload_hash
+    # payload_hash have to mean the same payload. Computed in the hash format
+    # `append` writes, which is version 2 since stage 1c, with the row's salt.
+    assert row.hash_version == 2
+    assert row.payload_salt is not None
+    assert payload_hash_v2(row.payload, row.payload_salt) == row.payload_hash
 
 
 @pytest.mark.db
@@ -244,6 +266,139 @@ def test_the_reserved_key_is_refused(db: Engine) -> None:
     )
     with pytest.raises(InvalidPayload, match="reserved"):
         append(storage, [event], recorded_at=NOW)
+
+
+# --- References to blobs ({ref}`blobs`) --------------------------------------
+
+_ADDRESS = "5" * 64
+
+
+def _with_blobs(*blobs: BlobRef, payload: dict[str, object] | None = None) -> RawEvent:
+    return RawEvent(
+        source="cli",
+        external_id="a",
+        occurred_at=OCCURRED,
+        evidence=Evidence.RECOLLECTION,
+        units=split_plaintext("Hello"),
+        payload={"note": "Hello"} if payload is None else payload,
+        blobs=blobs,
+    )
+
+
+def _register(db: Engine) -> list[tuple[int, bytes]]:
+    with db.connect() as c:
+        rows = c.execute(text("SELECT event_id, sha256 FROM event_blob ORDER BY 1, 2")).all()
+    return [(event_id, sha256) for event_id, sha256 in rows]
+
+
+@pytest.mark.db
+def test_blob_references_land_in_the_payload_and_in_the_register(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    reference = BlobRef(sha256=_ADDRESS, size=12, media_type="text/plain", filename="notes.txt")
+    append(storage, [_with_blobs(reference)], recorded_at=NOW)
+    with storage.begin() as c:
+        row = next(iter(storage.read(c, from_id=1, limit=1)))
+        registered = storage.blobs_by_event(c, [1])
+    assert row.payload is not None
+    assert row.payload["blobs"] == [
+        {"sha256": _ADDRESS, "size": 12, "media_type": "text/plain", "filename": "notes.txt"}
+    ]
+    assert registered == {1: [bytes.fromhex(_ADDRESS)]}
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_an_event_without_blobs_carries_no_blobs_key(db: Engine) -> None:
+    """Its payload is the one it would have had before blobs existed."""
+    storage = PostgresStorage(db)
+    append(storage, [_with_blobs()], recorded_at=NOW)
+    with storage.begin() as c:
+        row = next(iter(storage.read(c, from_id=1, limit=1)))
+    assert row.payload == {"note": "Hello", "evidence": "recollection"}
+    assert _register(db) == []
+
+
+@pytest.mark.db
+def test_the_key_blobs_is_reserved(db: Engine) -> None:
+    """Reserved like `evidence`, with or without attachments: a payload that
+    already carries the key is refused rather than overwritten, and nothing
+    is written."""
+    storage = PostgresStorage(db)
+    for blobs in ((), (BlobRef(sha256=_ADDRESS, size=1, media_type="text/plain"),)):
+        with pytest.raises(InvalidPayload) as caught:
+            append(storage, [_with_blobs(*blobs, payload={"blobs": []})], recorded_at=NOW)
+        assert str(caught.value) == (
+            "payload already carries the key 'blobs' — it is reserved for the attachments"
+        )
+    with storage.begin() as c:
+        assert storage.count_events(c) == 0
+
+
+@pytest.mark.db
+def test_the_same_content_twice_at_one_event_is_two_references_and_one_register_row(
+    db: Engine,
+) -> None:
+    """Review focus 3 of the 2026-10-04 stage 1c plan: two attachments of one
+    mail with the same content under two names. Two references, because each
+    names its use; one row, because the register answers which events use a
+    blob, and the primary key on `(event_id, sha256)` would refuse a second."""
+    storage = PostgresStorage(db)
+    append(
+        storage,
+        [
+            _with_blobs(
+                BlobRef(sha256=_ADDRESS, size=4, media_type="image/png", filename="logo.png"),
+                BlobRef(sha256=_ADDRESS, size=4, media_type="image/png", filename="logo-1.png"),
+            )
+        ],
+        recorded_at=NOW,
+    )
+    with storage.begin() as c:
+        row = next(iter(storage.read(c, from_id=1, limit=1)))
+    assert row.payload is not None
+    blobs = cast("list[dict[str, object]]", row.payload["blobs"])
+    assert [blob["filename"] for blob in blobs] == ["logo.png", "logo-1.png"]
+    assert _register(db) == [(1, bytes.fromhex(_ADDRESS))]
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("reference", "message"),
+    [
+        (
+            BlobRef(sha256="A" * 64, size=1, media_type="text/plain"),
+            "blob reference 1: sha256 is not 64 hexadecimal characters, lower case",
+        ),
+        (
+            BlobRef(sha256=_ADDRESS[:63], size=1, media_type="text/plain"),
+            "blob reference 1: sha256 is not 64 hexadecimal characters, lower case",
+        ),
+        (
+            BlobRef(sha256=_ADDRESS, size=-1, media_type="text/plain"),
+            "blob reference 1: size must be at least 0, is -1",
+        ),
+        (
+            BlobRef(sha256=_ADDRESS, size=1, media_type=""),
+            "blob reference 1: media_type is empty",
+        ),
+    ],
+    ids=["upper-case", "63-characters", "negative-size", "empty-media-type"],
+)
+def test_a_blob_reference_that_is_not_one_is_refused(
+    db: Engine, reference: BlobRef, message: str
+) -> None:
+    """The second reference is the broken one, behind a good one, so that the
+    index in the message is the reference's and not always 0. Refused before
+    anything reaches the store: no event and no register row."""
+    storage = PostgresStorage(db)
+    good = BlobRef(sha256="6" * 64, size=1, media_type="text/plain")
+    with pytest.raises(InvalidPayload) as caught:
+        append(storage, [_with_blobs(good, reference)], recorded_at=NOW)
+    assert str(caught.value) == message
+    with storage.begin() as c:
+        assert storage.count_events(c) == 0
+    assert _register(db) == []
 
 
 # --- Finding W3: backing off between the attempts ------------------------
@@ -362,6 +517,30 @@ def test_a_null_byte_in_a_unit_is_refused(db: Engine) -> None:
     )
     with pytest.raises(InvalidPayload, match=r"unit 1 contains a null byte"):
         append(storage, [event], recorded_at=NOW)
+
+
+@pytest.mark.db
+def test_a_lone_surrogate_in_a_unit_is_refused_by_name(db: Engine) -> None:
+    """The message names the unit, as for a null byte, before anything is
+    written. Measured on 2026-10-05 with the check in `_check_units`
+    removed: the unit digest refused it as `$.content: string not
+    representable as UTF-8 ...`, which names no unit."""
+    storage = PostgresStorage(db)
+    event = RawEvent(
+        source="cli",
+        external_id="a",
+        occurred_at=OCCURRED,
+        evidence=Evidence.RECOLLECTION,
+        units=(RawUnit(seq=1, content="before\ud800after"),),
+        payload={},
+    )
+    with pytest.raises(
+        InvalidPayload,
+        match=r"^unit 1: not representable as UTF-8 \(surrogates not allowed\)",
+    ):
+        append(storage, [event], recorded_at=NOW)
+    with storage.begin() as conn:
+        assert storage.tip(conn) is None
 
 
 @pytest.mark.db

@@ -1,9 +1,9 @@
 [importlinter]
 root_package = previously
-# Three of the four contracts forbid external packages (sqlalchemy, psycopg,
-# alembic, anthropic, openai). import-linter requires this setting for that,
-# otherwise it aborts with a configuration error — it is not a loosening of
-# the contracts themselves.
+# Five of the six contracts forbid external packages (sqlalchemy, psycopg,
+# alembic, anthropic, openai, pyrage, boto3, botocore). import-linter requires
+# this setting for that, otherwise it aborts with a configuration error — it
+# is not a loosening of the contracts themselves.
 include_external_packages = True
 
 [importlinter:contract:layers]
@@ -73,3 +73,38 @@ source_modules =
 forbidden_modules =
     anthropic
     openai
+
+[importlinter:contract:only-sealing-knows-age]
+name = Only core.sealing imports pyrage
+type = forbidden
+source_modules =
+    previously
+forbidden_modules =
+    pyrage
+ignore_imports =
+    previously.core.sealing -> pyrage
+# Sealing happens where the rules are, in `core`, so that the store below
+# gets and gives ciphertext only: a module in `storage` that could open what
+# it stores is the mistake this contract exists to catch. The whole package
+# is the source, and the one edge that may exist is named — never a pattern,
+# for the reason `core-is-clean` gives. Should `core.sealing` stop importing
+# `pyrage`, `lint-imports` fails with "No matches for ignored import"
+# (measured on 2026-10-05), so the exemption cannot outlive its edge.
+
+[importlinter:contract:only-s3-knows-boto3]
+name = Only storage.s3 imports boto3
+type = forbidden
+source_modules =
+    previously
+forbidden_modules =
+    boto3
+    botocore
+ignore_imports =
+    previously.storage.s3 -> boto3
+    previously.storage.s3 -> botocore
+# Storing happens where the foreign systems are, in `storage`, the way SQL
+# stays in `storage.postgres`: what reaches `core` is the protocol in
+# `contract.blobs` and the errors in `storage.errors`, no `botocore` type.
+# `botocore` is forbidden beside `boto3` because the exceptions and the
+# client configuration come from there, and an import of either would carry
+# the foreign system upwards. Two named edges, out of one module.

@@ -21,7 +21,7 @@ Record your first event and verify the chain.
 
 **How-to guides**
 ^^^
-Solve a specific problem: restore a backup, add a migration, rebuild a projection, check the chain in operation.
+Solve a specific problem: erase something from the log, attach a file and fetch it again, keep the blob key safe, run a blob store on your machine, check the chain in operation, restore a backup, add a migration, rebuild a projection.
 :::
 
 :::{grid-item-card}
@@ -39,7 +39,7 @@ Look up a command, a configuration variable, a column, or the hash format.
 
 **Explanation**
 ^^^
-Understand why the chain hashes a digest, why there is no sequence, and what the chain doesn't cover.
+Understand why the chain hashes a digest, why there is no sequence, and what the chain doesn't cover; how an erasure works as an event, and what it can't reach; and how blobs are addressed, sealed and kept.
 :::
 ::::
 

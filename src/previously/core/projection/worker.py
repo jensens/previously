@@ -13,6 +13,7 @@ from previously.contract.rows import EventRow
 from previously.contract.rows import ProjectionState
 from previously.contract.rows import UnitRow
 from previously.core.errors import ProjectionGap
+from previously.core.errors import ProjectionRebuilt
 from typing import Protocol
 from typing import TYPE_CHECKING
 
@@ -101,9 +102,18 @@ def catch_up[Conn](
         # and the loop below would report a gap in the log that is not there.
         raise ValueError(f"batch_size must be at least 1, got {batch_size}")
 
+    # Every transaction below starts by locking the state row and takes
+    # `up_to_id` and the version from it, never from the transaction before.
+    # Two catch-ups of one projection, a scheduled `project` and the one
+    # every `redact` runs, then take turns batch by batch, and each starts
+    # where the other committed. Measured on 2026-10-05 with `up_to_id` kept
+    # in memory instead: one catch-up read an event, a redaction of it
+    # committed, another event was appended, and both catch-ups committed;
+    # the chronicle kept the erased text at an `up_to_id` past the
+    # redaction, and the next catch-up called it up to date.
     rebuilt_from: int | None = None
     with store.begin() as conn:
-        state = store.projection_state(conn, projection.name)
+        state = store.lock_projection_state(conn, projection.name)
         if state is None or state.version != projection.version:
             # `!=` and not `<`: a rolled-back release derives differently from
             # the table it meets, in either direction.
@@ -115,6 +125,15 @@ def catch_up[Conn](
     processed = 0
     while True:
         with store.begin() as conn:
+            state = store.lock_projection_state(conn, projection.name)
+            if state is None or state.version != projection.version:
+                found = (
+                    "has no state row" if state is None else f"stands at version {state.version}"
+                )
+                raise ProjectionRebuilt(
+                    f"projection {projection.name} was rebuilt while this catch-up ran: "
+                    f"it {found}, and this code declares version {projection.version}"
+                )
             tip = log.tip(conn)
             if tip is None or tip.id <= state.up_to_id:
                 break

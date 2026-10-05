@@ -46,3 +46,85 @@ class ProjectionGap(PreviouslyError):
     `up_to_id` 4 the worker projected 6 to 10 and stored `up_to_id = 10` —
     exactly what this type says it refuses.
     """
+
+
+class ProjectionRebuilt(PreviouslyError):
+    """The state row of a projection changed its version, or vanished, while
+    a catch-up of it ran ({ref}`projections`).
+
+    Only another release does that: a catch-up at a different version
+    rebuilds the table between two batches of this one. Raised rather than
+    rebuilt over in turn, because two releases that each rebuilt whenever
+    they met the other's version would take turns at the lock and never
+    finish; this one stops, and the other carries its build to the end.
+    """
+
+
+class RedactionRefused(PreviouslyError):
+    """An erasure that cannot be carried out as asked ({ref}`erasure`).
+
+    Raised before anything is written: the target does not exist, is itself a
+    redaction, names a unit it does not have, or was written in a hash format
+    that cannot attest part of its units. The command line shows the one
+    sentence and returns 2, like every other `PreviouslyError`.
+    """
+
+
+class BlobError(PreviouslyError):
+    """Root of what can go wrong between a content and its sealed object
+    ({ref}`blobs`). Raised as itself when `pyrage` refuses to seal, which it
+    does when the source breaks off while it is being read.
+
+    No message of this family names an identity: an identity is the secret
+    half of a key, and a message ends up on a terminal and in a log.
+    """
+
+
+class InvalidKey(BlobError, ValueError):
+    """A recipient or an identity is not an age X25519 key.
+
+    A malformed recipient is named in the message, since a recipient is
+    public. A malformed identity is not: what stands in its place may be a
+    real identity with a typo in it.
+    """
+
+
+class CannotOpen(BlobError):
+    """A sealed object cannot be opened: it names no key, no identity for its
+    key is at hand, the identity belongs to another key, or `age` refuses it
+    — the wrong identity, or bytes that are not an age file."""
+
+
+class SourceUnreadable(BlobError):
+    """The content to be stored could not be read: the source raised an
+    `OSError` while it was hashed or sealed. `reason` is the system's
+    description of the failure, which a caller that knows the source's name
+    puts beside it; the source itself says nothing about its name."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"the content cannot be read: {reason}")
+        self.reason = reason
+
+
+class SinkUnwritable(BlobError):
+    """What sealing or opening writes into could not take it: the sink
+    raised an `OSError`. `reason` is the system's description of the
+    failure, which a caller that knows the sink's name puts beside it."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"the output cannot be written: {reason}")
+        self.reason = reason
+
+
+class AddressMismatch(BlobError):
+    """An object opened, and its plaintext is not the content its address
+    names. The bytes written so far are to be thrown away."""
+
+
+def reason_of(error: OSError) -> str:
+    """The system's description of an `OSError`, for the sentence that
+    names it: `strerror` when it has an error number, its own text when it
+    was raised without one, and its class when it has neither. An `OSError`
+    raised without an error number has `strerror` set to `None`, which would
+    print as the word."""
+    return error.strerror or str(error) or type(error).__name__

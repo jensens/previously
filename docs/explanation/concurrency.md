@@ -4,8 +4,8 @@
 
 Two processes read the same chain tip, derive the same `id` and the same `prev_hash` from it, and both try to write the event that follows.
 One of them has to lose, and the whole of what makes it lose is two unique indexes.
-There's no advisory lock in Previously, no `SELECT … FOR UPDATE`, and no coordination between processes of any kind.
-{ref}`database-schema` names the indexes; this page says why two of them are enough, what the loser does afterward, and why one of the two recoveries behaves differently from the way the specification first described it.
+No advisory lock decides the chain position, no `SELECT … FOR UPDATE` on the tip, and no coordination between processes of any kind.
+{ref}`database-schema` names the indexes; this page says why two of them are enough, what the loser does afterward, why one of the two recoveries behaves differently from the way the specification first described it, and what the two kinds of row lock in the system are for: an erasure's lock on event rows, and a catch-up's lock on the state row of a projection.
 
 ## The indexes are the serialization
 
@@ -58,6 +58,48 @@ After the eighth attempt `append` raises `ChainConflict` instead of spinning.
 
 That a lost race costs nothing but time is a consequence of where the `id` comes from.
 Whoever loses the chain position consumed no number, so a retry leaves no gap behind to explain; {ref}`hash-chain` carries that argument in full, including why a sequence would have been worse.
+
+## Two write paths on one chain
+
+Since stage 1c two paths write to the chain: `append` writes observations, and an erasure writes its redaction event, which {ref}`erasure` describes.
+Both read the tip the same way, derive `id` and `prev_hash` from it, and let the same two indexes decide who gets the position.
+An erasure that loses the race loses it at the insert of its redaction, before it has set a single tombstone, so the rollback undoes no more than its lock and its reads.
+It backs off with the same jitter and starts over from the lock, up to the same eight attempts.
+The tombstones are set by the attempt that wins a position, or by one that needs none, because a redaction already covers its target and it writes no event.
+So a redaction racing an append ends the way two appends do: both events stand, one after the other, on one chain.
+
+That holds for the chain, and the blob store is outside it.
+An `append --attach` that finds the object of its content already in the store doesn't upload it again.
+If a `redact` of the last event that used that content commits in the meantime, it deletes the object after its transaction, and the new event names a blob the store no longer holds.
+Nothing prevents that: the store takes part in neither transaction, and a lock in the database can't hold an object in a bucket.
+`verify --blobs` reports the blob as missing afterward.
+Attaching the same file again to any event stores it again, because `append` asks the store whether the object is there, not the register.
+
+An erasure takes one lock that `append` doesn't, and the lock isn't on the tip.
+It locks event rows with `SELECT … FOR NO KEY UPDATE` before it reads which redactions exist: the row of its target event, for `redact event` and `redact units`, and for `redact blob`, whose target is a blob and has no row of its own, the rows of the events that use it.
+That mode conflicts with itself, so two erasures that lock one row still take turns, and it doesn't conflict with the key-share lock that a foreign-key check takes on the row it references.
+Every row a catch-up writes into a projection table references an event, so with `FOR UPDATE` a catch-up and an erasure would wait for each other.
+Two erasures of the same target then run one after the other, and the second, once it holds the lock, sees the redaction the first one wrote and writes none of its own.
+Without the lock both would read before either had committed, find nothing, and both write a redaction for the same target.
+
+An erasure of an event with attachments locks more than its target: every event that uses one of its blobs, in ascending order of `id`, and `redact blob` locks the events of its blob in the same order.
+Two erasures of different events that share a blob then run one after the other as well, and the second sees the first one's redaction when it decides whether the blob still has to lie in the store.
+Without that, each could read the redactions before the other had committed and keep the blob for the other's sake, and nothing would ever delete it.
+The race between them on the chain position doesn't settle that: an erasure that reads the redactions before the other commits and the tip after it wins its position all the same.
+The ascending order is what keeps two such erasures from each holding a row the other waits for.
+
+The lock decides nothing about the chain position, and an append never asks for it.
+Two erasures wait for each other when the sets of rows they lock overlap.
+For `redact units` the set is its target event, for `redact event` its target event and every event that uses one of that event's blobs, and for `redact blob` exactly the events that use the blob.
+So two erasures can wait for each other without sharing a target or a blob: one erasing an event that shares a blob with event 2, the other erasing an event that shares another blob with event 2, both lock event 2.
+A `redact units` locks only its target, and still waits behind an erasure whose set holds that event.
+
+The second kind of row lock isn't on the log.
+A catch-up of a projection locks the projection's row in `projection_state` at the start of each of its transactions, and reads its bookmark and its version from the locked row.
+Two catch-ups of one projection, a scheduled `project` and the catch-up every `redact` runs, then take turns batch by batch, and each starts where the other committed.
+Without it, the two were measured to leave erased text in the chronicle for good, and {ref}`catch-up-lock` gives that interleaving.
+That lock and an erasure's never wait for each other: a catch-up reads the log without a lock, and the only lock it takes on an event row is the key-share lock of a foreign-key check, which `FOR NO KEY UPDATE` lets through.
+A catch-up that finds the state row at another version of the code stops with an error rather than rebuilding in turn, which {ref}`catch-up-lock` explains as well.
 
 ## The index clause that isn't optional
 

@@ -18,6 +18,14 @@ import re
 _SEPARATOR = re.compile(r"\n[ \t]*\n[\s]*")
 
 
+def normalize_line_endings(text: str) -> str:
+    """Every line ending as `\\n`: first the pair `\\r\\n`, then the single
+    `\\r`. `split_plaintext` applies it before it splits, and an erasure of
+    units applies it before it looks for a unit's wording in a payload, so
+    that both read a text the same way."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def split_plaintext(text: str) -> tuple[RawUnit, ...]:
     """Plain text: split at blank lines, strip the edges, number from 1.
 
@@ -29,7 +37,7 @@ def split_plaintext(text: str) -> tuple[RawUnit, ...]:
     standing in the content, the same text with LF and with CRLF endings would
     yield different contents and therefore different hashes.
     """
-    normalized = text.replace("\r\n", "\n").replace("\r", "\n")
+    normalized = normalize_line_endings(text)
     parts = (part.strip() for part in _SEPARATOR.split(normalized))
     units = tuple(RawUnit(seq=i, content=part) for i, part in enumerate((p for p in parts if p), 1))
     if not units:

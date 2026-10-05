@@ -47,6 +47,10 @@ not appear in it at all.
 | `sphinxcontrib-mermaid` | Renders the four Mermaid diagrams (see the plan's Diagrams section) | — | 2026-10-03, active — last release 2026-09-01, repository pushed 2026-10-01 |
 | `vale` | Checks style and American English | — | 2026-10-03, active — last release 2026-09-18 |
 | `linkify-it-py` | Turns bare URLs into links; `conf.py`'s `myst_enable_extensions` turns on `linkify`, and markdown-it-py's linkify rule raises `ModuleNotFoundError` without this installed | — | 2026-10-03, active — last release 2026-08-29, repository pushed the same day, not archived |
+| `boto3` | The S3 client in `storage/s3.py`, the one module allowed to import it ([About blobs](docs/explanation/blobs.md)) | the MinIO Python SDK: last release 7.2.20 on 2025-11-27, and the server project it belongs to, `minio/minio`, is archived (checked 2026-10-05) | 2026-10-05, active — 1.43.108 on 2026-10-02, a release on each of the four working days before it; repository `boto/boto3` pushed 2026-10-02, not archived. Brings `botocore` (same day), `s3transfer` (0.19.2, 2026-07-22) and `jmespath` (1.1.0, 2026-01-22) |
+| `pyrage` | Seals and opens blobs in the `age` format in `core/sealing.py`, the one module allowed to import it | `cryptography` with AES-GCM in one piece holds the plaintext, the ciphertext and the opened copy at once and stops at 2 GiB — measured on 2026-10-05 with `docs/superpowers/plans/2026-10-04-stufe-1c-anlagen/measure_gcm.py`: a peak of 793 MiB at 256 MiB, and at 2048 MiB `OverflowError: Data or associated data too long. Max 2**31 - 1 bytes`; with a chunked scheme of our own it would be security-critical code and a format of our own; Tink pulls in `protobuf`, `absl-py` and `bazel-runfiles` | 2026-10-05, **released rarely, judgement: acceptable because the format carries it** — 1.4.0 on 2026-08-23, before that 2025-06-14 and 2025-04-02; one maintainer; repository `woodruffw/pyrage` pushed 2026-09-30, last commit 2026-09-27, not archived, MIT. A thin binding to the Rust crate `age` (0.12.1, per the wheel's SBOM), with no Python dependencies and `abi3` wheels from Python 3.10. The judgement rests on the **format, not on the binding**: should the binding be orphaned, every other `age` implementation — the `age` tool, `rage` — still reads the blobs |
+| `pyrage-stubs` | Types for `pyrage`, for pyright strict; the wheel of `pyrage` ships no `py.typed` and no `.pyi` (checked against its `RECORD`) | — | 2026-10-05, active — 1.4.0 on 2026-08-23, the same day as `pyrage` 1.4.0, out of the same repository; MIT. Only for type checking |
+| `types-boto3-lite[s3]` | Types for `boto3` and its S3 client, for pyright strict; neither `boto3` nor `botocore` ships a `py.typed` | `types-boto3[s3]`, the full flavor: under strict mode `boto3.client` is "partially unknown" with it, because its overloads point into the unknown for every service that is not installed; with `lite` and `pyrage-stubs` pyright reports nothing. Both halves are the measurement of 2026-10-04 against a draft of the adapter, recorded in the header of `docs/superpowers/plans/2026-10-04-stufe-1c-anlagen/blob_spike.py`; not repeated here. What was measured on 2026-10-05 is only that the tree, with `lite`, reports 0 errors under strict mode | 2026-10-05, active — 1.43.108 on 2026-10-02, generated daily; MIT. Brings `types-boto3-s3` (1.43.106, 2026-09-30), `botocore-stubs` (1.43.67, 2026-08-08) and `types-s3transfer` (0.16.0, 2025-12-08). Only for type checking |
 
 **Not in the plan's dependency table.** `linkify-it-py` is the eighth new
 dependency, found by running `make -C docs html`, not by review: the
@@ -55,6 +59,19 @@ installed.` The plan's table in task 1, step 2 covers seven packages and
 says they were already checked; this one was checked the same way and on
 the same day, for the same reason it was missing — running the build is
 what surfaced it.
+
+**`rustfs/rustfs:1.0.1` is no package, and a dependency of the tests all the
+same.** `tests/conftest.py` starts it as the S3 server the blob tests run
+against, through the generic container of the `testcontainers` already
+listed, with no module of its own; the image is named there as a literal, like
+`postgres:17`. Checked on 2026-10-05: the tag was pushed to Docker Hub on
+2026-10-03; the repository `rustfs/rustfs` is Apache-2.0, pushed 2026-10-04
+and not archived. A release two days old is enough for tests, and measured it
+carries the whole blob path. The store of the operation is a different one —
+an S3 service of the hosting provider —, and what is different there only
+operation will show. MinIO, the obvious choice, is out: checked on
+2026-10-05, its repository `minio/minio` is archived and Docker Hub answers
+404 for its image `minio/minio`.
 
 **`vale` is a wrapper, not the tool.** The PyPI package is a shell that fetches
 the Go binary; its version encodes the Vale version (`3.22.0.0` → Vale

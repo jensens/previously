@@ -32,16 +32,18 @@ See {ref}`cli-reference` for the four outcomes and their exact wording.
 
 Raise the projection's version in the code whenever you change how its rows are derived.
 `ChronicleProjection.version` in `src/previously/core/projection/chronicle.py` carries the chronicle's version, and `SourceStatsProjection.version` in `src/previously/core/projection/source_stats.py` carries the statistics' version.
-Read the current value there.
+Read the current value there, and raise it by one.
+For a chronicle at version 2, the line becomes this one:
 
 ```python
-version: int = 2
+version: int = 3
 ```
 
 Then run `previously project`.
 It empties that projection's table and builds it again from the log.
 The line for the projection you raised begins with `rebuilt:`, names the version it moved from and to, and ends with the number of events projected and the new `up_to_id`.
 The line for the projection you left alone reports `up to date`.
+If `previously redact` runs before `previously project` does, it catches the projections up itself, and prints the same `rebuilt:` line on standard error.
 
 A raised version rebuilds the rows and leaves the table's columns and indexes as they are.
 If your change needs a column that isn't there yet, write a migration for it as well; see {ref}`add-a-migration`.
@@ -64,10 +66,24 @@ The line for the other projection again reports `up to date`.
 
 :::{warning}
 The `DELETE` drops the bookmark and leaves the rows of `p_chronicle` standing.
-Until the next `previously project`, `previously chronicle` prints those old rows and reports the whole log as its lag.
+Until the next `previously project`, or a `previously redact`, which catches up as well, `previously chronicle` prints those old rows and reports the whole log as its lag.
 `previously project` then empties the table in its first transaction and fills it batch by batch, so a `previously chronicle` run during a long rebuild sees a partial chronicle, with the lag line saying how far the rebuild has come.
 :::
 
 To force the statistics the same way, use `'source-stats'` in place of `'chronicle'` in the `DELETE`.
+
+A `previously project` or `previously redact` whose next batch starts after your `DELETE` commits stops with exit code 2 and a sentence that the projection `has no state row`; run it again once the `DELETE` is done.
+
+## When a catch-up says that the projection was rebuilt while it ran
+
+If `previously project`, or a `previously redact` in the sentence of an unfinished redaction, reports that a projection `was rebuilt while this catch-up ran: it stands at version <n>`, another version of the code is catching up the same database.
+Each release rebuilds the table to its own version whenever it finds another, so the two undo each other's work.
+
+1.  Find the process of the release that isn't meant to run against this database, such as a scheduled `previously project` of the old or the new version, and stop it.
+2.  Run `previously project` again with the release meant to run against this database.
+    Its line for that projection begins with `rebuilt:` if the other release left the table at its own version.
+3.  If the error came from `previously redact`, run the same `redact` command again with that release; it finds its target covered and finishes.
+
+For the wording of the error, see {ref}`cli-reference`.
 
 For why a rebuild yields the same rows as the incremental path, see {ref}`projections`.

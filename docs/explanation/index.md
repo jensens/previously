@@ -6,6 +6,8 @@ Understand the decisions behind the log and what it doesn't promise.
 :maxdepth: 1
 
 hash-chain
+erasure
+blobs
 canonicalization
 concurrency
 module-boundaries

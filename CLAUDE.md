@@ -16,7 +16,7 @@ repository root — `pyproject.toml`, `.importlinter`, `alembic.ini`,
 `.pre-commit-config.yaml`, `.vale.ini`, `.gitignore` — comments included.
 
 Root configuration is not a borderline case, because much of it **is program
-output or published metadata**: the four contract names in `.importlinter` are
+output or published metadata**: the six contract names in `.importlinter` are
 printed by the `lint-imports` gate, `markers` in `pyproject.toml` shows up in
 `pytest --markers`, and `description` is the package metadata that gets
 published.

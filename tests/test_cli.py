@@ -1,26 +1,54 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from contextlib import contextmanager
 from datetime import datetime
 from datetime import UTC
 from previously.cli import COMMANDS
 from previously.cli import escape_field
 from previously.cli import main
 from previously.cli import MAX_TEXT_BYTES
+from previously.cli import media_type_of
 from previously.cli import parse_moment
 from previously.contract.rows import EventRow
+from previously.contract.rows import ProjectionState
 from previously.contract.rows import UnitRow
+from previously.contract.types import BlobRef
+from previously.contract.types import Evidence
+from previously.contract.types import RawEvent
+from previously.core.append import append
 from previously.core.errors import InvalidPayload
+from previously.core.projection import catch_up
+from previously.core.projection import CHRONICLE
+from previously.core.redact import redact_blob
+from previously.core.redact import redact_event
+from previously.core.sealing import recipient_of
+from previously.core.sealing import seal
+from previously.core.units import split_plaintext
 from previously.storage.postgres import PostgresStorage
 from typing import TYPE_CHECKING
 
+import hashlib
 import io
+import os
 import pytest
 import re
 import sys
+import threading
+import time
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from collections.abc import Generator
+    from collections.abc import Sequence
+    from previously.contract.blobs import ClosableSource
+    from previously.contract.blobs import StoredBlob
+    from previously.storage.s3 import S3BlobStore
+    from sqlalchemy import Connection
+    from sqlalchemy import Engine
+    from typing import IO
+
     import pathlib
 
 
@@ -147,8 +175,11 @@ def test_show_displays_the_evidence_and_the_payload(
     output = capsys.readouterr().out
     assert "evidence=verbatim" in output
     # The payload as canonical-ish JSON with sorted keys, so the line is
-    # stable: jsonb does not give the keys back in the order written.
-    assert 'payload={"evidence": "verbatim", "text": "Hello"}' in output
+    # stable: jsonb does not give the keys back in the order written. The
+    # text is in the units alone: `append --text` adds nothing to the payload
+    # but the kind of evidence. Measured on 2026-10-05 with the text copied
+    # into the payload again: this comparison failed.
+    assert 'payload={"evidence": "verbatim"}\n  ¶1 Hello\n' in output
 
 
 @pytest.mark.db
@@ -158,7 +189,9 @@ def test_show_says_so_when_the_payload_is_erased(
     """The tombstone has neither payload nor kind of evidence
     ({ref}`tombstone-seam`). `show` has to say that rather than print an
     empty line — and it must not crash on `None`, which is the branch a plain
-    `payload.get(...)` would have fallen into."""
+    `payload.get(...)` would have fallen into. Forged with plain SQL, the
+    tombstone has no redaction to name, and the line stays `payload=<erased>`
+    ({ref}`erasure`)."""
     from sqlalchemy import Engine
     from sqlalchemy import text
 
@@ -167,12 +200,38 @@ def test_show_says_so_when_the_payload_is_erased(
     assert main(["append", "--source", "cli", "--external-id", "a", "--text", "Hello"]) == 0
     capsys.readouterr()
     with db.begin() as c:
-        c.execute(text("UPDATE event SET payload = NULL WHERE id = 1"))
+        # The salt goes with the payload, or `event_payload_salt_check`
+        # refuses the statement (ruling P-1 of the 2026-10-04 stage 1c plan).
+        c.execute(text("UPDATE event SET payload = NULL, payload_salt = NULL WHERE id = 1"))
 
     assert main(["show", "1"]) == 0
     output = capsys.readouterr().out
     assert "payload=<erased>" in output
     assert "evidence=" not in output
+
+
+@pytest.mark.db
+def test_show_says_so_when_a_unit_is_erased(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A unit without content prints as erased, and its neighbour as before.
+    The tombstone is forged with plain SQL here, so no redaction ordered it,
+    and `show` says `<erased>` without naming one ({ref}`erasure`)."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
+    assert main(["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"]) == 0
+    capsys.readouterr()
+    with db.begin() as c:
+        c.execute(
+            text("UPDATE unit SET content = NULL, salt = NULL WHERE event_id = 1 AND seq = 1")
+        )
+
+    assert main(["show", "1"]) == 0
+    output = capsys.readouterr().out
+    assert "  ¶1 <erased>\n  ¶2 Two\n" in output
 
 
 @pytest.mark.db
@@ -470,7 +529,7 @@ def test_show_does_not_display_the_next_event_instead(
         ("--source", "\x00", "source contains a null byte"),
         ("--external-id", "\ud800", "external_id: not representable as UTF-8"),
         ("--external-id", "\x00", "external_id contains a null byte"),
-        ("--text", "\ud800", "$.text: string not representable as UTF-8"),
+        ("--text", "\ud800", "unit 1: not representable as UTF-8"),
         # The text becomes units before it becomes a payload, so the unit
         # check gets there first. That message is pinned in
         # `test_append.py::test_a_null_byte_in_a_unit_is_refused`; what is new
@@ -556,10 +615,10 @@ def test_project_on_an_empty_log_is_up_to_date_at_zero_but_still_names_a_rebuild
     ]
 
     with db.begin() as c:
-        c.execute(text("UPDATE projection_state SET version = 2 WHERE name = 'chronicle'"))
+        c.execute(text("UPDATE projection_state SET version = 3 WHERE name = 'chronicle'"))
     assert main(["project"]) == 0
     assert capsys.readouterr().out.splitlines() == [
-        "chronicle       rebuilt: version 2 -> 1, 0 events, up_to_id 0",
+        "chronicle       rebuilt: version 3 -> 2, 0 events, up_to_id 0",
         "source-stats    up to date, up_to_id 0",
     ]
 
@@ -611,12 +670,12 @@ def test_project_says_which_path_it_took(
     # reference page promises and nothing produces. `source-stats` is left
     # alone, so the two projections report different paths in the same run.
     with db.begin() as c:
-        c.execute(text("UPDATE projection_state SET version = 2 WHERE name = 'chronicle'"))
+        c.execute(text("UPDATE projection_state SET version = 3 WHERE name = 'chronicle'"))
     capsys.readouterr()
     assert main(["project"]) == 0
     fourth = capsys.readouterr().out.splitlines()
     assert fourth == [
-        "chronicle       rebuilt: version 2 -> 1, 2 events, up_to_id 2",
+        "chronicle       rebuilt: version 3 -> 2, 2 events, up_to_id 2",
         "source-stats    up to date, up_to_id 2",
     ]
 
@@ -1150,3 +1209,1818 @@ def test_the_help_names_exactly_the_commands_of_the_sequence(
     assert listed.group(1).split(",") == [command.name for command in COMMANDS]
     for command in COMMANDS:
         assert re.search(rf"^    {command.name} +{re.escape(command.help)}$", out, re.MULTILINE)
+
+
+# --- redact ({ref}`erasure`) -------------------------------------------------
+
+# The `write_version_1` fixture from `conftest.py`, under a `type` alias for
+# the reason its docstring gives.
+type WriteVersion1 = Callable[[PostgresStorage, Sequence[RawEvent], datetime], list[int]]
+
+
+def _connect(db: object, monkeypatch: pytest.MonkeyPatch) -> Engine:
+    from sqlalchemy import Engine
+
+    assert isinstance(db, Engine)
+    monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
+    return db
+
+
+@pytest.mark.db
+def test_redact_event_prints_the_redaction_and_show_names_it(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _connect(db, monkeypatch)
+    assert main(["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"]) == 0
+    capsys.readouterr()
+
+    # Nothing was projected before, so the catch-up after the redaction
+    # builds both projections and says so on standard error.
+    assert main(["redact", "event", "1", "--reason", "wrong recipient"]) == 0
+    out, err = capsys.readouterr()
+    assert (out, err) == (
+        "redacted by event 2\n",
+        "chronicle       built: 2 events, up_to_id 2\n"
+        "source-stats    built: 2 events, up_to_id 2\n",
+    )
+
+    assert main(["show", "1"]) == 0
+    output = capsys.readouterr().out
+    assert (
+        "payload=<erased by event 2>\n  ¶1 <erased by event 2>\n  ¶2 <erased by event 2>\n"
+        in output
+    )
+    assert "evidence=" not in output
+
+    assert main(["show", "2"]) == 0
+    output = capsys.readouterr().out
+    assert "id=2 kind=action" in output
+    assert (
+        'payload={"action": "redaction", "reason": "wrong recipient", "scope": "event", '
+        '"target": {"blobs": [], "event": 1}}'
+    ) in output
+    assert "evidence=" not in output
+    assert main(["verify"]) == 0
+
+
+def _payload_standing(event_id: int) -> str:
+    return (
+        f"the payload of event {event_id} is not erased and holds the wording of an "
+        f"erased unit; `previously redact event {event_id}` erases it\n"
+    )
+
+
+def _append_with_text_in_payload(engine: Engine, text_: str) -> None:
+    """Event 1, written through `core` with its text in the units and, which
+    `append --text` does not write, under `text` in the payload as well."""
+    append(
+        PostgresStorage(engine),
+        [
+            RawEvent(
+                source="cli",
+                external_id="a",
+                occurred_at=datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC),
+                evidence=Evidence.RECOLLECTION,
+                units=split_plaintext(text_),
+                payload={"text": text_},
+            )
+        ],
+        recorded_at=datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC),
+    )
+
+
+@pytest.mark.db
+def test_redact_units_on_an_event_of_append_leaves_no_text_and_says_nothing(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`append --text` writes the text into the units alone, so `redact
+    units` erases it, `show` no longer has it anywhere, and no notice about
+    the payload comes. Measured on 2026-10-05 with the text copied into the
+    payload again: the notice came."""
+    _connect(db, monkeypatch)
+    submit = ["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"]
+    assert main(submit) == 0
+    assert main(["project"]) == 0
+    capsys.readouterr()
+
+    assert main(["redact", "units", "1", "2", "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("redacted by event 2\n", "")
+
+    assert main(["show", "1"]) == 0
+    output = capsys.readouterr().out
+    assert 'payload={"evidence": "recollection"}\n  ¶1 One\n  ¶2 <erased by event 2>\n' in output
+    assert "Two" not in output
+
+
+@pytest.mark.db
+def test_redact_units_says_when_the_payload_holds_the_wording(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A payload that holds the wording of an erased unit keeps it after
+    `redact units`. Standard output keeps its one line and the exit code
+    stays 0; the notice on standard error says so. A rerun that finds the
+    units covered has no wording left to compare and says nothing. The
+    control: once `redact event` has erased the payload, `redact units` on
+    the same event prints no such notice either. Measured on 2026-10-05
+    with `payload_holds_wording` always `False`: the first comparison
+    failed; always `True`: the second."""
+    engine = _connect(db, monkeypatch)
+    _append_with_text_in_payload(engine, "One\n\nTwo")
+    assert main(["project"]) == 0
+    capsys.readouterr()
+
+    assert main(["redact", "units", "1", "2", "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("redacted by event 2\n", _payload_standing(1))
+    assert main(["redact", "units", "1", "2", "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("already redacted by event 2\n", "unit 2 was already erased\n")
+
+    assert main(["show", "1"]) == 0
+    assert '"text": "One\\n\\nTwo"' in capsys.readouterr().out
+
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    capsys.readouterr()
+    assert main(["redact", "units", "1", "1", "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("already redacted by event 3\n", "unit 1 was already erased\n")
+
+
+@pytest.mark.db
+def test_redact_units_names_each_tombstone(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Each erased unit names the redaction that ordered it, and the payload
+    and the unit left standing print as before."""
+    engine = _connect(db, monkeypatch)
+    _append_with_text_in_payload(engine, "One\n\nTwo\n\nThree")
+    assert main(["redact", "units", "1", "3", "--reason", "r"]) == 0
+    assert main(["redact", "units", "1", "1", "3", "--reason", "r"]) == 0
+    out, err = capsys.readouterr()
+    assert out == "redacted by event 2\nredacted by event 3\n"
+    # The first `redact` builds the projections, which nobody had built; the
+    # second only catches up and says nothing about it. Both say that the
+    # payload, which holds the whole text under `text`, holds the wording of
+    # a unit they erased: unit 3 in the first, unit 1 in the second.
+    standing = _payload_standing(1)
+    assert err == (
+        "chronicle       built: 2 events, up_to_id 2\n"
+        "source-stats    built: 2 events, up_to_id 2\n"
+        f"{standing}"
+        "unit 3 was already erased\n"
+        f"{standing}"
+    )
+
+    assert main(["show", "1"]) == 0
+    output = capsys.readouterr().out
+    assert "evidence=recollection" in output
+    assert "  ¶1 <erased by event 3>\n  ¶2 Two\n  ¶3 <erased by event 2>\n" in output
+
+
+@pytest.mark.db
+def test_redacting_twice_says_already(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _connect(db, monkeypatch)
+    assert main(["append", "--source", "cli", "--external-id", "a", "--text", "One"]) == 0
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    capsys.readouterr()
+
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("already redacted by event 2\n", "")
+
+
+@pytest.mark.parametrize(
+    ("arguments", "refusal"),
+    [
+        pytest.param(["event", "9"], "there is no event 9", id="missing-event"),
+        pytest.param(
+            ["event", "3"],
+            "event 3 is a redaction, and a redaction cannot be redacted",
+            id="a-redaction",
+        ),
+        pytest.param(
+            ["units", "2", "1"],
+            "event 2 was written in hash format 1, which attests its units only "
+            "together: use `previously redact event`",
+            id="version-1-units",
+        ),
+        pytest.param(["units", "1", "1", "7"], "event 1 has no unit 7", id="missing-unit"),
+        pytest.param(["blob", "c" * 64], f"no event uses blob {'c' * 64}", id="unused-blob"),
+        pytest.param(
+            ["blob", "C" * 64],
+            f"{'C' * 64} is not a blob address: 64 hexadecimal characters, lower case",
+            id="not-a-blob-address",
+        ),
+        pytest.param(
+            ["event", "1", "--reason", ""], "--reason must not be empty", id="empty-reason"
+        ),
+        pytest.param(
+            ["event", "1", "--reason", "   "], "--reason must not be empty", id="blank-reason"
+        ),
+    ],
+)
+@pytest.mark.db
+def test_a_refused_redaction_is_one_sentence(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    write_version_1: WriteVersion1,
+    arguments: list[str],
+    refusal: str,
+) -> None:
+    """Event 1 is version 2, event 2 version 1, event 3 a redaction of a unit
+    of event 1. Every refusal leaves the log as it was."""
+    engine = _connect(db, monkeypatch)
+    assert main(["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"]) == 0
+    write_version_1(
+        PostgresStorage(engine),
+        [
+            RawEvent(
+                source="cli",
+                external_id="b",
+                occurred_at=datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC),
+                evidence=Evidence.RECOLLECTION,
+                units=split_plaintext("Old"),
+                payload={"text": "Old"},
+            )
+        ],
+        datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC),
+    )
+    assert main(["redact", "units", "1", "2", "--reason", "r"]) == 0
+    capsys.readouterr()
+
+    if "--reason" not in arguments:
+        arguments = [*arguments, "--reason", "r"]
+    assert main(["redact", *arguments]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == f"Error: {refusal}\n"
+    assert main(["log"]) == 0
+    assert len(capsys.readouterr().out.splitlines()) == 3
+
+
+@pytest.mark.db
+def test_after_redact_the_chronicle_no_longer_shows_it(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`redact` brings the projections up to date itself ({ref}`projections`):
+    `chronicle` straight after it, with no `project` between, shows neither
+    the erased event nor a lag."""
+    _connect(db, monkeypatch)
+    _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
+    _append("cli", "b", "Three", "2026-10-02T09:00:00Z")
+    assert main(["project"]) == 0
+    capsys.readouterr()
+
+    assert main(["redact", "event", "1", "--reason", "wrong recipient"]) == 0
+    assert capsys.readouterr() == ("redacted by event 3\n", "")
+
+    assert main(["chronicle"]) == 0
+    out, err = capsys.readouterr()
+    assert [line.split("\t")[:2] for line in out.splitlines()] == [["2", "1"]]
+    assert err == ""
+
+
+@pytest.mark.db
+def test_a_second_redact_finishes_what_the_first_left_behind(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A redaction written by a call that did not get to the catch-up — taken
+    here through `core`, which does not catch up — is caught up by the next
+    call, the one that says `already`."""
+    engine = _connect(db, monkeypatch)
+    _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
+    assert main(["project"]) == 0
+    storage = PostgresStorage(engine)
+    redact_event(storage, storage, 1, reason="r", recorded_at=datetime.now(UTC))
+    capsys.readouterr()
+
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("already redacted by event 2\n", "")
+    assert main(["chronicle"]) == 0
+    assert capsys.readouterr() == ("", "")
+
+
+@pytest.mark.db
+def test_a_catch_up_that_fails_after_the_redaction_says_what_is_outstanding(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The redaction is written and the catch-up fails: nothing on standard
+    output, which carries its line only once the redaction is carried out,
+    and the error says what stands and what does not. The failure is a gap
+    in the log, forged with plain SQL the way `test_projection_worker` forges
+    it — nothing in the write paths can produce one, which makes it a
+    failure no wrapper has to stand in for."""
+    from sqlalchemy import text
+
+    engine = _connect(db, monkeypatch)
+    _append("cli", "a", "One", "2026-10-01T09:00:00Z")
+    assert main(["project"]) == 0
+    _append("cli", "b", "Two", "2026-10-02T09:00:00Z")
+    _append("cli", "c", "Three", "2026-10-03T09:00:00Z")
+    with engine.begin() as c:
+        c.execute(text("DELETE FROM source_key WHERE event_id = 2"))
+        c.execute(text("DELETE FROM unit WHERE event_id = 2"))
+        c.execute(text("DELETE FROM event WHERE id = 2"))
+    capsys.readouterr()
+
+    assert main(["redact", "event", "1", "--reason", "r"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == (
+        "Error: the redaction is recorded as event 4, but it is not finished: "
+        "projection chronicle is not caught up (expected events 2.. above id 1, "
+        "read [3, 4]; the tip is 4); run the same command again\n"
+    )
+
+
+@pytest.mark.db
+def test_an_unfinished_redact_units_still_says_that_the_payload_holds_the_wording(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The units are erased and the catch-up fails on a forged gap, as in
+    `test_a_catch_up_that_fails_after_the_redaction_says_what_is_outstanding`:
+    the payload still holds the wording of the erased unit, so the notice
+    comes on standard error beside
+    the sentence of the unfinished redaction, and the exit code stays 2.
+    Measured on 2026-10-05 with the notice printed only on success: the
+    sentence came alone."""
+    from sqlalchemy import text
+
+    engine = _connect(db, monkeypatch)
+    _append_with_text_in_payload(engine, "One\n\nTwo")
+    assert main(["project"]) == 0
+    _append("cli", "b", "Three", "2026-10-02T09:00:00Z")
+    _append("cli", "c", "Four", "2026-10-03T09:00:00Z")
+    with engine.begin() as c:
+        c.execute(text("DELETE FROM source_key WHERE event_id = 2"))
+        c.execute(text("DELETE FROM unit WHERE event_id = 2"))
+        c.execute(text("DELETE FROM event WHERE id = 2"))
+    capsys.readouterr()
+
+    assert main(["redact", "units", "1", "2", "--reason", "r"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == (
+        f"{_payload_standing(1)}"
+        "Error: the redaction is recorded as event 4, but it is not finished: "
+        "projection chronicle is not caught up (expected events 2.. above id 1, "
+        "read [3, 4]; the tip is 4); run the same command again\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "sentence"),
+    [
+        ("event", "erase the payload and the content of every unit"),
+        ("units", "erase the content of the named units; the payload of the event stays"),
+        ("blob", "erase a blob for every event that uses it"),
+    ],
+)
+def test_each_form_of_redact_says_in_its_own_help_what_it_erases(
+    capsys: pytest.CaptureFixture[str], target: str, sentence: str
+) -> None:
+    """`previously redact units --help` says that the payload stays, and the
+    other two forms say what they erase the same way, not only in the list
+    `previously redact --help` prints. argparse rewraps the text to the
+    terminal, so the comparison ignores where the lines break. Measured on
+    2026-10-05 with the sentence passed as `help=` only: the subcommand's own
+    help did not carry it."""
+    with pytest.raises(SystemExit) as exit_:
+        main(["redact", target, "--help"])
+    assert exit_.value.code == 0
+    assert sentence in " ".join(capsys.readouterr().out.split())
+
+
+class _HoldingProject(PostgresStorage):
+    """The real store, except that a catch-up through it, once it has
+    written the rows of its first batch that reads an event and the new
+    `up_to_id`, holds them uncommitted until `may_commit()` is true, and
+    says so in `holding`."""
+
+    def __init__(self, engine: Engine, may_commit: Callable[[], bool]) -> None:
+        super().__init__(engine)
+        self.holding = threading.Event()
+        self._may_commit = may_commit
+
+    def set_projection_state(self, conn: Connection, state: ProjectionState) -> None:
+        super().set_projection_state(conn, state)
+        if state.up_to_id > 0 and not self.holding.is_set():
+            self.holding.set()
+            deadline = time.monotonic() + 10
+            while not self._may_commit():
+                assert time.monotonic() < deadline, "redact never came"
+                time.sleep(0.01)
+
+
+def _waiting_on_a_lock(engine: Engine) -> bool:
+    from sqlalchemy import text
+
+    with engine.connect() as c:
+        return bool(
+            c.execute(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                )
+            ).scalar_one()
+        )
+
+
+@pytest.mark.db
+def test_redact_beside_a_project_holding_rows_ends_without_a_traceback(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `project` holds the chronicle rows of event 1 uncommitted while
+    `redact event 2` runs its own catch-up. The catch-up waits at the state
+    row of the chronicle, starts where the `project` committed, and the
+    command ends with its one line and nothing on standard error.
+
+    Measured on 2026-10-05 with the lock taken out of
+    `lock_projection_state`: the catch-up of `redact` started at `up_to_id` 0,
+    inserted event 1's rows behind the uncommitted ones of the `project`, and
+    once that committed, `main` raised `IntegrityError` on `p_chronicle_pkey`
+    — a traceback after the redaction had committed, with no word that it
+    stood."""
+    engine = _connect(db, monkeypatch)
+    storage = PostgresStorage(engine)
+    _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
+    redacted = threading.Event()
+    project = _HoldingProject(engine, lambda: redacted.is_set() or _waiting_on_a_lock(engine))
+    errors: list[BaseException] = []
+
+    def run_project() -> None:
+        try:
+            catch_up(project, project, CHRONICLE)
+        except BaseException as e:
+            errors.append(e)
+
+    thread = threading.Thread(target=run_project)
+    thread.start()
+    try:
+        assert project.holding.wait(timeout=10)
+        _append("cli", "b", "Three", "2026-10-02T09:00:00Z")
+        capsys.readouterr()
+        assert main(["redact", "event", "2", "--reason", "r"]) == 0
+    finally:
+        redacted.set()
+        thread.join(timeout=20)
+    assert not thread.is_alive(), "thread is hanging"
+
+    assert errors == []
+    assert capsys.readouterr() == (
+        "redacted by event 3\n",
+        "source-stats    built: 3 events, up_to_id 3\n",
+    )
+    with storage.begin() as conn:
+        rows = storage.read_chronicle(conn, since=None, until=None, limit=10)
+    assert [(row.event_id, row.seq) for row in rows] == [(1, 1), (1, 2)]
+
+
+@pytest.mark.db
+def test_redact_reports_a_rebuild_it_runs_on_standard_error(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `redact` that is the first catch-up after an upgrade rebuilds the
+    chronicle, and says so in the words of `project`, on standard error:
+    standard output stays the one line ({ref}`projections`). The `project`
+    after it has nothing left to rebuild. The control is
+    `test_after_redact_the_chronicle_no_longer_shows_it`, where the
+    projections are current and `redact` says nothing on standard error."""
+    from sqlalchemy import text
+
+    engine = _connect(db, monkeypatch)
+    _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
+    assert main(["project"]) == 0
+    with engine.begin() as c:
+        c.execute(text("UPDATE projection_state SET version = 1 WHERE name = 'chronicle'"))
+    capsys.readouterr()
+
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    assert capsys.readouterr() == (
+        "redacted by event 2\n",
+        "chronicle       rebuilt: version 1 -> 2, 2 events, up_to_id 2\n",
+    )
+    assert main(["project"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "chronicle       up to date, up_to_id 2",
+        "source-stats    up to date, up_to_id 2",
+    ]
+
+
+@pytest.mark.db
+def test_project_rebuilds_a_chronicle_built_at_version_1(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Version 1 of the chronicle did not read redactions, so a table it built
+    can still hold the rows of an erased event. The state row is set to what
+    such a table carries — version 1, caught up past the redaction — and the
+    first `project` of version 2 rebuilds it and says so."""
+    from sqlalchemy import text
+
+    engine = _connect(db, monkeypatch)
+    _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
+    _append("cli", "b", "Three", "2026-10-02T09:00:00Z")
+    assert main(["project"]) == 0
+    storage = PostgresStorage(engine)
+    redact_event(storage, storage, 1, reason="r", recorded_at=datetime.now(UTC))
+    with engine.begin() as c:
+        c.execute(
+            text("UPDATE projection_state SET version = 1, up_to_id = 3 WHERE name = 'chronicle'")
+        )
+    capsys.readouterr()
+
+    assert main(["project"]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == (
+        "chronicle       rebuilt: version 1 -> 2, 3 events, up_to_id 3"
+    )
+    assert main(["chronicle"]) == 0
+    out = capsys.readouterr().out
+    assert [line.split("\t")[:2] for line in out.splitlines()] == [["2", "1"]]
+
+
+def _connections(engine: Engine) -> int:
+    """What the server holds for the test database right now, this query's
+    own connection included."""
+    from sqlalchemy import text
+
+    with engine.connect() as c:
+        return c.execute(
+            text("SELECT count(*) FROM pg_stat_activity WHERE datname = current_database()")
+        ).scalar_one()
+
+
+@pytest.mark.db
+def test_main_releases_the_connections_it_opened(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every command gives back what it opened, on success and on error alike,
+    so a process that calls `main` again and again holds no more connections
+    at the end than at the start.
+
+    The test relies on one property of SQLAlchemy's engines: an engine nobody
+    refers to any more is held in reference cycles, so it lets go of its
+    connections only when the garbage collector collects it, not when the
+    last reference goes. The collector is therefore switched off for the loop
+    and for the reading after it, since a collection in either would hide a
+    missing release. Were a later SQLAlchemy to free an engine by reference
+    counting alone, this test would stay green without the release and stop
+    proving anything.
+
+    The count is read until it is no higher than before, for at most five
+    seconds: a backend leaves `pg_stat_activity` only once it has processed
+    the client's terminate, which happens after `dispose` returns. The bound
+    itself stays where it was. Measured on 2026-10-05: with the release, 1 connection before
+    the 33 calls and 1 after, so the bound needs no allowance. With
+    `PostgresStorage.close` emptied, 34 after; with the release on success
+    only, 4 after, one for each refused `redact`. Before the release existed,
+    a test run in fixed order piled up 93 of the server's 100 connections,
+    and on other runs the test that came next could not connect.
+    """
+    import gc
+
+    engine = _connect(db, monkeypatch)
+    _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
+    assert main(["redact", "units", "1", "1", "--reason", "r"]) == 0
+    capsys.readouterr()
+    commands = [
+        ["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"],
+        ["redact", "units", "1", "1", "--reason", "r"],
+        ["log"],
+        ["verify"],
+        ["anchor"],
+        ["show", "1"],
+        ["project"],
+        ["chronicle"],
+        ["stats"],
+        ["show", "99"],  # exit code 1
+        ["redact", "event", "99", "--reason", "r"],  # a refusal, exit code 2
+    ]
+    gc.collect()
+    before = _connections(engine)
+    gc.disable()
+    try:
+        for _ in range(3):
+            for command in commands:
+                main(command)
+        deadline = time.monotonic() + 5
+        after = _connections(engine)
+        while after > before and time.monotonic() < deadline:
+            time.sleep(0.05)
+            after = _connections(engine)
+    finally:
+        gc.enable()
+    capsys.readouterr()
+    assert after <= before
+
+
+# --- Blobs at the event ({ref}`blobs`) ----------------------------------------
+
+_BLOB_VARIABLES = (
+    "PREVIOUSLY_BLOB_ENDPOINT",
+    "PREVIOUSLY_BLOB_REGION",
+    "PREVIOUSLY_BLOB_BUCKET",
+    "PREVIOUSLY_BLOB_ACCESS_KEY",
+    "PREVIOUSLY_BLOB_SECRET_KEY",
+    "PREVIOUSLY_BLOB_RECIPIENT",
+    "PREVIOUSLY_BLOB_IDENTITIES",
+)
+
+# What the `s3_connections` fixture is, spelled as `conftest.py` asks of a
+# test that takes one of its callables.
+type ConnectionCount = Callable[[], int]
+
+
+class _Blobs:
+    """What a test of the blob commands works with: the database, the bucket,
+    and the identity whose recipient the environment names.
+
+    A plain class rather than a dataclass, whose field annotations would have
+    to be importable at run time."""
+
+    def __init__(
+        self, engine: Engine, store: S3BlobStore, identity: str, keys: pathlib.Path, secret: str
+    ) -> None:
+        self.engine = engine
+        self.store = store
+        self.identity = identity
+        self.keys = keys
+        self.secret = secret
+
+
+@pytest.fixture
+def blobs(
+    db: object,
+    monkeypatch: pytest.MonkeyPatch,
+    blob_store: S3BlobStore,
+    s3_settings: dict[str, str],
+    age_identity: str,
+    tmp_path: pathlib.Path,
+) -> _Blobs:
+    """The database, a bucket of its own and a key directory with one
+    identity in it, all seven variables set to reach them. The identity and
+    the secret are drawn at run time (`conftest.py`)."""
+    engine = _connect(db, monkeypatch)
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    (keys / recipient_of(age_identity)).write_text(age_identity + "\n", encoding="utf-8")
+    values = (
+        s3_settings["endpoint"],
+        s3_settings["region"],
+        blob_store.bucket,
+        s3_settings["access_key"],
+        s3_settings["secret_key"],
+        recipient_of(age_identity),
+        str(keys),
+    )
+    for name, value in zip(_BLOB_VARIABLES, values, strict=True):
+        monkeypatch.setenv(name, value)
+    return _Blobs(engine, blob_store, age_identity, keys, s3_settings["secret_key"])
+
+
+def _file(directory: pathlib.Path, name: str, content: bytes) -> pathlib.Path:
+    path = directory / name
+    path.write_bytes(content)
+    return path
+
+
+def _attach(external_id: str, *paths: pathlib.Path) -> list[str]:
+    argv = ["append", "--source", "cli", "--external-id", external_id, "--text", "See attached."]
+    for path in paths:
+        argv += ["--attach", str(path)]
+    return argv
+
+
+def _bucket(store: S3BlobStore) -> list[str]:
+    listing = store.client.list_objects_v2(Bucket=store.bucket)
+    return [entry.get("Key", "") for entry in listing.get("Contents", [])]
+
+
+def _events(engine: Engine) -> int:
+    from sqlalchemy import text
+
+    with engine.connect() as c:
+        return c.execute(text("SELECT count(*) FROM event")).scalar_one()
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_append_with_an_attachment_and_blob_get_bring_the_bytes_back(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    content = b"Minutes of the site meeting, invented for this test.\n" * 50
+    attachment = _file(tmp_path, "minutes.txt", content)
+    address = hashlib.sha256(content).hexdigest()
+
+    assert main(_attach("a", attachment)) == 0
+    assert capsys.readouterr().out == "1\n"
+
+    target = tmp_path / "out" / "fetched.txt"
+    target.parent.mkdir()
+    assert main(["blob", "get", address, "--output", str(target)]) == 0
+    assert capsys.readouterr().out == f"wrote {len(content)} bytes to {target}\n"
+    assert target.read_bytes() == content
+    # Readable by its owner only, as the temporary file was created.
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert sorted(path.name for path in target.parent.iterdir()) == ["fetched.txt"]
+    assert _bucket(blobs.store) == [address]
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.parametrize("broken", ["missing", "directory"])
+def test_an_attachment_that_cannot_be_read_appends_nothing(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], broken: str
+) -> None:
+    """Review focus 1 of the 2026-10-04 stage 1c plan. Two attachments, the
+    second unreadable: every file is opened before the first is stored, so
+    the readable one is not stored either, and nothing is appended."""
+    readable = _file(tmp_path, "readable.txt", b"stored only if every attachment opens")
+    unreadable = tmp_path / "unreadable"
+    if broken == "directory":
+        unreadable.mkdir()
+    reason = "Is a directory" if broken == "directory" else "No such file or directory"
+
+    assert main(_attach("a", readable, unreadable)) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _single_line(err) == f"Error: cannot read the attachment {unreadable}: {reason}"
+    assert _events(blobs.engine) == 0
+    assert _bucket(blobs.store) == []
+
+
+@pytest.mark.parametrize("command", ["blob get", "redact blob"])
+@pytest.mark.parametrize("address", ["A" * 64, "a" * 63], ids=["upper-case", "63-characters"])
+def test_a_blob_address_that_is_not_one_is_an_input_error(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    command: str,
+    address: str,
+) -> None:
+    """Review focus 6 of the 2026-10-04 stage 1c plan. Refused before
+    anything is asked: `PREVIOUSLY_DSN` is not even set, there is no blob
+    setting, and the sentence is still about the address. Measured on
+    2026-10-05 for `redact blob` before it checked the address itself: it
+    said `PREVIOUSLY_DSN is not set`."""
+    monkeypatch.delenv("PREVIOUSLY_DSN", raising=False)
+    for name in _BLOB_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    target = tmp_path / "out.bin"
+    if command == "blob get":
+        argv = ["blob", "get", address, "--output", str(target)]
+    else:
+        argv = ["redact", "blob", address, "--reason", "r"]
+    assert main(argv) == 2
+    assert _single_line(capsys.readouterr().err) == (
+        f"Error: {address} is not a blob address: 64 hexadecimal characters, lower case"
+    )
+    assert not target.exists()
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_append_with_an_attachment_and_no_database_stores_nothing(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unset `PREVIOUSLY_DSN` is the most predictable configuration
+    error, and it is named before anything is stored, so it leaves no object
+    in the bucket that no event names. Measured on 2026-10-05 with the blobs
+    stored first: the sentence was the same, and the bucket held the
+    object."""
+    monkeypatch.delenv("PREVIOUSLY_DSN")
+    path = _file(tmp_path, "hello.txt", b"hello\n")
+    assert main(_attach("a", path)) == 2
+    assert capsys.readouterr() == ("", "Error: PREVIOUSLY_DSN is not set\n")
+    assert _bucket(blobs.store) == []
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_blob_get_of_an_address_no_event_uses_returns_1(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    address = hashlib.sha256(b"never attached").hexdigest()
+    target = tmp_path / "out.bin"
+    assert main(["blob", "get", address, "--output", str(target)]) == 1
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == f"no event uses blob {address}\n"
+    assert not target.exists()
+
+
+def _forge_foreign_object(blobs: _Blobs, address: str, content: bytes) -> None:
+    """Lays a sealed object of other content under `address`: it opens with
+    the identity at hand, and its plaintext is not what the address names."""
+    sealed = io.BytesIO()
+    seal(io.BytesIO(content), sealed, recipient_of(blobs.identity))
+    sealed.seek(0)
+    blobs.store.put(address, sealed, key_id=recipient_of(blobs.identity))
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_blob_get_writes_nothing_when_the_address_does_not_match(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The plaintext passes into a temporary file before the address is
+    known to hold, so a mismatch leaves neither the target nor that file
+    behind ({ref}`blobs`)."""
+    content = b"the content the event names"
+    assert main(_attach("a", _file(tmp_path, "named.txt", content))) == 0
+    address = hashlib.sha256(content).hexdigest()
+    _forge_foreign_object(blobs, address, b"another content, laid under a foreign address")
+    capsys.readouterr()
+
+    directory = tmp_path / "out"
+    directory.mkdir()
+    target = directory / "fetched.txt"
+    assert main(["blob", "get", address, "--output", str(target)]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _single_line(err) == (
+        f"Error: blob {address} does not match its address; nothing was written"
+    )
+    assert list(directory.iterdir()) == []
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_blob_get_leaves_an_existing_target_alone_when_it_fails(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    content = b"the content the event names"
+    assert main(_attach("a", _file(tmp_path, "named.txt", content))) == 0
+    address = hashlib.sha256(content).hexdigest()
+    _forge_foreign_object(blobs, address, b"another content, laid under a foreign address")
+    capsys.readouterr()
+
+    directory = tmp_path / "out"
+    directory.mkdir()
+    target = _file(directory, "fetched.txt", b"what stood here before")
+    assert main(["blob", "get", address, "--output", str(target)]) == 2
+    capsys.readouterr()
+    assert target.read_bytes() == b"what stood here before"
+    assert list(directory.iterdir()) == [target]
+
+
+# What the write side and the read side of the blob path can fail with, for
+# real. A directory without write permission is no obstacle to root, so the
+# tests that need one are skipped there, with that reason.
+_ROOT = sys.platform != "win32" and os.geteuid() == 0
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.parametrize("failure", ["parent-missing", "not-writable", "target-a-directory"])
+def test_blob_get_that_cannot_write_is_one_sentence_and_leaves_nothing(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], failure: str
+) -> None:
+    """Ruling T6-a of the 2026-10-04 stage 1c plan: a target whose directory
+    does not exist, a directory that does not allow writing, and a target
+    that is a directory, so that the rename fails after the fetch. Each is
+    `cannot write <file>: <reason>` and exit code 2, and no temporary file
+    stays behind."""
+    if failure == "not-writable" and _ROOT:
+        pytest.skip("root writes into a directory without write permission")
+    content = b"fetched, and then nowhere to put it"
+    assert main(_attach("a", _file(tmp_path, "a.txt", content))) == 0
+    capsys.readouterr()
+    address = hashlib.sha256(content).hexdigest()
+    directory = tmp_path / "out"
+    directory.mkdir()
+    target, reason = {
+        "parent-missing": (directory / "missing" / "a.txt", "No such file or directory"),
+        "not-writable": (directory / "a.txt", "Permission denied"),
+        "target-a-directory": (directory / "a.txt", "Is a directory"),
+    }[failure]
+    if failure == "target-a-directory":
+        target.mkdir()
+    if failure == "not-writable":
+        directory.chmod(0o500)
+    try:
+        assert main(["blob", "get", address, "--output", str(target)]) == 2
+    finally:
+        directory.chmod(0o700)
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _single_line(err) == f"Error: cannot write {target}: {reason}"
+    expected = [target] if failure == "target-a-directory" else []
+    assert list(directory.iterdir()) == expected
+
+
+@contextmanager
+def _file_size_limit(limit: int) -> Generator[None]:
+    """A real limit on the size of every file this process writes, for the
+    duration of one command: a write past it fails with `EFBIG`, `File too
+    large`. CPython ignores the `SIGXFSZ` the kernel would send instead
+    (`signal.getsignal(signal.SIGXFSZ)` is `SIG_IGN`, read on 2026-10-05).
+    Only the soft limit moves, and it is put back."""
+    import resource
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+    try:
+        yield
+    finally:
+        resource.setrlimit(resource.RLIMIT_FSIZE, (soft, hard))
+
+
+_LARGE = 1024 * 1024
+_LIMIT = 256 * 1024
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.skipif(sys.platform != "linux", reason="RLIMIT_FSIZE as measured on Linux")
+@pytest.mark.parametrize("before", ["no-target", "existing-target"])
+def test_blob_get_whose_output_cannot_be_written_leaves_nothing(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], before: str
+) -> None:
+    """Ruling T6-c of the 2026-10-04 stage 1c plan: the temporary output
+    fills up while the content passes into it — a file size limit below
+    the blob's size, for real. One sentence, exit code 2, and no temporary
+    file; no target where there was none, and a target that was there is
+    byte for byte what it was. `fetch_blob` returns no size for bytes that
+    never arrived."""
+    content = os.urandom(_LARGE)
+    assert main(_attach("a", _file(tmp_path, "large.bin", content))) == 0
+    capsys.readouterr()
+    directory = tmp_path / "out"
+    directory.mkdir()
+    target = directory / "large.bin"
+    earlier = b"what stood here before"
+    if before == "existing-target":
+        target.write_bytes(earlier)
+    with _file_size_limit(_LIMIT):
+        code = main(["blob", "get", hashlib.sha256(content).hexdigest(), "--output", str(target)])
+    out, err = capsys.readouterr()
+    assert code == 2
+    assert out == ""
+    assert _single_line(err) == f"Error: cannot write {target}: File too large"
+    if before == "existing-target":
+        assert list(directory.iterdir()) == [target]
+        assert target.read_bytes() == earlier
+    else:
+        assert list(directory.iterdir()) == []
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.skipif(sys.platform != "linux", reason="RLIMIT_FSIZE as measured on Linux")
+def test_a_sealed_form_that_cannot_be_written_appends_nothing(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same limit while the attachment is sealed into its temporary
+    file: one sentence, exit code 2, nothing appended and nothing stored."""
+    attachment = _file(tmp_path, "large.bin", os.urandom(_LARGE))
+    with _file_size_limit(_LIMIT):
+        code = main(_attach("a", attachment))
+    out, err = capsys.readouterr()
+    assert code == 2
+    assert out == ""
+    assert _single_line(err) == "Error: cannot write a temporary file: File too large"
+    assert _events(blobs.engine) == 0
+    assert _bucket(blobs.store) == []
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.skipif(sys.platform != "linux", reason="/proc/self/mem is Linux's")
+def test_an_attachment_that_opens_and_cannot_be_read_appends_nothing(
+    blobs: _Blobs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A file that opens, can be rewound, and fails at its first read with a
+    real `EIO`: `/proc/self/mem`, whose offset 0 no process maps. One
+    sentence naming the attachment, exit code 2, nothing appended and
+    nothing stored."""
+    from pathlib import Path
+
+    assert main(_attach("a", Path("/proc/self/mem"))) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _single_line(err) == (
+        "Error: cannot read the attachment /proc/self/mem: Input/output error"
+    )
+    assert _events(blobs.engine) == 0
+    assert _bucket(blobs.store) == []
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.skipif(_ROOT, reason="root writes into a directory without write permission")
+def test_a_temporary_file_that_cannot_be_made_appends_nothing(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sealed form goes into a temporary file, here in a directory that
+    does not allow writing: one sentence, exit code 2, nothing appended and
+    nothing stored."""
+    import tempfile
+
+    closed = tmp_path / "closed"
+    closed.mkdir()
+    closed.chmod(0o500)
+    monkeypatch.setattr(tempfile, "tempdir", str(closed))
+    try:
+        assert main(_attach("a", _file(tmp_path, "a.txt", b"to be sealed"))) == 2
+    finally:
+        closed.chmod(0o700)
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _single_line(err) == "Error: cannot write a temporary file: Permission denied"
+    assert _events(blobs.engine) == 0
+    assert _bucket(blobs.store) == []
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_a_mistyped_recipient_is_refused_before_anything_is_stored(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A content the store already holds is not sealed again, so the
+    recipient is not used — and a typo in it would pass unnoticed until new
+    content arrived. `append --attach` checks it first: one sentence, which
+    may quote the recipient because a recipient is public, and nothing
+    appended."""
+    attachment = _file(tmp_path, "a.txt", b"stored before the typo")
+    assert main(_attach("a", attachment)) == 0
+    capsys.readouterr()
+    mistyped = recipient_of(blobs.identity)[:-1] + "!"
+    monkeypatch.setenv("PREVIOUSLY_BLOB_RECIPIENT", mistyped)
+
+    assert main(_attach("b", attachment)) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _single_line(err) == f"Error: {mistyped!r} is not an age X25519 recipient"
+    assert _events(blobs.engine) == 1
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.parametrize("variable", _BLOB_VARIABLES)
+def test_a_missing_blob_setting_is_named(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+) -> None:
+    """Each variable, taken away alone, at the command that needs it: the
+    five of the store and the recipient at `append --attach`, which then
+    appends nothing; the key directory at `blob get`."""
+    content = b"an attachment"
+    attachment = _file(tmp_path, "a.txt", content)
+    if variable == "PREVIOUSLY_BLOB_IDENTITIES":
+        assert main(_attach("a", attachment)) == 0
+        capsys.readouterr()
+        argv = ["blob", "get", hashlib.sha256(content).hexdigest(), "--output", "unused"]
+    else:
+        argv = _attach("a", attachment)
+    monkeypatch.delenv(variable)
+
+    assert main(argv) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _single_line(err) == f"Error: {variable} is not set"
+    expected_events = 1 if variable == "PREVIOUSLY_BLOB_IDENTITIES" else 0
+    assert _events(blobs.engine) == expected_events
+
+
+@pytest.mark.db
+def test_the_commands_of_today_run_without_any_blob_setting(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every command that touches no blob reads no blob setting, so a
+    deployment without a blob store runs as before ({ref}`blobs`)."""
+    _connect(db, monkeypatch)
+    for name in _BLOB_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    commands = [
+        ["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"],
+        ["log"],
+        ["verify"],
+        ["anchor"],
+        ["show", "1"],
+        ["project"],
+        ["chronicle"],
+        ["stats"],
+        ["redact", "event", "1", "--reason", "r"],
+    ]
+    for command in commands:
+        assert main(command) == 0, command
+    capsys.readouterr()
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_a_store_that_does_not_answer_appends_nothing_and_shows_no_secret(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review focus 5 of the 2026-10-04 stage 1c plan: an endpoint where
+    nobody listens is one sentence with the endpoint in it, exit code 2, no
+    event — and the secret of the store stands in neither output, since a
+    message ends up on a terminal and in a log."""
+    endpoint = "http://127.0.0.1:1"
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", endpoint)
+    assert main(_attach("a", _file(tmp_path, "a.txt", b"an attachment"))) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert endpoint in _single_line(err)
+    assert blobs.secret not in out + err
+    assert _events(blobs.engine) == 0
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.parametrize("command", ["append", "blob-get"])
+def test_an_endpoint_without_a_scheme_is_one_sentence(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    """A typo in the environment, `localhost:9000` without `http://`, at
+    both commands that build a store: one sentence that names the endpoint,
+    exit code 2, nothing appended, and no secret. Before fix round 1 of task
+    6 it left `main` as a `ValueError` traceback. `blob get` builds its store
+    only for a blob an event uses and no redaction erased, so it asks for
+    one an event names, written through `core` without a store."""
+    events = 0
+    if command == "append":
+        argv = _attach("a", _file(tmp_path, "a.txt", b"an attachment"))
+    else:
+        _append_naming(blobs.engine, "c" * 64)
+        events = 1
+        argv = ["blob", "get", "c" * 64, "--output", str(tmp_path / "out.bin")]
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "localhost:9000")
+    assert main(argv) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _single_line(err).startswith(
+        "Error: the settings for the blob store at localhost:9000, bucket "
+    )
+    assert err.rstrip().endswith("are not usable: ValueError")
+    assert blobs.secret not in out + err
+    assert _events(blobs.engine) == events
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_no_identity_reaches_any_output(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    other_age_identity: str,
+) -> None:
+    """No identity in any output, on the path that reads identities: an
+    identity is the secret half of a key, and a message ends up on a
+    terminal and in a log. The file named after the object's recipient holds
+    the identity of another key, `age` refuses it, and the sentence says the
+    blob cannot be opened without quoting either identity."""
+    content = b"sealed to the key the environment names"
+    assert main(_attach("a", _file(tmp_path, "a.txt", content))) == 0
+    capsys.readouterr()
+    (blobs.keys / recipient_of(blobs.identity)).write_text(
+        other_age_identity + "\n", encoding="utf-8"
+    )
+    address = hashlib.sha256(content).hexdigest()
+
+    assert main(["blob", "get", address, "--output", str(tmp_path / "out.bin")]) == 2
+    out, err = capsys.readouterr()
+    assert _single_line(err).startswith(f"Error: blob {address} cannot be opened: ")
+    for secret in (blobs.identity, other_age_identity, "AGE-SECRET-KEY"):
+        assert secret not in out + err
+    assert not (tmp_path / "out.bin").exists()
+
+
+@pytest.mark.db
+def test_show_lists_the_blobs_of_an_event(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One line per reference, in the payload's order, the same content
+    twice included, and `-` for a reference without a name. Written through
+    `core` with references to blobs no store holds and without any blob
+    setting: `show` reads the log and does not ask the store."""
+    engine = _connect(db, monkeypatch)
+    for name in _BLOB_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    first, second = "1" * 64, "2" * 64
+    append(
+        PostgresStorage(engine),
+        [
+            RawEvent(
+                source="cli",
+                external_id="a",
+                occurred_at=datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC),
+                evidence=Evidence.VERBATIM,
+                units=split_plaintext("See attached."),
+                payload={"text": "See attached."},
+                blobs=(
+                    BlobRef(sha256=second, size=12, media_type="text/plain", filename="a.txt"),
+                    BlobRef(sha256=first, size=0, media_type="application/octet-stream"),
+                    BlobRef(sha256=second, size=12, media_type="text/plain", filename="b.txt"),
+                ),
+            )
+        ],
+        recorded_at=datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC),
+    )
+    assert main(["show", "1"]) == 0
+    out = capsys.readouterr().out
+    assert out.endswith(
+        "  ¶1 See attached.\n"
+        f"  blob {second} 12 text/plain a.txt\n"
+        f"  blob {first} 0 application/octet-stream -\n"
+        f"  blob {second} 12 text/plain b.txt\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "media_type"),
+    [
+        ("minutes.txt", "text/plain"),
+        ("PLAN.PDF", "application/pdf"),
+        ("photo.jpeg", "image/jpeg"),
+        ("archive.tar.gz", "application/octet-stream"),
+        ("no-extension", "application/octet-stream"),
+        ("unknown.previously-test", "application/octet-stream"),
+    ],
+)
+def test_the_media_type_comes_from_the_name_and_the_built_in_table(
+    name: str, media_type: str
+) -> None:
+    """From the file's name, and from Python's own table only, not from the
+    files of the system it runs on: the value stands in the hash for good,
+    and has to be the same whichever machine attached it. A name that says
+    the content is compressed (`.gz`) names the type of what is inside, not
+    of the bytes, so it is no answer."""
+    assert media_type_of(name) == media_type
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_main_releases_the_blob_store_it_opened(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    s3_connections: ConnectionCount,
+) -> None:
+    """Every command that builds a blob store closes it, on success and on
+    error alike, the way `test_main_releases_the_connections_it_opened` holds
+    it for the database: a process that calls `main` again and again holds
+    no more connections to the store at the end than at the start.
+
+    The attachments are above the 8 MiB from which an upload goes in parts,
+    and a new content each round, since a content already stored is not
+    uploaded again: an upload in parts keeps the client in reference cycles,
+    so only the garbage collector would free a store left open, and the
+    collector is off for the loop and the count after it, as in
+    `tests/test_s3.py::test_close_releases_the_connections_the_store_opened`.
+    Two calls fail: a fetch of an object that names a key no identity in the
+    directory belongs to, and an attachment uploaded in parts into a bucket
+    that does not exist. The second is the one that holds the "on error"
+    half: a failing fetch uploads nothing, and a store without an upload is
+    freed by reference counting even unclosed, while a refused upload in
+    parts leaves the store in reference cycles.
+
+    Measured on 2026-10-05, after ruling T6-a of the 2026-10-04 stage 1c
+    plan had the adapter let go of what a refused upload kept: 1 connection
+    before the twenty calls and 1 after; with the close moved out of the
+    `finally` of `_blob_store`, so that it runs on success only, 5 after;
+    with `store.close()` taken out, 13 after. Before that ruling the
+    refused upload kept its connection through `close` as well, and the
+    test had to leave it out.
+    """
+    import gc
+
+    broken = b"an object nobody can open"
+    assert main(_attach("broken", _file(tmp_path, "broken.txt", broken))) == 0
+    broken_address = hashlib.sha256(broken).hexdigest()
+    blobs.store.put(broken_address, io.BytesIO(b"not an age file"), key_id="age1unknown")
+    capsys.readouterr()
+    target = tmp_path / "out.bin"
+
+    gc.collect()
+    before = s3_connections()
+    gc.disable()
+    try:
+        for round_ in range(4):
+            content = os.urandom(9 * 1024 * 1024)
+            attachment = _file(tmp_path, f"large-{round_}.bin", content)
+            address = hashlib.sha256(content).hexdigest()
+            assert main(_attach(f"large-{round_}", attachment)) == 0
+            assert main(["blob", "get", address, "--output", str(target)]) == 0
+            assert main(["blob", "get", broken_address, "--output", str(target)]) == 2
+            assert main(["blob", "get", address, "--output", str(target)]) == 0
+            monkeypatch.setenv("PREVIOUSLY_BLOB_BUCKET", "previously-no-such-bucket")
+            assert main(_attach(f"refused-{round_}", attachment)) == 2
+            monkeypatch.setenv("PREVIOUSLY_BLOB_BUCKET", blobs.store.bucket)
+        after = s3_connections()
+    finally:
+        gc.enable()
+    capsys.readouterr()
+    assert after <= before, f"{after} connections after the commands, {before} before"
+
+
+# --- Erasing and checking blobs ({ref}`erasure`) ------------------------------
+
+
+def _stays(address: str, *event_ids: int) -> str:
+    users = ", ".join(str(event_id) for event_id in event_ids)
+    verb = "event" if len(event_ids) == 1 else "events"
+    use = "uses" if len(event_ids) == 1 else "use"
+    return f"blob {address} stays in the store: {verb} {users} still {use} it\n"
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_redact_event_deletes_its_blob_and_says_which_one_stays(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Event 1 has a blob of its own and one it shares with events 2 and 3.
+    Erasing event 1 deletes its own blob and leaves the shared one, named
+    with the events that still use it, on standard error after the lines of
+    the catch-up; erasing event 2 names the one event left."""
+    own, shared = b"only in the first mail", b"in three mails"
+    own_address = hashlib.sha256(own).hexdigest()
+    shared_address = hashlib.sha256(shared).hexdigest()
+    assert (
+        main(_attach("a", _file(tmp_path, "own.txt", own), _file(tmp_path, "s.txt", shared))) == 0
+    )
+    assert main(_attach("b", tmp_path / "s.txt")) == 0
+    assert main(_attach("c", tmp_path / "s.txt")) == 0
+    assert sorted(_bucket(blobs.store)) == sorted([own_address, shared_address])
+    capsys.readouterr()
+
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    assert capsys.readouterr() == (
+        "redacted by event 4\n",
+        "chronicle       built: 4 events, up_to_id 4\n"
+        "source-stats    built: 4 events, up_to_id 4\n" + _stays(shared_address, 2, 3),
+    )
+    assert _bucket(blobs.store) == [shared_address]
+
+    assert main(["redact", "event", "2", "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("redacted by event 5\n", _stays(shared_address, 3))
+    assert _bucket(blobs.store) == [shared_address]
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_redact_blob_and_then_blob_get_says_erased(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    content = b"a scan that must go"
+    address = hashlib.sha256(content).hexdigest()
+    assert main(_attach("a", _file(tmp_path, "scan.pdf", content))) == 0
+    assert main(["project"]) == 0
+    capsys.readouterr()
+
+    assert main(["redact", "blob", address, "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("redacted by event 2\n", "")
+    assert _bucket(blobs.store) == []
+
+    target = tmp_path / "out.pdf"
+    assert main(["blob", "get", address, "--output", str(target)]) == 1
+    assert capsys.readouterr() == ("", f"blob {address} is erased (event 2)\n")
+    assert not target.exists()
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_a_delete_that_fails_is_finished_by_the_second_call(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    s3_settings: dict[str, str],
+) -> None:
+    """The store does not answer when the first call deletes: the redaction
+    stands, the sentence names the blobs still to delete, and the same
+    command with a store that answers deletes them without a second
+    redaction."""
+    content, other = b"the attachment to erase", b"the second attachment"
+    address, other_address = sorted(hashlib.sha256(c).hexdigest() for c in (content, other))
+    assert (
+        main(_attach("a", _file(tmp_path, "a.txt", content), _file(tmp_path, "b.txt", other))) == 0
+    )
+    assert main(["project"]) == 0
+    capsys.readouterr()
+
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "http://127.0.0.1:1")
+    assert main(["redact", "event", "1", "--reason", "r"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    line = _single_line(err)
+    assert line.startswith(
+        "Error: the redaction is recorded as event 2, but it is not finished: "
+        f"blobs {address}, {other_address} are not deleted from the store ("
+    )
+    assert line.endswith("); run the same command again")
+    assert "http://127.0.0.1:1" in line
+    assert "is not caught up" not in line
+    assert blobs.secret not in err
+    assert _events(blobs.engine) == 2
+    assert _bucket(blobs.store) == [address, other_address]
+    # The catch-up ran although the deletion failed: the chronicle no longer
+    # shows the erased text, and stands at the tip. Measured on 2026-10-05
+    # with a deletion that raised before the catch-up: the chronicle still
+    # printed the erased unit, and the lag on standard error.
+    assert main(["chronicle"]) == 0
+    assert capsys.readouterr() == ("", "")
+
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", s3_settings["endpoint"])
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("already redacted by event 2\n", "")
+    assert _bucket(blobs.store) == []
+    assert _events(blobs.engine) == 2
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_a_delete_and_a_catch_up_that_both_fail_are_named_in_one_sentence(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The store does not answer, and the log has a gap above the
+    chronicle's `up_to_id`, forged with plain SQL the way
+    `test_a_catch_up_that_fails_after_the_redaction_says_what_is_outstanding`
+    forges it: the sentence names the deletion and then the catch-up, and
+    still ends in the advice to run the same command again. Measured on
+    2026-10-05 with the deletion raising as it used to: the sentence named
+    the blob alone."""
+    from sqlalchemy import text
+
+    content = b"the attachment to erase"
+    address = hashlib.sha256(content).hexdigest()
+    assert main(_attach("a", _file(tmp_path, "a.txt", content))) == 0
+    assert main(["project"]) == 0
+    _append("cli", "b", "Two", "2026-10-02T09:00:00Z")
+    _append("cli", "c", "Three", "2026-10-03T09:00:00Z")
+    with blobs.engine.begin() as c:
+        c.execute(text("DELETE FROM source_key WHERE event_id = 2"))
+        c.execute(text("DELETE FROM unit WHERE event_id = 2"))
+        c.execute(text("DELETE FROM event WHERE id = 2"))
+    capsys.readouterr()
+
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "http://127.0.0.1:1")
+    assert main(["redact", "event", "1", "--reason", "r"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    line = _single_line(err)
+    assert line.startswith(
+        "Error: the redaction is recorded as event 4, but it is not finished: "
+        f"blob {address} is not deleted from the store ("
+    )
+    assert line.endswith(
+        "), and projection chronicle is not caught up (expected events 2.. above id 1, "
+        "read [3, 4]; the tip is 4); run the same command again"
+    )
+    assert blobs.secret not in err
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_a_refused_redaction_deletes_nothing(
+    blobs: _Blobs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An object no event names, the kind an append that failed after its
+    upload leaves behind: `redact blob` refuses it, and the object stays,
+    since deleting comes only after a redaction stands."""
+    address = hashlib.sha256(b"left behind").hexdigest()
+    blobs.store.put(address, io.BytesIO(b"sealed bytes"), key_id=recipient_of(blobs.identity))
+
+    assert main(["redact", "blob", address, "--reason", "r"]) == 2
+    assert capsys.readouterr() == ("", f"Error: no event uses blob {address}\n")
+    assert _bucket(blobs.store) == [address]
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_verify_blobs_prints_the_count(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(_attach("a", _file(tmp_path, "a.txt", b"first"))) == 0
+    capsys.readouterr()
+    assert main(["verify", "--blobs"]) == 0
+    assert capsys.readouterr().out == "chain intact, 1 blob matches\n"
+
+    assert main(_attach("b", _file(tmp_path, "b.txt", b"second"), tmp_path / "a.txt")) == 0
+    capsys.readouterr()
+    assert main(["verify", "--blobs"]) == 0
+    assert capsys.readouterr().out == "chain intact, 2 blobs match\n"
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_verify_blobs_reports_a_missing_blob_and_returns_1(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    content = b"deleted by hand"
+    address = hashlib.sha256(content).hexdigest()
+    assert main(_attach("a", _file(tmp_path, "a.txt", content))) == 0
+    blobs.store.delete(address)
+    capsys.readouterr()
+
+    assert main(["verify", "--blobs"]) == 1
+    assert capsys.readouterr() == (f"FINDING 1: blob {address} is missing\n", "")
+
+
+@pytest.mark.db
+def test_show_marks_an_erased_blob(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At an event with its payload, the line of a blob a blob redaction
+    erased for the event names that redaction. At an erased event the blobs
+    come from its redaction, each with the redaction that erased the
+    reference first. Written through `core`, with references to blobs no
+    store holds and without any blob setting: `show` does not ask the
+    store."""
+    engine = _connect(db, monkeypatch)
+    for name in _BLOB_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    erased, kept = "1" * 64, "2" * 64
+    storage = PostgresStorage(engine)
+    append(
+        storage,
+        [
+            RawEvent(
+                source="cli",
+                external_id="a",
+                occurred_at=datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC),
+                evidence=Evidence.VERBATIM,
+                units=split_plaintext("See attached."),
+                payload={"text": "See attached."},
+                blobs=(
+                    BlobRef(sha256=erased, size=12, media_type="text/plain", filename="a.txt"),
+                    BlobRef(sha256=kept, size=3, media_type="text/plain", filename="b.txt"),
+                ),
+            )
+        ],
+        recorded_at=datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC),
+    )
+    now = datetime.now(UTC)
+    redact_blob(storage, storage, erased, reason="r", recorded_at=now)
+
+    assert main(["show", "1"]) == 0
+    assert capsys.readouterr().out.endswith(
+        "  ¶1 See attached.\n"
+        f"  blob {erased} 12 text/plain a.txt <erased by event 2>\n"
+        f"  blob {kept} 3 text/plain b.txt\n"
+    )
+
+    redact_event(storage, storage, 1, reason="r", recorded_at=now)
+    assert main(["show", "1"]) == 0
+    assert capsys.readouterr().out.endswith(
+        "  ¶1 <erased by event 3>\n"
+        f"  blob {erased} <erased by event 2>\n"
+        f"  blob {kept} <erased by event 3>\n"
+    )
+
+
+@pytest.mark.db
+def test_redacting_an_event_without_blobs_needs_no_blob_setting(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _connect(db, monkeypatch)
+    for name in _BLOB_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    assert main(["append", "--source", "cli", "--external-id", "a", "--text", "One"]) == 0
+    capsys.readouterr()
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    assert capsys.readouterr().out == "redacted by event 2\n"
+
+
+class _CountedStore:
+    """The real store, counting the times it is closed."""
+
+    def __init__(self, inner: S3BlobStore, closed: list[int]) -> None:
+        self._inner = inner
+        self._closed = closed
+
+    def stat(self, address: str) -> StoredBlob | None:
+        return self._inner.stat(address)
+
+    def put(self, address: str, sealed: IO[bytes], *, key_id: str) -> None:
+        self._inner.put(address, sealed, key_id=key_id)
+
+    def get(self, address: str) -> tuple[StoredBlob, ClosableSource] | None:
+        return self._inner.get(address)
+
+    def delete(self, address: str) -> None:
+        self._inner.delete(address)
+
+    def close(self) -> None:
+        self._closed.append(1)
+        self._inner.close()
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_every_command_closes_each_blob_store_it_builds(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`verify --blobs` and the deletion after a redaction build a store
+    and never upload, and a store that never uploads is freed by reference
+    counting whether or not it is closed: with either one's close taken out,
+    `test_main_releases_the_blob_store_it_opened` stayed green with both
+    commands in its loop, measured on 2026-10-05. So the stores are counted
+    instead, each one the command line builds against each `close`, on
+    success and on error: the store the command line builds is the real one,
+    wrapped so that its closing is seen."""
+    from previously.storage import s3
+
+    built: list[int] = []
+    closed: list[int] = []
+
+    def counted(**settings: str) -> _CountedStore:
+        built.append(1)
+        return _CountedStore(s3.from_settings(**settings), closed)
+
+    monkeypatch.setattr("previously.cli.from_settings", counted)
+    content = b"counted"
+    address = hashlib.sha256(content).hexdigest()
+    target = tmp_path / "out.txt"
+    assert main(_attach("a", _file(tmp_path, "a.txt", content))) == 0
+    assert main(_attach("b", tmp_path / "a.txt")) == 0
+    assert main(["blob", "get", address, "--output", str(target)]) == 0
+    assert main(["verify", "--blobs"]) == 0
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0  # keeps the blob
+    assert main(["redact", "event", "2", "--reason", "r"]) == 0  # deletes it
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "http://127.0.0.1:1")
+    assert main(["verify", "--blobs"]) == 2
+    assert main(["redact", "blob", address, "--reason", "r"]) == 2
+    capsys.readouterr()
+    assert (len(built), len(closed)) == (7, 7)
+
+
+@pytest.mark.parametrize("forged", [False, True], ids=["intact-chain", "forged-unit"])
+@pytest.mark.parametrize(
+    "failure", ["store-does-not-answer", "identity-cannot-be-read", "identity-is-not-one"]
+)
+@pytest.mark.db
+@pytest.mark.s3
+def test_verify_blobs_that_cannot_check_is_an_error_and_no_finding(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+    forged: bool,
+) -> None:
+    """A store that does not answer, an identity file that is there and
+    cannot be read, or one whose content is no age identity says nothing
+    about the blobs: one sentence, exit code 2, no `FINDING` line about a
+    blob, and neither the secret of the store nor an identity nor the
+    file's content in any output. The file in the third case holds a line
+    that looks like an identity and is none, so that its content would show
+    in the output. The finding on the other side of the line is
+    `test_a_blob_whose_key_is_not_at_hand_cannot_be_opened_and_the_check_goes_on`
+    in `tests/test_verify.py`.
+
+    What the pass over the chain found before the blobs stands all the same:
+    with a unit rewritten by hand, its finding is on standard output beside
+    the error, so that a store that does not answer cannot hide a forgery.
+    Measured on 2026-10-05 with the findings printed only after the blobs:
+    standard output stayed empty."""
+    assert main(_attach("a", _file(tmp_path, "a.txt", b"checked"))) == 0
+    capsys.readouterr()
+    if forged:
+        from sqlalchemy import text
+
+        with blobs.engine.begin() as c:
+            c.execute(text("UPDATE unit SET content = 'forged' WHERE event_id = 1 AND seq = 1"))
+    if failure == "store-does-not-answer":
+        monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "http://127.0.0.1:1")
+        expected = "http://127.0.0.1:1"
+    elif failure == "identity-cannot-be-read":
+        path = blobs.keys / recipient_of(blobs.identity)
+        path.unlink()
+        path.mkdir()
+        expected = "cannot be read: IsADirectoryError"
+    else:
+        path = blobs.keys / recipient_of(blobs.identity)
+        path.write_text("AGE-SECRET-KEY-1PREVIOUSLYTESTNOTAKEY\n", encoding="utf-8")
+        expected = "the identity is not an age X25519 identity"
+
+    assert main(["verify", "--blobs"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ("FINDING 1: unit 1 does not match its digest\n" if forged else "")
+    line = _single_line(err)
+    assert line.startswith("Error: ")
+    assert expected in line
+    for secret in (blobs.secret, blobs.identity, "AGE-SECRET-KEY", "PREVIOUSLYTESTNOTAKEY"):
+        assert secret not in out + err
+
+
+@pytest.mark.parametrize("command", ["verify --blobs", "blob get"])
+@pytest.mark.db
+@pytest.mark.s3
+def test_an_identity_directory_that_is_no_directory_is_a_configuration_error(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    """`PREVIOUSLY_BLOB_IDENTITIES` naming a path that does not exist, or a
+    file, is a configuration error: one sentence, exit code 2. Measured on
+    2026-10-05 before the check: `verify --blobs` reported every blob as
+    `cannot be opened` with exit code 1, which reads as a lost key on a
+    freshly restored machine. The control: an existing directory without
+    the identity stays a finding about that blob."""
+    content = b"checked"
+    address = hashlib.sha256(content).hexdigest()
+    assert main(_attach("a", _file(tmp_path, "a.txt", content))) == 0
+    capsys.readouterr()
+    target = tmp_path / "out.bin"
+    if command == "verify --blobs":
+        argv = ["verify", "--blobs"]
+    else:
+        argv = ["blob", "get", address, "--output", str(target)]
+
+    for nowhere in (tmp_path / "no-such-directory", _file(tmp_path, "a-file", b"")):
+        monkeypatch.setenv("PREVIOUSLY_BLOB_IDENTITIES", str(nowhere))
+        assert main(argv) == 2
+        assert capsys.readouterr() == (
+            "",
+            f"Error: PREVIOUSLY_BLOB_IDENTITIES is not a directory: {nowhere}\n",
+        )
+        assert not target.exists()
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("PREVIOUSLY_BLOB_IDENTITIES", str(empty))
+    if command == "verify --blobs":
+        assert main(argv) == 1
+        assert capsys.readouterr().out == f"FINDING 1: blob {address} cannot be opened\n"
+    else:
+        assert main(argv) == 2
+        assert _single_line(capsys.readouterr().err).startswith(
+            f"Error: blob {address} cannot be opened: "
+        )
+
+
+def _append_naming(engine: Engine, *addresses: str) -> None:
+    """One event per address that names it, written through `core` with
+    references to blobs no store holds."""
+    append(
+        PostgresStorage(engine),
+        [
+            RawEvent(
+                source="cli",
+                external_id=address,
+                occurred_at=datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC),
+                evidence=Evidence.VERBATIM,
+                units=split_plaintext("See attached."),
+                payload={"text": "See attached."},
+                blobs=(BlobRef(sha256=address, size=1, media_type="text/plain"),),
+            )
+            for address in addresses
+        ],
+        recorded_at=datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC),
+    )
+
+
+@pytest.mark.db
+def test_blob_get_answers_from_the_log_without_any_blob_setting(
+    db: object,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ "No event uses it" and "it is erased" are answers about the log, and
+    come on a machine without a single blob setting. The blob that is
+    neither needs the store, and the first setting it reads is the control
+    that the settings are really missing."""
+    engine = _connect(db, monkeypatch)
+    for name in _BLOB_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    kept, erased, unused = "1" * 64, "2" * 64, "3" * 64
+    _append_naming(engine, kept, erased)
+    storage = PostgresStorage(engine)
+    redact_blob(storage, storage, erased, reason="r", recorded_at=datetime.now(UTC))
+    target = str(tmp_path / "out.bin")
+
+    assert main(["blob", "get", unused, "--output", target]) == 1
+    assert capsys.readouterr() == ("", f"no event uses blob {unused}\n")
+    assert main(["blob", "get", erased, "--output", target]) == 1
+    assert capsys.readouterr() == ("", f"blob {erased} is erased (event 3)\n")
+    assert main(["blob", "get", kept, "--output", target]) == 2
+    assert capsys.readouterr() == ("", "Error: PREVIOUSLY_BLOB_IDENTITIES is not set\n")

@@ -39,16 +39,26 @@ class EventRow:
     # the digest stands in the row, the content in its own table.
     units_hash: bytes
     payload: Mapping[str, object] | None
+    # The hash format the row was written in ({ref}`hash-version-2`), and the
+    # salt of its payload digest in version 2. The defaults mirror the
+    # columns: a row that says nothing is version 1, which has no salt.
+    hash_version: int = 1
+    payload_salt: bytes | None = None
 
 
 @dataclass(frozen=True)
 class UnitRow:
     event_id: int
     seq: int
-    content: str
+    # `None` is the tombstone of an erased unit.
+    content: str | None
     start_ms: int | None = None
     end_ms: int | None = None
     speaker: str | None = None
+    # The unit's own digest and its salt, both version 2 only
+    # ({ref}`hash-version-2`); `None` on a version 1 unit.
+    digest: bytes | None = None
+    salt: bytes | None = None
 
 
 @dataclass(frozen=True)

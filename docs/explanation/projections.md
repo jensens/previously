@@ -6,7 +6,7 @@ Stage 1b adds three tables that carry no truth of their own: `projection_state`,
 This page explains what that promise means in practice and why the two content-bearing tables look the way they do.
 Three sections follow on the worker that keeps them current: how it catches up in batches, why a gap in the log can't arise and is checked for all the same, and which test makes the promise more than a claim.
 Two more follow on the commands that read them: why `log` and `chronicle` are two commands rather than one with more options, and what the commands say about what they don't know.
-A last section follows on what the unit-level chronicle makes visible about an erasure that empties a payload.
+A last section follows on how the chronicle follows an erasure, and why the per-source statistics don't have to.
 
 ## Derivable and disposable
 
@@ -25,7 +25,9 @@ It carries no foreign key onto another projection, because that would make one d
 That's the difference from `log`, which reads the chain one event at a time: a chronicle row answers "what happened, line by line, and how it's known," by pulling together fields from `event`, `unit`, `source_key`, and the payload's evidence field into a single row.
 
 `evidence` is nullable on purpose.
-The kind of evidence lives in the payload, and an erased payload is `NULL`, so a `NOT NULL` column here would mean the chronicle can't show an erased event's units at all—a row from the log disappearing rather than showing up with its evidence missing.
+The kind of evidence lives in the payload, and an erased payload is `NULL`.
+An event that a redaction erased has no chronicle row left, because its units go with it, but a payload set to `NULL` with its units left standing—a tombstone without an order, which `verify` reports—still has rows.
+A `NOT NULL` column here would make those rows disappear rather than show up with their evidence missing.
 `source` is nullable for a different reason: `source_key` enforces at most one source attribution per event, not at least one, so an event with no attribution still gets a chronicle row, just with an empty `source` and `external_id`.
 From `p_source_stats` that same event is absent altogether, because there's no source it could be attributed to, and the chronicle is where it stays visible.
 
@@ -33,6 +35,7 @@ From `p_source_stats` that same event is absent altogether, because there's no s
 The plainness is beside the point; what makes this aggregation worth building is its **form**.
 Catching it up incrementally, rather than rebuilding it from scratch on every event, is correct only because the log is append-only.
 If a row could ever disappear from the log, a minimum such as `first_seen` couldn't be caught up incrementally at all, since nothing about a stored minimum says whether the row that produced it still exists.
+An erasure doesn't make one disappear, and the last section says why that keeps this table as it is.
 That's exactly the property that turns this aggregation into the test of the promise above, and not merely an example of it.
 
 ## Catching up in batches, and what an abort leaves behind
@@ -61,6 +64,41 @@ a store wrapper that raises on the third insert_chronicle
 Four events, not six: the third batch covers events 5 and 6, and its transaction rolled back whole.
 The eight rows are the units of the first four events, and `up_to_id` names those same four.
 Whoever reads the projection at that moment sees less than the log holds and nothing the log doesn't hold.
+
+(catch-up-lock)=
+
+## Two catch-ups of one projection take turns
+
+The bookmark carries the design only if one catch-up at a time moves it.
+Before stage 1c, two catch-ups of one projection needed two `project` runs at once; since then every `redact` catches up as well, beside whatever `project` runs on a schedule, so two at once is the ordinary case.
+
+Each transaction of a catch-up therefore begins by locking the projection's row in `projection_state`, and takes `up_to_id` and the version from the locked row, never from the transaction before.
+That holds for the first transaction, which builds or rebuilds the table, and for every batch after it.
+A second catch-up waits at the row while the first holds it, and then starts where the first committed.
+A projection without a state row has nothing to lock yet, so the first transaction inserts a placeholder row and holds that; a second first build waits at the row's key, inserts nothing, and locks the row the first one committed.
+
+The lock came out of a measurement, not out of caution.
+The final review of stage 1c measured, on 2026-10-05 against PostgreSQL 17, two catch-ups that kept `up_to_id` in memory:
+
+```text
+A (project)  reads event 1 and its units
+             redact event 1 commits as event 2; event 3 is appended
+A            inserts event 1's rows, with their content, and sets its state; uncommitted
+B (redact)   reads 1..3, inserts event 3's rows, deletes event 1's rows,
+             which it can't see yet, and waits for A at the state row
+A            commits; B commits up_to_id 3
+
+p_chronicle: event 1's two rows, with the erased text, at up_to_id 3
+```
+
+A further catch-up called that table up to date, and only a rebuild removed the erased text.
+With the lock, B waits for A, reads `up_to_id 1` from the row A committed, reads the redaction, and deletes the rows.
+`test_two_catch_ups_of_one_projection_take_turns` in `tests/test_projection_worker.py` holds that interleaving, with a control that leaves out the extra append, and `test_two_first_builds_build_once` holds the first build.
+
+The lock settles two catch-ups of one version of the code, and not two versions.
+A catch-up rebuilds whenever the version it finds differs from its own, in either direction, so two releases running against one database would each rebuild what the other built.
+A batch that finds the row at another version than its own, or finds no row, therefore stops with `ProjectionRebuilt` instead of rebuilding in turn: two releases that each rebuilt whenever they met the other's version would take turns at the lock and never finish, while one that stops leaves the other to carry its build to the end.
+The error names the version it found; {ref}`rebuild-a-projection` says what to do, and `test_a_catch_up_stops_when_another_release_rebuilds_under_it` holds it.
 
 ## Why there are no gaps to worry about
 
@@ -104,8 +142,9 @@ Both lines agree after a single event.
 Both still agree after ten events that arrive in the order they happened, because the first one stays the first.
 They part the moment an older event arrives late, which is the ordinary case as soon as yesterday's mail is read in today.
 
-None of this is reachable in `p_chronicle`.
-Each chronicle row stands for one unit and nothing is added up, so a catch-up there can't reach a different answer from a rebuild.
+None of this arithmetic is reachable in `p_chronicle`.
+Each chronicle row stands for one unit and nothing is added up.
+What can part the two paths there is the deletion an erasure brings, and the last section shows why it doesn't.
 That's why the second projection is an aggregation: counts and extremes are the part where the promise is at risk.
 
 Which test fails for which mistake was measured, and the pair of tests is what covers both natural mistakes:
@@ -137,17 +176,18 @@ What the comparison catches is a step that goes wrong on one path only:
 SourceStatsProjection.write merges None instead of the stored row
   -> test_incremental_equals_rebuilt fails
   -> the property fails
-  -> all nine tests in test_projection_derive.py stay green
+  -> all eleven tests in test_projection_derive.py stay green
 ```
 
 That mutation is invisible to every test that runs without a database and to the pinned `first_seen` value as well, and it's the reason the comparison exists.
+The counts in both blocks were measured again on 2026-10-05, and each mutation failed the same tests as before.
 
 Three layers, then, and none of them covers another.
 The pure tests in `test_projection_derive.py` pin the arithmetic where it lives, without a database.
 The pinned `first_seen` value inside the central test catches that same arithmetic end to end: the never-catch-up mutation turns the central test red on that value, and not on the comparison.
 The comparison and the property catch the step that goes wrong on one path only, which neither of the other two layers can see.
 
-Beside the comparison stands a property that interleaves "append some events" and "catch up" in an order drawn at random and compares the result against one rebuild at the end.
+Beside the comparison stands a property that interleaves "append some events," "catch up" and "redact one of them" in an order drawn at random and compares the result against one rebuild at the end.
 Twenty-five examples per run, with `occurred_at` drawn at random as well and sources from a set of three, so that something is aggregated at all.
 
 The version trigger gets the same treatment.
@@ -155,7 +195,7 @@ A projection declares its version in the code, and a catch-up that meets a diffe
 The test poisons a row in `p_source_stats`, raises the version, and finds the poison gone.
 Its control sits right next to it: a catch-up at the unchanged version leaves the poison in place.
 Without that control the first half would show only that the worker writes, not that the version is what set it off.
-Dropping the version comparison from the worker turns both version tests red and leaves the other ten green.
+Dropping the version comparison from the worker turned both version tests red and left the rest of the file green, measured on 2026-10-05, before the catch-up lock added a second comparison to every batch.
 
 ## Two orders, two commands
 
@@ -193,28 +233,41 @@ Silence is therefore a statement: no notice means current and complete.
 
 The third is the one `project` answers.
 A catch-up that empties a table and builds it again looks, in the table, exactly like one that appended a few rows—so `project` names the path the run took, `built`, `caught up`, `rebuilt: version 1 -> 2` or `up to date`, and a version-triggered rebuild stops being invisible.
+`redact`, which catches up as well, names a build or a rebuild it runs in the same words, on standard error.
 What that line reports is the path *this* run took, and one case escapes it: if a run is interrupted after the version check has rewritten the state row but before its first batch commits, the next run finds the state row already at the new version and reports an ordinary catch-up, because the rebuild it continues was recorded nowhere that survived the interruption.
 That's a known limit rather than a bug to fix in the worker: the alternative is a second stored field whose only reader is a sentence on the terminal.
 
-## What a chronicle per unit teaches about erasure
+## How the chronicle follows an erasure
 
-Erasure isn't built, and the shape it will take is fixed already: a tombstone replaces `payload` with SQL `NULL`, and the chain survives that because the event hash covers the payload's digest rather than the payload itself.
-{ref}`tombstone-seam` carries the reasoning for the detour and the price it comes with.
-What the shape leaves alone is `unit`.
-The units stand in a table of their own, and emptying a payload doesn't reach them—so a chronicle built one row per unit goes on showing the content of an erased event, with its `evidence` column empty beside the content.
+Since stage 1c an erasure takes the content of units, and the chronicle follows it.
+That makes it the first projection that deletes rows rather than only adding them, and two rules carry it.
+A unit without content gives no row, because of an erased unit nothing is left to show.
+A redaction deletes the rows of what it erased: every row of the event, or the rows of the units it names.
+{ref}`erasure` describes what a redaction is and what it takes.
 
-The architecture's §4.6 (frozen design record) describes that tombstone and overlooks the units: nothing in it reaches `unit`, and nothing had to, because no reader at unit level existed yet.
-What it does say is the sharper evidence—an erasure takes the proof and not the derived facts, and what disappears is the wording—because the wording is what `unit.content` holds, and a chronicle per unit goes on printing it.
-Stage 1b builds the first one, and the finding comes with it.
-A chronicle per unit means that whoever erases has to erase the units along with the payload, or the content was never erased at all—a demand on the erasure event rather than a decision for this stage to take.
-A projection one row per event would have hidden the question behind an empty payload column, which is worth noticing about findings of this kind: this one comes out of the shape of the projection and not out of any change to the log.
+It takes two rules and not one, because the worker can meet an erasure either way round.
+If it reads an event before the event's redaction, it builds the rows, and deletes them when it reads the redaction.
+If it reads the event only after, the units are tombstones by then, so it builds no row, and the deletion meets nothing.
+Both ways end in the same table, and a rebuild always takes the second, which is why a catch-up still arrives where a rebuild does.
+`test_incremental_equals_rebuilt_with_redactions_before_and_after_the_worker` walks both ways in one log, and the property draws redactions among its steps.
 
-A second consequence sits one table over, and it's the sharper one.
-`p_source_stats.units` counts the units of events the worker has already folded in, and the worker never looks below its bookmark again.
-An erasure that deletes units would therefore leave that count standing at a number the log no longer supports, and no catch-up would correct it.
-Here the disposable half of the promise earns its keep: an erasure event that raises the projection's version gets the count back for nothing, because the table is then built again from what the log holds and nothing but the log decides it.
-A count that no rebuild could reproduce would have been a second copy of the truth, and the erasure would have had to repair it by hand.
+Two details keep the batch boundaries out of the result, and they matter because a catch-up and a rebuild cut the log into different batches.
+Within one batch the rows go in first and the deletions run after, so a redaction takes the rows of a target that still carries what it erased whether it shares a batch with that target or not—an order without its execution, which `verify` reports, but which shouldn't make the two paths part.
+A redaction that names a later event than itself takes nothing, since it can only order the erasure of something before it; taken, it would delete rows in a rebuild and none on the incremental path.
 
-`test_a_tombstoned_event_keeps_its_chronicle_rows_with_evidence_null` pins today's behavior: one event with its payload set to `NULL`, two chronicle rows, `evidence` null in both and the content unchanged.
-The pin is what keeps the finding from being a note somebody may or may not act on.
-An erasure that deletes units turns that test red, and whoever makes it green again has to decide what the chronicle of an erased event shows.
+`redact` catches the projections up itself, after the erasure, so the chronicle stops showing what was erased without waiting for the next `project`.
+The derivation reads redactions now, so the chronicle's version went from 1 to 2, and the first catch-up after the upgrade rebuilds it and says `rebuilt: version 1 -> 2`.
+That catch-up can be a `project` or a `redact`, since `redact` catches up too, and both name the rebuild: `project` on standard output, `redact` on standard error, where its one line on standard output stays alone.
+A rebuild takes as long as reading the whole log does, and a command that rebuilt without a word would look as if it hung.
+That rebuild isn't a formality: a table that version 1 built can still hold the rows of a unit erased since.
+
+The chronicle per unit is also what made this necessary.
+A tombstone that only emptied the payload would have left the wording standing in `unit.content`, and a chronicle one row per unit would have gone on printing it beside an empty `evidence` column.
+So an erasure of an event takes the content of its units too.
+What stays of the older behavior is the tombstone without an order: `test_a_payload_erased_without_a_redaction_keeps_its_chronicle_rows_with_evidence_null` sets a payload to `NULL` by hand, leaves the units standing, and finds their rows with `evidence` empty.
+
+`p_source_stats` doesn't change, and its version stays at 1.
+An erasure leaves the rows of its units in the log as tombstones, so no row disappears, and the append-only argument for catching up a minimum still holds.
+`units` therefore counts the units recorded, erased ones included, and not the units that still carry content.
+A count of units with content is one an erasure would lower below the bookmark, where the worker never looks again, and keeping it right would take arithmetic that subtracts or a rebuild after every erasure.
+`test_the_stats_keep_counting_an_erased_unit` holds the count before and after an erasure, on the incremental path and rebuilt.

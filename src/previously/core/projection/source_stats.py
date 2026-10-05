@@ -8,6 +8,12 @@ caught up incrementally **only because the log is append-only**: were a row
 able to disappear, a minimum would need a rebuild, because a minimum does not
 show whether its carrier still exists ({ref}`projections`).
 
+Erasure does not make a row disappear, and that is tested rather than
+assumed: an erased unit stays in `unit` as a tombstone, so `units` keeps
+counting it, incrementally and rebuilt alike, and this projection's version
+did not move when the chronicle's did
+(`test_the_stats_keep_counting_an_erased_unit`).
+
 The merge arithmetic is here and not in SQL. Done as `ON CONFLICT DO UPDATE
 SET events = events + excluded.events, first_seen = least(…)` the
 correctness of the incremental step would sit in `storage`, and the claim

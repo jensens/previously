@@ -10,7 +10,7 @@ No output below names a directory, so nothing here depends on where you put your
 
 - **Python 3.14**, and **[uv](https://docs.astral.sh/uv/)**, which fetches that version of Python itself if the machine doesn't have it.
 - **PostgreSQL 17** to append to.
-- **Docker**, for the test suite at the end: the tests start their own PostgreSQL container, so they never touch the database below.
+- **Docker**, for the test suite at the end: the tests start their own PostgreSQL container and their own S3 server, so they never touch the database below.
 
 Start a trial database if you don't already have one running:
 
@@ -30,12 +30,13 @@ Clone the repository, then install it with every extra: the test suite and the d
 $ uv sync --all-extras
 Using CPython 3.14.3
 Creating virtual environment at: .venv
-Resolved 74 packages in 0.65ms
-Installed 71 packages in 159ms
+Resolved 101 packages in 0.98ms
+Prepared 1 package in 331ms
+Installed 98 packages in 174ms
 ```
 
-uv then lists every one of the 71 packages it installed.
-This page leaves that list out.
+uv then lists every one of the 98 packages it installed.
+This page leaves that list out, and the two lines before `Prepared` in which uv builds Previously itself, because they name the directory of your checkout, and a warning that uv can't link its files from its cache, which it prints when its cache and your checkout lie on different file systems.
 
 ## Point the tools at the database
 
@@ -56,11 +57,14 @@ INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
 INFO  [alembic.runtime.migration] Will assume transactional DDL.
 INFO  [alembic.runtime.migration] Running upgrade  -> 0001_log, Log, units, idempotency key
 INFO  [alembic.runtime.migration] Running upgrade 0001_log -> 0002_projections, Projections: state, chronicle, source statistics
+INFO  [alembic.runtime.migration] Running upgrade 0002_projections -> 0003_hash_version_2, Hash format version 2: version, salts and unit digests
+INFO  [alembic.runtime.migration] Running upgrade 0003_hash_version_2 -> 0004_event_blob, The blob register: which event names which blob
 ```
 
-Notice that there are two upgrade steps.
+Notice that there are four upgrade steps.
 The first one brings the log, its units, and the idempotency key.
 The second one brings three more tables: one for each derived view, and one that records how far each view has read.
+The third brings hash format 2, in which every event gets a salt of its own, and our event is written in it; the fourth prepares the log for attached files, which this tutorial doesn't use.
 
 ## Submit your first event
 
@@ -83,7 +87,7 @@ This is the first event in the chain, so there's no predecessor to link to.
 
 ```console
 $ uv run previously log
-1	2026-10-04T13:24:54.151385+00:00	observation	52a060a8734b
+1	2026-10-05T08:53:13.103557+00:00	observation	c675a31e2500
 ```
 
 Notice that the chain now has one event.
@@ -122,20 +126,20 @@ This `anchors.txt` is this tutorial's alone, so delete it from your clone once y
 ```console
 $ uv run previously show 1
 id=1 kind=observation
-occurred_at=2026-10-04T13:24:54.151385+00:00
-hash=52a060a8734ba42c073985683adce79da3ba550a9d26902a6f7a60fb451f9f17
+occurred_at=2026-10-05T08:53:13.103557+00:00
+hash=c675a31e25000bc9768a9fa0a08f3467e247667a303c0c43f1af7eaf2c237bc3
 evidence=recollection
-payload={"evidence": "recollection", "text": "The client approved the new homepage design.\n\nNext milestone: content migration starts Monday."}
+payload={"evidence": "recollection"}
   ¶1 The client approved the new homepage design.
   ¶2 Next milestone: content migration starts Monday.
 ```
 
-Notice that the text split into two units at the blank line, numbered `¶1` and `¶2`.
+Notice that the text split into two units at the blank line, numbered `¶1` and `¶2`, and that it stands in those units alone: the payload holds the kind of evidence and nothing else.
 Notice also `evidence=recollection`: the command above didn't pass `--evidence`, and `recollection` is what it defaults to.
 
 :::{note}
 The hash and the timestamps on your screen won't match the ones above, here or in any block below.
-`recorded_at`—the moment you submitted the event—feeds the hash, so the same text submitted at a different time produces a different event, and therefore a different hash.
+`recorded_at`—the moment you submitted the event—feeds the hash, and so does a random salt drawn for the event, so the same text submitted twice produces two different events, and therefore two different hashes.
 Running this tutorial twice, or on two different machines, gives two different hashes, both correct.
 :::
 
@@ -167,8 +171,8 @@ There was nothing left to project.
 
 ```console
 $ uv run previously chronicle
-1	1	2026-10-04T13:24:54.151385+00:00	email	2026-10-03-kickoff@example.org	The client approved the new homepage design.
-1	2	2026-10-04T13:24:54.151385+00:00	email	2026-10-03-kickoff@example.org	Next milestone: content migration starts Monday.
+1	1	2026-10-05T08:53:13.103557+00:00	email	2026-10-03-kickoff@example.org	The client approved the new homepage design.
+1	2	2026-10-05T08:53:13.103557+00:00	email	2026-10-03-kickoff@example.org	Next milestone: content migration starts Monday.
 ```
 
 Notice that each line is one unit, and that each one carries `email` and the message identifier we passed to `append`.
@@ -178,7 +182,7 @@ That source attribution is what makes this a chronicle and not a copy of `log`.
 
 ```console
 $ uv run previously stats
-email	1	2	2026-10-04T13:24:54.151385+00:00	2026-10-04T13:24:54.151385+00:00
+email	1	2	2026-10-05T08:53:13.103557+00:00	2026-10-05T08:53:13.103557+00:00
 ```
 
 Notice that `email` stands at one event and two units, and that the two timestamps are the same moment: the log holds one event, so the first one seen and the last one seen are that event.
@@ -186,39 +190,51 @@ Notice that `email` stands at one event and two units, and that the two timestam
 ## Run the test suite
 
 The test suite needs no `PREVIOUSLY_DSN`.
-It raises its own PostgreSQL container and never touches the database above.
+It raises its own PostgreSQL container, and a RustFS container as the S3 server for the blob tests, and never touches the database above.
 
 ```console
 $ uv run pytest
 ============================= test session starts ==============================
 platform linux -- Python 3.14.3, pytest-9.1.1, pluggy-1.6.0
-Using --randomly-seed=3421205172
+Using --randomly-seed=1676039121
 configfile: pyproject.toml
 testpaths: tests
-plugins: hypothesis-6.168.3, cov-7.1.0, randomly-5.0.0, platformdirs-4.12.2
-collected 272 items
+plugins: randomly-5.0.0, platformdirs-4.12.2, cov-7.1.0, hypothesis-6.168.3
+collected 644 items
 
-tests/test_projection_worker.py ............                             [  4%]
-tests/test_docs_typed_output.py .                                        [  4%]
-tests/test_properties.py .........                                       [  8%]
-tests/test_docs_build.py ......                                          [ 10%]
-tests/test_projection_derive.py .........                                [ 13%]
-tests/test_anchor.py .............                                       [ 18%]
-tests/test_append.py ..............................                      [ 29%]
-tests/test_hashing.py ........................                           [ 38%]
-tests/test_canonical.py ...............                                  [ 43%]
-tests/test_projection_store.py ........                                  [ 46%]
-tests/test_cli.py ..................................................     [ 65%]
-tests/test_units.py .............                                        [ 69%]
-tests/test_rows.py ....                                                  [ 71%]
-tests/test_docs_references.py .....                                      [ 73%]
-tests/test_contracts.py ..                                               [ 73%]
-tests/test_storage.py ............................                       [ 84%]
-tests/test_migrations_dsn.py ...                                         [ 85%]
-tests/test_schema.py .............                                       [ 90%]
-tests/test_verify.py ...........................                         [100%]
+tests/test_migration_0003.py ..                                          [  0%]
+tests/test_schema.py ..................                                  [  3%]
+tests/test_verify.py ................................................... [ 11%]
+.............................                                            [ 15%]
+tests/test_keys.py ..............                                        [ 17%]
+tests/test_blob.py ...................                                   [ 20%]
+tests/test_sealing.py .....................                              [ 23%]
+tests/test_cli.py ...................................................... [ 32%]
+........................................................................ [ 43%]
+........                                                                 [ 44%]
+tests/test_canonical.py ...............                                  [ 47%]
+tests/test_hashing.py ........................................           [ 53%]
+tests/test_s3.py ....................                                    [ 56%]
+tests/test_properties.py ..........                                      [ 57%]
+tests/test_projection_derive.py ...........                              [ 59%]
+tests/test_migration_0004.py .                                           [ 59%]
+tests/test_projection_worker.py ....................                     [ 62%]
+tests/test_docs_typed_output.py .                                        [ 63%]
+tests/test_rows.py ......                                                [ 63%]
+tests/test_append.py ........................................            [ 70%]
+tests/test_chain.py ...............................                      [ 75%]
+tests/test_docs_build.py ......                                          [ 75%]
+tests/test_migrations_dsn.py ...                                         [ 76%]
+tests/test_redaction.py ..........................                       [ 80%]
+tests/test_projection_store.py ..........                                [ 81%]
+tests/test_storage.py ..........................................         [ 88%]
+tests/test_anchor.py .............                                       [ 90%]
+tests/test_units.py .............                                        [ 92%]
+tests/test_contracts.py ....                                             [ 93%]
+tests/test_docs_references.py .....                                      [ 93%]
+tests/test_redact.py .......................................             [100%]
 
-============================= 272 passed in 21.29s =============================
+======================== 644 passed in 90.36s (0:01:30) ========================
 ```
 
 `pytest-randomly` reshuffles the file order on every run and prints its seed, so a hidden dependency between two tests surfaces instead of staying hidden.
@@ -231,3 +247,4 @@ For the full command reference, see {ref}`cli-reference`.
 For why `log` and `chronicle` are two commands, see {ref}`projections`.
 For exactly what goes into the hash you saw above, see {ref}`hash-format`.
 For what the anchor in `anchors.txt` protects, and what it doesn't, see {ref}`external-anchor`.
+This tutorial attaches no file to an event, so that it runs without a second service beside PostgreSQL; to attach one, see {ref}`attach-and-fetch-a-file`.

@@ -13,3 +13,7 @@ Hetzner
 Ceph
 Dalibo
 namespace
+redactions
+ciphertext
+ciphertexts
+plaintext
