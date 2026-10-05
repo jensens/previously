@@ -16,6 +16,7 @@ from previously.core.append import MAX_RETRIES
 from previously.core.chain import link
 from previously.core.chain import prepare
 from previously.core.errors import ChainConflict
+from previously.core.errors import InvalidPayload
 from previously.core.errors import RedactionRefused
 from previously.core.hashing import payload_hash_v2
 from previously.core.hashing import unit_digest
@@ -789,6 +790,18 @@ def test_redacting_a_blob_no_event_uses_is_refused(db: Engine) -> None:
         redact_blob(storage, storage, _OWN, reason="r", recorded_at=LATER)
 
     assert len(_rows(storage)) == 1
+
+
+@pytest.mark.db
+def test_redacting_a_blob_by_something_that_is_no_address_is_refused(db: Engine) -> None:
+    """`core` refuses an address that is no address itself, in the words
+    of the command line, which checks it first and so no longer reaches
+    this line: a second entry point gets the refusal without copying it."""
+    storage = PostgresStorage(db)
+    address = _OWN.upper()
+    with pytest.raises(InvalidPayload, match=f"^{address} is not a blob address: "):
+        redact_blob(storage, storage, address, reason="r", recorded_at=LATER)
+    assert _rows(storage) == []
 
 
 class _StaleReader(PostgresStorage):
