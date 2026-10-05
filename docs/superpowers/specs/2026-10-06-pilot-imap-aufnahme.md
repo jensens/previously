@@ -237,6 +237,13 @@ selbst (§7.3), und Tests halten die Regel fest.
 | `variant_of` | nur bei einer Variante (§3.5): die Message-ID, unter der schon ein anderer Inhalt liegt |
 | `forwarded_in` | nur bei einer Mail aus einem Anhang (§3.6): der Schlüssel der äußeren Mail |
 
+**Antworten** tragen ihre Verweise in den Kopfzeilen: `In-Reply-To` nennt
+die Message-ID der Mail, auf die sie antworten, `References` die Kette davor.
+Beide stehen unter `headers`, und weil `external_id` die Message-ID ist, löst
+jeder Verweis auf ein Event auf. Gesprächsfäden daraus sind eine Ableitung,
+keine Aufnahme: eine spätere Projektion (§11), die sich aus dem Log neu
+aufbauen lässt, ohne erneut einzulesen.
+
 Name, Typ, Größe und Hash jedes Anhangs stehen in `blobs`, nicht ein zweites
 Mal. **Der Text der Mail steht nicht in der Nutzlast**, nur in den Einheiten;
 so tilgt `redact units` ihn wirklich.
@@ -438,6 +445,11 @@ Stufe 1c ist es sicher, dass beide nebeneinander laufen.
   Ordner nie. Wer eine Tilgung zusagt, löscht die Mail auch im Ordner und in
   den Sicherungen des Postfachs; deren Aufbewahrung gehört dann zur Zusage wie
   die von Datenbank und Bucket.
+- **Zitate in Antworten überleben eine Tilgung.** Eine Antwort zitiert meist
+  den Verlauf; wird eine Mail getilgt, bleibt ihr Text in jeder Antwort
+  stehen, die sie zitiert. Wer den Inhalt einer Mail tilgen muss, tilgt auch
+  diese Antworten; finden lassen sie sich über `In-Reply-To` und
+  `References`. Die Anleitung und die Seite zur Tilgung sagen es.
 - **Der Einfachheits-Check** fällt gut aus: ein Kommando mehr, ein Zeitgeber,
   eine Tabelle. Neu ist ein Geheimnis, das Passwort des Postfachs.
 
@@ -528,7 +540,10 @@ Im selben Pull-Request, nach `plone-doc-style:author`.
   (`watermark`); neu: **die Abbildung einer Mail**, als Tabellen.
 - **How-to, neu:** einen Mail-Ordner aufnehmen — Benutzer und Ordner anlegen,
   Angaben setzen, laufen lassen, lesen, was der Lauf sagt; was Tilgen hier
-  heißt.
+  heißt, Ordner und Postfach-Sicherungen und die Antworten, die eine Mail
+  zitieren, eingeschlossen.
+- **Explanation, bestehend:** `erasure.md` nennt die Zitate in Antworten als
+  Grenze der Tilgung bei Mail.
 - **Handoff:** die Ergänzung für kup6s (§6), englisch.
 - **README** und **Landkarte.**
 
@@ -589,6 +604,9 @@ Landkarte.
    Datei) müssen erst umgewandelt oder zerlegt werden — was davon gebraucht
    wird, zeigt, was im Ordner tatsächlich landet. Vom Betreuer am 2026-10-06
    gefragt, „dann wird es nicht vergessen".
-10. **Weiterleitung als zitierter Text** bleibt Text der äußeren Mail (§3.6);
+10. **Gesprächsfäden** als Projektion über `In-Reply-To` und `References`
+    (§3.4); und ob zitierter Verlauf in Antworten in der Chronik ausgeblendet
+    werden soll — Zitate zu erkennen ist Deutung.
+11. **Weiterleitung als zitierter Text** bleibt Text der äußeren Mail (§3.6);
    sie zu zerlegen wäre Deutung, und ob das eine spätere Einheit leisten
    soll, ist offen.
