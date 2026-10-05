@@ -45,11 +45,22 @@ class InvalidDsn(StorageError):
 class ServerUnreachable(StorageError):
     """Connecting to the database failed (review finding W2).
 
-    Translates `sqlalchemy.exc.OperationalError`, which arises while the
-    connection is actually being established — the DSN was valid, and nobody
-    answers at that address, or the server answers and refuses: a wrong
-    password, a database that does not exist. The message quotes libpq's
-    first line, which says which, and never the password.
+    Translates a `sqlalchemy.exc.OperationalError` without a SQLSTATE, which
+    is what a failure while the connection is being established brings — the
+    DSN was valid, and nobody answers at that address, or the server answers
+    and refuses: a wrong password, a database that does not exist. The
+    message names database, host and port, and quotes the first line of the
+    reason, which says which.
+    """
+
+
+class OperationFailed(StorageError):
+    """The database ended an operation after the connection stood: a
+    statement timeout, a shutdown, a disk that is full.
+
+    Translates a `sqlalchemy.exc.OperationalError` that carries a SQLSTATE,
+    other than the ones `TransactionAborted` takes. The message names
+    database, host and port, and the server's reason.
     """
 
 

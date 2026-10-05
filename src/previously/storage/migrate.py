@@ -64,7 +64,8 @@ def migrate(dsn: str) -> Migrated:
 
     The connection comes out of `from_dsn`, the way every command gets one,
     so an unparsable string, a server that does not answer or a password it
-    refuses become the same one sentence as there, without the password.
+    refuses become the same one sentence as there, which names database,
+    host and port and nothing else of the string.
     `command.upgrade` runs inside the same `with`, so a failure to connect on
     Alembic's own connection is translated the same way.
     """
@@ -85,8 +86,12 @@ def migrate(dsn: str) -> Migrated:
     storage = from_dsn(dsn)
     try:
         with storage.autocommit() as conn:
-            conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": MIGRATION_LOCK})
             try:
+                # Inside the `try`: a database that does not let this role
+                # call `pg_advisory_lock` refuses it with a `ProgrammingError`,
+                # which outside would become `MigrationPending`, the advice to
+                # run this very command again.
+                conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": MIGRATION_LOCK})
                 before = MigrationContext.configure(conn).get_current_revision()
                 if before is not None:
                     try:

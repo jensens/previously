@@ -48,6 +48,7 @@ if TYPE_CHECKING:
     from previously.storage.s3 import S3BlobStore
     from sqlalchemy import Connection
     from sqlalchemy import Engine
+    from sqlalchemy import URL
     from typing import IO
 
     import pathlib
@@ -292,57 +293,116 @@ def test_an_unreachable_server_shows_one_sentence(
     sentence = _single_line(capsys.readouterr().err)
     assert "Traceback" not in sentence
     assert "SECRET123" not in sentence
-    # Nothing listens on port 1: the reason is the operating system's, and
-    # it comes after the address, as for a server that answers and refuses.
+    # Nothing listens on port 1: the reason is the operating system's, and it
+    # comes after host, port and database, as for a server that answers and
+    # refuses.
     assert sentence.startswith(
-        "Error: connecting to the database at postgresql+psycopg://user:***@localhost:1/db "
-        "failed: connection to server at "
+        "Error: connecting to database db at localhost:1 failed: connection to server at "
     )
     assert "Connection refused" in sentence
     assert main(["verify"]) == 2
     assert _single_line(capsys.readouterr().err) == sentence
 
 
-def _refused(
-    db: object,
-    capsys: pytest.CaptureFixture[str],
-    monkeypatch: pytest.MonkeyPatch,
-    *,
-    password: str | None = None,
-    database: str | None = None,
-) -> tuple[str, str, str]:
-    """`log` against the session's server with the password or the database
-    of the connection string changed: what it prints on standard output, the
-    one sentence on standard error, and the connection string with its
-    password hidden."""
+def _session_url(db: object) -> URL:
     from sqlalchemy import Engine
 
     assert isinstance(db, Engine)
-    url = db.url.set(password=password) if password else db.url
-    url = url.set(database=database) if database else url
-    monkeypatch.setenv("PREVIOUSLY_DSN", url.render_as_string(hide_password=False))
+    return db.url
+
+
+def _log_with(
+    dsn: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> tuple[str, str]:
+    """`log` with `dsn`: what it prints on standard output, and the one
+    sentence on standard error."""
+    monkeypatch.setenv("PREVIOUSLY_DSN", dsn)
     assert main(["log"]) == 2
     out, err = capsys.readouterr()
-    return out, _single_line(err), url.render_as_string(hide_password=True)
+    return out, _single_line(err)
+
+
+def _no_fragment_of(secret: str, output: str) -> bool:
+    """Whether no eight characters in a row of `secret` stand in `output`:
+    a password cut in two by a parser that read it wrongly shows as a piece,
+    not as itself."""
+    return not any(secret[i : i + 8] in output for i in range(len(secret) - 7))
+
+
+def _wrong_password() -> str:
+    """Drawn at run time, so that no output can hold it by coincidence, and
+    with letters at both ends, so that no port or count can look like a
+    piece of it."""
+    return f"Wrong{secrets.token_hex(12)}Pw"
 
 
 @pytest.mark.db
 def test_a_refused_password_names_libpqs_reason_and_not_the_password(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The server answers and refuses the login. The sentence says that
-    connecting failed and quotes the first line of libpq's message, which
-    names the reason in the server's language: a guess of ours in its place
-    said "does not answer — is PostgreSQL running there", and sent whoever
-    had typed a wrong password to look at the network. The password is drawn
-    at run time, so that no output can hold it by coincidence."""
-    secret = f"wrong-{secrets.token_hex(8)}"
-    out, sentence, hidden = _refused(db, capsys, monkeypatch, password=secret)
+    """The server answers and refuses the login, the password in the usual
+    `user:password@` place. The sentence names host, port and database and
+    nothing else of the connection string, says that connecting failed, and
+    quotes the first line of the reason: a guess of ours in its place said
+    "does not answer — is PostgreSQL running there", and sent whoever had
+    typed a wrong password to look at the network."""
+    url = _session_url(db)
+    secret = _wrong_password()
+    dsn = url.set(password=secret).render_as_string(hide_password=False)
+    out, sentence = _log_with(dsn, capsys, monkeypatch)
     # First, so that a password in the output fails on this line and no other.
-    assert secret not in out + sentence
+    assert _no_fragment_of(secret, out + sentence)
     assert out == ""
-    assert sentence.startswith(f"Error: connecting to the database at {hidden} failed: ")
+    assert sentence.startswith(
+        f"Error: connecting to database {url.database} at {url.host}:{url.port} failed: "
+    )
     assert "FATAL:  password authentication failed for user " in sentence
+
+
+@pytest.mark.db
+def test_a_password_in_the_query_is_not_printed(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """libpq takes the password as a parameter of the query as well,
+    `…/database?password=…`. Measured at `3c8e506`: the sentence printed the
+    whole connection string with the query, and the password in clear —
+    `render_as_string(hide_password=True)` hides only the one in
+    `user:password@`. The sentence names host, port and database now, so the
+    query never reaches it."""
+    url = _session_url(db)
+    secret = _wrong_password()
+    dsn = url.set(password=None).render_as_string(hide_password=False) + f"?password={secret}"
+    out, sentence = _log_with(dsn, capsys, monkeypatch)
+    assert _no_fragment_of(secret, out + sentence)
+    assert out == ""
+    assert sentence.startswith(
+        f"Error: connecting to database {url.database} at {url.host}:{url.port} failed: "
+    )
+    assert "FATAL:  password authentication failed for user " in sentence
+
+
+@pytest.mark.db
+def test_a_password_with_an_unencoded_at_sign_is_refused_before_connecting(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An `@` in a password that is not percent-encoded ends the password
+    there for the parser, and the rest of it reads as part of the host.
+    Measured at `3c8e506`: that rest was printed as the host, and the reason
+    repeated it. A second `@` before the query is refused before anything
+    connects, and the sentence names no piece of the connection string."""
+    url = _session_url(db)
+    first, second = _wrong_password(), _wrong_password()
+    dsn = (
+        f"postgresql+psycopg://{url.username}:{first}@{second}@{url.host}:{url.port}/{url.database}"
+    )
+    out, sentence = _log_with(dsn, capsys, monkeypatch)
+    assert _no_fragment_of(first, out + sentence)
+    assert _no_fragment_of(second, out + sentence)
+    assert (out, sentence) == (
+        "",
+        "Error: PREVIOUSLY_DSN holds more than one `@` before the host — a password "
+        "with special characters has to be percent-encoded, such as `%40` for `@`",
+    )
 
 
 @pytest.mark.db
@@ -351,9 +411,12 @@ def test_a_missing_database_names_libpqs_reason(
 ) -> None:
     """A database name the server does not know: the same sentence, with
     the server's reason."""
-    out, sentence, hidden = _refused(db, capsys, monkeypatch, database="no_such_database")
+    url = _session_url(db).set(database="no_such_database")
+    out, sentence = _log_with(url.render_as_string(hide_password=False), capsys, monkeypatch)
     assert out == ""
-    assert sentence.startswith(f"Error: connecting to the database at {hidden} failed: ")
+    assert sentence.startswith(
+        f"Error: connecting to database no_such_database at {url.host}:{url.port} failed: "
+    )
     assert 'FATAL:  database "no_such_database" does not exist' in sentence
 
 

@@ -32,6 +32,7 @@ from previously.contract.rows import UnitRow
 from previously.storage.errors import ChainPositionTaken
 from previously.storage.errors import InvalidDsn
 from previously.storage.errors import MigrationPending
+from previously.storage.errors import OperationFailed
 from previously.storage.errors import ServerUnreachable
 from previously.storage.errors import SourceKeyTaken
 from previously.storage.errors import TransactionAborted
@@ -70,6 +71,7 @@ if TYPE_CHECKING:
     from contextlib import AbstractContextManager
     from datetime import datetime
     from sqlalchemy import Table
+    from sqlalchemy import URL
 
 # Three indexes mark the same class of conflict. Ruling T6-b had excluded
 # event_hash_idx here, on the grounds that a duplicate `hash` means "the same
@@ -106,6 +108,21 @@ def diagnosis(error: DBAPIError, field: str) -> str | None:
     diag = getattr(error.orig, "diag", None)
     value = getattr(diag, field, None)
     return value if isinstance(value, str) else None
+
+
+def _where(url: URL) -> str:
+    """The database, host and port of `url`, for a message, and nothing else
+    of it.
+
+    Never the user part and never the query: a password stands in either.
+    `render_as_string(hide_password=True)` stood here until 2026-10-05 and
+    hid only the one in `user:password@`; a password given as
+    `?password=…`, which libpq takes as well, was printed in clear.
+    """
+    database = url.database or "(default)"
+    host = url.host or "(default host)"
+    port = "" if url.port is None else f":{url.port}"
+    return f"database {database} at {host}{port}"
 
 
 def _constraint_name(error: IntegrityError) -> str | None:
@@ -231,21 +248,25 @@ class PostgresStorage:
                     "the database aborted the operation in a conflict with a concurrent one; "
                     "run the command again"
                 ) from error
-            # That connecting failed, and libpq's own first line on why: a
+            where = _where(engine.url)
+            if isinstance(state, str):
+                # The server answered after the connection stood, and said
+                # why with a SQLSTATE: a statement timeout, a shutdown, a disk
+                # that is full. Not a failure to connect, so not that sentence.
+                reason = diagnosis(error, "message_primary") or state
+                raise OperationFailed(f"the operation on {where} failed: {reason}") from error
+            # No SQLSTATE: psycopg gives none to a failure to connect, measured
+            # with psycopg 3.3.6, because it builds that error out of the
+            # client library's text alone. The reason is quoted and never
+            # matched, since parts of it are in the server's language: a
             # refused password, a database that does not exist, nothing
-            # listening. psycopg gives no SQLSTATE for a failure at connect
-            # time — it builds the error out of libpq's text alone, measured
-            # with psycopg 3.3.6 — and the text is in the server's language,
-            # so it is quoted and never matched. Before, one guess stood here
-            # for all three: "does not answer — is PostgreSQL running there",
-            # which sent whoever had a wrong password to look at the network.
-            # The first line only: libpq lists every address it tried below
-            # it. The prefix `connection failed: ` is psycopg's, not libpq's.
+            # listening. Before, one guess stood here for all three, "does not
+            # answer — is PostgreSQL running there", which sent whoever had a
+            # wrong password to look at the network. The first line only: the
+            # lines below list every address that was tried. The prefix
+            # `connection failed: ` is psycopg's own.
             reason = str(error.orig).partition("\n")[0].removeprefix("connection failed: ")
-            address = engine.url.render_as_string(hide_password=True)
-            raise ServerUnreachable(
-                f"connecting to the database at {address} failed: {reason}"
-            ) from error
+            raise ServerUnreachable(f"connecting to {where} failed: {reason}") from error
         except ProgrammingError as error:
             # `previously migrate` and not `alembic upgrade head`: an installed
             # previously has no `alembic.ini` and no checkout to run Alembic
@@ -872,6 +893,19 @@ def from_dsn(dsn: str) -> PostgresStorage:
     2026-10-05 to make `previously project` over 3,000 events take about
     0.75 s instead of 0.55 s, a connection per transaction.
     """
+    # A second `@` before the query is a password whose `@` is not
+    # percent-encoded. The parser ends the password at the first one and reads
+    # the rest of it as part of the host, which a message then printed —
+    # measured on 2026-10-05, in the host and again in the reason. Refused
+    # here, before anything connects, and the sentence names no piece of the
+    # string. Counted over everything before the query and not only up to the
+    # first `/`, because SQLAlchemy lets a password hold a `/`: `a@b/c@host`
+    # put `b/c` into the host the same way.
+    if dsn.partition("://")[2].partition("?")[0].count("@") > 1:
+        raise InvalidDsn(
+            "PREVIOUSLY_DSN holds more than one `@` before the host — a password with "
+            "special characters has to be percent-encoded, such as `%40` for `@`"
+        )
     try:
         engine = create_engine(dsn)
     except ArgumentError as error:

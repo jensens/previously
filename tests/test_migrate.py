@@ -380,9 +380,68 @@ def test_cli_migrate_translates_a_failure_on_alembics_own_connection(
     out, err = capsys.readouterr()
     assert out == ""
     assert len(err.splitlines()) == 1, err
-    assert err.startswith("Error: connecting to the database at ")
+    url = make_url(empty_dsn)
+    assert err.startswith(f"Error: connecting to database {url.database} at {url.host}:{url.port}")
     assert "too many connections for role" in err
     assert role.password not in err
+
+
+@pytest.mark.db
+def test_cli_migrate_names_an_error_after_connecting_as_one_of_the_operation(
+    empty_dsn: str,
+    engine: Engine,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A database with a statement timeout of half a second, and a `migrate`
+    that waits longer than that for the lock the test holds: the server
+    cancels the wait with SQLSTATE `57014`. That is not a failure to connect —
+    psycopg gives a failure to connect no SQLSTATE, this one has one — so the
+    sentence says that the operation failed, with the server's reason."""
+    url = make_url(empty_dsn)
+    admin = engine.execution_options(isolation_level="AUTOCOMMIT")
+    with admin.connect() as conn:
+        conn.execute(text(f"ALTER DATABASE {url.database} SET statement_timeout = '500ms'"))
+    holder_engine = create_engine(empty_dsn)
+    monkeypatch.setenv("PREVIOUSLY_DSN", empty_dsn)
+    try:
+        with holder_engine.connect() as holder:
+            holder.execute(text("SELECT pg_advisory_lock(:key)"), {"key": MIGRATION_LOCK})
+            assert main(["migrate"]) == 2
+    finally:
+        holder_engine.dispose()
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the operation on database {url.database} at {url.host}:{url.port} failed: "
+        "canceling statement due to statement timeout\n",
+    )
+
+
+@pytest.mark.db
+def test_cli_migrate_as_a_role_that_may_not_take_the_lock_names_the_reason(
+    role: Role,
+    empty_dsn: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hardened database that does not let every role call
+    `pg_advisory_lock`. Measured at `3c8e506`, with the lock statement
+    outside the `try` that translates a refusal: `migrate` answered "database
+    schema incomplete — `previously migrate` has not run yet", the advice to
+    run itself again."""
+    admin = create_engine(empty_dsn, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            conn.execute(text("REVOKE EXECUTE ON FUNCTION pg_advisory_lock(bigint) FROM PUBLIC"))
+    finally:
+        admin.dispose()
+    monkeypatch.setenv("PREVIOUSLY_DSN", role.on(empty_dsn))
+    assert main(["migrate"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the database refused the migration to {HEAD}: "
+        "permission denied for function pg_advisory_lock\n",
+    )
 
 
 @pytest.mark.db
