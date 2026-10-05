@@ -14,13 +14,6 @@ NET="previously-smoke-$$"
 PG="$NET-pg"
 S3="$NET-s3"
 WORK="$(mktemp -d)"
-# The container runs as uid 1000 and writes into these two directories. The
-# host user may be another one (a GitHub runner is 1001), so both are made here,
-# owned by the host user and open to everybody: a directory the container made
-# would belong to uid 1000, and `rm -rf` in `cleanup` could not remove the key
-# inside it.
-mkdir "$WORK/identities"
-chmod 0777 "$WORK" "$WORK/identities"
 
 cleanup() {
   docker rm -f -v "$PG" "$S3" > /dev/null 2>&1 || true
@@ -44,8 +37,14 @@ for _ in $(seq 1 60); do
   sleep 1
 done
 
+# Every container but the one that checks the default user runs as the host
+# user. What it writes into $WORK then belongs to the host user, which can read
+# and remove all of it whatever its uid is (a GitHub runner is 1001): a file the
+# container wrote as uid 1000 would be unreadable for `cmp` (`blob get` writes
+# mode 0600) and the key could not be removed. It also proves the image works
+# under a foreign uid, as it does in Kubernetes with `runAsUser`.
 run() {
-  docker run --rm --network "$NET" -v "$WORK:/work" -w /work \
+  docker run --rm --user "$(id -u):$(id -g)" --network "$NET" -v "$WORK:/work" -w /work \
     -e PREVIOUSLY_DSN="postgresql+psycopg://previously:previously@$PG:5432/previously" \
     -e PREVIOUSLY_BLOB_ENDPOINT="http://$S3:9000" \
     -e PREVIOUSLY_BLOB_REGION=us-east-1 \
@@ -58,7 +57,7 @@ run() {
 }
 
 echo "::group::the image runs as user 1000"
-test "$(run --entrypoint id "$IMAGE" -u)" = 1000
+test "$(docker run --rm --entrypoint id "$IMAGE" -u)" = 1000
 echo "::endgroup::"
 
 echo "::group::installed versions match uv.lock"
