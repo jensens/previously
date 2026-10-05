@@ -90,6 +90,11 @@ Rehearse on a regular schedule that a blob opens with the backup alone, without 
     The rehearsal holds when `age` opens the object and the hash is the address.
 
 5.  Delete `content`, `blob.age` and `identity.txt`: the first is the plaintext, and the last is the secret.
+    Unset the credentials of the store you exported for the fetch:
+
+    ```shell
+    unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_DEFAULT_REGION
+    ```
 
 If the object is sealed to a different key than the identity you took, `age` refuses it:
 
@@ -97,7 +102,8 @@ If the object is sealed to a different key than the identity you took, `age` ref
 age: error: no identity matched any of the recipients
 ```
 
-The object names the recipient it's sealed to in its metadata `key-id`, and any S3 tool shows it:
+The object names the recipient it's sealed to in its metadata `key-id`, and any S3 tool shows it.
+The example below shows an object sealed to the second key of this guide, the one *Change the key* creates:
 
 ```console
 $ aws --endpoint-url "$PREVIOUSLY_BLOB_ENDPOINT" s3api head-object --bucket $PREVIOUSLY_BLOB_BUCKET --key 109d441a2425851023028341d7ce024fa010d2dfe1d89a49a543c3f8c74aacc9
@@ -114,7 +120,8 @@ $ aws --endpoint-url "$PREVIOUSLY_BLOB_ENDPOINT" s3api head-object --bucket $PRE
 ```
 
 Take the backup of the file with that name, and try again.
-If no backup of it exists, every object sealed to that key is lost; rehearse with the backups of the other keys as well, now.
+If no backup of it exists, copy that file from the identity directory into the backup now, before anything else.
+Only if the identity directory doesn't hold it either is every object sealed to that key lost; then rehearse with the backups of the other keys as well, now.
 
 ## Change the key
 

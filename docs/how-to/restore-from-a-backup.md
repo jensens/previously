@@ -149,6 +149,13 @@ previously verify --blobs
 ```
 
 It needs the blob settings; see {ref}`configuration-reference`.
+On a restored or new machine, two of its answers are about the identities and not about the blobs:
+
+- `Error: PREVIOUSLY_BLOB_IDENTITIES is not a directory: <path>`, with exit code 2, means that the setting names no directory on this machine.
+  Restore the directory of identities from its backup, point the setting at it, and run the check again.
+- `cannot be opened` for every blob, with exit code 1, means that the directory exists and holds no identity for the keys of those blobs.
+  Restore the missing identity files from their backup, as {ref}`keep-the-blob-key-safe` shows, before you read the findings as damage.
+
 Read its findings apart from the chain check: a `missing` blob here doesn't mean that the restore failed.
 
 A blob reported as `missing` after a restore is, as a rule, one that an erasure deleted after the point you restored to.
@@ -157,7 +164,7 @@ Other erasures since that point came back without any finding: an erased payload
 
 Repeat the erasures since the point you restored to whose target the restored log still holds.
 The log can't tell you which erasures those were: its record of them is what the restore took away.
-Take them from a record kept outside the database, which names for each erasure the command, its date, and for `redact event` and `redact units` the target's `id` and its `hash`; {ref}`erase-something` shows where to note them.
+Take them from a record kept outside the database, which names for each erasure the command, its date, and for `redact event` and `redact units` the target's `id`, its `hash` and its source key; {ref}`erase-something` shows where to note them.
 If you promise erasure to anybody, keep that record from the first erasure on; without it, nothing tells you what to repeat.
 
 Don't repeat a `redact event` or `redact units` by its `id` alone.
@@ -174,6 +181,10 @@ previously show 42
 - If `show` prints a different hash, or `No event 42`, the event you erased was appended after the point you restored to and went with the restore.
   Don't repeat that erasure: it would erase another event, and nothing undoes an erasure.
 
+An event that went with the restore can come back: when its source delivers the same submission again, it's appended under a new `id`, with a new hash.
+The source key in your record says that it's the submission you erased.
+No command finds an event by its source key; `previously chronicle` prints the source key beside each unit, so look for it there, and erase the event you find under its new `id`, noting the new `id` and hash in your record.
+
 A `redact blob` names the blob by its address, which a restore doesn't change.
 Repeated, it erases the blob for every event that uses it when it runs, including an event that attached the same content again after the restore.
 Repeat the erasures of blobs before anything else appends to the restored log, so that they reach no event the first erasure didn't reach.
@@ -181,5 +192,11 @@ See {ref}`cli-reference` for `show` and `anchor`.
 
 Then run `previously verify --blobs` again.
 Once every erasure is repeated, no `missing` finding is left.
-An object uploaded after the point you restored to stays in the bucket, and no event of the restored log names it, so no check reports it.
+
+A blob that was erased before the point you restored to, and attached again after it, lies in the bucket again, while the restored log names it only through erased references.
+`previously verify --blobs` reports it as `erased and still present`, and returns 1.
+Run `previously redact blob` with its address and a reason: it finds the blob covered, prints `already redacted by event <id>`, writes no redaction, and deletes the object.
+Then run `previously verify --blobs` once more.
+
+An object uploaded after the point you restored to, for a content that no event of the restored log names, stays in the bucket, and no check reports it.
 For why losing the passphrase means losing the backups for good, see {ref}`backup-encryption`.

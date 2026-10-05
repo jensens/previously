@@ -72,4 +72,18 @@ Until the next `previously project`, or a `previously redact`, which catches up 
 
 To force the statistics the same way, use `'source-stats'` in place of `'chronicle'` in the `DELETE`.
 
+A `previously project` or `previously redact` that runs while you delete the row stops with exit code 2 and a sentence that the projection `has no state row`; run it again once the `DELETE` is done.
+
+## When a catch-up says that the projection was rebuilt while it ran
+
+If `previously project`, or a `previously redact` in the sentence of an unfinished redaction, reports that a projection `was rebuilt while this catch-up ran: it stands at version <n>`, another version of the code is catching up the same database.
+Each release rebuilds the table to its own version whenever it finds another, so the two undo each other's work.
+
+1.  Find the process of the release that isn't meant to run against this database, such as a scheduled `previously project` of the old or the new version, and stop it.
+2.  Run `previously project` again with the release meant to run against this database.
+    Its line for that projection begins with `rebuilt:` if the other release left the table at its own version.
+3.  If the error came from `previously redact`, run the same `redact` command again with that release; it finds its target covered and finishes.
+
+For the wording of the error, see {ref}`cli-reference`.
+
 For why a rebuild yields the same rows as the incremental path, see {ref}`projections`.

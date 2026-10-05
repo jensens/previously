@@ -65,6 +65,7 @@ wrote 62 bytes to minutes-copy.txt
 ```
 
 `blob get` writes the file only once its content matched the address, and makes it readable by its owner only.
+If a file of that name exists, `blob get` replaces it without asking; choose a name nothing else uses.
 If it returns `1` with `is erased`, an erasure took the blob, and nothing fetches it any longer.
 For every other error and its exit code, see {ref}`cli-reference`.
 

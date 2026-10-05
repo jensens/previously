@@ -96,7 +96,19 @@ It needs the five settings of the store and the directory of identities; see {re
 Treat exit code `1` as an alarm, as for the chain.
 The four findings it adds name the blob, and each stands under the first event that names it.
 A blob that appears as `missing` after a restore of the database is the case {ref}`restore-from-a-backup` covers.
-Exit code `2` means that the check couldn't be made, for example because the store didn't answer, and says nothing about the blobs; run it again once the cause on standard error is gone.
+If every blob of one key appears as `cannot be opened`, first check that the directory of identities holds that key's file, above all on a restored or new machine; {ref}`keep-the-blob-key-safe` says where its backup is.
+Exit code `2` means that the check couldn't be made and says nothing about the blobs; run it again once the cause on standard error is gone.
+The causes include a store that didn't answer, and a `PREVIOUSLY_BLOB_IDENTITIES` that names no directory on this machine:
+
+```console
+$ previously verify --blobs
+Error: PREVIOUSLY_BLOB_IDENTITIES is not a directory: /srv/previously/identities
+```
+
+The settings are read before the chain is checked, so this error comes alone; an error of the store while the blobs are checked comes after the pass over the chain, and that pass's findings still go to standard output beside it.
+
+The check can't see a bucket with versioning or object lock: there, deleting an erased blob keeps a copy, and `--blobs` asks only after the current object.
+Nothing in Previously checks the bucket for it; {ref}`run-a-blob-store-on-your-machine` shows how to ask a bucket for both.
 
 For the format of an anchor line and the three findings an anchor can produce, see {ref}`cli-reference`.
 For what an anchor closes, and what it leaves open, see {ref}`external-anchor`.
