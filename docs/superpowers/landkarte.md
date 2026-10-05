@@ -102,7 +102,7 @@ ihren Beleg im Prüfpunkt.
 | Tilgung als Event, die Einheiten und Projektionen mitnimmt — **gebaut mit Stufe 1c** | Inhalte Dritter im Log (Mail, Dokumente) — also der Pilot | ein Grabstein war von einer Fälschung nicht zu unterscheiden, und die Einheiten blieben stehen |
 | Ein Betrieb mit Sicherung, Restore-Probe und Anker-Routine | Daten, deren Verlust weh tut | bisher gibt es nur Wegwerf-Datenbanken |
 | Echte, gemischtsprachige Einheiten im Log | die Messung zur Textsuche und die Wahl des Embedding-Modells | beide verlangen einen Testsatz aus echten gemischten Einheiten (Architektur §11, Nachtrag) |
-| Warteschlange mit Sperre auf der Zustandszeile | der erste asynchrone Produzent | zwei gleichzeitige Läufe einer Projektion schreiben heute beide |
+| Warteschlange (die Sperre auf der Zustandszeile ist gebaut, Commit `3ae7038`) | der erste asynchrone Produzent | ein asynchroner Produzent braucht Entprellung und Wiederholung |
 | Das Gate | jeder Modellaufruf | Regel 2 der Architektur: nur `gate` ruft Modelle |
 | Prüfung, ob Claude Code MRTR und die Tasks-Erweiterung kann | blockierende Rückfragen und lange Läufe über MCP | Architektur §13 |
 | Die Rechtsfrage zur Gesprächsaufzeichnung | Teil 2, Voice | Entwurf §16 |
@@ -161,6 +161,14 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
   Schlüssel bekannt bleibt und nicht wieder aufgenommen wird, ist im ruhenden
   Pilot-Spec entworfen; der Hash, an dem er Inhalt wiedererkennt, trüge kein
   Salz (1c §12 Punkt 12).
+- Nach einer Wiederherstellung kann ein getilgtes Event, das mit ihr verloren
+  ging, neu eingeliefert werden und trägt dann eine neue `id` und einen neuen
+  Hash; die Prüfung am Hash weist es zu Recht ab. Die Aufzeichnung einer
+  Tilgung führt deshalb den Quellschlüssel (`erase-something.md`,
+  `restore-from-a-backup.md`). Kein Kommando findet ein Event an seinem
+  Quellschlüssel: `show` druckt ihn nicht, nur `chronicle` neben jeder Einheit,
+  die dort eine Zeile hat. Für den Piloten, dessen Aufnahme ein Postfach erneut
+  liest (Endprüfung der Doku, Befund 12; P-1c).
 
 ### Feststellungen und Entitäten (ohne Teilprojekt)
 
@@ -220,7 +228,16 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
 - Die Projektionsnamen stehen zweimal: in `core` und als Abbildung auf die
   Tabelle in `storage` (PP, A2).
 - `_catch_up_after` in `cli.py` hört an der ersten Projektion auf, die
-  scheitert; heute folgenlos, weil beide dasselbe Log lesen (P-1c).
+  scheitert, und nennt die übrigen nicht: scheitert `chronicle`, wird
+  `source-stats` weder nachgezogen noch im Satz genannt. Eine gescheiterte
+  Löschung hält das Nachziehen seit Commit `b9b0cdc` nicht mehr auf (P-1c;
+  Nachprüfung der Endkorrektur).
+- Zwei Releases gegen eine Datenbank bauen eine Projektion gegeneinander neu:
+  ein Nachziehen baut neu, sobald die Fassung, die es findet, von seiner
+  abweicht, in beide Richtungen. `ProjectionRebuilt` hält einen Lauf an, der
+  das zwischen zwei Stapeln bemerkt (Commit `3ae7038`); das Hin und Her über
+  Läufe hinweg verhindert nichts. Die Anleitung `rebuild-a-projection.md` sagt,
+  den Prozess der anderen Release anzuhalten (Endkorrektur, Teil 2).
 - `p_chronicle` hält den Inhalt jeder Einheit ein zweites Mal und ist damit
   größer als die Tabelle `unit`: 1,9 GB gegen 1,4 GB bei 700 000 Events; ihr
   Schreiben ist mit 48 % der größte Posten eines Neubaus (PP, Bericht C).
@@ -257,8 +274,17 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
 - `redact units` lässt den Wortlaut der Einheiten in der Nutzlast stehen, wenn
   die Nutzlast ihn wiederholt — und `append --text` legt den ganzen Text unter
   `text` ab. An einem Event der Kommandozeile erreicht nur `redact event` den
-  Text. Gemessen am 2026-10-05 (Aufgabe 8, P-1c); steht auf `erasure.md` und
-  in der Anleitung; zu entscheiden mit dem Einwurf-Vertrag, wo der Text steht.
+  Text. Gemessen am 2026-10-05 (Aufgabe 8, P-1c). Seit den Commits `4bbb305`
+  und `1b696a6` sagt das Kommando es auf der Standardfehlerausgabe und in
+  seiner Hilfe, auch bei einer unfertigen Tilgung (ruling E-3 der Endkorrektur);
+  `cli.md`, `erasure.md`, `erase-something.md` und das README sagen es dort,
+  wo man entscheidet. Ob `append --text` den Text weiter in die Nutzlast legt,
+  entscheidet der Betreuer; offen, mit dem Einwurf-Vertrag.
+- `redact_event` nimmt die Blobs eines Events nur aus dem Register. An einem
+  beschädigten Register, das `verify` meldet, nennt und löscht die Tilgung
+  einen Blob nicht, den nur die Nutzlast nennt. Mit der Nutzlast vereinigen
+  oder die Tilgung abweisen — nicht entschieden (ruling E-6 der
+  Endkorrektur).
 - Ein Schlüssel je Betroffenem und das Krypto-Schreddern (1c §12 Punkt 6).
 - Das Ziel von `redact event` und `redact units` ist eine `id`, und eine `id`
   überlebt keine Wiederherstellung: sie vergibt jede `id` über ihrer Spitze
@@ -267,7 +293,10 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
   `restore-from-a-backup.md` lässt den Leser das Ziel am `hash` bestätigen,
   den er bei der Tilgung notiert hat; ob `redact` selbst sein Ziel gegen
   etwas prüfen soll, das eine Wiederherstellung überlebt — den `hash` des
-  Events —, ist nicht entschieden (Prüfung der Aufgabe 8, P-1c).
+  Events —, ist nicht entschieden (Prüfung der Aufgabe 8, P-1c). Die
+  Codeprüfung der Endprüfung schlägt eine Option `--hash` an `redact event`
+  und `redact units` vor, gegen die gesperrte Zeile geprüft, bevor etwas
+  geschrieben wird — empfohlen vor dem Piloten.
 
 ### Blobs und Speicher
 
@@ -309,8 +338,6 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
 
 - Tabelle `job`, Entprellung, Wiederholung, `SKIP LOCKED` (A §7.1; 1b §10
   Punkt 4).
-- Sperre auf der Zustandszeile: zwei gleichzeitige Läufe einer Projektion
-  schreiben heute beide (1b §10 Punkt 8, F11).
 
 ### Betrieb (ohne Teilprojekt)
 
@@ -327,9 +354,16 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
   `key-id` so zurückgibt; was ein Leser sieht, während ein Objekt ersetzt
   wird (bei RustFS bricht sein Lesen ab); ob ein bedingtes Schreiben
   angenommen wird; ob Löschen ohne Version und ohne Löschmarke löscht (1c §12
-  Punkt 11; P-1c).
+  Punkt 11; P-1c). Nichts prüft, dass der Bucket ohne Versionierung und ohne
+  Objektsperre ist; ein Bucket mit einem von beiden behält getilgte Blobs, und
+  `verify --blobs` sieht es nicht, könnte es aber melden (Endprüfung der Doku,
+  Befund 5).
 - Ein Tresor hinter der Schlüssel-Naht; heute ein Verzeichnis mit einer Datei
   je Empfänger (1c §12 Punkt 7).
+- Keine Seite sagt einem Betreiber, der von Stufe 1b kommt, dass er
+  `alembic upgrade head` ausführen muss, und was mit seinen Events im Format 1
+  ist: kein Salz, Einheiten nur zusammen tilgbar (Endprüfung der Doku, als
+  Lücke des Projekts zurückgestellt).
 - Die Aufbewahrungsfrist der Sicherungen ist Teil der Tilgungszusage: die der
   Datenbank und des WAL-Archivs, und die der Sicherungen oder Kopien des
   Buckets, wenn es sie gibt (1c §4.5, §7; P-1c). Steht auf `erasure.md`,
@@ -392,6 +426,11 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
 - `show` druckt Einheiten roh; eine Einheit mit Umbruch bricht die
   Zeilenstruktur (1b §10 Punkt 3).
 - Eine Obergrenze für `--limit` (P-1b).
+- `N blobs match` zählt getilgte, zu Recht fehlende Blobs mit (Endprüfung,
+  ruling E-6 der Endkorrektur).
+- Die Hilfe von `verify --blobs` sagt „also read every blob in the store and
+  check it"; gelesen wird jeder Blob, den das Register nennt und der liegen
+  muss, nach einem getilgten wird nur gefragt (Endkorrektur, Teil 2).
 - Die Kommandozeile ist mit zehn Kommandos, Ausgabeverträgen und Rückgabecodes
   faktisch eine Oberfläche mit Vertrag geworden, obwohl sie nur der Einstieg
   ist, bis der MCP-Server steht (PP, A2 §11 Zeile 8).
@@ -408,8 +447,14 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
   gemessene Mutation (P-AA).
 - `ruling`-Labels im Baum lösen nicht auf; das Hauptbuch der Stufe 1a ist
   verloren (`CLAUDE.md`).
-- Der Testlauf ist mit Stufe 1c von rund 31 s auf 73 s gewachsen (`606 passed in 72.97s`, gemessen am 2026-10-05): ein
+- Der Testlauf ist mit Stufe 1c von rund 31 s auf 87 s gewachsen (`632 passed in 86.80s`, gemessen am 2026-10-05 nach der Endkorrektur): ein
   zweiter Container, und Tests, die wirklich hochladen (P-1c).
+- Die neun Befunde der Kette selbst stehen seit der Endkorrektur in `cli.md`,
+  aber `tests/test_docs_references.py` hält nur die Blöcke, die es mit ihrem
+  Einleitungssatz kennt, und zählt dreizehn; den neuen Block hält kein Test.
+  Am 2026-10-05 mit den Helfern des Tests per Skript geprüft, alle sieben
+  Zeilen stimmen. Ihn aufzunehmen ist eine Änderung an `tests/` (Endkorrektur,
+  Teil 2).
 - Der Zitat-Test in `tests/test_docs_references.py` lässt hinter einem
   eingesetzten Wert am Satzende beliebigen Text zu; eine Verschärfung auf
   „kein Leerzeichen im eingesetzten Ende" bräche an Sätzen, die mit einem
@@ -480,6 +525,10 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
 - ~~`evidence` steht in der Nutzlast; eine Tilgung nimmt die Belegart mit~~
   (PP, A1 Zeilen 10 und 11) — entschieden: die Belegart geht mit der Nutzlast,
   `erasure.md` sagt es; Stufe 1c, Commit `a0377ba`.
+- ~~Sperre auf der Zustandszeile: zwei gleichzeitige Läufe einer Projektion
+  schreiben heute beide~~ (1b §10 Punkt 8, F11) — Endkorrektur, Commit
+  `3ae7038`: jede Transaktion eines Nachziehens sperrt die Zustandszeile und
+  liest Lesezeichen und Fassung aus ihr.
 - Die Unterart einer Handlung hat einen Ort, die Nutzlast unter `action`, und
   `verify` kennt eine erste Regel je Art, für `action` (PP, A1 S2 und S3, je
   zur Hälfte; die andere Hälfte steht oben unter *Feststellungen und
