@@ -139,10 +139,13 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
   S7).
 - `RawEvent` ohne `raw: bytes` und ohne `channel_identities`, gegen
   Architektur §6.2; ein Grund ist nirgends aufgeschrieben (PP, A1 Zeile 12).
-- `RawEvent.payload` steht in keinem Vertrag der Architektur, und die
-  Kommandozeile legt den Volltext dort ab (PP, A1 Zeile 13). Damit steht der
-  Text dreimal in der Datenbank — Nutzlast, Einheiten, `p_chronicle` —, und
-  aus 1 GB Text werden 4,5 GB (PP, Bericht C).
+- `RawEvent.payload` steht in keinem Vertrag der Architektur (PP, A1 Zeile
+  13). Bis Commit `09c5d81` legte die Kommandozeile den Volltext dort ab, und
+  der Text stand dreimal in der Datenbank — Nutzlast, Einheiten,
+  `p_chronicle` —; aus 1 GB Text wurden 4,5 GB (PP, Bericht C). Seitdem steht
+  der Text eines `append --text` zweimal, in den Einheiten und in
+  `p_chronicle`; die Zahl aus Bericht C ist mit der Kopie gemessen und nicht
+  neu gemessen. Was ein Konnektor in die Nutzlast legt, bleibt offen.
 - Der Nutzlastbereich weist Mail-Header-Schlüssel, Bytes und Gleitkommazahlen
   ab; ein Konnektor muss umformen, bevor er aufnimmt (PP, A1 Zeile 14 und
   Leitsatz 4).
@@ -271,15 +274,6 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
 - Die Weigerung „is a redaction" trifft jedes Event der Art `action`; heute
   ist jede Handlung eine Tilgung, mit der zweiten Art von Handlung ist der
   Satz falsch (`core/redact.py`, der Kommentar daneben sagt es; P-1c).
-- `redact units` lässt den Wortlaut der Einheiten in der Nutzlast stehen, wenn
-  die Nutzlast ihn wiederholt — und `append --text` legt den ganzen Text unter
-  `text` ab. An einem Event der Kommandozeile erreicht nur `redact event` den
-  Text. Gemessen am 2026-10-05 (Aufgabe 8, P-1c). Seit den Commits `4bbb305`
-  und `1b696a6` sagt das Kommando es auf der Standardfehlerausgabe und in
-  seiner Hilfe, auch bei einer unfertigen Tilgung (ruling E-3 der Endkorrektur);
-  `cli.md`, `erasure.md`, `erase-something.md` und das README sagen es dort,
-  wo man entscheidet. Ob `append --text` den Text weiter in die Nutzlast legt,
-  entscheidet der Betreuer; offen, mit dem Einwurf-Vertrag.
 - `redact_event` nimmt die Blobs eines Events nur aus dem Register. An einem
   beschädigten Register, das `verify` meldet, nennt und löscht die Tilgung
   einen Blob nicht, den nur die Nutzlast nennt. Mit der Nutzlast vereinigen
@@ -533,3 +527,12 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
   `verify` kennt eine erste Regel je Art, für `action` (PP, A1 S2 und S3, je
   zur Hälfte; die andere Hälfte steht oben unter *Feststellungen und
   Entitäten*) — Stufe 1c, Commit `a0377ba`.
+- ~~`redact units` lässt den Wortlaut der Einheiten in der Nutzlast stehen,
+  und `append --text` legt den ganzen Text unter `text` ab~~ (Aufgabe 8, P-1c;
+  ruling E-3 der Endkorrektur) — entschieden vom Betreuer am 2026-10-05:
+  `append --text` legt den Text nur noch in die Einheiten, die Nutzlast trägt
+  `evidence` und mit Anhängen `blobs`; Events von vorher behalten ihre Kopie.
+  Der Hinweis von `redact units` kommt nur noch, wenn ein Text der Nutzlast den
+  Wortlaut einer getilgten Einheit enthält — Commit `09c5d81`. Dass eine
+  Nutzlast, die den Wortlaut hält, ihn nach `redact units` behält, bleibt als
+  Regel stehen und steht in `cli.md` und `erasure.md`.

@@ -87,7 +87,7 @@ This is the first event in the chain, so there's no predecessor to link to.
 
 ```console
 $ uv run previously log
-1	2026-10-05T02:55:45.634838+00:00	observation	e8fa1a71a86a
+1	2026-10-05T08:53:13.103557+00:00	observation	c675a31e2500
 ```
 
 Notice that the chain now has one event.
@@ -126,15 +126,15 @@ This `anchors.txt` is this tutorial's alone, so delete it from your clone once y
 ```console
 $ uv run previously show 1
 id=1 kind=observation
-occurred_at=2026-10-05T02:55:45.634838+00:00
-hash=e8fa1a71a86acd49e34247147322983d6bb6ca888182ea60f9b0bfe7050ea720
+occurred_at=2026-10-05T08:53:13.103557+00:00
+hash=c675a31e25000bc9768a9fa0a08f3467e247667a303c0c43f1af7eaf2c237bc3
 evidence=recollection
-payload={"evidence": "recollection", "text": "The client approved the new homepage design.\n\nNext milestone: content migration starts Monday."}
+payload={"evidence": "recollection"}
   ¶1 The client approved the new homepage design.
   ¶2 Next milestone: content migration starts Monday.
 ```
 
-Notice that the text split into two units at the blank line, numbered `¶1` and `¶2`.
+Notice that the text split into two units at the blank line, numbered `¶1` and `¶2`, and that it stands in those units alone: the payload holds the kind of evidence and nothing else.
 Notice also `evidence=recollection`: the command above didn't pass `--evidence`, and `recollection` is what it defaults to.
 
 :::{note}
@@ -171,8 +171,8 @@ There was nothing left to project.
 
 ```console
 $ uv run previously chronicle
-1	1	2026-10-05T02:55:45.634838+00:00	email	2026-10-03-kickoff@example.org	The client approved the new homepage design.
-1	2	2026-10-05T02:55:45.634838+00:00	email	2026-10-03-kickoff@example.org	Next milestone: content migration starts Monday.
+1	1	2026-10-05T08:53:13.103557+00:00	email	2026-10-03-kickoff@example.org	The client approved the new homepage design.
+1	2	2026-10-05T08:53:13.103557+00:00	email	2026-10-03-kickoff@example.org	Next milestone: content migration starts Monday.
 ```
 
 Notice that each line is one unit, and that each one carries `email` and the message identifier we passed to `append`.
@@ -182,7 +182,7 @@ That source attribution is what makes this a chronicle and not a copy of `log`.
 
 ```console
 $ uv run previously stats
-email	1	2	2026-10-05T02:55:45.634838+00:00	2026-10-05T02:55:45.634838+00:00
+email	1	2	2026-10-05T08:53:13.103557+00:00	2026-10-05T08:53:13.103557+00:00
 ```
 
 Notice that `email` stands at one event and two units, and that the two timestamps are the same moment: the log holds one event, so the first one seen and the last one seen are that event.

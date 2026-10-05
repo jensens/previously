@@ -85,8 +85,8 @@ are covered and which are not.
 An erasure has a limit of the same kind: it takes content out of the log and
 out of the bucket, not out of the backups taken before it, and a restore to an
 earlier point brings it back. The address of a blob and the source key stay as
-well, and an erasure of units leaves their wording in the payload, where
-`append --text` puts the whole text of every event it writes;
+well, and an erasure of units leaves their wording in a payload that holds
+it too, and says so;
 [About erasure](docs/explanation/erasure.md) says what an erasure does not
 achieve and why.
 

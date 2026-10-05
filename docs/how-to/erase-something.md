@@ -12,7 +12,7 @@ Pick the smallest target that holds everything that has to go:
 - If it stands in the payload, such as a file name, an address in a field, or the text of an event without units, erase the **event**.
   The payload can't be erased in part.
 - If it stands in some units of an event, and nowhere in its payload, erase those **units**.
-  `previously append --text` puts the whole text into the payload as well, so for an event it wrote, erase the event.
+  `previously show` prints the payload, so check it there first.
   Units can be erased only at events in hash format 2; for an older event, `previously redact units` refuses and names `previously redact event` instead.
 - If it's an attached file that has to go wherever it's attached, erase the **blob**.
 
@@ -48,15 +48,20 @@ The bucket must have neither versioning nor object lock: on such a bucket, delet
 ## Erase units
 
 `redact units` erases the named units and leaves the payload of the event as it is.
-Every event `previously append` writes holds its whole text in the payload as well, so for such an event the wording of the erased units stays readable there, and `redact units` says so on standard error; erase the event instead.
-The example below erases a unit of such an event, and shows what stays.
+If the payload holds the wording of an erased unit, that wording stays readable there, and `redact units` says so on standard error, in this form:
+
+```text
+the payload of event 2 is not erased and holds the wording of an erased unit; `previously redact event 2` erases it
+```
+
+If you see that notice, erase the event as well.
+The example below erases a unit of an event that `previously append` wrote, whose payload holds none of its text.
 
 Name the event and the `seq` of every unit to erase:
 
 ```console
 $ previously redact units 2 2 --reason "a deadline the client asked to keep out of the record"
 redacted by event 3
-the payload of event 2 is not erased and may hold the same text; `previously redact event 2` erases it
 ```
 
 Check the event:
@@ -64,16 +69,16 @@ Check the event:
 ```console
 $ previously show 2
 id=2 kind=observation
-occurred_at=2026-10-05T04:51:23.128681+00:00
-hash=3d4758362ff2ab2f05aa122158dd95ef0d5303cc01a4492817570403b4b3c4c4
+occurred_at=2026-10-05T08:53:18.734619+00:00
+hash=b39a1f0b554b1b3e7e95b0b469dde6d39e63a51d738fe0e2de2279c224a45e17
 evidence=recollection
-payload={"blobs": [{"filename": "draft.txt", "media_type": "text/plain", "sha256": "b00c29a1d42316f16fd5ef9c72ce82bc5c1dcf24ff1280e12bfe3d61e3846373", "size": 35}], "evidence": "recollection", "text": "The second draft is attached.\n\nThe client wants it by Friday."}
+payload={"blobs": [{"filename": "draft.txt", "media_type": "text/plain", "sha256": "b00c29a1d42316f16fd5ef9c72ce82bc5c1dcf24ff1280e12bfe3d61e3846373", "size": 35}], "evidence": "recollection"}
   ¶1 The second draft is attached.
   ¶2 <erased by event 3>
   blob b00c29a1d42316f16fd5ef9c72ce82bc5c1dcf24ff1280e12bfe3d61e3846373 35 text/plain draft.txt
 ```
 
-The unit is erased, and the payload still holds the full text, `The client wants it by Friday.` included.
+The unit is erased, and `The client wants it by Friday.` is gone from the event.
 
 ## Erase a blob
 
@@ -91,10 +96,10 @@ The events keep their payloads and their units.
 ```console
 $ previously show 2
 id=2 kind=observation
-occurred_at=2026-10-05T04:51:23.128681+00:00
-hash=3d4758362ff2ab2f05aa122158dd95ef0d5303cc01a4492817570403b4b3c4c4
+occurred_at=2026-10-05T08:53:18.734619+00:00
+hash=b39a1f0b554b1b3e7e95b0b469dde6d39e63a51d738fe0e2de2279c224a45e17
 evidence=recollection
-payload={"blobs": [{"filename": "draft.txt", "media_type": "text/plain", "sha256": "b00c29a1d42316f16fd5ef9c72ce82bc5c1dcf24ff1280e12bfe3d61e3846373", "size": 35}], "evidence": "recollection", "text": "The second draft is attached.\n\nThe client wants it by Friday."}
+payload={"blobs": [{"filename": "draft.txt", "media_type": "text/plain", "sha256": "b00c29a1d42316f16fd5ef9c72ce82bc5c1dcf24ff1280e12bfe3d61e3846373", "size": 35}], "evidence": "recollection"}
   ¶1 The second draft is attached.
   ¶2 <erased by event 3>
   blob b00c29a1d42316f16fd5ef9c72ce82bc5c1dcf24ff1280e12bfe3d61e3846373 35 text/plain draft.txt <erased by event 4>
@@ -124,8 +129,8 @@ Check the event:
 ```console
 $ previously show 1
 id=1 kind=observation
-occurred_at=2026-10-05T04:51:22.661609+00:00
-hash=7e084ae695ef43e6024f899b8af6ae86203389e4e1d0b1d7bf7594b5956fa02e
+occurred_at=2026-10-05T08:53:17.476912+00:00
+hash=c61e165239d35bc0bb59d9a4ade637320af3bed50433d5d53df512bce8bf72e6
 payload=<erased by event 5>
   ¶1 <erased by event 5>
   blob 72f4f2c5a92ade61b696c0fe800b8af775fd2f3982b123693379e6ee7cd264f2 <erased by event 5>
@@ -176,5 +181,5 @@ An erasure takes the content out of the log and the blob out of the store.
 It stays in every backup of the database, and in every backup or copy of the bucket, until their retention runs out, and a restore to a point before the erasure brings it back; {ref}`restore-from-a-backup` shows what to do then.
 The address of a blob, the source key `(source, external_id)` and every hash stay as well.
 An event written before stage 1c, in hash format 1, has no salt, so short erased content stays guessable from its digests; see {ref}`erasure`.
-An erasure of units leaves their wording in a payload that repeats it, as *Erase units* says.
+An erasure of units leaves their wording in a payload that holds it too, as *Erase units* says.
 For why, see {ref}`erasure`.

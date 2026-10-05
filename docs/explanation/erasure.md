@@ -15,7 +15,7 @@ An erasure has a target, and the target is a whole event, some units of one even
 | Target | What disappears | What stays |
 |---|---|---|
 | An event | The payload with its salt, and with it the kind of evidence (`evidence`) and the file names of its attachments; the content, speaker, timestamps and salt of every unit; every blob to which no reference that isn't erased points afterward | Every hash; `id`, `kind`, and both timestamps; the source key `(source, external_id)`; the rows of the units, as tombstones—attested in hash format 2, and in hash format 1 by nothing, as the section on erasing in part explains; the rows of the blob register |
-| Units | The content, speaker, timestamps and salt of the named units | Their `seq` and their digest; everything else about the event, including a copy of their wording where the payload repeats it, as it does for every event `previously append --text` writes |
+| Units | The content, speaker, timestamps and salt of the named units | Their `seq` and their digest; everything else about the event, including their wording wherever a string of the payload holds it |
 | A blob | The object in the blob store, for every event that uses the blob at that moment | The references in the payloads and the rows of the register: the hash stays as the evidence that something was there |
 
 A tombstone is what an erased row turns into: the row stays, and the columns that carried content hold SQL `NULL`.
@@ -104,8 +104,10 @@ An event written in hash format 1 has one digest over the texts of all its units
 `redact units` refuses such an event and says so, and `verify` reports a version 1 event with only some of its units erased, whoever ordered it.
 
 A unit's own digest pays off only where the payload doesn't repeat the unit.
-`previously append --text` keeps the whole text in the payload as well, under `text`, so erasing units of an event it wrote leaves their wording standing in the payload; only an erasure of the event takes it.
-Which events carry their text in the payload alone, in the units alone, or in both is for the contract of the connectors to settle, and until it does, erasing units reaches less than its name suggests.
+A payload that holds the wording of a unit keeps it after the unit is erased; only an erasure of the event takes it, and `redact units` says so when it finds that wording in the payload.
+`previously append --text` puts the text into the units alone and none of it into the payload, so for the events it writes, erasing units takes the wording.
+It copied the whole text into the payload as well until 2026-10-05, and the events written until then keep that copy, since their hash covers the payload as it was written.
+Which events carry their text in the payload alone, in the units alone, or in both is for the contract of the connectors to settle, and until it does, erasing units of a connector's events can reach less than its name suggests.
 
 Erasing all of them has a cost of its own, and version 1 carries it beside its unsalted digests.
 Once every text is gone, nothing is left to recompute the units digest from, so the check computes nothing for the units of that event.
@@ -168,7 +170,7 @@ A `redact blob` names an address, which survives the restore as well, but it era
 
 **An erasure of units leaves what the payload repeats.**
 The units disappear, and the payload stays under its one digest, so whatever wording of theirs it carries stays with it.
-Every event `previously append --text` writes carries its whole text in the payload; for those, only an erasure of the event takes the wording, as *Why the payload can't be erased in part* explains.
+For such an event only an erasure of the event takes the wording, as *Why the payload can't be erased in part* explains, and `redact units` names the payload on standard error when it finds the wording there.
 
 **A bucket that keeps versions keeps the blobs.**
 `redact` deletes an object and trusts the store that it's gone.
