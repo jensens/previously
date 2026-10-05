@@ -39,7 +39,7 @@ If he decides to keep it private instead, he gives you a pull secret, and this f
 | Tags of a stable release | `<version>`, `<major>.<minor>`, and `latest` |
 | Tags of a pre-release | `<version>` only, such as `0.1.0a1` |
 | Entry point | `previously`; without arguments it prints its help and exits `0` |
-| User | uid 1000 and gid 1000 by default; any other uid works as well |
+| User | uid 1000 and gid 1000 by default, set by number (`USER 1000:1000`); any other uid works as well |
 | Ports, health check, volumes | none |
 
 **Pin the exact version.**
@@ -52,11 +52,20 @@ The tags `<version>-linux-amd64` and `<version>-linux-arm64` also exist; they're
 
 **Any uid works.**
 Measured on 2026-10-05: the smoke test runs every command as the host's user, which is uid 1001 on a GitHub runner; `migrate` also ran under `--user 12345:12345` with `--read-only`, and `append`, `verify`, `project` and `anchor` with `--read-only`.
-So `runAsUser`, `runAsNonRoot` and `readOnlyRootFilesystem` are all fine.
-The only command that writes a file is `previously blob get --output <file>`, and it writes a temporary file in the directory of `<file>` and renames it; that directory has to be writable.
+The image names its user by number, so `runAsNonRoot` works on its own, without `runAsUser` beside it; with a name, the kubelet can't tell that the user isn't root, and refuses to start the pod.
+The final review measured both in a `kind` cluster on 2026-10-05.
+So `runAsUser` and `runAsNonRoot` are fine, and `readOnlyRootFilesystem` is fine with one exception.
 
-The image's labels carry `org.opencontainers.image.source`, `org.opencontainers.image.licenses` (`AGPL-3.0-or-later`) and `org.opencontainers.image.version`.
-Its title, description, URL and revision labels are inherited from the `uv` base image and describe `uv`, not Previously; don't key anything on them.
+The exception is `previously append --attach`: it seals the file into a temporary file before the upload, and with a read-only root it finds no directory for it, because neither `/tmp` nor the working directory `/app` is writable.
+Wherever `append --attach` runs, which is the tools pod and later the ingest, give it a writable `/tmp`, such as an `emptyDir`.
+Measured on 2026-10-05 with `docker run --read-only`: Python found no usable temporary directory under the default working directory, and the whole smoke test, `append --attach`, `blob get` and `verify --blobs` included, passed with a writable working directory instead.
+The only command that writes a file of its own is `previously blob get --output <file>`, and it writes a temporary file in the directory of `<file>` and renames it; that directory has to be writable.
+
+`previously` ends on `SIGTERM` with exit code `143` and nothing on standard error, also as process 1 of its container, so a container that gets stopped ends at once rather than at the end of its grace period.
+A migration it was running rolls back.
+Measured on 2026-10-05 with `docker stop`, which sends `SIGTERM` the way the kubelet does: on a `migrate` that waited for the lock, it took 0.4 s and ended with `143`, where the image before took the full ten seconds and ended with `137`.
+
+The image's labels carry `org.opencontainers.image.title` (`previously`), `description`, `url`, `source`, `licenses` (`AGPL-3.0-or-later`) and `version`, and from the release workflow `revision`, the commit of the release, and `created`, the moment the release was published.
 
 ## PostgreSQL
 
@@ -77,6 +86,10 @@ A role that may not is refused with a sentence that names the database's own rea
 ## The bucket
 
 One S3 bucket for the blobs, **without versioning and without object lock**, with access credentials of its own that reach that bucket and nothing else.
+
+If you write those credentials as a policy per operation, Previously uses `HeadObject`, `PutObject` with multipart upload, `GetObject` and `DeleteObject` on the bucket's objects.
+On a server that follows AWS, it also needs `ListBucket`: without it, a missing object answers `403` instead of `404`, and `append --attach` of new content fails.
+That second sentence is AWS's documented behavior, not measured against the store kup6s uses.
 
 **Why:** an erasure in Previously deletes the blob from the bucket.
 On a bucket with versioning or object lock, deleting keeps a copy, and the erasure doesn't take what it promises.
@@ -119,6 +132,12 @@ Previously reads all of its settings from environment variables; there's no conf
 A message about the database names its database, host and port, and never the password.
 When connecting fails, the sentence quotes the first line of the client library's reason, which can name the user.
 
+A password needs a user name in front of it: `postgresql://:password@host/database` is refused.
+
+Point `PREVIOUSLY_DSN` at the database directly, such as CloudNativePG's `-rw` service, and not at a pooler in transaction mode.
+`migrate` holds its lock on the session, and a pooler in that mode can take the lock and its release through two different server connections, which would leave the lock behind and make every later `migrate` wait.
+That follows from how such a pooler works and isn't measured.
+
 ### The identity
 
 `PREVIOUSLY_BLOB_IDENTITIES` names a **directory** that holds one file per key, each named after its recipient (`age1…`) and holding the identity, one line of the form `AGE-SECRET-KEY-1…`.
@@ -150,16 +169,21 @@ up to date: 0004_event_blob
 
 The first form names the revision the database was at, `(empty)` for a database without a schema, and the newest one; the second means nothing had to run.
 
-**Why first:** every other command refuses a database whose schema is behind, with ``Error: database schema incomplete — `previously migrate` has not run yet`` and exit code `2`.
+**Why first:** the order of the jobs is the only guard, because `migrate` is the only command that compares revisions.
+Every other command fails on a schema that's behind only where it touches a table or a column the schema lacks, with ``Error: database schema incomplete — `previously migrate` has not run yet`` and exit code `2`; where it touches none, it runs.
+Measured on 2026-10-05 against a database one revision behind: `append`, `log` and `project` exited `0`, and `verify` refused.
+So a migration job that's forgotten or late doesn't stop the commands of the new release; let nothing of the release start before its migration job has succeeded.
 
 **Two at once are safe.**
 `migrate` holds a PostgreSQL advisory lock while it runs, so a second migration job waits and then reports `up to date`.
 
-**An older image against a newer database is refused**, with exit code `2`, and changes nothing:
+**An older image's `migrate` against a newer database is refused**, with exit code `2`, and changes nothing:
 
 ```text
 Error: the database is at revision 0005_example, which this version of previously does not know; it knows revisions up to 0004_event_blob
 ```
+
+The older image's other commands aren't refused, for the same reason as above: they run against the newer schema as far as it still has what they touch.
 
 `migrate` only goes forward; going back is a restore, not a command.
 
@@ -186,9 +210,11 @@ Exit code `0` is success and `2` an error that kept the command from doing its w
   Where is the platform's decision; `docs/how-to/verify-the-chain.md` gives the conditions and the routine: fetch the anchor file, run `previously verify --anchors - < anchors.txt && previously anchor >> anchors.txt`, and put the file back.
   Standard input has to be passed through, and no terminal allocated, or standard error lands in the anchor file.
   It needs only `PREVIOUSLY_DSN`.
+  The image has no tool to fetch or put back a file: no `curl`, no `wget`, no `aws`, measured on 2026-10-05; it has `/bin/sh`, `sleep`, and Python with `boto3`.
+  So the fetching and putting back happen outside the `previously` container, such as in a container of the job that brings its own tool, and the anchor file reaches `previously` on standard input.
 - **`previously verify --anchors - --blobs`, nightly**, with an **alarm on any exit code but `0`**.
   It checks the chain against the anchors, and reads, opens and checks every blob that has to lie in the bucket, so it takes about as long as reading the whole bucket.
-  It needs `PREVIOUSLY_DSN`, the five bucket settings and the identity.
+  It needs `PREVIOUSLY_DSN`, the five bucket settings and the identity, and the same anchor file as the daily routine on standard input, fetched the same way.
 
 The ingest CronJob comes with the handoff for the ingest, the next unit of work.
 
@@ -200,7 +226,10 @@ The nightly check is the one that sees a blob gone missing or a chain that no lo
 
 ## Network out
 
+- The database, such as CloudNativePG's `-rw` service on port 5432.
+- DNS, to resolve the names of the database and the S3 server.
 - The S3 server of the bucket.
+- The place the anchor file lives, if it's outside the cluster, for the container that fetches it and puts it back.
 - With the ingest, later: the mail server, on port 993.
 
 Previously opens no port and needs nothing inbound.

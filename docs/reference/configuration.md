@@ -25,7 +25,7 @@ Every subcommand, `migrate` included, builds the connection from the parts the f
 | Part | Form |
 |---|---|
 | Scheme | `postgresql://` or `postgresql+psycopg://`, in lowercase. |
-| User part | Optional: a user name, then optionally `:` and the password, then `@`. |
+| User part | Optional: a user name, then optionally `:` and the password, then `@`. A password without a user name in front of it, such as `postgresql://:password@host/database`, is refused. |
 | Host | A host name of labels of 1 to 63 letters, digits, `-` and `_`, joined by `.`, or an IPv6 address in brackets, such as `[::1]`. |
 | Port | Optional: `:` and a number from 1 to 65535, in digits alone. |
 | Database | Optional: `/` and the database name. |

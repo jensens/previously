@@ -43,7 +43,9 @@ An alpha gets no `<major>.<minor>` either, and that one wasn't a decision but a 
 The tool that derives the tags, `docker/metadata-action`, extends a pre-release to its exact version only, whatever pattern it's given.
 The `semver` rules the plan first named gave `v0.1.0a1` no tag at all, because `0.1.0a1` isn't valid semantic versioning, and the first release would have failed at the manifest after the package was on PyPI.
 The `pep440` rules read the version as Python does.
-So until `1.0.0`, each image has exactly one tag, its version, and pinning that version is the only way to use it, which is how a deployment should use any image.
+So until `1.0.0`, each release marked as a pre-release has exactly one tag meant for use, its version, and pinning that version is the only way to use it, which is how a deployment should use any image.
+The intermediate tags `<version>-linux-amd64` and `<version>-linux-arm64` exist beside it, as steps of the workflow that nobody is meant to pull.
+An alpha published without the mark would get `<major>.<minor>` and `latest` as well, because the mark decides.
 
 `latest` also has a limit worth knowing about: it follows the release published last, not the highest version.
 A stable release of an older line, published after a newer one, moves `latest` back to it.
@@ -70,8 +72,12 @@ Without a lock, both would run the same DDL against the same database.
 A second `migrate` waits for the lock, then reads the revision the first one left behind, and reports `up to date`.
 The lock belongs to the session, not to a transaction, so a `migrate` that fails gives it up when its connection closes, and nothing has to clean up after it.
 
-A database that's ahead of the image, migrated by a newer release, is refused rather than ignored.
-Silence there would let an older image run against a schema it doesn't know.
+A database that's ahead of the image, migrated by a newer release, is refused by `migrate` rather than ignored.
+That refusal is the only comparison of revisions there is.
+The other commands don't compare, in either direction: against a schema that's behind, one fails only where it touches a table or a column the schema lacks, and runs where it touches none, and an older image's commands run against a newer schema as far as it still has what they touch.
+Measured on 2026-10-05 against a database one revision behind, `append`, `log` and `project` ran, and only `verify` refused.
+So the guard is the order in which a release runs its jobs, migration first, and not the commands.
+Whether every command should check the revision itself is open, and it's a decision about the code, not about delivery.
 
 ## The tag gets checked before anything is uploaded
 
@@ -82,8 +88,10 @@ The check runs before the upload, side by side with the gates, and a tag in anot
 In the project this workflow was modeled on, the same check runs last, once the package and the image are already out, and so it can only report a mistake that's already public.
 
 The check reads the form, not the result.
-Nothing compares the version that was built with the tag, so two mistakes still pass it: a tag with a leading zero, such as `v1.02.3`, which Python's version rules read as `1.2.3`, and a tag on a commit that carries a second tag.
-{ref}`cut-a-release` says what each of them does.
+Nothing compares the version that was built with the tag, so two cases pass it.
+A tag with a leading zero, such as `v1.02.3`, which Python's version rules read as `1.2.3`, is a mistake that costs a version: it reaches PyPI and gets no image.
+A tag on a commit that carries a second tag, such as a stable release on the commit of a release candidate, passes the check and does no harm, measured: the build reads the right tag, and if it ever read the other one, PyPI would refuse the upload as a duplicate.
+{ref}`cut-a-release` says what to do about each of them.
 
 ## No token in the repository
 

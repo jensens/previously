@@ -46,8 +46,8 @@ Every command of the command line reads the database from one environment variab
 export PREVIOUSLY_DSN=postgresql+psycopg://previously:previously@localhost:5432/previously
 ```
 
-The `+psycopg` belongs in there.
-It names the driver, and without it SQLAlchemy reaches for one that isn't installed here.
+The `+psycopg` names the driver.
+Without it, `postgresql://` reaches the same one, and the tutorial keeps it so that you can see which driver talks to the database.
 
 ## Create the schema
 

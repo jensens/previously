@@ -71,7 +71,9 @@ Run it again, and it reports that nothing had to run:
 up to date: 0004_event_blob
 ```
 
-Every other command refuses a database whose schema is behind, and an image older than the database refuses to migrate it; {ref}`cli-reference` gives both messages.
+Don't rely on the other commands to notice a schema that's behind: `migrate` is the only command that compares revisions.
+Any other command fails only where it touches a table or a column the schema lacks, and runs where it touches none.
+An image older than the database refuses to migrate it; {ref}`cli-reference` gives both messages.
 
 ## Run a command
 

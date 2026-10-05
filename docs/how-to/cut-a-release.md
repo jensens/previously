@@ -70,7 +70,8 @@ git diff --name-only --diff-filter=A v0.1.0a1 main -- src/previously/migrations/
 ```
 
 If that lists a file, the notes have to say that `previously migrate` runs before anything else of this release.
-Every other command refuses a database whose schema is behind, and an older image refuses a database a newer one has migrated.
+Nothing else enforces that order: `migrate` is the only command that compares revisions, and the other commands fail on a schema that's behind only where they touch a table or a column it lacks.
+An older image's `migrate` refuses a database a newer one has migrated; its other commands don't.
 
 ## Publish the release
 
@@ -114,6 +115,8 @@ Check that the image is there for both platforms:
 docker buildx imagetools inspect ghcr.io/jensens/previously:0.1.0a1
 ```
 
+On the first release, the package on `ghcr.io` is still private, so log in with `docker login ghcr.io` first, or run the check after you made the image public.
+
 ## Make the image public, once
 
 After the first release, the package `previously` on `ghcr.io` is private, which is GitHub's default for a new package.
@@ -135,7 +138,7 @@ Read the table from the job that failed.
 | Failed job | Already published | What to do |
 |---|---|---|
 | `gates`, `tag` or `build` | Nothing. | Delete the release and its tag with `gh release delete v0.1.0a1 --cleanup-tag`, fix the cause on `main`, and publish the release again under the same version. |
-| `publish-pypi` | Nothing, unless PyPI shows the version. | Look for the version on `https://pypi.org/project/previously/`. If it isn't there, rerun the failed jobs. If it's there, continue as for `image`. |
+| `publish-pypi` | Nothing, unless PyPI shows the version. | Look for the version on `https://pypi.org/project/previously/`. If it isn't there, fix the cause, such as a missing trusted publisher, and rerun the failed jobs. If it's there, even one of its two files, this version stays on PyPI without an image: a rerun repeats the upload, which fails on a file that's already there, so fix the cause on `main` and release the next version. |
 | `image`, while it waits for PyPI | The package on PyPI. | The version didn't show on PyPI within five minutes; rerun the failed jobs. |
 | `image`, in the build or the smoke test | The package on PyPI, and possibly an intermediate tag on `ghcr.io`. | Read the log. If the build found no such version, rerun the failed jobs: the wait asks PyPI's JSON interface, the build installs from PyPI's simple index, and the second can lag behind the first. If the cause was transient, rerun the failed jobs as well. If it's a defect, fix it on `main` and release the next version: this one stays on PyPI without an image, and its intermediate tags stay unused. |
 | `manifest` | The package on PyPI, and both intermediate tags on `ghcr.io`. | Rerun the failed jobs. |
@@ -147,6 +150,7 @@ gh run rerun 1234567890 --failed
 ```
 
 A rerun repeats the failed jobs and the jobs that depend on them, so `manifest` runs again after a rerun of `image`.
+A rerun of `manifest` alone reads the digests the two `image` jobs left behind, which the run keeps for seven days; after that, release the next version.
 
 A version on PyPI never comes back.
 Once the package is there, the next version fixes a defect in it, never an upload of the same one.
