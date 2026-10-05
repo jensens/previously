@@ -148,6 +148,30 @@ def test_the_index_finds_a_unit_through_its_own_redaction_and_through_its_event(
     assert list(index) == [of_units, of_event]
 
 
+def test_the_index_names_the_earlier_of_a_unit_redaction_and_an_event_redaction() -> None:
+    """A unit covered both by a redaction of its units and by a redaction
+    of its whole event is answered with the earlier of the two, the rule the
+    class states and `of_reference` keeps. Neither `redact` path writes
+    that pair, so only a log written otherwise holds it; the order of `add`
+    is the chain order. Measured on 2026-10-05 with the units redaction
+    preferred as before: the first assertion failed."""
+    index = RedactionIndex()
+    of_event = parse(8, event_payload(5, blobs=[], reason="r"))
+    of_units = parse(9, units_payload(5, [2], reason="r"))
+    index.add(of_event)
+    index.add(of_units)
+    assert index.of_unit(5, 2) == of_event
+    assert index.of_unit(5, 1) == of_event
+
+    later = RedactionIndex()
+    of_units = parse(8, units_payload(5, [2], reason="r"))
+    of_event = parse(9, event_payload(5, blobs=[], reason="r"))
+    later.add(of_units)
+    later.add(of_event)
+    assert later.of_unit(5, 2) == of_units
+    assert later.of_unit(5, 1) == of_event
+
+
 def test_every_payload_a_builder_makes_is_canonical() -> None:
     canonical(event_payload(5, blobs=[BLOB, BLOB], reason="r"))
     canonical(units_payload(5, [2, 1], reason="r"))

@@ -214,9 +214,15 @@ class RedactionIndex:
         return self._events.get(event_id)
 
     def of_unit(self, event_id: int, seq: int) -> Redaction | None:
-        """A redaction of units that names this one, and otherwise the
-        redaction of its whole event, or `None`."""
-        return self._units.get((event_id, seq)) or self.of_event(event_id)
+        """The redaction that erased a unit, or `None`: a redaction of units
+        that names it, or the redaction of its whole event. When both exist,
+        the earlier one, for the reason the class gives."""
+        found = [
+            redaction
+            for redaction in (self._units.get((event_id, seq)), self.of_event(event_id))
+            if redaction is not None
+        ]
+        return min(found, key=lambda redaction: redaction.id, default=None)
 
     def of_reference(self, event_id: int, sha256: str) -> Redaction | None:
         """The redaction that erased the reference of an event to a blob, or
