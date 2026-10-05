@@ -44,7 +44,7 @@ It prints the existing event's `id` and returns 0.
 ### Attachments
 
 With `--attach`, `append` reads `PREVIOUSLY_BLOB_RECIPIENT` and the five settings of the blob store, opens every file, stores each file as a blob, and then appends the event; see {ref}`blobs`.
-It checks the recipient before it stores anything, and a recipient that isn't an age X25519 recipient is an input error, quoted in the sentence.
+It checks that `PREVIOUSLY_DSN` is set and the recipient before it stores anything, and a recipient that isn't an age X25519 recipient is an input error, quoted in the sentence.
 A file that can't be opened, that can't be read twice, such as a pipe, or that fails while it's read is an input error:
 
 ```text
@@ -184,7 +184,7 @@ Error: --reason must not be empty
 
 The fourth refuses `redact units` on an event whose `hash_version` is neither 1 nor 2, which only a row this version didn't write can carry.
 `--reason` counts as empty when it holds nothing but blanks.
-A `HASH` that isn't 64 lowercase hexadecimal characters is an input error in the words `blob get` uses for it.
+A `HASH` that isn't 64 lowercase hexadecimal characters is an input error in the words `blob get` uses for it, refused before a setting is read or the database is asked.
 
 ## `log`
 

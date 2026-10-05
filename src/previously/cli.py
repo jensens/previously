@@ -398,19 +398,22 @@ def _cmd_append(args: argparse.Namespace) -> int:
     occurred = parse_moment(args.occurred_at) if args.occurred_at else datetime.now(UTC)
     evidence = _parse_evidence(args.evidence)
     units = split_plaintext(args.text)
-    # First the blobs, then the event ({ref}`blobs`), and the blob settings
-    # only when there is something to attach.
-    blobs = _attach(args.attach) if args.attach else ()
-    event = RawEvent(
-        source=args.source,
-        external_id=args.external_id,
-        occurred_at=occurred,
-        evidence=evidence,
-        units=units,
-        payload={"text": args.text},
-        blobs=blobs,
-    )
+    # The database setting before anything is stored: `_storage` refuses an
+    # unset `PREVIOUSLY_DSN` without connecting, and a blob stored before that
+    # refusal would lie in the bucket with no event to name it. Then the
+    # blobs, then the event ({ref}`blobs`), and the blob settings only when
+    # there is something to attach.
     with _storage() as storage:
+        blobs = _attach(args.attach) if args.attach else ()
+        event = RawEvent(
+            source=args.source,
+            external_id=args.external_id,
+            occurred_at=occurred,
+            evidence=evidence,
+            units=units,
+            payload={"text": args.text},
+            blobs=blobs,
+        )
         ids = append(storage, [event], recorded_at=datetime.now(UTC))
     print(ids[0])
     return 0
@@ -879,6 +882,13 @@ def _cmd_redact(args: argparse.Namespace) -> int:
     # Blanks alone count as empty: a reason that says nothing brakes nothing.
     if not args.reason.strip():
         raise RedactionRefused("--reason must not be empty")
+    # An address that is no address is an input error before anything is
+    # asked, the database setting included, as in `blob get`; `redact_blob`
+    # refuses it in the same words, a second line behind this one.
+    if args.target == "blob" and not is_address(args.address):
+        raise InvalidPayload(
+            f"{args.address} is not a blob address: 64 hexadecimal characters, lower case"
+        )
     with _storage() as storage:
         result = _redact(storage, args)
         _delete_obsolete(result)

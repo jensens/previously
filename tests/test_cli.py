@@ -1848,25 +1848,53 @@ def test_an_attachment_that_cannot_be_read_appends_nothing(
     assert _bucket(blobs.store) == []
 
 
+@pytest.mark.parametrize("command", ["blob get", "redact blob"])
 @pytest.mark.parametrize("address", ["A" * 64, "a" * 63], ids=["upper-case", "63-characters"])
 def test_a_blob_address_that_is_not_one_is_an_input_error(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: pathlib.Path,
+    command: str,
     address: str,
 ) -> None:
     """Review focus 6 of the 2026-10-04 stage 1c plan. Refused before
-    anything is asked: there is no database and no blob setting, and the
-    sentence is still about the address."""
-    monkeypatch.setenv("PREVIOUSLY_DSN", "postgresql+psycopg://user:pw@localhost:1/db")
+    anything is asked: `PREVIOUSLY_DSN` is not even set, there is no blob
+    setting, and the sentence is still about the address. Measured on
+    2026-10-05 for `redact blob` before it checked the address itself: it
+    said `PREVIOUSLY_DSN is not set`."""
+    monkeypatch.delenv("PREVIOUSLY_DSN", raising=False)
     for name in _BLOB_VARIABLES:
         monkeypatch.delenv(name, raising=False)
     target = tmp_path / "out.bin"
-    assert main(["blob", "get", address, "--output", str(target)]) == 2
+    if command == "blob get":
+        argv = ["blob", "get", address, "--output", str(target)]
+    else:
+        argv = ["redact", "blob", address, "--reason", "r"]
+    assert main(argv) == 2
     assert _single_line(capsys.readouterr().err) == (
         f"Error: {address} is not a blob address: 64 hexadecimal characters, lower case"
     )
     assert not target.exists()
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_append_with_an_attachment_and_no_database_stores_nothing(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unset `PREVIOUSLY_DSN` is the most predictable configuration
+    error, and it is named before anything is stored, so it leaves no object
+    in the bucket that no event names. Measured on 2026-10-05 with the blobs
+    stored first: the sentence was the same, and the bucket held the
+    object."""
+    monkeypatch.delenv("PREVIOUSLY_DSN")
+    path = _file(tmp_path, "hello.txt", b"hello\n")
+    assert main(_attach("a", path)) == 2
+    assert capsys.readouterr() == ("", "Error: PREVIOUSLY_DSN is not set\n")
+    assert _bucket(blobs.store) == []
 
 
 @pytest.mark.db
