@@ -520,6 +520,30 @@ def test_a_null_byte_in_a_unit_is_refused(db: Engine) -> None:
 
 
 @pytest.mark.db
+def test_a_lone_surrogate_in_a_unit_is_refused_by_name(db: Engine) -> None:
+    """The message names the unit, as for a null byte, before anything is
+    written. Measured on 2026-10-05 with the check in `_check_units`
+    removed: the unit digest refused it as `$.content: string not
+    representable as UTF-8 ...`, which names no unit."""
+    storage = PostgresStorage(db)
+    event = RawEvent(
+        source="cli",
+        external_id="a",
+        occurred_at=OCCURRED,
+        evidence=Evidence.RECOLLECTION,
+        units=(RawUnit(seq=1, content="before\ud800after"),),
+        payload={},
+    )
+    with pytest.raises(
+        InvalidPayload,
+        match=r"^unit 1: not representable as UTF-8 \(surrogates not allowed\)",
+    ):
+        append(storage, [event], recorded_at=NOW)
+    with storage.begin() as conn:
+        assert storage.tip(conn) is None
+
+
+@pytest.mark.db
 def test_a_start_ms_outside_32_bit_is_refused(db: Engine) -> None:
     """Measured (not taken over from memory): a real PostgreSQL 17 container
     accepts `integer` up to 2**31-1 and from -(2**31) on, but fails on 2**31

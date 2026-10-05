@@ -47,6 +47,7 @@ from previously.core.redaction import event_payload
 from previously.core.redaction import parse
 from previously.core.redaction import read_index
 from previously.core.redaction import units_payload
+from previously.core.units import normalize_line_endings
 from previously.storage.errors import ChainPositionTaken
 from typing import cast
 from typing import TYPE_CHECKING
@@ -211,9 +212,20 @@ def _holds_any(value: object, wordings: Sequence[str]) -> bool:
     """Whether a string anywhere in `value` — nested objects and arrays
     included — contains one of `wordings`. Only the values are searched: a
     key is limited to `^[a-z][a-z0-9_]*$` ({ref}`payload-range`), and it
-    names a field rather than holding what somebody wrote."""
+    names a field rather than holding what somebody wrote.
+
+    The line endings of each string are normalized before the comparison,
+    the way `split_plaintext` normalizes a text before it splits it: a
+    payload that keeps a text with CRLF endings, as e-mail has them, holds
+    the line breaks inside a paragraph as `\\r\\n`, and the unit made from
+    that paragraph holds them as `\\n`. The one caller, `redact_units`,
+    passes `wordings` normalized the same way. The split changes
+    nothing else inside a paragraph: it cuts at blank lines and strips the
+    edges of each part, and a search for a substring is not hurt by either.
+    """
     if isinstance(value, str):
-        return any(wording in value for wording in wordings)
+        text = normalize_line_endings(value)
+        return any(wording in text for wording in wordings)
     if isinstance(value, Mapping):
         return any(
             _holds_any(item, wordings) for item in cast("Mapping[str, object]", value).values()
@@ -329,15 +341,20 @@ def redact_units[Conn](
         for seq in wanted:
             if seq not in present:
                 raise RedactionRefused(f"event {event_id} has no unit {seq}")
-        # The wording of the named units, read before they are erased below.
-        # A unit already erased has no content left to compare, so on a call
-        # that finds every named unit covered there is nothing to look for,
-        # and `payload_holds_wording` is `False` although the payload may
+        # The wording of the named units, read before they are erased below,
+        # with its line endings normalized as `_holds_any` normalizes the
+        # payload's. A unit already erased has no content left to compare, so
+        # when every named unit is erased already there is nothing to look
+        # for, and `payload_holds_wording` is `False` although the payload may
         # still hold that wording: the gone content cannot be compared, and
-        # the call that erased it is the one that could say so. An empty content
-        # is left out too: every string contains it, and it holds nothing that
-        # could still be read.
-        wordings = [unit.content for unit in units if unit.seq in wanted and unit.content]
+        # the call that erased it is the one that could say so. An empty
+        # content is left out too: every string contains it, and it holds
+        # nothing that could still be read.
+        wordings = [
+            normalize_line_endings(unit.content)
+            for unit in units
+            if unit.seq in wanted and unit.content
+        ]
         index = read_index(log, conn)
         covering = {seq: index.of_unit(event_id, seq) for seq in wanted}
         skipped = tuple(seq for seq, by in covering.items() if by is not None)

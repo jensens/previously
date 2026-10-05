@@ -822,8 +822,13 @@ def _payload_line(event_id: int) -> str:
     hold their wording too, and then it can still be read there after the
     units are erased; this says so, and names the command that erases it,
     rather than leave the line on standard output to read as "the content is
-    gone". `append --text` writes nothing of the text into the payload, so an
-    event it wrote never gets this notice."""
+    gone". `append --text` writes none of the text into the payload, only
+    what `append` adds — the kind of evidence, and with attachments their
+    names, media types and addresses —, so for an event it wrote the notice
+    comes only where the wording of an erased unit equals or lies inside one
+    of those values, such as a unit that reads `minutes.txt` beside an
+    attachment of that name. The notice is then true: the payload holds that
+    wording."""
     return (
         f"the payload of event {event_id} is not erased and holds the wording of an "
         f"erased unit; `previously redact event {event_id}` erases it"

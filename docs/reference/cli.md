@@ -105,7 +105,7 @@ previously redact blob HASH --reason TEXT
 `redact event` erases the event's payload, and the content, speaker, timestamps and salt of every unit.
 `redact units` erases the content, speaker, timestamps and salt of the named units, and leaves the event's payload as it is.
 A payload that holds the wording of a unit keeps it after `redact units`, readable where `show` prints the payload; `redact event` erases it.
-The payload of an event `append` writes holds no text, so for such an event `redact units` takes the wording with the units.
+The payload of an event `append` writes holds none of the text, only the kind of evidence and, with `--attach`, the references to the blobs, so for such an event `redact units` takes the wording with the units.
 The order of the `SEQ` arguments doesn't matter, and a `SEQ` given twice counts once.
 `redact blob` erases the blob for every event whose reference to it isn't erased yet; their payloads and units stay as they are.
 Every hash, the source key, the rows of the units and the rows of the blob register stay, and after `redact units` the payload as well.
@@ -182,7 +182,10 @@ the payload of event 7 is not erased and holds the wording of an erased unit; `p
 ```
 
 `redact units` compares the content of the named units before it erases them, and compares the values of the payload, not its keys.
-A unit already erased has no content left to compare, so a call that finds every named unit covered prints no such notice.
+It compares with every line ending normalized to a line feed on both sides, the way `append` normalizes `--text` before it splits it, so a payload that keeps a text with CRLF or CR endings still counts.
+A unit's whole content counts only where it stands in one string; a part of it, or a value that isn't a string, doesn't count.
+A value `append` adds counts as well: a unit that reads `minutes.txt` matches the file name of an attachment of that name.
+A unit already erased has no content left to compare, so a call on units that are all erased already prints no such notice.
 An empty unit is never compared.
 
 Seven refusals print one sentence to standard error, print nothing to standard output, write nothing, delete nothing, and return 2:

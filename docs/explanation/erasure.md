@@ -106,7 +106,8 @@ An event written in hash format 1 has one digest over the texts of all its units
 A unit's own digest pays off only where the payload doesn't repeat the unit.
 A payload that holds the wording of a unit keeps it after the unit is erased; only an erasure of the event takes it, and `redact units` says so when it finds that wording in the payload.
 `previously append --text` puts the text into the units alone and none of it into the payload, so for the events it writes, erasing units takes the wording.
-It copied the whole text into the payload as well until 2026-10-05, and the events written until then keep that copy, since their hash covers the payload as it was written.
+It used to copy the whole text into the payload as well, under `text`, and an event written before that changed keeps the copy, since its hash covers the payload as it was written: `previously show` prints a payload with a key `text`.
+Most of those events are in hash format 1, written before stage 1c, and their units can only be erased together with the event anyway.
 Which events carry their text in the payload alone, in the units alone, or in both is for the contract of the connectors to settle, and until it does, erasing units of a connector's events can reach less than its name suggests.
 
 Erasing all of them has a cost of its own, and version 1 carries it beside its unsalted digests.

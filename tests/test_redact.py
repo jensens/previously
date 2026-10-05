@@ -291,6 +291,28 @@ def test_redacting_units_says_whether_the_payload_holds_the_wording(db: Engine) 
             False,
             id="an-empty-unit",
         ),
+        pytest.param(
+            split_plaintext("Line a\r\nline b\r\n\r\nSecond"),
+            {"text": "Line a\r\nline b\r\n\r\nSecond"},
+            1,
+            True,
+            id="crlf-in-the-payload",
+        ),
+        pytest.param(
+            split_plaintext("Line a\rline b\r\rSecond"),
+            {"text": "Line a\rline b\r\rSecond"},
+            1,
+            True,
+            id="cr-in-the-payload",
+        ),
+        pytest.param(
+            (RawUnit(seq=1, content="Line a\r\nline b"),),
+            {"text": "Line a\nline b"},
+            1,
+            True,
+            id="crlf-in-the-unit",
+        ),
+        pytest.param(split_plaintext("Noted.\n\nverbatim"), {}, 2, True, id="a-value-append-adds"),
     ],
 )
 @pytest.mark.db
@@ -298,13 +320,19 @@ def test_the_payload_holds_the_wording_only_where_a_string_contains_it(
     db: Engine, units: tuple[RawUnit, ...], payload: dict[str, object], seq: int, holds: bool
 ) -> None:
     """Any string at any depth, objects and arrays included, that contains
-    the content of an erased unit; not the content of a unit left standing,
-    not a key, and not an empty content, which every string contains.
+    the content of an erased unit, with the line endings of both sides
+    normalized as `split_plaintext` normalizes them; not the content of a
+    unit left standing, not a key, and not an empty content, which every
+    string contains. A value `append` adds counts as well: the kind of
+    evidence of `_message` is `verbatim`.
     Measured on 2026-10-05 with the check replaced by `True`: the four
-    `False` cases failed; by `False`: the two `True` cases; with every unit
+    `False` cases failed; by `False`: the six `True` cases; with every unit
     of the event compared instead of the erased ones: `another-unit`; with
     the keys searched as well: `a-key`; with an empty content compared:
-    `an-empty-unit`."""
+    `an-empty-unit`; without normalizing the payload's strings:
+    `crlf-in-the-payload` and `cr-in-the-payload`; without normalizing the
+    units' content: `crlf-in-the-unit`; with the values `append` adds left
+    out of the search: `a-value-append-adds`."""
     storage = PostgresStorage(db)
     append(storage, [replace(_message("m"), units=units, payload=payload)], recorded_at=NOW)
 
