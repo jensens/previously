@@ -87,9 +87,10 @@ Leave out `--prerelease` for a stable release, and add the notes for operators w
 gh release create v1.0.0 --generate-notes --target main --notes 'Run `previously migrate` before anything else of this release: it adds the revision 0005_example.'
 ```
 
-The mark decides the image tags, not the tag's form.
-A release marked as a pre-release gets only the tag `<version>`.
-A release without the mark gets `<version>`, `<major>.<minor>` and `latest`.
+The version decides `<major>.<minor>`, and the mark decides `latest`.
+A pre-release version, such as `0.1.0a1`, gets the tag `<version>` and never `<major>.<minor>`.
+A stable version gets `<version>` and `<major>.<minor>`.
+`latest` comes only with a release published without the pre-release mark.
 `latest` goes to the stable release published last, so a stable release of an older line, published after a newer one, moves `latest` back to it.
 
 ## Watch the run

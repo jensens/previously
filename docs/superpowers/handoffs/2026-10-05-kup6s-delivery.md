@@ -62,6 +62,7 @@ Measured on 2026-10-05 with `docker run --read-only`: Python found no usable tem
 The only command that writes a file of its own is `previously blob get --output <file>`, and it writes a temporary file in the directory of `<file>` and renames it; that directory has to be writable.
 
 `previously` ends on `SIGTERM` with exit code `143` and nothing on standard error, also as process 1 of its container, so a container that gets stopped ends at once rather than at the end of its grace period.
+That holds once the command has started: a `SIGTERM` within about the first 0.7 s, while it imports, isn't caught, and that container ends only at the end of its grace period.
 A migration it was running rolls back.
 Measured on 2026-10-05 with `docker stop`, which sends `SIGTERM` the way the kubelet does: on a `migrate` that waited for the lock, it took 0.4 s and ended with `143`, where the image before took the full ten seconds and ended with `137`.
 

@@ -45,7 +45,7 @@ The `semver` rules the plan first named gave `v0.1.0a1` no tag at all, because `
 The `pep440` rules read the version as Python does.
 So until `1.0.0`, each release marked as a pre-release has exactly one tag meant for use, its version, and pinning that version is the only way to use it, which is how a deployment should use any image.
 The intermediate tags `<version>-linux-amd64` and `<version>-linux-arm64` exist beside it, as steps of the workflow that nobody is meant to pull.
-An alpha published without the mark would get `<major>.<minor>` and `latest` as well, because the mark decides.
+The mark decides only `latest`: an alpha published without the mark would get `latest` beside its version, and still no `<major>.<minor>`.
 
 `latest` also has a limit worth knowing about: it follows the release published last, not the highest version.
 A stable release of an older line, published after a newer one, moves `latest` back to it.

@@ -62,7 +62,8 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `chronicle` | The chronicle was printed, even when the window holds no row. | Not used. | The input was invalid, or storage raised an error. |
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
 
-Every command that receives `SIGTERM` while it runs stops with exit code 143, 128 and the signal's number, and prints nothing to standard error.
+Every command that receives `SIGTERM` once it has started stops with exit code 143, 128 and the signal's number, and prints nothing to standard error.
+The handler is set after the command's imports; a `SIGTERM` in the first fraction of a second, measured at about 0.7 s in the image, isn't caught, and as process 1 of a container the command then runs on until the grace period ends.
 A transaction it had open rolls back, so a `migrate` that was applying a migration leaves the schema at the revision it found.
 That holds when `previously` runs as process 1 of a container as well.
 
