@@ -89,7 +89,7 @@ $ previously verify --anchors anchors.txt --blobs
 chain intact, 1 anchor holds, 1 blob matches
 ```
 
-`--blobs` reads every blob the log names out of the store, opens it, and checks it against its address, so it takes as long as reading the whole store does.
+`--blobs` reads every blob that has to lie in the store, opens it, and checks it against its address, and it asks the store whether an erased blob is gone, so it takes about as long as reading the whole store does.
 Keep it out of the anchor routine above, which runs more often: `--blobs` adds nothing to an anchor.
 It needs the five settings of the store and the directory of identities; see {ref}`configuration-reference`.
 

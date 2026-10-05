@@ -21,14 +21,16 @@ Gebaut und abgenommen, auf `main`:
 | 1b | Projektionen: Arbeiter, `p_chronicle`, `p_source_stats`, `project`, `chronicle`, `stats` | `specs/2026-10-04-stufe-1b-projektionen.md` | PR #1, `b0396b6` |
 | — | Der äußere Anker: `anchor`, `verify --anchors [--exact]`, `examine` in einem Schnappschuss | `specs/2026-10-04-aeusserer-anker.md` | PR #2, `2bc42d4` |
 
-Gebaut, auf dem Zweig `worktree-stufe-1c-blobs`, und zur Abnahme:
+Stufe 1c ist auf dem Zweig `worktree-stufe-1c-blobs` gebaut; abgenommen ist
+sie mit dem Merge dieses Zweigs nach `main`, und nicht vorher:
 
 | Stufe | Inhalt | Spec | Abnahme |
 |---|---|---|---|
-| 1c | Hash-Format v=2 mit Salz; Tilgung von Event, Einheiten und Blob als Event der Art `action`, mit Anordnung und Vollzug in `verify`; Projektionen folgen einer Tilgung; Blobs im Format `age` auf S3, `append --attach`, `blob get`, `verify --blobs`; `redact` | `specs/2026-10-04-stufe-1c-blobs-und-tilgung.md` | steht aus: der Merge nach `main` |
+| 1c | Hash-Format v=2 mit Salz; Tilgung von Event, Einheiten und Blob als Event der Art `action`, mit Anordnung und Vollzug in `verify`; Projektionen folgen einer Tilgung; Blobs im Format `age` auf S3, `append --attach`, `blob get`, `verify --blobs`; `redact` | `specs/2026-10-04-stufe-1c-blobs-und-tilgung.md` | der Merge des Zweigs `worktree-stufe-1c-blobs` nach `main` |
 
 Mit Stufe 1c ist Teilprojekt 1 gebaut, wie die Architektur es in §12.1
-zuschneidet: Log, Projektionen, Blobs. Abgeschlossen ist es mit ihrem Merge.
+zuschneidet: Log, Projektionen, Blobs. Abgeschlossen ist es mit dem Merge
+dieses Zweigs.
 
 Nicht gebaut: die Suche, jede
 Feststellung und jede Entität, der Konnektor-Vertrag über `RawEvent` hinaus,
@@ -258,6 +260,14 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
   Text. Gemessen am 2026-10-05 (Aufgabe 8, P-1c); steht auf `erasure.md` und
   in der Anleitung; zu entscheiden mit dem Einwurf-Vertrag, wo der Text steht.
 - Ein Schlüssel je Betroffenem und das Krypto-Schreddern (1c §12 Punkt 6).
+- Das Ziel von `redact event` und `redact units` ist eine `id`, und eine `id`
+  überlebt keine Wiederherstellung: sie vergibt jede `id` über ihrer Spitze
+  neu (`id` = Spitze + 1). Eine Tilgung, nach einer Wiederherstellung wörtlich
+  wiederholt, kann ein anderes Event treffen. Die Anleitung
+  `restore-from-a-backup.md` lässt den Leser das Ziel am `hash` bestätigen,
+  den er bei der Tilgung notiert hat; ob `redact` selbst sein Ziel gegen
+  etwas prüfen soll, das eine Wiederherstellung überlebt — den `hash` des
+  Events —, ist nicht entschieden (Prüfung der Aufgabe 8, P-1c).
 
 ### Blobs und Speicher
 

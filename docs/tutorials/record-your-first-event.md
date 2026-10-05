@@ -36,7 +36,7 @@ Installed 98 packages in 174ms
 ```
 
 uv then lists every one of the 98 packages it installed.
-This page leaves that list out, and the two lines before `Prepared` in which uv builds Previously itself, because they name the directory of your checkout.
+This page leaves that list out, and the two lines before `Prepared` in which uv builds Previously itself, because they name the directory of your checkout, and a warning that uv can't link its files from its cache, which it prints when its cache and your checkout lie on different file systems.
 
 ## Point the tools at the database
 
@@ -64,7 +64,7 @@ INFO  [alembic.runtime.migration] Running upgrade 0003_hash_version_2 -> 0004_ev
 Notice that there are four upgrade steps.
 The first one brings the log, its units, and the idempotency key.
 The second one brings three more tables: one for each derived view, and one that records how far each view has read.
-The third and the fourth prepare the log for erasure and for attached files, which this tutorial doesn't use.
+The third brings hash format 2, in which every event gets a salt of its own, and our event is written in it; the fourth prepares the log for attached files, which this tutorial doesn't use.
 
 ## Submit your first event
 

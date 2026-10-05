@@ -49,8 +49,9 @@ merely described.
   event of its own in the same chain, so that a tombstone without an order is
   a finding; every hash stays, the salt goes, the projections follow, and a
   blob leaves the store once no reference to it is left
-- **checking the blobs** (`verify --blobs`): every blob the log names is read,
-  opened and held against its address, and every erased one has to be gone
+- **checking the blobs** (`verify --blobs`): every blob that has to lie in
+  the store is read, opened and held against its address, and every erased one
+  has to be gone
 - the ten commands `append`, `redact`, `log`, `verify`, `anchor`, `show`,
   `blob`, `project`, `chronicle` and `stats`
 - the schema as Alembic migrations
@@ -78,8 +79,10 @@ are covered and which are not.
 An erasure has a limit of the same kind: it takes content out of the log and
 out of the bucket, not out of the backups taken before it, and a restore to an
 earlier point brings it back. The address of a blob and the source key stay as
-well; [About erasure](docs/explanation/erasure.md) says what an erasure does
-not achieve and why.
+well, and an erasure of units leaves their wording in the payload, where
+`append --text` puts the whole text of every event it writes;
+[About erasure](docs/explanation/erasure.md) says what an erasure does not
+achieve and why.
 
 ## Documentation
 

@@ -15,7 +15,7 @@ An erasure has a target, and the target is a whole event, some units of one even
 | Target | What disappears | What stays |
 |---|---|---|
 | An event | The payload with its salt, and with it the kind of evidence (`evidence`) and the file names of its attachments; the content, speaker, timestamps and salt of every unit; every blob to which no reference that isn't erased points afterward | Every hash; `id`, `kind`, and both timestamps; the source key `(source, external_id)`; the rows of the units, as tombstones—attested in hash format 2, and in hash format 1 by nothing, as the section on erasing in part explains; the rows of the blob register |
-| Units | The content, speaker, timestamps and salt of the named units | Their `seq` and their digest; everything else about the event |
+| Units | The content, speaker, timestamps and salt of the named units | Their `seq` and their digest; everything else about the event, including a copy of their wording where the payload repeats it, as it does for every event `previously append --text` writes |
 | A blob | The object in the blob store, for every event that uses the blob at that moment | The references in the payloads and the rows of the register: the hash stays as the evidence that something was there |
 
 A tombstone is what an erased row turns into: the row stays, and the columns that carried content hold SQL `NULL`.
@@ -159,6 +159,14 @@ Nothing reports that for a payload or a unit, because the restored state is cons
 For a blob it shows, as far as the restored log names it: the store doesn't go back with the database, so `verify --blobs` reports as missing every blob that an erasure since that point deleted and that an event of the restored log names.
 A blob attached after that point and erased since is named by no event of the restored log, and neither is an object uploaded after that point for a content no restored event names; nothing reports either, since `verify --blobs` checks only the blobs the register names.
 The erasures since that point have to be repeated, and the log can't say which ones they were, since its record of them is what the restore took away.
+Only those whose target the restored log still holds can be repeated, and an `id` can't tell which those are.
+An `id` is the tip plus one, so a restore frees every `id` above its tip, and an event appended since can hold the `id` an erasure once named; repeated by its `id` alone, that erasure would take an event nobody meant.
+The event's hash survives the restore and belongs to that one event, so the hash, noted when the erasure ran, is what confirms a target; {ref}`restore-from-a-backup` gives the steps.
+A `redact blob` names an address, which survives the restore as well, but it erases the blob for every event that uses it when it runs, also for one that attached the same content after the restore.
+
+**An erasure of units leaves what the payload repeats.**
+The units disappear, and the payload stays under its one digest, so whatever wording of theirs it carries stays with it.
+Every event `previously append --text` writes carries its whole text in the payload; for those, only an erasure of the event takes the wording, as *Why the payload can't be erased in part* explains.
 
 **The hashes stay.**
 With the salt gone, the content can't be guessed from its digest, and it can't even be confirmed.

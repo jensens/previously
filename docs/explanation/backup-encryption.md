@@ -2,7 +2,7 @@
 
 # About the backup encryption
 
-Previously encrypts its backups on the client, before they leave the cluster, with `aes-256-cbc` and a key that lives outside the data path.
+The backups this design plans for Previously are encrypted on the client, before they leave the cluster, with `aes-256-cbc` and a key that lives outside the data path; no backup runs yet.
 That reads like a strong choice made out of caution.
 It isn't: at the storage provider this project uses, client-side encryption is the only kind that encrypts anything at all.
 This page is the reasoning, and it ends with the three paths that were on the table and the one finding that would still overturn the chosen one.
@@ -97,7 +97,7 @@ A key that has never been used for a restore is as little a key as an untested r
 
 Two encryption points in this design need a key, and there are two keys.
 The blobs are sealed in the `age` format before they leave the process, and the identity that opens them lies in a directory of its own; {ref}`blobs` explains the format and the seam.
-The backups are encrypted on the client with `aes-256-cbc` and a passphrase.
+The backups this design plans are encrypted on the client with `aes-256-cbc` and a passphrase.
 For both the same rule holds: a key must not lie where the data it opens lies.
 The identity of the blobs doesn't belong in the bucket, nor in a backup of the bucket; the passphrase doesn't belong in the backup target.
 A key that lies beside its data protects nothing from whoever reaches the data, and goes down with it in the same incident.

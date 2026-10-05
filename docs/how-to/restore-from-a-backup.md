@@ -155,10 +155,29 @@ A blob reported as `missing` after a restore is, as a rule, one that an erasure 
 The restore took that erasure's redaction away, so its event names the blob again, and with an erased event, its payload and units stand there again with their content.
 Other erasures since that point came back without any finding: an erased payload or unit is simply there again.
 
-Repeat every erasure since the point you restored to, with the same `previously redact` command as the first time; see {ref}`erase-something`.
+Repeat the erasures since the point you restored to whose target the restored log still holds.
 The log can't tell you which erasures those were: its record of them is what the restore took away.
-Take them from a record kept outside the database, such as a list of every `redact` command with its date, kept beside the anchor file.
+Take them from a record kept outside the database, which names for each erasure the command, its date, and for `redact event` and `redact units` the target's `id` and its `hash`; {ref}`erase-something` shows where to note them.
 If you promise erasure to anybody, keep that record from the first erasure on; without it, nothing tells you what to repeat.
+
+Don't repeat a `redact event` or `redact units` by its `id` alone.
+A restore frees every `id` above the tip of the restored log, and an event appended since can hold the `id` your record names.
+Learn the tip with `previously anchor`: the first field of the line it prints is the `id` of the last event.
+An erasure whose target `id` lies above the tip you learned has lost its target to the restore.
+For every other erasure of an event or of units in your record, run `previously show` with its `id`, and compare the `hash=` line with the hash in your record:
+
+```shell
+previously show 42
+```
+
+- If the hash is the one in your record, the event is the one you erased: repeat the command as it was.
+- If `show` prints a different hash, or `No event 42`, the event you erased was appended after the point you restored to and went with the restore.
+  Don't repeat that erasure: it would erase another event, and nothing undoes an erasure.
+
+A `redact blob` names the blob by its address, which a restore doesn't change.
+Repeated, it erases the blob for every event that uses it when it runs, including an event that attached the same content again after the restore.
+Repeat the erasures of blobs before anything else appends to the restored log, so that they reach no event the first erasure didn't reach.
+See {ref}`cli-reference` for `show` and `anchor`.
 
 Then run `previously verify --blobs` again.
 Once every erasure is repeated, no `missing` finding is left.

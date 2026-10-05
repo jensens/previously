@@ -25,6 +25,12 @@ Write why the erasure happens, such as the request it answers.
 Don't write what's being erased: no name, no address, no quotation from the content.
 `redact` can't check that for you.
 
+## Keep a record of the erasure
+
+If you promise erasure to anybody, note every erasure in a record kept outside the database: the command, its date, and for `redact event` and `redact units` the target's `id` and its `hash`.
+`previously show` prints the `hash` on its third line, and an erasure doesn't change it, so note it when you erase.
+A restore to an earlier point takes the log's own record of an erasure away, and {ref}`restore-from-a-backup` repeats the erasure from yours.
+
 ## Set the blob settings
 
 An erasure of an event with attachments, or of a blob, deletes objects from the blob store.
@@ -134,7 +140,7 @@ no anchor given: verify attests that the log is unchanged, not that it is comple
 ```
 
 `--blobs` also checks that every erased blob is gone from the store, and reports one that isn't as `erased and still present`.
-Leave it out if the log names no blob; it then needs no blob setting.
+Without `--blobs`, `verify` reads no blob setting; leave `--blobs` out if the log names no blob.
 The anchors you keep hold after an erasure as before, so run your usual check with `--anchors` as well; see {ref}`verify-the-chain`.
 
 ## If the command stops with exit code 2
@@ -156,4 +162,5 @@ See {ref}`cli-reference` for every refusal and error of `redact`.
 An erasure takes the content out of the log and the blob out of the store.
 It stays in every backup of the database, and in every backup or copy of the bucket, until their retention runs out, and a restore to a point before the erasure brings it back; {ref}`restore-from-a-backup` shows what to do then.
 The address of a blob, the source key `(source, external_id)` and every hash stay as well.
+An erasure of units leaves their wording in a payload that repeats it, as *Choose the target* says.
 For why, see {ref}`erasure`.
