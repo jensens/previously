@@ -82,9 +82,10 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 # standard library, third-party and `previously.*` imports end up in a single
 # alphabetical list, so a module no longer shows at a glance which layer it
 # depends on — in a project whose central property is the separation of
-# `cli` → `core` → `storage` → `contract`. That separation is enforced
-# mechanically by import-linter (see `.importlinter`), so this costs
-# readability at that one spot and nothing else.
+# `cli` → `core` | `migrations` → `storage` → `contract`, where `core` and
+# `migrations` share a layer and import nothing from each other. That
+# separation is enforced mechanically by import-linter (see `.importlinter`),
+# so this costs readability at that one spot and nothing else.
 force-single-line = true
 from-first = true
 lines-after-imports = 2

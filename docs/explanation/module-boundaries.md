@@ -91,7 +91,7 @@ What `.importlinter` holds, in the words the gate prints:
 ```text
 Layers: core beside migrations, both above storage, contract below all KEPT
 core knows no foreign system and no model KEPT
-Only storage imports sqlalchemy KEPT
+core and contract import no sqlalchemy KEPT
 No vendor SDK in the package KEPT
 Only core.sealing imports pyrage KEPT (1 ignored import)
 Only storage.s3 imports boto3 KEPT (2 ignored imports)
@@ -101,11 +101,15 @@ Contracts: 6 kept, 0 broken.
 
 The output was measured on 2026-10-05.
 The first line read `Layers: core above storage, contract below both` until that day, when `migrations` joined `core` in the second layer and the name followed it, because the name is what the gate prints.
+The third line read `Only storage imports sqlalchemy` until the same day, and the move made that name false: the migrations import SQLAlchemy, and they're inside the package now.
+The contract itself didn't change, because its sources were always `core` and `contract`, so the name now says what it checks; the older blocks further down keep the name of their day.
 Sharing a layer keeps the two apart in both directions: measured the same day, an import of `migrations.dsn` written into `core/units.py` broke the first contract with `previously.core is not allowed to import previously.migrations`, and the second contract as well, because `migrations.dsn` imports `alembic`.
+The other way round, an import of `core.units` written into `migrations/dsn.py` broke the first contract with `previously.migrations is not allowed to import previously.core`.
 
 The first contract holds `migrations.env` and `migrations.dsn`, and it doesn't hold the revisions.
 `versions/` has no `__init__.py`, and `import-linter` doesn't read it.
 Measured on 2026-10-05, an import of `previously.cli` written into a revision went unreported, while the same import in `migrations/dsn.py` broke the first contract.
+
 The second and third lines read `KEPT (2 ignored imports)` until 2026-10-04.
 That number was the price of typing `core` against a concrete store, and it stood in the gate log so the price stayed countable until somebody paid it.
 Stage 1b paid it, and the parentheses on the last two contracts are a different thing: no debt, but the one module each contract exists to allow, named.

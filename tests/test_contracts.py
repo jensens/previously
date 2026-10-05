@@ -153,7 +153,7 @@ def test_a_deliberately_wrong_import_breaks_the_named_contracts() -> None:
     assert result.returncode != 0, output
     # Both contracts that forbid sqlalchemy in `core`, reported by name …
     assert "core knows no foreign system and no model BROKEN" in output, output
-    assert "Only storage imports sqlalchemy BROKEN" in output, output
+    assert "core and contract import no sqlalchemy BROKEN" in output, output
     # … and the import that breaks them, in the reasoning underneath. A
     # configuration error carries no import — that is what tells the two
     # apart.

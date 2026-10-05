@@ -49,8 +49,8 @@ forbidden_modules =
 # back here, it is a named edge, never a pattern; {ref}`module-boundaries`
 # carries the measurement that says why.
 
-[importlinter:contract:only-storage-knows-sql]
-name = Only storage imports sqlalchemy
+[importlinter:contract:core-and-contract-know-no-sql]
+name = core and contract import no sqlalchemy
 type = forbidden
 source_modules =
     previously.core
@@ -64,6 +64,12 @@ forbidden_modules =
 # worth. Stage 1b typed `core` against `contract.store.LogStore[Conn]`, the
 # edge `core -> storage.postgres` is gone, and there is nothing left to exempt
 # here either.
+#
+# The contract was named `Only storage imports sqlalchemy`, with the id
+# `only-storage-knows-sql`, until 2026-10-05. That day the migrations moved into
+# the package, and they import SQLAlchemy too, so the old name stated
+# something false while the contract still checked the right thing: its
+# sources were always `core` and `contract`, and the name now says so.
 
 [importlinter:contract:no-vendor-sdk]
 name = No vendor SDK in the package

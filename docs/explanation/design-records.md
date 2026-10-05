@@ -88,7 +88,7 @@ The stage 1a specification's §10.2 names the chain's properties `P1` to `P7`, �
 The property names, the condition numbers and the open points mean something only against the document that assigned them, so a citation of one of those belongs in a frozen record and says so.
 
 No row names the stage 1b specification, and that's the one thing worth saying about it.
-Measured over `src/`, `tests/` and `migrations/`, the directories `tests/test_docs_references.py` walks, stage 1b added three paragraph references, and all three name the architecture: §4.4 twice, for the promise that a projection carries no truth of its own, and §4.1 once, for the two orders the chronicle's index keeps apart.
+Measured over `src/`, `tests/` and `migrations/`, the directories `tests/test_docs_references.py` walked until the migrations moved under `src/` on 2026-10-05, stage 1b added three paragraph references, and all three name the architecture: §4.4 twice, for the promise that a projection carries no truth of its own, and §4.1 once, for the two orders the chronicle's index keeps apart.
 Not one line points at the specification of its own stage.
 Stage 1b is the first stage whose code never had to: its pages were written in the same pull request as the code, so a reason had a page to name from the first draft, and `test_no_bare_paragraph_references_remain` in `tests/test_docs_references.py` turns that from a habit into a gate by refusing an unmarked paragraph sign.
 Two citations in the test suite did point at this specification, as `§6.2` and `§6.3`, and both carried the `(frozen design record)` marking while the specification was still a draft; fix round 1 of the freezing task sent them to the pages that hold the reasoning instead.
@@ -98,7 +98,8 @@ Measured over the same three directories on 2026-10-04, every paragraph sign in 
 Not one of them points at its specification.
 
 No row names the specification of stage 1c either.
-Measured over the same three directories on 2026-10-05, the paragraph signs stand on the same fifteen lines in the same seven files as at the start of the stage, each with the `(frozen design record)` marking, and `grep -rn "§" src tests migrations | grep -v "frozen design record"` prints nothing.
+Measured over the same three directories on 2026-10-05, the paragraph signs stand on the same fifteen lines in the same seven files as at the start of the stage, each with the `(frozen design record)` marking, and `grep -rn "§" src tests migrations | grep -v "frozen design record"` printed nothing.
+Later that day the migrations moved under `src/`, so the command drops its third directory: measured after the move, `grep -rn "§" src tests | grep -v "frozen design record"` still prints nothing, and the signs stand on the same fifteen lines in the same seven files.
 Its code cites {ref}`erasure`, {ref}`blobs` and {ref}`hash-version-2` instead, and the gate checks that each label resolves.
 
 ## Two kinds of citation, and the code shows which is which
