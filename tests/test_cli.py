@@ -1860,27 +1860,36 @@ _LIMIT = 256 * 1024
 @pytest.mark.db
 @pytest.mark.s3
 @pytest.mark.skipif(sys.platform != "linux", reason="RLIMIT_FSIZE as measured on Linux")
+@pytest.mark.parametrize("before", ["no-target", "existing-target"])
 def test_blob_get_whose_output_cannot_be_written_leaves_nothing(
-    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], before: str
 ) -> None:
     """Ruling T6-c of the 2026-10-04 stage 1c plan: the temporary output
     fills up while the content passes into it — a file size limit below
-    the blob's size, for real. One sentence, exit code 2, no target, and no
-    temporary file; `fetch_blob` returns no size for bytes that never
-    arrived."""
+    the blob's size, for real. One sentence, exit code 2, and no temporary
+    file; no target where there was none, and a target that was there is
+    byte for byte what it was. `fetch_blob` returns no size for bytes that
+    never arrived."""
     content = os.urandom(_LARGE)
     assert main(_attach("a", _file(tmp_path, "large.bin", content))) == 0
     capsys.readouterr()
     directory = tmp_path / "out"
     directory.mkdir()
     target = directory / "large.bin"
+    earlier = b"what stood here before"
+    if before == "existing-target":
+        target.write_bytes(earlier)
     with _file_size_limit(_LIMIT):
         code = main(["blob", "get", hashlib.sha256(content).hexdigest(), "--output", str(target)])
     out, err = capsys.readouterr()
     assert code == 2
     assert out == ""
     assert _single_line(err) == f"Error: cannot write {target}: File too large"
-    assert list(directory.iterdir()) == []
+    if before == "existing-target":
+        assert list(directory.iterdir()) == [target]
+        assert target.read_bytes() == earlier
+    else:
+        assert list(directory.iterdir()) == []
 
 
 @pytest.mark.db

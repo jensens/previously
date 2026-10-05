@@ -75,9 +75,12 @@ class _Stream:
     A read can break off: measured on 2026-10-05 against RustFS 1.0.1, an
     object of 64 MiB deleted while it was being read did so in five rounds
     out of five, and a second upload replacing it does the same. `botocore`
-    raises `ResponseStreamingError` then, and `pyrage` lets an exception out
-    of `read` pass unchanged — so without this wrapper a `botocore` type
-    would arrive in `core`, which is not to know it.
+    raises `ResponseStreamingError` then. `pyrage` let an exception out of
+    a later `read` pass unchanged, and at the first `read`, the header,
+    turned it into its own `DecryptError` (both measured on 2026-10-05);
+    `core.sealing.unseal` now raises the stream's own exception in both
+    cases. So without this wrapper a `botocore` type would arrive in
+    `core`, which is not to know it.
 
     `close` gives the connection back at once. A body that is not read to its
     end holds its connection for as long as anything refers to it, and a

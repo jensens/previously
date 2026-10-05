@@ -101,6 +101,11 @@ class _WatchedSink:
     either. So this wrapper writes the rest itself, and the write after a
     short one is the one that fails with the system's reason. A sink that
     takes nothing at all fails here.
+
+    This is the one place that finishes a short write. What it wraps — the
+    caller's sink, or `HashingSink` in front of it — passes on the count
+    of what was taken and does not retry, so every byte reaches the sink
+    once and is counted once.
     """
 
     def __init__(self, sink: ByteSink) -> None:
@@ -224,6 +229,15 @@ class HashingSink:
     The reader puts it between the opening and the caller's sink, so the
     address is checked against what was actually written, without a second
     pass over the plaintext.
+
+    It hashes and counts what `sink` took, not what it was given, and
+    returns that count: finishing a short write is not its business but
+    `unseal`'s, whose watched sink sends the rest again, and a byte that
+    comes round a second time has to be counted only when it is taken. Fix
+    round 2 of task 6, the 2026-10-04 stage 1c plan: counting what it was
+    given made a sink that took seven bytes a call count 39,806,307 bytes
+    for 70,000 and the address fail on correct bytes (re-review probe,
+    2026-10-05).
     """
 
     def __init__(self, sink: ByteSink) -> None:
@@ -232,9 +246,10 @@ class HashingSink:
         self.size = 0
 
     def write(self, data: bytes, /) -> int:
-        self._digest.update(data)
-        self.size += len(data)
-        return self._sink.write(data)
+        taken = self._sink.write(data)
+        self._digest.update(data[:taken])
+        self.size += taken
+        return taken
 
     def hexdigest(self) -> str:
         return self._digest.hexdigest()

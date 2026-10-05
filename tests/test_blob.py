@@ -341,6 +341,35 @@ class _FullSink:
         raise OSError(errno.ENOSPC, "No space left on device")
 
 
+class _TakesSeven:
+    """A sink that takes at most seven bytes a call and says so in the count
+    it returns, the way an unbuffered file may."""
+
+    def __init__(self) -> None:
+        self.data = bytearray()
+
+    def write(self, data: bytes, /) -> int:
+        self.data.extend(data[:7])
+        return len(data[:7])
+
+
+@pytest.mark.parametrize("size", [12, 70_000], ids=["12-bytes", "70000-bytes"])
+def test_a_fetch_into_a_sink_that_takes_little_at_a_time_is_whole_and_counted_once(
+    blob_store: S3BlobStore, age_identity: str, tmp_path: Path, size: int
+) -> None:
+    """Fix round 2 of task 6, the 2026-10-04 stage 1c plan: the short write
+    is finished by `unseal`'s watched sink, outside `HashingSink`, so every
+    byte passes `HashingSink` as often as the sink takes it — once. Before,
+    `HashingSink` hashed and counted what it was given, not what the sink
+    took, and the rest came round again: a re-review probe on 2026-10-05
+    counted 39,806,307 bytes for 70,000 and the digest did not match."""
+    content = os.urandom(size)
+    stored = store_blob(blob_store, io.BytesIO(content), recipient=recipient_of(age_identity))
+    sink = _TakesSeven()
+    assert fetch_blob(blob_store, _keys(tmp_path, age_identity), stored.address, sink) == size
+    assert bytes(sink.data) == content
+
+
 @pytest.mark.parametrize("size", [12, 70_000], ids=["12-bytes", "70000-bytes"])
 def test_a_fetch_into_a_sink_that_fails_returns_no_size(
     blob_store: S3BlobStore, age_identity: str, tmp_path: Path, size: int
