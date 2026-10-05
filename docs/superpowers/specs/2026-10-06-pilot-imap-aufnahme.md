@@ -235,6 +235,7 @@ selbst (§7.3), und Tests halten die Regel fest.
 | `found_in` | der Name des Konnektor-Laufs und `uidvalidity`/`uid`, wo die Mail bei dieser Sichtung lag |
 | `body` | `{"part": …, "charset": …, "converter": … oder null, "replaced": true/false}` |
 | `variant_of` | nur bei einer Variante (§3.5): die Message-ID, unter der schon ein anderer Inhalt liegt |
+| `forwarded_in` | nur bei einer Mail aus einem Anhang (§3.6): der Schlüssel der äußeren Mail |
 
 Name, Typ, Größe und Hash jedes Anhangs stehen in `blobs`, nicht ein zweites
 Mal. **Der Text der Mail steht nicht in der Nutzlast**, nur in den Einheiten;
@@ -254,13 +255,49 @@ wird daraus eine Zuordnung.
 | **`Date` fehlt oder ist unlesbar** | `INTERNALDATE`, und `date_source` sagt es |
 | **Nur HTML** | umgewandelt, §7.3 |
 | **Verschlüsselt oder signiert** | signiert: der lesbare Teil; verschlüsselt: die eine Einheit aus §3.2. Entschlüsselt wird nichts |
-| **Eine Mail als Anhang** (`message/rfc822`) | ein Anhang-Blob wie jeder andere; ihr Text geht nicht in den Körper der äußeren Mail, ihre Anhänge nicht in deren `blobs` |
+| **Eine Mail als Anhang** (`message/rfc822`), etwa eine weitergeleitete | ein Anhang-Blob der äußeren Mail **und zusätzlich ein eigenes Event**, abgebildet wie jede Mail (§3.6); ihr Text geht nicht in den Körper der äußeren Mail, ihre Anhänge nicht in deren `blobs` |
 | **Unbekannter Zeichensatz** | als Latin-1 gelesen, `replaced` vermerkt es |
 
 Im Spike vom 2026-10-05 (Notiz) waren das genau die Fälle, an denen eine
 fertige Zerlegung still Inhalt verlor: ein unlesbares `Date` wurde
 1900-01-01, ein unbekannter Zeichensatz verlor Zeichen, eine weitergeleitete
 Mail ging in den Körper der äußeren auf.
+
+### 3.6 Eine Mail im Anhang wird ein eigenes Event
+
+Der Betreuer kopiert Mails in den Ordner (2026-10-05); dann bleiben sie
+Original, und eine Weiterleitung ist die Ausnahme. Leitet aber ein Kunde eine
+Mail **als Anhang** weiter, steht der interessante Teil in ihr, und die
+äußere Mail sagt oft nur „siehe unten". Als bloßer Blob läge er unlesbar
+neben einer leeren Chronikzeile.
+
+Darum wird jede Mail im Anhang auch ein eigenes Event:
+
+- **Abgebildet wie jede Mail** (§3.1–§3.5): ihre eigene Message-ID, ihr
+  `Date`, ihre Absender, ihre Einheiten, ihre eigenen Anhänge als Blobs;
+  ihre Bytes, wie sie im Anhang stehen, sind ihre Rohmail.
+- **Die äußere Mail bleibt ein Event.** Dass jemand weitergeleitet hat, wann
+  und mit welchem Satz, ist selbst etwas, das geschah. Sie führt die innere
+  unter ihren `blobs`, wie jeden Anhang.
+- **Die innere verweist zurück**: ihre Nutzlast trägt `forwarded_in` mit der
+  Message-ID (oder dem `sha256:`-Schlüssel) der äußeren.
+- **Doppelt abgelegt ist bekannt.** Liegt dieselbe Mail auch direkt im
+  Ordner oder wurde sie zweimal weitergeleitet, ist sie über ihre Message-ID
+  dasselbe Event; `forwarded_in` hält dann den ersten Fundort.
+- **`occurred_at` ist der Zeitpunkt der eigentlichen Mail**, nicht der
+  Weiterleitung; die Chronik zeigt sie dort, wo sie hingehört.
+- **Verschachtelt** (eine Mail im Anhang einer Mail im Anhang) wird rekursiv
+  entpackt, bis zu einer festen Tiefe von **fünf**; was tiefer liegt, bleibt
+  Blob, und die Nutzlast der Mail auf Tiefe fünf vermerkt es. Die Grenze
+  schützt vor einer kaputten oder böswilligen Mail, nicht vor echter Post.
+- **Eine Weiterleitung als zitierter Text** („---------- Forwarded message
+  ----------" im Körper) bleibt Text der äußeren Mail: sie zu zerlegen hieße
+  den Text deuten. Die Anleitung sagt, dass eine Weiterleitung als Anhang
+  sauber erfasst wird.
+
+Im Lauf (§4.2) entstehen aus einem `Fetched` damit ein oder mehrere Events,
+die im selben Stapel angefügt werden. Ihre Reihenfolge darin ist gleich:
+`forwarded_in` verweist auf einen Schlüssel, nicht auf eine `id`.
 
 ---
 
@@ -469,7 +506,11 @@ gemischt, nie Kundenpost.
     benannt, nicht gejagt (Arbeitsregel vom 2026-10-05).
 13. **Die Abbildung, Fall für Fall** aus §3.5, an Mails als Dateien, ohne
     Server.
-14. **Was die Reference zur Abbildung und zum Kommando zitiert**, wird gegen
+14. **Eine weitergeleitete Mail im Anhang wird ein eigenes Event** mit ihrem
+    eigenen Zeitpunkt, ihren Einheiten und `forwarded_in`; liegt sie auch
+    direkt im Ordner, bleibt es ein Event; eine Verschachtelung über die
+    Tiefe fünf hinaus bleibt Blob. Mutation: das Entpacken entfällt.
+15. **Was die Reference zur Abbildung und zum Kommando zitiert**, wird gegen
     den Code gehalten.
 
 ---
@@ -538,3 +579,6 @@ Landkarte.
 7. **Ein Objekt ohne Event**, wenn eine Mail zwischen Speichern und Anfügen
    aus dem Ordner verschwindet (wie Stufe 1c).
 8. **Textextraktion aus Anhängen** (Einheit 7).
+9. **Weiterleitung als zitierter Text** bleibt Text der äußeren Mail (§3.6);
+   sie zu zerlegen wäre Deutung, und ob das eine spätere Einheit leisten
+   soll, ist offen.
