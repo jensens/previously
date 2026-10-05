@@ -40,6 +40,14 @@ A command that needs a variable and finds it unset or empty returns 2 and names 
 Error: PREVIOUSLY_BLOB_RECIPIENT is not set
 ```
 
+A `PREVIOUSLY_BLOB_IDENTITIES` that names no directory, a path that doesn't exist or a file, returns 2 as well, with the path in the sentence:
+
+```text
+Error: PREVIOUSLY_BLOB_IDENTITIES is not a directory: /srv/previously/identities
+```
+
+A directory that exists and holds no identity for a key isn't an error of the setting; `verify --blobs` reports each blob sealed to that key as one that can't be opened.
+
 An endpoint without a scheme, such as `localhost:9000`, or a region the S3 client can't parse, such as `us east 1`, returns 2 as well, with one sentence that names the endpoint, the bucket, the region and the kind of refusal, and never a key.
 
 `append` without `--attach`, and every other command, reads none of them.

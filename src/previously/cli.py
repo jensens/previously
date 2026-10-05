@@ -246,8 +246,19 @@ def _recipient() -> str:
 
 
 def _identities() -> DirectoryKeys:
-    """The directory of identities that open what was sealed."""
-    return DirectoryKeys(_setting("PREVIOUSLY_BLOB_IDENTITIES"))
+    """The directory of identities that open what was sealed.
+
+    A setting that names no directory is a configuration error, said as
+    one. `DirectoryKeys` answers "no identity" for every key out of a
+    directory that does not exist, so `verify --blobs` reported every blob
+    as one that cannot be opened, with exit code 1, which reads as a lost
+    key on a freshly restored machine. An existing directory without the
+    identity for one key stays what it is: a finding about that blob.
+    """
+    directory = _setting("PREVIOUSLY_BLOB_IDENTITIES")
+    if not Path(directory).is_dir():
+        raise PreviouslyError(f"PREVIOUSLY_BLOB_IDENTITIES is not a directory: {directory}")
+    return DirectoryKeys(directory)
 
 
 def _read_anchors(source: str) -> tuple[Anchor, ...]:

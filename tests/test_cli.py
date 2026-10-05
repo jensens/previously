@@ -2830,6 +2830,54 @@ def test_verify_blobs_that_cannot_check_is_an_error_and_no_finding(
         assert secret not in out + err
 
 
+@pytest.mark.parametrize("command", ["verify --blobs", "blob get"])
+@pytest.mark.db
+@pytest.mark.s3
+def test_an_identity_directory_that_is_no_directory_is_a_configuration_error(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    """`PREVIOUSLY_BLOB_IDENTITIES` naming a path that does not exist, or a
+    file, is a configuration error: one sentence, exit code 2. Measured on
+    2026-10-05 before the check: `verify --blobs` reported every blob as
+    `cannot be opened` with exit code 1, which reads as a lost key on a
+    freshly restored machine. The control: an existing directory without
+    the identity stays a finding about that blob."""
+    content = b"checked"
+    address = hashlib.sha256(content).hexdigest()
+    assert main(_attach("a", _file(tmp_path, "a.txt", content))) == 0
+    capsys.readouterr()
+    target = tmp_path / "out.bin"
+    if command == "verify --blobs":
+        argv = ["verify", "--blobs"]
+    else:
+        argv = ["blob", "get", address, "--output", str(target)]
+
+    for nowhere in (tmp_path / "no-such-directory", _file(tmp_path, "a-file", b"")):
+        monkeypatch.setenv("PREVIOUSLY_BLOB_IDENTITIES", str(nowhere))
+        assert main(argv) == 2
+        assert capsys.readouterr() == (
+            "",
+            f"Error: PREVIOUSLY_BLOB_IDENTITIES is not a directory: {nowhere}\n",
+        )
+        assert not target.exists()
+
+    empty = tmp_path / "empty"
+    empty.mkdir()
+    monkeypatch.setenv("PREVIOUSLY_BLOB_IDENTITIES", str(empty))
+    if command == "verify --blobs":
+        assert main(argv) == 1
+        assert capsys.readouterr().out == f"FINDING 1: blob {address} cannot be opened\n"
+    else:
+        assert main(argv) == 2
+        assert _single_line(capsys.readouterr().err).startswith(
+            f"Error: blob {address} cannot be opened: "
+        )
+
+
 def _append_naming(engine: Engine, *addresses: str) -> None:
     """One event per address that names it, written through `core` with
     references to blobs no store holds."""
