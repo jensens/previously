@@ -33,6 +33,10 @@ Whoever gets hold of the bucket's credentials, or of the bucket itself, or of a 
 The provider of the store never sees a key.
 That isn't a promise about the provider's honesty; it's the absence of anything for the provider to be honest about.
 
+What the provider does see is the name of every object, and the name is the address: the SHA-256 of the plaintext, without a salt.
+Whoever holds a candidate file, the provider or anybody who can list the bucket, can hash it and confirm that the bucket holds it, without opening anything.
+That's the price of addressing by content, the same one {ref}`erasure` names for the address that stays in the log after an erasure.
+
 The address isn't protected the same way: `age` doesn't bind a ciphertext to the name it lies under.
 So the reader hashes the plaintext as it comes out of the opening, and compares the result with the address at the end.
 A ciphertext put under a foreign address, by mistake or on purpose, opens and then fails that comparison.
@@ -135,6 +139,7 @@ The key name comes from the metadata of an object, so it's input from outside: w
 It's therefore checked before it becomes part of a path.
 Only the exact shape of a recipient names a file, `age1` and 58 characters of its alphabet, and anything else, `../x` or `/etc/passwd` or a name too long for the file system among it, is treated as unknown without the disk being asked.
 A file that's there and can't be read is a fault of the key directory, and it's reported as one rather than as a missing key.
+A setting that names no directory at all is a fault of the configuration, and it's reported as one before any blob is read, rather than as every blob of the log failing to open; a directory that exists and lacks one key's file is a finding about the blobs of that key.
 That's also why the writer stores the recipient in lower case, the canonical spelling of its encoding, even when it was given in upper case.
 
 The address is held to its shape too: the adapter refuses anything that isn't 64 lower-case hexadecimal characters before a request goes out, because a key with `/` or `..` in it would depend on how the server normalizes a path.
@@ -213,7 +218,7 @@ Whoever promises erasure within a period chooses the retention of the bucket's b
 The register is what makes that rule cheap to compute.
 An erasure asks it which events use a blob, holds each of them against the redactions, and knows whether the blob still has to lie, without reading a single payload.
 
-## What verify checks in the store
+## What `verify` checks in the store
 
 Without a switch, `verify` touches no blob: it holds the register against the payloads and the redactions, inside the database.
 With `--blobs` it also reads the store, after the pass over the chain, and holds every blob the register names against the rule.
@@ -235,3 +240,4 @@ The references of every blob are held in memory until then, one address and its 
 
 A finding says something about the log and its blobs: a blob is missing, doesn't match its address, can't be opened, or is erased and still present.
 A store that doesn't answer, an identity file that can't be read, or a stream that breaks off says nothing about the blobs, only that the check couldn't be made, so it ends the command as an error instead of reporting blobs as broken that nobody looked at.
+The findings of the chain, read before the blobs, still go to standard output beside that error.

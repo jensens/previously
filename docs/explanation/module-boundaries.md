@@ -245,7 +245,7 @@ One change removed the two exemptions and the bolt behind them, and it removed t
 `class LogStore[Conn](Protocol)` in `contract.store`, generic over the connection type, gives `core` something to be typed against that isn't the concrete `PostgresStorage`.
 `append` and `verify` are generic functions over that connection type, the edge `core → storage.postgres` doesn't exist, so there's nothing to exempt and nothing for a test to watch over.
 
-The protocol has nine methods, and the number was read off the two callers rather than copied from the store's method list:
+The protocol had nine methods when stage 1b introduced it, and the number was read off the two callers of that day rather than copied from the store's method list:
 
 ```text
 $ grep -o 'storage\.[a-z_]*(' src/previously/core/append.py src/previously/core/verify.py \
@@ -264,6 +264,7 @@ storage.units_by_event(
 Reading it off that way is what keeps the protocol a statement about what `core` needs instead of a copy of what the store happens to offer.
 `PostgresStorage.units` is the test of that: it fetches the units of a single event, `cli` calls it for `show`, and `core` never does—so it's a method of the store and not a member of the protocol.
 A protocol copied from the implementation would have carried ten methods and said something false about `core`.
+Stage 1c took it to thirteen, read off the same way from the five modules of `core` that name it today; the command that counts them stands at the top of `contract/store.py`.
 
 The store still has to satisfy the protocol, and that's now a typed claim rather than a guarded one.
 Renaming `count_events` to `count_rows` in `storage/postgres.py`, measured on 2026-10-04, turns `pyright` red at every place a `PostgresStorage` is handed to `append` or `verify`:
@@ -295,10 +296,15 @@ previously.contract is not allowed to import previously.storage:
 So `storage/rows.py` became `contract/rows.py`, six import sites followed, and no re-export stayed behind: a module that exists only to forward a name is the kind of thing this project removes rather than keeps.
 `storage.postgres` imports the row types from `contract` now, which is where the page's sixth edge came from.
 
-A second protocol exists now, `ProjectionStore[Conn]`, for the projection store ({ref}`projections`), and it's a second one by design rather than more methods on this one.
+A second protocol has existed since stage 1b, `ProjectionStore[Conn]`, for the projection store ({ref}`projections`), and it's a second one by design rather than more methods on this one.
 `LogStore` is append-only—write once, read in chain order, never change.
 A projection store empties, inserts and updates, because a projection is derivable and disposable by design ({ref}`projections`).
 One protocol covering both would blur exactly the line that separates them: a projection carries no truth of its own, and a type that offers "append to the log" and "truncate the table" through the same interface stops saying so.
+
+Stage 1c added a third, `RedactionStore[Conn]`, with three methods: `lock_event`, `erase_payload` and `erase_units`.
+An erasure changes rows of the log, which is the one thing `LogStore` promises never to do, and the protocol of its own keeps that promise a statement about a type.
+Nothing typed against `LogStore` can erase, and what can erase is listed in one place, three methods long; {ref}`erasure` says what those three may change and why.
+Adding them to `LogStore` would have made every caller of the log a possible eraser, `append` and `verify` among them.
 
 The honest version of the old arrangement deserves saying plainly.
 The exemptions weren't a compromise anybody was proud of.

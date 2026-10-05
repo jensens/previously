@@ -224,7 +224,7 @@ Whoever drops the unique constraint without reading this far appears to loosen a
 
 ## Separating the domains
 
-Every wrapped digest carries a version and a domain of its own, two digests in version 1 and all four in version 2, and {ref}`hash-format` holds every pair.
+Every wrapped digest carries a version and a domain, two digests in version 1 and all four in version 2, and {ref}`hash-format` holds every pair; the units digest of version 2 keeps the domain of version 1 on purpose, and its version tells the two apart.
 The pair keeps a digest from another context out.
 A units digest, in particular, must never be able to count as an event digest, which is why the units get a domain of their own rather than riding along in the event's.
 

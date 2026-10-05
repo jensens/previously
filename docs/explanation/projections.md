@@ -65,6 +65,41 @@ Four events, not six: the third batch covers events 5 and 6, and its transaction
 The eight rows are the units of the first four events, and `up_to_id` names those same four.
 Whoever reads the projection at that moment sees less than the log holds and nothing the log doesn't hold.
 
+(catch-up-lock)=
+
+## Two catch-ups of one projection take turns
+
+The bookmark carries the design only if one catch-up at a time moves it.
+Before stage 1c, two catch-ups of one projection needed two `project` runs at once; since then every `redact` catches up as well, beside whatever `project` runs on a schedule, so two at once is the ordinary case.
+
+Each transaction of a catch-up therefore begins by locking the projection's row in `projection_state`, and takes `up_to_id` and the version from the locked row, never from the transaction before.
+That holds for the first transaction, which builds or rebuilds the table, and for every batch after it.
+A second catch-up waits at the row while the first holds it, and then starts where the first committed.
+A projection without a state row has nothing to lock yet, so the first transaction inserts a placeholder row and holds that; a second first build waits at the row's key, inserts nothing, and locks the row the first one committed.
+
+The lock came out of a measurement, not out of caution.
+The final review of stage 1c measured, on 2026-10-05 against PostgreSQL 17, two catch-ups that kept `up_to_id` in memory:
+
+```text
+A (project)  reads event 1 and its units
+             redact event 1 commits as event 2; event 3 is appended
+A            inserts event 1's rows, with their content, and sets its state; uncommitted
+B (redact)   reads 1..3, inserts event 3's rows, deletes event 1's rows,
+             which it can't see yet, and waits for A at the state row
+A            commits; B commits up_to_id 3
+
+p_chronicle: event 1's two rows, with the erased text, at up_to_id 3
+```
+
+A further catch-up called that table up to date, and only a rebuild removed the erased text.
+With the lock, B waits for A, reads `up_to_id 1` from the row A committed, reads the redaction, and deletes the rows.
+`test_two_catch_ups_of_one_projection_take_turns` in `tests/test_projection_worker.py` holds that interleaving, with a control that leaves out the extra append, and `test_two_first_builds_build_once` holds the first build.
+
+The lock settles two catch-ups of one version of the code, and not two versions.
+A catch-up rebuilds whenever the version it finds differs from its own, in either direction, so two releases running against one database would each rebuild what the other built.
+A batch that finds the row at another version than its own, or finds no row, therefore stops with `ProjectionRebuilt` instead of rebuilding in turn: two releases that each rebuilt whenever they met the other's version would take turns at the lock and never finish, while one that stops leaves the other to carry its build to the end.
+The error names the version it found; {ref}`rebuild-a-projection` says what to do, and `test_a_catch_up_stops_when_another_release_rebuilds_under_it` holds it.
+
 ## Why there are no gaps to worry about
 
 Reading from `up_to_id + 1` to the tip assumes two things about the log: that it has no holes, and that no row appears below the tip afterward.
@@ -145,7 +180,7 @@ SourceStatsProjection.write merges None instead of the stored row
 ```
 
 That mutation is invisible to every test that runs without a database and to the pinned `first_seen` value as well, and it's the reason the comparison exists.
-The counts in both blocks were measured again on 2026-10-05, with eleven tests in `test_projection_derive.py` and sixteen in `test_projection_worker.py`, and each mutation failed the same tests as before.
+The counts in both blocks were measured again on 2026-10-05, and each mutation failed the same tests as before.
 
 Three layers, then, and none of them covers another.
 The pure tests in `test_projection_derive.py` pin the arithmetic where it lives, without a database.
@@ -160,7 +195,7 @@ A projection declares its version in the code, and a catch-up that meets a diffe
 The test poisons a row in `p_source_stats`, raises the version, and finds the poison gone.
 Its control sits right next to it: a catch-up at the unchanged version leaves the poison in place.
 Without that control the first half would show only that the worker writes, not that the version is what set it off.
-Dropping the version comparison from the worker turns both version tests red and leaves the other fourteen green.
+Dropping the version comparison from the worker turned both version tests red and left the rest of the file green, measured on 2026-10-05, before the catch-up lock added a second comparison to every batch.
 
 ## Two orders, two commands
 

@@ -125,7 +125,7 @@ The command can't check that.
 ## What "covered" means
 
 An erasure doesn't order the same thing twice.
-Before it writes, it locks the row of its target event, or for a blob the rows of the events that use it, and reads the redactions, and whatever a redaction already covers it leaves out: an event that a redaction of the event covers, and a unit that a redaction of that unit or of its event covers.
+Before it writes, it locks the rows the section on blobs above names, its target event and, for an event with attachments, every event that shares a blob with it, or for a blob the events that use it, and reads the redactions, and whatever a redaction already covers it leaves out: an event that a redaction of the event covers, and a unit that a redaction of that unit or of its event covers.
 If nothing is left, it writes no event and reports the redaction that covers the target.
 It still sets the tombstones and computes which blobs no longer have to lie, so a second call finishes an erasure whose order stands and whose execution doesn't.
 For a blob, covered means that every reference to it has been erased already, and the redaction it reports is the newest of those that erased them.
@@ -158,6 +158,8 @@ Whoever restores to a point before an erasure has the content again and the reda
 Nothing reports that for a payload or a unit, because the restored state is consistent with itself.
 For a blob it shows, as far as the restored log names it: the store doesn't go back with the database, so `verify --blobs` reports as missing every blob that an erasure since that point deleted and that an event of the restored log names.
 A blob attached after that point and erased since is named by no event of the restored log, and neither is an object uploaded after that point for a content no restored event names; nothing reports either, since `verify --blobs` checks only the blobs the register names.
+A blob erased before that point and attached again after it makes the opposite case: the restored log names it, only through references it erased, and the bucket holds it again, so `verify --blobs` reports it as erased and still present.
+A `redact blob` of it finds every reference covered, writes nothing, and deletes the object, because an erasure computes what has to go on every call.
 The erasures since that point have to be repeated, and the log can't say which ones they were, since its record of them is what the restore took away.
 Only those whose target the restored log still holds can be repeated, and an `id` can't tell which those are.
 An `id` is the tip plus one, so a restore frees every `id` above its tip, and an event appended since can hold the `id` an erasure once named; repeated by its `id` alone, that erasure would take an event nobody meant.
@@ -167,6 +169,11 @@ A `redact blob` names an address, which survives the restore as well, but it era
 **An erasure of units leaves what the payload repeats.**
 The units disappear, and the payload stays under its one digest, so whatever wording of theirs it carries stays with it.
 Every event `previously append --text` writes carries its whole text in the payload; for those, only an erasure of the event takes the wording, as *Why the payload can't be erased in part* explains.
+
+**A bucket that keeps versions keeps the blobs.**
+`redact` deletes an object and trusts the store that it's gone.
+On a bucket with versioning or object lock, deleting leaves a copy behind, and `verify --blobs` asks only after the current object, so it doesn't see that copy either.
+That's why the bucket must have neither, and nothing in Previously checks that it doesn't.
 
 **The hashes stay.**
 With the salt gone, the content can't be guessed from its digest, and it can't even be confirmed.

@@ -5,7 +5,7 @@
 Two processes read the same chain tip, derive the same `id` and the same `prev_hash` from it, and both try to write the event that follows.
 One of them has to lose, and the whole of what makes it lose is two unique indexes.
 No advisory lock decides the chain position, no `SELECT … FOR UPDATE` on the tip, and no coordination between processes of any kind.
-{ref}`database-schema` names the indexes; this page says why two of them are enough, what the loser does afterward, why one of the two recoveries behaves differently from the way the specification first described it, and what the one row lock in the system is for.
+{ref}`database-schema` names the indexes; this page says why two of them are enough, what the loser does afterward, why one of the two recoveries behaves differently from the way the specification first described it, and what the two kinds of row lock in the system are for: an erasure's lock on event rows, and a catch-up's lock on the state row of a projection.
 
 ## The indexes are the serialization
 
@@ -93,6 +93,13 @@ Two erasures wait for each other when the sets of rows they lock overlap.
 For `redact units` the set is its target event, for `redact event` its target event and every event that uses one of that event's blobs, and for `redact blob` exactly the events that use the blob.
 So two erasures can wait for each other without sharing a target or a blob: one erasing an event that shares a blob with event 2, the other erasing an event that shares another blob with event 2, both lock event 2.
 A `redact units` locks only its target, and still waits behind an erasure whose set holds that event.
+
+The second kind of row lock isn't on the log.
+A catch-up of a projection locks the projection's row in `projection_state` at the start of each of its transactions, and reads its bookmark and its version from the locked row.
+Two catch-ups of one projection, a scheduled `project` and the catch-up every `redact` runs, then take turns batch by batch, and each starts where the other committed.
+Without it, the two were measured to leave erased text in the chronicle for good, and {ref}`catch-up-lock` gives that interleaving.
+That lock and an erasure's never wait for each other: a catch-up reads the log without a lock, and the only lock it takes on an event row is the key-share lock of a foreign-key check, which `FOR NO KEY UPDATE` lets through.
+A catch-up that finds the state row at another version of the code stops with an error rather than rebuilding in turn, which {ref}`catch-up-lock` explains as well.
 
 ## The index clause that isn't optional
 
