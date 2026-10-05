@@ -400,6 +400,25 @@ def _is_the_same_sentence(parts: list[str], line: str) -> bool:
     return True
 
 
+def _assert_raised(quoted: list[str], raised: list[list[str]], error_class: str) -> None:
+    """Every quoted line is `Error: ` and then a message one of `raised` says.
+
+    A function of its own for ruff's `C901`, whose threshold here is ten.
+    Measured on 2026-10-05 with `ruff check --select C901 --config
+    'lint.mccabe.max-complexity = 1' tests/test_docs_references.py`: the
+    test that calls it stood at nine, the loop over the errors of `migrate`
+    with these assertions written inline took it to eleven, and with them
+    here it stands at ten.
+    """
+    for line in quoted:
+        prefix, _, error = line.partition(": ")
+        assert prefix == "Error", f"cli.md quotes the error {line!r} without `Error: `"
+        assert any(_is_the_same_sentence(parts, error) for parts in raised), (
+            f"cli.md quotes the error {error!r} and no `{error_class}` raises it. "
+            "Either the code's wording changed, or the page's did."
+        )
+
+
 def _refusal(payload: Mapping[str, object]) -> str:
     """What `canonical` says about a payload, without the path prefix.
 
@@ -449,9 +468,11 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     the line `blob get` prints on success, which `_message_patterns` does
     not collect, since it reads standard-error sentences and returned lines
     only; the seven refusals of `redact` against the messages
-    `core/redact.py` and `cli.py` raise as `RedactionRefused`; the refusal
-    of `migrate` against the message `storage/migrate.py` raises as
-    `UnknownRevision`; the nine errors of the blob commands and of
+    `core/redact.py` and `cli.py` raise as `RedactionRefused`; the three
+    errors of `migrate` against the messages `storage/migrate.py` raises as
+    `UnknownRevision` and `MigrationFailed`, and the missing schema against
+    the one `storage/postgres.py` raises as `MigrationPending`; the nine
+    errors of the blob commands and of
     an unfinished redaction against the messages `cli.py` raises as
     `PreviouslyError` or `InvalidPayload` and `core/blob.py` raises as
     `BlobError`;
@@ -531,19 +552,21 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
             "Either the code's wording changed, or the page's did."
         )
 
-    # The refusal of `migrate` comes out of `storage/migrate.py`, raised as
-    # `UnknownRevision`, and the command line prints it behind `Error: `.
-    unknown = _raised_patterns(
-        ROOT / "src" / "previously" / "storage" / "migrate.py", "UnknownRevision"
-    )
-    quoted = _quoted_block(page, "is refused, and nothing changes")
-    assert len(quoted) == 1, quoted
-    prefix, _, refusal = quoted[0].partition(": ")
-    assert prefix == "Error", f"cli.md quotes the refusal {quoted[0]!r} without `Error: `"
-    assert any(_is_the_same_sentence(parts, refusal) for parts in unknown), (
-        f"cli.md quotes the refusal {refusal!r} and no `UnknownRevision` raises it. "
-        "Either the code's wording changed, or the page's did."
-    )
+    # The errors of `migrate` come out of `storage/migrate.py`, raised as
+    # `UnknownRevision` or `MigrationFailed`, and the one every other command
+    # gives against a database without the schema out of `storage/postgres.py`,
+    # raised as `MigrationPending`; the command line prints each behind
+    # `Error: `. What `MigrationFailed` says after its colon is the server's
+    # own reason, which `tests/test_migrate.py` holds against a real database.
+    storage = ROOT / "src" / "previously" / "storage"
+    for after, module, error_class, expected in (
+        ("is refused, and nothing changes", "migrate.py", "UnknownRevision", 1),
+        ("the database's own reason", "migrate.py", "MigrationFailed", 2),
+        ("against a database without it prints one sentence", "postgres.py", "MigrationPending", 1),
+    ):
+        quoted = _quoted_block(page, after)
+        assert len(quoted) == expected, quoted
+        _assert_raised(quoted, _raised_patterns(storage / module, error_class), error_class)
 
     # The errors of `blob get` and the input errors of the blob commands come
     # out of `cli.py`, raised as `PreviouslyError` or `InvalidPayload`; the

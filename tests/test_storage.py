@@ -571,12 +571,14 @@ def test_an_unreachable_server_shows_no_password() -> None:
 
 @pytest.mark.db
 def test_a_missing_table_becomes_a_storage_error(unmigrated_engine: Engine) -> None:
-    """Case 3 out of review finding W2: `log` or `append` run before `alembic
-    upgrade head` has created the tables. The exception arises here only
-    **inside** the `with` block, at `tip`, not during the connection setup
-    itself — exactly the case the long comment at `begin()` describes."""
+    """Case 3 out of review finding W2: `log` or `append` run before
+    `previously migrate` has created the tables. The exception arises here
+    only **inside** the `with` block, at `tip`, not during the connection
+    setup itself — exactly the case the long comment at `begin()` describes.
+    The message names `previously migrate`, the way an operator has, and no
+    longer `alembic upgrade head`, which needs a checkout."""
     storage = PostgresStorage(unmigrated_engine)
-    with pytest.raises(MigrationPending, match="alembic upgrade head"), storage.begin() as c:
+    with pytest.raises(MigrationPending, match="`previously migrate`"), storage.begin() as c:
         storage.tip(c)
 
 

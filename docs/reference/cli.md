@@ -8,12 +8,17 @@ Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see
 `append --attach`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
 A missing setting is an input error that names the first variable missing, in the form `Error: PREVIOUSLY_BLOB_BUCKET is not set`.
 A transaction the database aborts in a conflict with a concurrent one, a deadlock or a lock not granted in time, is a storage error with exit code 2, in the form `Error: the database aborted the operation in a conflict with a concurrent one; run the command again`.
+Every subcommand but `migrate` needs the schema that `migrate` creates, and against a database without it prints one sentence to standard error and returns 2:
+
+```text
+Error: database schema incomplete — `previously migrate` has not run yet
+```
 
 ## Exit codes
 
 | Command | 0 | 1 | 2 |
 |---|---|---|---|
-| `migrate` | The schema stands at the newest revision, whether `migrate` ran a migration or found it up to date. | Not used. | The database is at a revision this version doesn't know, or storage raised an error. |
+| `migrate` | The schema stands at the newest revision, whether `migrate` ran a migration or found it up to date. | Not used. | The database is at a revision this version doesn't know, the database refused to let the role read the revision or apply a migration, or storage raised an error. |
 | `append` | The event was recorded, or an event with the same `--source` and `--external-id` already existed. | Not used. | The input was invalid, an attachment couldn't be read, a blob setting is missing or invalid, or storage or the blob store raised an error. |
 | `redact` | The redaction was recorded and carried out, or the target was already covered by one, every blob it made obsolete is gone from the blob store, and every projection stands at the tip of the log. | Not used. | The input was invalid, the redaction was refused, storage raised an error, or after the redaction was recorded a blob couldn't be deleted or the projections couldn't be caught up. |
 | `log` | The log was printed. | Not used. | The input was invalid, or storage raised an error. |
@@ -46,14 +51,25 @@ The second means that the database was at the newest revision already, and nothi
 `migrate` only goes forward.
 Going back to an older revision is `alembic downgrade` in a checkout, with the refusals {ref}`database-schema` lists.
 
-`migrate` holds a PostgreSQL advisory lock on the database for as long as it runs.
+`migrate` holds a PostgreSQL advisory lock on the database for as long as it runs, and releases it once its migration has committed.
 A second `migrate` against the same database, such as a second job of the same release, waits until the first is done, and then finds the schema up to date.
+The lock is a session lock outside any transaction, and a `migrate` that fails gives it up when it closes its connection.
 
 A database at a revision this version doesn't know, such as one that a newer version of previously has migrated already, is refused, and nothing changes:
 
 ```text
 Error: the database is at revision 0005_example, which this version of previously does not know; it knows revisions up to 0004_event_blob
 ```
+
+A database that refuses the role in `PREVIOUSLY_DSN` the reading of the revision or a step of the migration gives one sentence that names the newest revision and the database's own reason:
+
+```text
+Error: the database refused the migration to 0004_event_blob: permission denied for schema public
+Error: the database refused the migration to 0004_event_blob: permission denied for table alembic_version
+```
+
+The first comes from a role that may not create a table in schema `public`, which since PostgreSQL 15 is every role but the owner of the database and a superuser.
+The second comes from a role that may not read the table `alembic_version`, where the revision stands.
 
 A connection string that can't be parsed, a server that doesn't answer, and a password the server refuses each print one sentence to standard error, the same sentence every other command prints for it, without the password.
 

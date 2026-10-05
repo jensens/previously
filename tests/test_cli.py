@@ -301,7 +301,8 @@ def test_a_missing_table_shows_one_sentence(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Case 3 out of review finding W2: `log` before `alembic upgrade head`.
+    """Case 3 out of review finding W2: `log` before `previously migrate`,
+    and the sentence names that command, the way an operator has.
 
     `verify` is in it because it reads through a different entrance to the
     storage than `log` does: `snapshot`, not `begin`, and the translation has
@@ -315,7 +316,7 @@ def test_a_missing_table_shows_one_sentence(
     assert main(["log"]) == 2
     sentence = _single_line(capsys.readouterr().err)
     assert "Traceback" not in sentence
-    assert "alembic upgrade head" in sentence
+    assert sentence == "Error: database schema incomplete — `previously migrate` has not run yet"
     assert main(["verify"]) == 2
     assert _single_line(capsys.readouterr().err) == sentence
 

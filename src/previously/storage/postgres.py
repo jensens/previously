@@ -54,6 +54,7 @@ from sqlalchemy import select
 from sqlalchemy import update
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import ArgumentError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.exc import ProgrammingError
@@ -90,20 +91,31 @@ _CHAIN_POSITION_CONSTRAINTS = frozenset({"event_prev_hash_idx", "event_pkey", "e
 _SOURCE_KEY_CONSTRAINT = "source_key_pkey"
 
 
-def _constraint_name(error: IntegrityError) -> str | None:
-    """Reads the name of the violated constraint out of the psycopg diagnosis.
+def diagnosis(error: DBAPIError, field: str) -> str | None:
+    """One field of the server's diagnosis of `error`, such as
+    `constraint_name` or `message_primary`, or `None`.
 
     `error.orig` is typed by SQLAlchemy only as `BaseException | None`; that
     type does not know `diag`. `getattr` instead of a `cast` onto the psycopg
     type, so that a driver without a `diag` attribute does not break off here
     with an `AttributeError` but yields `None`, and the original error passes
-    through untranslated. Deliberately via `diag.constraint_name`, not by a
-    substring search in the error text — the text depends on language and
-    version, the constraint name does not.
+    through untranslated.
+
+    Public because `storage.migrate` names the server's reason with it.
     """
     diag = getattr(error.orig, "diag", None)
-    name = getattr(diag, "constraint_name", None)
-    return name if isinstance(name, str) else None
+    value = getattr(diag, field, None)
+    return value if isinstance(value, str) else None
+
+
+def _constraint_name(error: IntegrityError) -> str | None:
+    """Reads the name of the violated constraint out of the psycopg diagnosis.
+
+    Deliberately via `diag.constraint_name`, not by a substring search in the
+    error text — the text depends on language and version, the constraint
+    name does not.
+    """
+    return diagnosis(error, "constraint_name")
 
 
 class PostgresStorage:
@@ -119,6 +131,8 @@ class PostgresStorage:
         self._snapshot_engine = engine.execution_options(
             isolation_level="REPEATABLE READ", postgresql_readonly=True
         )
+        # `migrate` holds its lock here, see `autocommit`.
+        self._autocommit_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
 
     def close(self) -> None:
         """Closes every connection the engine's pool holds.
@@ -159,6 +173,19 @@ class PostgresStorage:
         reads is valid only once it commits, unless it is deferrable.
         """
         return self._transaction(self._snapshot_engine)
+
+    def autocommit(self) -> AbstractContextManager[Connection]:
+        """A connection on which every statement commits by itself, with no
+        transaction around them, for `storage.migrate`.
+
+        A session-level advisory lock belongs to the session and needs no
+        transaction, and a transaction around it would do harm: an error on
+        the connection aborts it, so the statement that releases the lock
+        fails in turn and hides the first error, and the open transaction
+        keeps its locks on whatever it read for as long as the migration
+        runs. The errors are translated as for `begin`.
+        """
+        return self._transaction(self._autocommit_engine)
 
     @contextmanager
     def _transaction(self, engine: Engine) -> Generator[Connection]:
@@ -210,8 +237,11 @@ class PostgresStorage:
                 "running there, and is it reachable from here?"
             ) from error
         except ProgrammingError as error:
+            # `previously migrate` and not `alembic upgrade head`: an installed
+            # previously has no `alembic.ini` and no checkout to run Alembic
+            # from, and the command is what an operator has.
             raise MigrationPending(
-                "database schema incomplete — `uv run alembic upgrade head` has not run yet"
+                "database schema incomplete — `previously migrate` has not run yet"
             ) from error
 
     def tip(self, conn: Connection) -> Tip | None:

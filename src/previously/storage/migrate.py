@@ -18,9 +18,12 @@ from alembic.runtime.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from alembic.util.exc import CommandError
 from dataclasses import dataclass
+from previously.storage.errors import MigrationFailed
 from previously.storage.errors import UnknownRevision
+from previously.storage.postgres import diagnosis
 from previously.storage.postgres import from_dsn
 from sqlalchemy import text
+from sqlalchemy.exc import ProgrammingError
 
 
 # The key of the session-level advisory lock `migrate` holds while it runs.
@@ -49,15 +52,20 @@ def migrate(dsn: str) -> Migrated:
     The lock sits on a connection of its own, and `command.upgrade` opens a
     second one through `env.py`: a session-level lock belongs to the session
     that holds it, so the second connection is not in its way, and every other
-    `migrate` queues behind the first. The revision is read after the lock is
-    granted, and under the READ COMMITTED of `begin` that read takes a fresh
-    snapshot, so it sees what a `migrate` that held the lock before committed.
+    `migrate` queues behind the first. The lock is released only once the
+    upgrade has committed, so whoever comes next reads the new revision.
 
-    The connection comes out of `from_dsn` and `begin`, the way every command
-    gets one, so an unparsable string, a server that does not answer or a
-    password it refuses become the same one sentence as there, without the
-    password. `command.upgrade` runs inside the same `with`, so a failure to
-    connect on Alembic's own connection is translated the same way.
+    The lock connection runs in autocommit, out of `autocommit`: the lock,
+    the read of the revision and the release are each a statement of their
+    own, with no transaction around them that an error could abort. The read
+    comes after the lock is granted, so it sees what a `migrate` that held
+    the lock before committed.
+
+    The connection comes out of `from_dsn`, the way every command gets one,
+    so an unparsable string, a server that does not answer or a password it
+    refuses become the same one sentence as there, without the password.
+    `command.upgrade` runs inside the same `with`, so a failure to connect on
+    Alembic's own connection is translated the same way.
     """
     config = Config()
     config.set_main_option("script_location", "previously:migrations")
@@ -75,7 +83,7 @@ def migrate(dsn: str) -> Migrated:
         raise RuntimeError("previously:migrations holds no revision")
     storage = from_dsn(dsn)
     try:
-        with storage.begin() as conn:
+        with storage.autocommit() as conn:
             conn.execute(text("SELECT pg_advisory_lock(:key)"), {"key": MIGRATION_LOCK})
             try:
                 before = MigrationContext.configure(conn).get_current_revision()
@@ -89,8 +97,22 @@ def migrate(dsn: str) -> Migrated:
                         ) from error
                 if before != head:
                     command.upgrade(config, "head")
-            finally:
-                conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": MIGRATION_LOCK})
+            except ProgrammingError as error:
+                # The database answered and refused: a role that may not read
+                # `alembic_version` or create a table. That is not the missing
+                # schema `MigrationPending` reports, whose advice would be to
+                # run this very command again; the server's own reason is what
+                # helps, and it carries no connection string.
+                reason = diagnosis(error, "message_primary") or type(error.orig).__name__
+                raise MigrationFailed(
+                    f"the database refused the migration to {head}: {reason}"
+                ) from error
+            # Released here, after success, and not in a `finally`: on the way
+            # out with an error, `storage.close()` below closes the session,
+            # and the lock goes with it. An unlock on that way could only fail
+            # on a connection that is broken, and its error would hide the one
+            # that matters.
+            conn.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": MIGRATION_LOCK})
             return Migrated(before=before, head=head)
     finally:
         storage.close()

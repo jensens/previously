@@ -67,8 +67,20 @@ class MigrationPending(StorageError):
     """The database schema is incomplete (review finding W2).
 
     Translates `sqlalchemy.exc.ProgrammingError`, which arises when something
-    is written to or read from a table that `alembic upgrade head` has not
+    is written to or read from a table that `previously migrate` has not
     created yet.
+    """
+
+
+class MigrationFailed(StorageError):
+    """The database refused a step of `previously migrate`: reading the
+    revision it is at, or applying a revision.
+
+    Translates the `sqlalchemy.exc.ProgrammingError` that arises there, such
+    as a role without the right to create a table or to read
+    `alembic_version`. It is not `MigrationPending`: the schema may well be
+    missing, but the cause is the database's answer, and the message names
+    that answer, never the connection string.
     """
 
 
