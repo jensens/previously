@@ -10,6 +10,7 @@ and the container without a migration is shared by tests that rely on every
 access to it failing.
 """
 
+from alembic import command
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 from dataclasses import dataclass
@@ -25,8 +26,12 @@ from sqlalchemy import text
 from typing import TYPE_CHECKING
 
 import itertools
+import os
 import pytest
 import secrets
+import signal
+import subprocess
+import sys
 import threading
 import time
 
@@ -518,10 +523,11 @@ def test_cli_migrate_takes_the_uri_cloudnativepg_writes(
     built by Go's `url.URL` with `url.UserPassword`, which writes `/` as
     `%2F` and leaves `$&+,;=` raw. The passwords CloudNativePG generates are
     letters and digits; one an operator supplies can hold these, `&` among
-    them (ruling T2-l), and this one holds all of them. Pasted as it is
-    into `PREVIOUSLY_DSN`, with the plain `postgresql://` scheme, it is inside
-    the grammar `from_dsn` accepts, and `migrate` runs. The role owns the
-    database, since only the owner may create in `public` (PostgreSQL 15)."""
+    them (ruling T2-l of the 2026-10-05 delivery plan), and this one holds
+    all of them. Pasted as it is into `PREVIOUSLY_DSN`, with the plain
+    `postgresql://` scheme, it is inside the grammar `from_dsn` accepts, and
+    `migrate` runs. The role owns the database, since only the owner may
+    create in `public` (PostgreSQL 15)."""
     password = f"Ab+cd/EF=gh&$,;{secrets.token_hex(8)}=="
     database = make_url(empty_dsn).database
     with engine.execution_options(isolation_level="AUTOCOMMIT").connect() as conn:
@@ -587,3 +593,136 @@ def test_cli_migrate_names_the_reason_of_an_error_at_commit(
         f"Error: the database refused the migration to {HEAD}: no revision may be recorded here\n",
     )
     assert _no_lock_left(empty_dsn)
+
+
+def _start(dsn: str) -> subprocess.Popen[str]:
+    """`previously migrate` in a process of its own, against `dsn`: a signal
+    sent to the test's own process would reach pytest.
+
+    The interpreter runs `sys.exit(main())`, which is what the script
+    `previously` the package installs runs, rather than the script by its
+    path. Every argument is then a literal written in the call, or
+    `sys.executable`, which ruff's `S603` does not report, as in
+    `tests/test_docs_typed_output.py`; the script's path, or the same string
+    held in a constant, it does, measured on 2026-10-05."""
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from previously.cli import main; sys.exit(main())",
+            "migrate",
+        ],
+        env={**os.environ, "PREVIOUSLY_DSN": dsn},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _waiting_on(engine: Engine, wait_event: str) -> bool:
+    """Whether another backend of this database waits on a lock of the kind
+    `wait_event` names: `advisory`, or `relation` for a table."""
+    with engine.connect() as conn:
+        return bool(
+            conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+                    "AND wait_event_type = 'Lock' AND wait_event = :event"
+                ),
+                {"event": wait_event},
+            ).scalar_one()
+        )
+
+
+def _terminated(process: subprocess.Popen[str], engine: Engine, wait_event: str) -> tuple[int, str]:
+    """Sends `SIGTERM` once `process` waits on the lock, and returns its exit
+    code and its standard error. The poll asks until a deadline, as the lock
+    tests above do, and stops early if the process ended without waiting."""
+    deadline = time.monotonic() + 30
+    while not _waiting_on(engine, wait_event):
+        assert process.poll() is None, process.communicate()
+        assert time.monotonic() < deadline, "migrate did not wait"
+        time.sleep(0.01)
+    process.send_signal(signal.SIGTERM)
+    _, err = process.communicate(timeout=30)
+    return process.returncode, err
+
+
+@pytest.mark.db
+def test_previously_migrate_as_a_process_of_its_own_runs(empty_dsn: str) -> None:
+    """The control for the two tests below: the same process, started the
+    same way and sent no signal, migrates and ends with 0. Without it, a
+    process that cannot start at all would make them fail for a reason that
+    has nothing to do with the signal."""
+    process = _start(empty_dsn)
+    out, err = process.communicate(timeout=60)
+    assert (process.returncode, out, err) == (0, f"migrated: (empty) -> {HEAD}\n", "")
+
+
+@pytest.mark.db
+def test_sigterm_ends_a_migrate_that_waits_for_the_lock(empty_dsn: str) -> None:
+    """In a container `previously` is process 1, which the kernel sends no
+    signal it has left at the default action: `docker stop`, and Kubernetes
+    stopping a pod, waited the whole grace period and ended it with `SIGKILL`,
+    measured on 2026-10-05. With a handler, `SIGTERM` ends the command with
+    143, 128 and the signal's number, and no traceback; the database is left
+    without a schema and without the lock.
+
+    The test runs the process as a child, not as process 1, and a child left
+    at the default action would end at once with -15, which the assertion
+    tells apart from 143. The wait is gone by the time the process has ended,
+    because psycopg cancels it on the server when `SystemExit` reaches it;
+    measured on 2026-10-05, a handler that ended the process with `os._exit`
+    left the server still waiting at that moment, and this test red."""
+    engine = create_engine(empty_dsn)
+    try:
+        with engine.connect() as holder:
+            holder.execute(text("SELECT pg_advisory_lock(:key)"), {"key": MIGRATION_LOCK})
+            code, err = _terminated(_start(empty_dsn), engine, "advisory")
+            assert not _waiting_on(engine, "advisory")
+            holder.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": MIGRATION_LOCK})
+            holder.commit()
+        assert (code, err) == (143, "")
+        assert _no_lock_left(empty_dsn)
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT to_regclass('alembic_version')")).scalar() is None
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.db
+def test_sigterm_in_the_middle_of_an_upgrade_rolls_it_back(empty_dsn: str) -> None:
+    """A database at `0003_hash_version_2`, and the test holding table
+    `event` locked: the upgrade to `0004_event_blob` creates `event_blob`
+    with a foreign key to `event` and waits for that lock, inside the one
+    transaction the upgrade runs in. `SIGTERM` there ends the command with
+    143, and the transaction rolls back — the database stays at the revision
+    it was at, without `event_blob` — so that the next `migrate` runs from
+    there as if nothing had happened.
+
+    The rollback is PostgreSQL's as much as the handler's: the server rolls
+    back the transaction of any client that goes away, so this test holds
+    the outcome and not how the process got there. Measured on 2026-10-05,
+    it stayed green with a handler that ended the process with `os._exit`;
+    the test above is the one that tells the two apart."""
+    engine = create_engine(empty_dsn)
+    try:
+        config = Config()
+        config.set_main_option("script_location", "previously:migrations")
+        with engine.begin() as conn:
+            config.attributes["connection"] = conn
+            command.upgrade(config, "0003_hash_version_2")
+        with engine.connect() as holder:
+            holder.execute(text("LOCK TABLE event IN ACCESS EXCLUSIVE MODE"))
+            code, err = _terminated(_start(empty_dsn), engine, "relation")
+            holder.rollback()
+        assert (code, err) == (143, "")
+        assert _no_lock_left(empty_dsn)
+        with engine.connect() as conn:
+            revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            table = conn.execute(text("SELECT to_regclass('event_blob')")).scalar()
+        assert (revision, table) == ("0003_hash_version_2", None)
+    finally:
+        engine.dispose()
+    assert migrate(empty_dsn) == Migrated(before="0003_hash_version_2", head=HEAD)

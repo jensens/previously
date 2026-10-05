@@ -63,6 +63,7 @@ import io
 import json
 import mimetypes
 import os
+import signal
 import sys
 import tempfile
 
@@ -78,6 +79,7 @@ if TYPE_CHECKING:
     from previously.core.redaction import RedactionIndex
     from previously.core.verify import Examination
     from previously.core.verify import Finding
+    from types import FrameType
     from typing import BinaryIO
 
 MAX_TEXT_BYTES = 1_000_000
@@ -1133,6 +1135,31 @@ COMMANDS: tuple[Command, ...] = (
 )
 
 
+# What a process ends with when a signal ended it, by the shell's convention:
+# 128 and the signal's number, 143 for `SIGTERM`.
+_SIGNAL_EXIT_BASE = 128
+
+
+def _terminate(signum: int, frame: FrameType | None) -> None:
+    """Ends the command on `SIGTERM` the way an exception would.
+
+    In a container, `previously` runs as process 1, and the kernel delivers no
+    signal to process 1 that it has left at the default action: measured on
+    2026-10-05, `docker stop` on a `migrate` waiting for the lock waited its
+    whole ten seconds and ended in `SIGKILL`, exit code 137. Kubernetes stops
+    a pod the same way.
+
+    `SystemExit` and not `os._exit`: it unwinds the stack, so every `with`
+    closes, an open transaction rolls back, and a migration that was running
+    leaves the schema where it found it. psycopg cancels a query it waits on
+    when `SystemExit` or `KeyboardInterrupt` reaches it, so a `migrate`
+    waiting for the lock lets go of it at once. A second `SIGTERM` during
+    that unwinding is ignored, so that it cannot break into the cleanup.
+    """
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+    raise SystemExit(_SIGNAL_EXIT_BASE + signum)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="previously")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -1150,8 +1177,12 @@ def main(argv: Sequence[str] | None = None) -> int:
     # threshold of 10, ruff's default, which `C901` has to exceed. The `if`
     # chain the table replaced was measured earlier that day at 9 with seven
     # commands, 10 with eight and 11 with nine: a ninth command would have
-    # broken the gate.
+    # broken the gate. The `finally` that puts the handler of `SIGTERM` back
+    # adds nothing either: measured the same way on 2026-10-05, still 3.
     run = {command.name: command.run for command in COMMANDS}
+    # Set for the command and put back after it, so that a caller that goes
+    # on after `main` returns, such as the test suite, keeps its own handler.
+    previous = signal.signal(signal.SIGTERM, _terminate)
     try:
         # No fallback below: `add_subparsers(..., required=True)` makes
         # `parse_args` fail before this line without the name of a command,
@@ -1169,3 +1200,5 @@ def main(argv: Sequence[str] | None = None) -> int:
         # as a one-liner.
         print(f"Error: {error}", file=sys.stderr)
         return 2
+    finally:
+        signal.signal(signal.SIGTERM, previous)
