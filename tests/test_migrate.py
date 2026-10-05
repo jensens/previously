@@ -481,3 +481,23 @@ def test_cli_migrate_names_the_reason_of_an_error_that_is_no_programming_error(
         "no schema changes in this database\n",
     )
     assert _no_lock_left(empty_dsn)
+
+
+@pytest.mark.db
+def test_cli_migrate_with_an_unknown_query_key_does_not_advise_itself(
+    empty_dsn: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A key of the query the client library does not know, here a typo of
+    `password`. psycopg raises `ProgrammingError` while it connects, before
+    the server is asked anything. Measured on 2026-10-05 at `fa61473`: that
+    became `MigrationPending`, and `migrate` answered "database schema
+    incomplete — `previously migrate` has not run yet", the advice to run
+    itself. Connecting failed, and the sentence says so."""
+    url = make_url(empty_dsn)
+    monkeypatch.setenv("PREVIOUSLY_DSN", f"{empty_dsn}?passwrod=typo")
+    assert main(["migrate"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: connecting to database {url.database} at {url.host}:{url.port} failed: "
+        'invalid connection option "passwrod"\n',
+    )

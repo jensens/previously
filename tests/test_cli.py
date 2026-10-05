@@ -37,6 +37,7 @@ import secrets
 import sys
 import threading
 import time
+import traceback
 
 
 if TYPE_CHECKING:
@@ -325,7 +326,9 @@ def _log_with(
 def _no_fragment_of(secret: str, output: str) -> bool:
     """Whether no eight characters in a row of `secret` stand in `output`:
     a password cut in two by a parser that read it wrongly shows as a piece,
-    not as itself."""
+    not as itself. A secret shorter than eight characters has no such piece,
+    and the check would pass whatever the output held, so it is refused."""
+    assert len(secret) >= 8, f"a secret of {len(secret)} characters proves nothing here"
     return not any(secret[i : i + 8] in output for i in range(len(secret) - 7))
 
 
@@ -381,28 +384,126 @@ def test_a_password_in_the_query_is_not_printed(
     assert "FATAL:  password authentication failed for user " in sentence
 
 
+# The connection strings of the attack review of 2026-10-05, fix round 2, all
+# 38 in its order, and one more after them. `{A}`, `{B}` and `{C}` are pieces
+# of a password, 20 hexadecimal characters each, and `{D}` one of 20 digits,
+# all drawn at run time; `{H}` is the session server's host and port. The
+# reviewer's pieces were letters; any characters do, since the specials stand
+# in the forms between the pieces. The outcome is what
+# the command must do: `refused` before anything connects, with the one
+# sentence `from_dsn` has for a string it cannot read as written; `connect`,
+# which fails with the connection sentence; or `traceback`, for the one form
+# that is broken whatever the string holds, a driver that is not installed.
+# The pieces listed last are the ones that must appear nowhere; forms 9 and 10
+# put no password where libpq quotes the value it rejects, so they list none.
+_FORMS: tuple[tuple[str, str, str, str], ...] = (
+    ("01-user-pass", "{S}app:{A}@{H}/probe", "connect", "A"),
+    ("02-encoded-specials", "{S}app:{A}%40%3A%2F%3F%23{B}@{H}/probe", "connect", "AB"),
+    ("03-query-password", "{S}app@{H}/probe?password={A}", "connect", "A"),
+    ("04-query-password-with-at", "{S}app@{H}/probe?password={A}@{B}", "refused", "AB"),
+    ("05-query-key-typo", "{S}app@{H}/probe?passwrod={A}", "connect", "A"),
+    ("06-query-passfile", "{S}app@{H}/probe?passfile=/tmp/{A}", "connect", "A"),
+    ("07-query-sslpassword", "{S}app@{H}/probe?sslpassword={A}", "connect", "A"),
+    (
+        "08-query-sslpassword-sslkey",
+        "{S}app@{H}/probe?sslpassword={A}&sslkey=/nonexistent&sslmode=require",
+        "connect",
+        "A",
+    ),
+    ("09-query-sslmode-value", "{S}app@{H}/probe?sslmode=bogus", "connect", ""),
+    ("10-query-connect-timeout-value", "{S}app@{H}/probe?connect_timeout=abc", "connect", ""),
+    ("11-query-options", "{S}app@{H}/probe?options=-c%20foo%3D{A}", "connect", "A"),
+    ("12-libpq-key-value", "host=localhost dbname=probe user=app password={A}", "refused", "A"),
+    ("13-libpq-scheme", "postgresql://app:{A}@{H}/probe", "connect", "A"),
+    ("14-two-at", "{S}app:{A}@{B}@{H}/probe", "refused", "AB"),
+    ("15-at-slash-at", "{S}app:{A}@{B}/{C}@{H}/probe", "refused", "ABC"),
+    ("16-question-before-second-at", "{S}app:{A}?{B}@{C}@{H}/probe", "refused", "ABC"),
+    ("17-question-then-colon", "{S}app:{A}?x@{B}:{C}@{H}/probe", "refused", "ABC"),
+    ("18-at-in-database", "{S}app:{A}@{H}/pro@be", "refused", "A"),
+    ("19-at-in-database-encoded", "{S}app:{A}@{H}/pro%40be", "connect", "A"),
+    ("20-at-in-user", "{S}app@corp:{A}@{H}/probe", "refused", "A"),
+    ("21-at-in-user-encoded", "{S}app%40corp:{A}@{H}/probe", "connect", "A"),
+    ("22-port-not-a-number", "{S}app:{A}@localhost:54x32/probe", "refused", "A"),
+    ("23-host-forgotten", "{S}app:{A}/probe", "refused", "A"),
+    ("24-host-and-database-forgotten", "{S}app:{A}", "refused", "A"),
+    ("25-colon-for-at", "{S}app:{A}:{H}/probe", "refused", "A"),
+    ("26-scheme-postgres", "postgres://app:{A}@{H}/probe", "refused", "A"),
+    ("27-scheme-unknown-driver", "postgresql+nope://app:{A}@{H}/probe", "refused", "A"),
+    ("28-scheme-psycopg2", "postgresql+psycopg2://app:{A}@{H}/probe", "traceback", "A"),
+    ("29-scheme-without-slashes", "postgresql+psycopg:app:{A}@{B}@{H}/probe", "refused", "AB"),
+    ("30-ipv6", "{S}app:{A}@[::1]:{port}/probe", "connect", "A"),
+    ("31-unreachable", "{S}app:{A}@localhost:1/probe", "connect", "A"),
+    ("32-unresolvable", "{S}app:{A}@no-such-host.invalid/probe", "connect", "A"),
+    ("33-percent-not-an-escape", "{S}app:{A}%zz{B}@{H}/probe", "refused", "AB"),
+    ("34-hash", "{S}app:{A}#{B}@{H}/probe", "refused", "AB"),
+    ("35-space", "{S}app:{A} {B}@{H}/probe", "connect", "AB"),
+    ("36-newline", "{S}app:{A}\n{B}@{H}/probe", "connect", "AB"),
+    ("37-ampersand-in-query-password", "{S}app@{H}/probe?password={A}&{B}", "connect", "AB"),
+    ("38-leading-space", " {S}app:{A}@{B}@{H}/probe", "refused", "AB"),
+    # Not among the review's 38, which named it as reasoned and not run: a
+    # password of digits alone with the `@host` forgotten reads as a port.
+    ("39-digits-host-forgotten", "{S}app:{D}/probe", "refused", "D"),
+)
+
+_UNREADABLE = (
+    "Error: PREVIOUSLY_DSN cannot be read as written — something like "
+    "postgresql+psycopg://user:password@host:5432/database is expected, and a "
+    "special character in the user name, the password, the database name or a "
+    "query value has to be percent-encoded, such as `%40` for `@`\n"
+)
+
+
 @pytest.mark.db
-def test_a_password_with_an_unencoded_at_sign_is_refused_before_connecting(
-    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize("command", ["log", "migrate"])
+@pytest.mark.parametrize(
+    ("template", "outcome", "secret"), [form[1:] for form in _FORMS], ids=[f[0] for f in _FORMS]
+)
+def test_no_form_of_the_connection_string_prints_the_password(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+    template: str,
+    outcome: str,
+    secret: str,
 ) -> None:
-    """An `@` in a password that is not percent-encoded ends the password
-    there for the parser, and the rest of it reads as part of the host.
-    Measured at `3c8e506`: that rest was printed as the host, and the reason
-    repeated it. A second `@` before the query is refused before anything
-    connects, and the sentence names no piece of the connection string."""
+    """Every connection string the attack review of fix round 2 tried, through
+    `log` and through `migrate`, which reads the string into Alembic's
+    configuration before `from_dsn` sees it.
+
+    Measured on 2026-10-05 at `fa61473`: forms 4, 15-17 and 23-25 printed a
+    piece of the password, through the host or the port in the sentence, or
+    in a `ValueError` traceback. A count of `@` was refusing the form the
+    round before named and passing the next; `from_dsn` now refuses every
+    string that SQLAlchemy does not give back as written.
+
+    Each piece of the password is 20 characters and is drawn at run time, so
+    that an eight-character run of it in the output is no coincidence. Where a
+    form joins pieces with specials, the password is longer than one piece.
+    """
     url = _session_url(db)
-    first, second = _wrong_password(), _wrong_password()
-    dsn = (
-        f"postgresql+psycopg://{url.username}:{first}@{second}@{url.host}:{url.port}/{url.database}"
+    pieces = {name: secrets.token_hex(10) for name in "ABC"}
+    pieces["D"] = "".join(secrets.choice("0123456789") for _ in range(20))
+    dsn = template.format(
+        S="postgresql+psycopg://", H=f"{url.host}:{url.port}", port=url.port, **pieces
     )
-    out, sentence = _log_with(dsn, capsys, monkeypatch)
-    assert _no_fragment_of(first, out + sentence)
-    assert _no_fragment_of(second, out + sentence)
-    assert (out, sentence) == (
-        "",
-        "Error: PREVIOUSLY_DSN holds more than one `@` before the host — a password "
-        "with special characters has to be percent-encoded, such as `%40` for `@`",
-    )
+    monkeypatch.setenv("PREVIOUSLY_DSN", dsn)
+    if outcome == "traceback":
+        with pytest.raises(ModuleNotFoundError) as caught:
+            main([command])
+        output = "".join(traceback.format_exception(caught.value))
+    else:
+        assert main([command]) == 2
+        out, err = capsys.readouterr()
+        output = out + err
+        assert out == ""
+        if outcome == "refused":
+            assert err == _UNREADABLE
+        else:
+            assert len(err.splitlines()) == 1, err
+            assert err.startswith("Error: connecting to "), err
+    for name in secret:
+        assert _no_fragment_of(pieces[name], output), output
 
 
 @pytest.mark.db

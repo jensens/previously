@@ -9,9 +9,11 @@ Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see
 A missing setting is an input error that names the first variable missing, in the form `Error: PREVIOUSLY_BLOB_BUCKET is not set`.
 A transaction the database aborts in a conflict with a concurrent one, a deadlock or a lock not granted in time, is a storage error with exit code 2, in the form `Error: the database aborted the operation in a conflict with a concurrent one; run the command again`.
 
-A message about the database names the database, the host and the port from `PREVIOUSLY_DSN`, and nothing else of it: not the user, not the password, and not the query.
+A message about the database names the database, the host and the port from `PREVIOUSLY_DSN`, and of the connection string nothing else, in its own words.
+The reason it quotes can say more: the line from the client library can name the user, and quote the value of a query parameter it rejects, such as an `sslmode` it doesn't know.
+The password appears in neither.
 
-When connecting to the database fails, every subcommand prints one sentence to standard error and returns 2, followed by the first line of the reason:
+When connecting to the database fails, including when the client library rejects a query parameter, every subcommand prints one sentence to standard error and returns 2, followed by the first line of the reason:
 
 ```text
 Error: connecting to database previously at localhost:5432 failed: connection to server at "127.0.0.1", port 5432 failed: FATAL:  password authentication failed for user "previously"
@@ -30,11 +32,14 @@ When the database ends an operation after the connection stands, such as with a 
 Error: the operation on database previously at localhost:5432 failed: canceling statement due to statement timeout
 ```
 
-A `PREVIOUSLY_DSN` with more than one `@` before the query is refused before anything connects, since a second `@` is a character of the password that isn't escaped as `%40`:
+A `PREVIOUSLY_DSN` that can't be read as written is refused before anything connects.
+Such a string isn't a connection string at all, has a port that isn't a number, or would be cut into its parts elsewhere than its writer meant, because a character such as `@`, `:`, `/`, `?`, `#` or `%` stands without its escape sequence inside the user name, the password, the database name or a query value:
 
 ```text
-Error: PREVIOUSLY_DSN holds more than one `@` before the host — a password with special characters has to be percent-encoded, such as `%40` for `@`
+Error: PREVIOUSLY_DSN cannot be read as written — something like postgresql+psycopg://user:password@host:5432/database is expected, and a special character in the user name, the password, the database name or a query value has to be percent-encoded, such as `%40` for `@`
 ```
+
+`previously` compares the string with how the parser writes back what it read, and refuses it where the two differ in where a part begins or ends; it also refuses a host that holds an `@` and a port above 65535.
 
 Every subcommand but `migrate` needs the schema that `migrate` creates, and against a database without it prints one sentence to standard error and returns 2:
 
@@ -99,7 +104,7 @@ Error: the database refused the migration to 0004_event_blob: permission denied 
 The first comes from a role that may not create a table in schema `public`, which since PostgreSQL 15 is every role but the owner of the database and a superuser.
 The second comes from a role that may not read the table `alembic_version`, where the revision stands.
 
-A connection string that can't be parsed, a server that doesn't answer, a password the server refuses, and a database that doesn't exist each print one sentence to standard error, the same sentence every other command prints for it, naming only database, host and port.
+A connection string that can't be parsed, a server that doesn't answer, a password the server refuses, and a database that doesn't exist each print one sentence to standard error, the same sentence every other command prints for it, as described at the top of this page.
 
 ## `append`
 

@@ -11,12 +11,14 @@ Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables ar
 |---|---|---|
 | `PREVIOUSLY_DSN` | `postgresql+psycopg://user:pass@host:5432/database` | The `previously` command line, `previously migrate` included, and `alembic` in a checkout. |
 
-A message about the database names the database, the host and the port from `PREVIOUSLY_DSN`, and nothing else of it: not the user, not the password, and not the query.
-When connecting fails, because the server refuses the password, doesn't have the database, or can't be reached, every command prints one such sentence and quotes the first line of the reason; {ref}`cli-reference` says where that line comes from.
-A `PREVIOUSLY_DSN` with more than one `@` before the query is refused before anything connects.
+A message about the database names the database, the host and the port from `PREVIOUSLY_DSN`, and of the connection string nothing else, in its own words.
+When connecting fails, because the server refuses the password, doesn't have the database, or can't be reached, every command prints one such sentence and quotes the first line of the reason.
+That line can name the user, and quote the value of a query parameter the client library rejects; the password appears in neither, and {ref}`cli-reference` says where the line comes from.
+
+A character such as `@`, `:`, `/`, `?`, `#` or `%` inside the user name, the password, the database name or a query value stands in the connection string as its escape sequence, such as `%40` for `@`, and `previously` reads it as the character.
+A `PREVIOUSLY_DSN` that holds such a character without its escape sequence, so that it would be cut into its parts elsewhere than its writer meant, is refused before anything connects.
 
 `previously migrate` reads the connection string from `PREVIOUSLY_DSN` alone.
-A character of the password that the connection string has to escape, such as `@`, stands in it as its escape sequence, such as `%40`, and `migrate` reads it as the character.
 
 `alembic`, run in a checkout during development, resolves the connection string through `previously.migrations.dsn.resolve_dsn`.
 There, an explicit `sqlalchemy.url` in `alembic.ini`, or set programmatically on the `Config` object, takes precedence over `PREVIOUSLY_DSN`.
