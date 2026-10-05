@@ -125,6 +125,15 @@ The same content attached twice to one event is two references in the payload an
 
 The migration `0004_event_blob` creates the table, and refuses to go back below it while the table holds a row.
 
+The migration `0003_hash_version_2` brings `hash_version`, the salts and the unit digests, and refuses to go back below it while the log holds an event in a hash format other than 1, or a unit without content.
+The refusal is one line, with each reason that applies, joined by `; `:
+
+```text
+refusing to downgrade below 0003_hash_version_2: the log holds events in a hash format other than 1, which cannot be verified without the version and the salts this would drop; the log holds units without content, which cannot be NOT NULL again
+```
+
+Either refusal leaves the database at the revision the `alembic downgrade` started from.
+
 Three more tables hold projections derived from the tables above.
 {ref}`projections` explains why they carry no foreign keys onto one another.
 

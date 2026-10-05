@@ -3,7 +3,7 @@
 # Configuration
 
 Previously reads its settings from eight environment variables.
-Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store or fetch a blob.
+Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store, fetch or delete a blob, as the table below says per variable.
 
 ## Database
 
@@ -46,8 +46,8 @@ A `PREVIOUSLY_BLOB_IDENTITIES` that names no directory, a path that doesn't exis
 Error: PREVIOUSLY_BLOB_IDENTITIES is not a directory: /srv/previously/identities
 ```
 
-A directory that exists and holds no identity for a key isn't an error of the setting; `verify --blobs` reports each blob sealed to that key as one that can't be opened.
+A directory that exists and holds no identity for a key isn't an error of the setting: `verify --blobs` reports each blob sealed to that key as one that can't be opened, with exit code 1, and `blob get` refuses such a blob with exit code 2.
 
 An endpoint without a scheme, such as `localhost:9000`, or a region the S3 client can't parse, such as `us east 1`, returns 2 as well, with one sentence that names the endpoint, the bucket, the region and the kind of refusal, and never a key.
 
-`append` without `--attach`, and every other command, reads none of them.
+Every other command, and `append` without `--attach` and `verify` without `--blobs`, reads none of them; `redact` reads the five settings of the store only when it has a blob to delete.

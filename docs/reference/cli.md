@@ -37,6 +37,15 @@ Submits one event and prints its `id`.
 | `--evidence` | No | `recollection` | `verbatim` or `recollection`. |
 | `--attach FILE` | No | — | A file to store as a blob and name at the event; may repeat. |
 
+The payload of the event is a JSON object that holds the whole `--text` under `text`, and the kind of evidence under `evidence`:
+
+```json
+{"evidence": "recollection", "text": "The client approved the new homepage design.\n\nNext milestone: content migration starts Monday."}
+```
+
+The same text is split into units as well, so every event `append` writes carries its text twice: once in the payload, and once in its units.
+With `--attach`, the payload carries a third key, `blobs`; see *Attachments* below.
+
 `append` prints exactly one line to standard output: the new event's `id`.
 Calling `append` again with the same `--source` and `--external-id` doesn't create a second event.
 It prints the existing event's `id` and returns 0.
@@ -95,9 +104,10 @@ previously redact blob HASH --reason TEXT
 
 `redact event` erases the event's payload, and the content, speaker, timestamps and salt of every unit.
 `redact units` erases the content, speaker, timestamps and salt of the named units, and leaves the event's payload as it is.
+The payload of every event `append` writes holds the whole text under `text`, so for such an event `redact units` takes the units and leaves their wording readable in the payload, where `show` prints it; `redact event` erases it.
 The order of the `SEQ` arguments doesn't matter, and a `SEQ` given twice counts once.
 `redact blob` erases the blob for every event whose reference to it isn't erased yet; their payloads and units stay as they are.
-Every hash, the source key, the rows of the units and the rows of the blob register stay.
+Every hash, the source key, the rows of the units and the rows of the blob register stay, and after `redact units` the payload as well.
 
 A blob has to lie in the blob store as long as at least one event names it whose reference isn't erased.
 A reference is erased when its event is erased whole, or when a `redact blob` names its event.
@@ -170,7 +180,7 @@ When the payload of the target still stands after `redact units`, one notice goe
 the payload of event 7 is not erased and may hold the same text; `previously redact event 7` erases it
 ```
 
-`append --text` writes the whole text into the payload as well as into the units, so after `redact units` the same text can still stand in the payload.
+The notice says what the first paragraph of this section says: `append --text` writes the whole text into the payload as well as into the units, so after `redact units` the same text can still stand in the payload.
 
 Seven refusals print one sentence to standard error, print nothing to standard output, write nothing, delete nothing, and return 2:
 
@@ -210,7 +220,7 @@ With `--anchors`, it also checks the log against anchor lines kept outside the d
 |---|---|---|---|
 | `--anchors FILE` | No | — | A file of anchor lines to check against; `-` reads standard input. |
 | `--exact` | No | Off | The tip of the log has to be the newest anchor; requires `--anchors`. |
-| `--blobs` | No | Off | Also read every blob the blob register names from the blob store and check it. |
+| `--blobs` | No | Off | Also check every blob the blob register names against the blob store: read and open each blob that has to lie there, and ask after each that doesn't. |
 
 An anchor line holds two fields separated by whitespace: an event `id`, a positive integer of at most 19 digits, and that event's `hash`, 64 hexadecimal characters.
 `anchor` prints lines in this format.
@@ -232,6 +242,33 @@ A missing event gives one finding for its `id`, however many lines name it.
 With `--exact`, the log also must not continue past the newest anchor, the anchor with the highest `id`.
 
 Each finding prints as one line: `FINDING <event_id>: <reason>`.
+Seven findings come from the chain itself, whatever the hash format:
+
+```text
+FINDING 7: payload_hash does not match the payload
+FINDING 7: units_hash does not match the units
+FINDING 7: hash does not match the fields
+FINDING 7: prev_hash does not match the predecessor
+FINDING 1: first event has prev_hash, expected NULL
+FINDING 0: event has 12 rows, 11 checked — the rest is unreachable
+FINDING 7: payload not canonicalizable: $.amount: floating point number not allowed — state a scale as an integer
+```
+
+| Finding | Condition | Event |
+|---|---|---|
+| `payload_hash does not match the payload` | The payload isn't erased, and its digest computed in the event's hash format isn't `payload_hash`; in hash format 2 also when the payload has no salt. | The event. |
+| `units_hash does not match the units` | In hash format 1, every unit carries content and the digest over their texts isn't `units_hash`; in hash format 2, a unit has no digest or the digest over the units' digests isn't `units_hash`. | The event. |
+| `hash does not match the fields` | The event hash computed over the row's fields, the stored `payload_hash` and `units_hash`, and the source key isn't `hash`. | The event. |
+| `prev_hash does not match the predecessor` | `prev_hash` isn't the `hash` of the event before it in the chain. | The event. |
+| `first event has prev_hash, expected NULL` | The first event of the chain has a `prev_hash`. | The first event. |
+| `event has <n> rows, <m> checked — the rest is unreachable` | The table holds more rows than the pass reached from `id` 1 on, such as a row with an `id` of 0 or below. | `0`, which is no chain position. |
+| `payload not canonicalizable: <reason>` | The payload holds a value the canonical form refuses, so no digest can be computed. | The event. |
+| `units not canonicalizable: <reason>` | In hash format 1, a unit holds a value the canonical form refuses. | The event. |
+| `unit <seq> not canonicalizable: <reason>` | In hash format 2, the unit holds a value the canonical form refuses. | The event of the unit. |
+
+The last two rows of the table are findings no row of this schema in a UTF-8 database can produce, since a unit's columns can't hold a value the canonical form refuses; they stay for a column or an encoding that changes later, and the block above doesn't show them.
+A row in a hash format `verify` doesn't know is still checked for its linkage and its blob register, and none of its digests is computed; it gets the finding `hash_version <n> is not known` below.
+
 Three findings come from the anchors:
 
 ```text
@@ -397,6 +434,7 @@ blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 is erased 
 
 Otherwise it reads `PREVIOUSLY_BLOB_IDENTITIES` and the five settings of the blob store, and writes the content to a temporary file in the directory of `--output`, and renames that file to `--output` only once the content matched its address.
 The file is readable by its owner only.
+An existing file at `--output` is replaced by the content, without a question.
 On success it prints one line to standard output and never the content:
 
 ```text
@@ -434,6 +472,20 @@ There are four outcomes:
 
 A count of one prints as `1 event`, every other count as `<n> events`.
 `up to date` carries no count, and `up_to_id 0` means that nothing has been projected yet.
+
+Two catch-ups of one projection, such as a `project` and the catch-up of a `redact`, take turns at the projection's state row, batch by batch; see {ref}`projections`.
+A catch-up that finds the state row at another version than its own, or gone, between two of its batches stops with exit code 2 and one sentence on standard error:
+
+```text
+Error: projection chronicle was rebuilt while this catch-up ran: it stands at version 3, and this code declares version 2
+Error: projection chronicle was rebuilt while this catch-up ran: it has no state row, and this code declares version 2
+```
+
+The first means that a catch-up of another version of the code ran against the same database and rebuilt the projection between two batches of this one.
+The second means that the state row was deleted while this catch-up ran, as {ref}`rebuild-a-projection` does by hand to force a rebuild.
+A catch-up rebuilds whenever the version it finds differs from its own, in either direction, so the next `project` of this release rebuilds the table back to its own version, and a `project` of the other release rebuilds it back again.
+Inside `redact`, the same sentence stands in parentheses in the sentence of an unfinished redaction, whose advice to run the same command again holds once only one release runs against the database.
+{ref}`rebuild-a-projection` says what to do.
 
 ## `chronicle`
 
