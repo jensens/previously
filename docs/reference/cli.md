@@ -242,7 +242,8 @@ A missing event gives one finding for its `id`, however many lines name it.
 With `--exact`, the log also must not continue past the newest anchor, the anchor with the highest `id`.
 
 Each finding prints as one line: `FINDING <event_id>: <reason>`.
-Seven findings come from the chain itself, whatever the hash format:
+Nine findings come from the chain itself.
+The seven in the block below can come from an event in either hash format; the last two rows of the table belong to one hash format each:
 
 ```text
 FINDING 7: payload_hash does not match the payload

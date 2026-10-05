@@ -72,7 +72,7 @@ Until the next `previously project`, or a `previously redact`, which catches up 
 
 To force the statistics the same way, use `'source-stats'` in place of `'chronicle'` in the `DELETE`.
 
-A `previously project` or `previously redact` that runs while you delete the row stops with exit code 2 and a sentence that the projection `has no state row`; run it again once the `DELETE` is done.
+A `previously project` or `previously redact` whose next batch starts after your `DELETE` commits stops with exit code 2 and a sentence that the projection `has no state row`; run it again once the `DELETE` is done.
 
 ## When a catch-up says that the projection was rebuilt while it ran
 
