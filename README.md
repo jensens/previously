@@ -12,7 +12,8 @@ line with its source attribution.
 ## State
 
 **Stages 1a, 1b and 1c are built and run: the append-only log with its hash
-chain, the projections derived from it, and blobs and erasure.** Not a product surface — a command line
+chain, the projections derived from it, and blobs and erasure. A release
+publishes a package on PyPI and an image on ghcr.io.** Not a product surface — a command line
 thin enough to get at the log by hand, so that each stage is *runnable* and not
 merely described.
 
@@ -90,6 +91,30 @@ well, and an erasure of units leaves their wording in a payload that holds
 it too, and says so when a string of the payload contains a unit's wording;
 [About erasure](docs/explanation/erasure.md) says what an erasure does not
 achieve and why.
+
+## Install
+
+Each release is a package on PyPI and a container image on ghcr.io, for
+`linux/amd64` and `linux/arm64`. Until `1.0.0` every release is an alpha, so
+ask `pip` for a pre-release, or name the version:
+
+```shell
+pip install --pre previously
+```
+
+The image runs `previously` as its entry point, and an alpha has one tag only,
+its exact version — no `latest`:
+
+```shell
+docker run --rm ghcr.io/jensens/previously:0.1.0a1
+```
+
+Either way, Previously reads its settings from the environment, and
+`previously migrate` creates or upgrades the schema before any other command
+runs against a database.
+[How to run Previously from its image](docs/how-to/run-the-image.md) shows the
+image at work, and [How to cut a release](docs/how-to/cut-a-release.md) how a
+release comes about.
 
 ## Documentation
 

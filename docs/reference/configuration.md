@@ -49,7 +49,7 @@ A mistyped string that matches the form is read as written, and a message can th
 | The `@host` forgotten after a password of up to five digits: `user:12345/database` | The user name as the host, and the password as the port. |
 | The `@host` and the database forgotten: `user:12345/rest` | The rest of the password as the database. |
 | A raw `@` in the password and the `@host` forgotten: `user:pw@rest`, or `user:pw@[rest]` with a rest of hexadecimal digits | The rest of the password as the host. |
-| The password as the value of `sslmode`, `require_auth` or `channel_binding` | The value, decoded, in the client library's reason. |
+| The password as the value of `sslmode`, `require_auth` or `channel_binding`; against a server that offers TLS, as the value of `sslrootcert` with `sslmode` set to `verify-ca` or `verify-full`, or of `sslkey` beside an `sslcert` that names a certificate | The value, decoded, in the client library's reason. |
 | The password as the user name | The user name, in the client library's reason when the server refuses the login. |
 | The password as the database name | The database name, in the sentence of `previously`. |
 

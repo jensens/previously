@@ -7,7 +7,8 @@ This is how an installed previously creates and upgrades its schema: a
 container image carries the package and nothing else, so the way that works
 in a checkout, `alembic upgrade head` beside `alembic.ini`, is not there. The
 migrations live in the package, `previously:migrations`, so this works from
-an installed wheel without a checkout and without `alembic.ini`.
+an installed wheel without a checkout and without `alembic.ini`
+({ref}`delivery`).
 
 Only forward: going back stays `alembic downgrade`, in development.
 """

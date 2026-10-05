@@ -1024,7 +1024,11 @@ def _url_of(dsn: str) -> URL | None:
       or `user:pw@[rest]` with a rest of hexadecimal digits: the rest is
       printed as the host;
     - a password written as the value of `sslmode`, `require_auth` or
-      `channel_binding`: the client library quotes the value, decoded;
+      `channel_binding`: the client library quotes the value, decoded; so
+      it does, against a server that offers TLS, for `sslrootcert` with
+      `sslmode` `verify-ca` or `verify-full`, and for `sslkey` beside an
+      `sslcert` that names a certificate (measured on 2026-10-05; a file
+      that is missing is otherwise passed over in silence);
     - a password written as the user name: the client library names it when
       the server refuses the login;
     - a password written as the database name: the message prints it.

@@ -14,5 +14,6 @@ module-boundaries
 projections
 backup-encryption
 silent-losses
+delivery
 design-records
 ```
