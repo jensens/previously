@@ -573,6 +573,7 @@ def examine[Conn](
     exact: bool = False,
     batch: int = 1000,
     blobs: BlobCheck | None = None,
+    before_blobs: Callable[[Sequence[Finding]], None] | None = None,
 ) -> Examination:
     """The one pass: the chain, and the anchors against it.
 
@@ -585,6 +586,14 @@ def examine[Conn](
     With `blobs`, it also holds every blob the register names against the
     store, after the snapshot; `_blob_findings` says how. Without it, no
     blob is touched.
+
+    `before_blobs` is handed the findings of the chain and the anchors once
+    the pass is done and before any blob is checked, with or without
+    `blobs`. The check of the blobs can end in an error rather than a
+    finding — a store that does not answer — and the error leaves this
+    function without an `Examination`; a caller that reports the findings
+    there has reported them before the error can take them along. They
+    stand at the head of `Examination.findings` as well.
 
     Returns structured results and no sentences: the command line formats
     them today, and a second entry point formats them its own way.
@@ -676,6 +685,8 @@ def examine[Conn](
                 tip = Anchor(row.id, row.hash)
 
     findings.extend(_closing_findings(pending, anchors, tip, exact=exact))
+    if before_blobs is not None:
+        before_blobs(tuple(findings))
     blob_findings = _blob_findings(references, erasures.redactions, blobs)
     findings.extend(blob_findings)
     return Examination(tuple(findings), tip, blobs_checked=len(references))

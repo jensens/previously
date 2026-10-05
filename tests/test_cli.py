@@ -2771,6 +2771,7 @@ def test_every_command_closes_each_blob_store_it_builds(
     assert (len(built), len(closed)) == (7, 7)
 
 
+@pytest.mark.parametrize("forged", [False, True], ids=["intact-chain", "forged-unit"])
 @pytest.mark.parametrize(
     "failure", ["store-does-not-answer", "identity-cannot-be-read", "identity-is-not-one"]
 )
@@ -2782,18 +2783,30 @@ def test_verify_blobs_that_cannot_check_is_an_error_and_no_finding(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
     failure: str,
+    forged: bool,
 ) -> None:
     """A store that does not answer, an identity file that is there and
     cannot be read, or one whose content is no age identity says nothing
-    about the blobs: one sentence, exit code 2, no `FINDING` line, and
-    neither the secret of the store nor an identity nor the file's content
-    in any output. The file in the third case holds a line that looks like
-    an identity and is none, so that its content would show in the output.
-    The finding on the other side of the line is
+    about the blobs: one sentence, exit code 2, no `FINDING` line about a
+    blob, and neither the secret of the store nor an identity nor the
+    file's content in any output. The file in the third case holds a line
+    that looks like an identity and is none, so that its content would show
+    in the output. The finding on the other side of the line is
     `test_a_blob_whose_key_is_not_at_hand_cannot_be_opened_and_the_check_goes_on`
-    in `tests/test_verify.py`."""
+    in `tests/test_verify.py`.
+
+    What the pass over the chain found before the blobs stands all the same:
+    with a unit rewritten by hand, its finding is on standard output beside
+    the error, so that a store that does not answer cannot hide a forgery.
+    Measured on 2026-10-05 with the findings printed only after the blobs:
+    standard output stayed empty."""
     assert main(_attach("a", _file(tmp_path, "a.txt", b"checked"))) == 0
     capsys.readouterr()
+    if forged:
+        from sqlalchemy import text
+
+        with blobs.engine.begin() as c:
+            c.execute(text("UPDATE unit SET content = 'forged' WHERE event_id = 1 AND seq = 1"))
     if failure == "store-does-not-answer":
         monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "http://127.0.0.1:1")
         expected = "http://127.0.0.1:1"
@@ -2809,7 +2822,7 @@ def test_verify_blobs_that_cannot_check_is_an_error_and_no_finding(
 
     assert main(["verify", "--blobs"]) == 2
     out, err = capsys.readouterr()
-    assert out == ""
+    assert out == ("FINDING 1: unit 1 does not match its digest\n" if forged else "")
     line = _single_line(err)
     assert line.startswith("Error: ")
     assert expected in line

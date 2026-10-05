@@ -75,6 +75,7 @@ if TYPE_CHECKING:
     from previously.core.redaction import Redaction
     from previously.core.redaction import RedactionIndex
     from previously.core.verify import Examination
+    from previously.core.verify import Finding
     from typing import BinaryIO
 
 MAX_TEXT_BYTES = 1_000_000
@@ -470,17 +471,33 @@ def _verify_arguments(parser: argparse.ArgumentParser) -> None:
 
 
 def _examine(
-    storage: PostgresStorage, anchors: Sequence[Anchor], *, exact: bool, blobs: bool
+    storage: PostgresStorage,
+    anchors: Sequence[Anchor],
+    *,
+    exact: bool,
+    blobs: bool,
+    before_blobs: Callable[[Sequence[Finding]], None],
 ) -> Examination:
     """The one pass, and with `blobs` the check of the blob store after it
     ({ref}`blobs`). The store is built once, every blob is fetched through
     it, and it is closed whether the pass returns or raises. Its settings
     are read only with `blobs`."""
     if not blobs:
-        return examine(storage, anchors=anchors, exact=exact)
+        return examine(storage, anchors=anchors, exact=exact, before_blobs=before_blobs)
     keys = _identities()
     with _blob_store() as store:
-        return examine(storage, anchors=anchors, exact=exact, blobs=BlobCheck(store, keys))
+        return examine(
+            storage,
+            anchors=anchors,
+            exact=exact,
+            blobs=BlobCheck(store, keys),
+            before_blobs=before_blobs,
+        )
+
+
+def _print_findings(findings: Sequence[Finding]) -> None:
+    for finding in findings:
+        print(f"FINDING {finding.event_id}: {finding.reason}")
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:
@@ -489,14 +506,27 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     if args.exact and args.anchors is None:
         raise InvalidPayload("--exact needs --anchors")
     anchors = () if args.anchors is None else _read_anchors(args.anchors)
+    # The findings of the chain are printed as soon as the pass is done,
+    # before the blobs are checked: a check of the blobs that ends in an
+    # error, a store that does not answer, leaves `_examine` without an
+    # `Examination`, and the error must not take a forgery report with it.
+    # Those findings head `examination.findings`, so only the rest, the
+    # blobs' own, is printed after it.
+    chain: list[Finding] = []
+
+    def report(findings: Sequence[Finding]) -> None:
+        _print_findings(findings)
+        chain.extend(findings)
+
     with _storage() as storage:
-        examination = _examine(storage, anchors, exact=args.exact, blobs=args.blobs)
+        examination = _examine(
+            storage, anchors, exact=args.exact, blobs=args.blobs, before_blobs=report
+        )
     # The count of blobs closes the line, after whatever the anchors said.
     count = examination.blobs_checked
     matched = f", {_plural(count, 'blob')} {'matches' if count == 1 else 'match'}"
     blob_tail = matched if args.blobs else ""
-    for finding in examination.findings:
-        print(f"FINDING {finding.event_id}: {finding.reason}")
+    _print_findings(examination.findings[len(chain) :])
     if examination.findings:
         return 1
     if not anchors:

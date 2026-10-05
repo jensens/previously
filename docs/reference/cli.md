@@ -303,7 +303,8 @@ FINDING 7: blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03
 Each stands under the smallest `id` of the events that name the blob.
 `verify` reads the blob store after the snapshot of the chain, so a blob erased and deleted while it runs can appear as missing, and a blob still being deleted by a concurrent `redact`, or attached again after the snapshot, can appear as erased and still present; the next run doesn't report either.
 `verify --blobs` checks only the blobs the blob register names, and reports nothing about an object in the store that no event names.
-A blob store that doesn't answer or refuses, an identity file that exists and can't be read, an identity file whose content isn't an age identity, and a stream that breaks off aren't findings: `verify` prints one sentence to standard error, nothing to standard output, and returns 2.
+A blob store that doesn't answer or refuses, an identity file that exists and can't be read, an identity file whose content isn't an age identity, and a stream that breaks off aren't findings: `verify` prints one sentence to standard error and returns 2.
+The findings of the chain and the anchors come before the blobs are checked, so they still go to standard output as `FINDING` lines beside that sentence; without one, standard output stays empty.
 
 With no finding, `verify` prints a single line, which depends on the arguments:
 
