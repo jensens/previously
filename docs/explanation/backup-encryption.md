@@ -95,16 +95,32 @@ A key that has never been used for a restore is as little a key as an untested r
 
 ## Where the keys lie, and why the question stops here
 
-Both encryption points of this design need a key from outside the data path: the content blobs, with AES-GCM and a key identifier in the row, and the backups, client-side with `aes-256-cbc`.
+Two encryption points in this design need a key, and there are two keys.
+The blobs are sealed in the `age` format before they leave the process, and the identity that opens them lies in a directory of its own; {ref}`blobs` explains the format and the seam.
+The backups are encrypted on the client with `aes-256-cbc` and a passphrase.
+For both the same rule holds: a key must not lie where the data it opens lies.
+The identity of the blobs doesn't belong in the bucket, nor in a backup of the bucket; the passphrase doesn't belong in the backup target.
+A key that lies beside its data protects nothing from whoever reaches the data, and goes down with it in the same incident.
 
-Today both arrive through the External Secrets Operator, out of a namespace of their own—which is to say, not the namespace the database runs in.
+In the operation this design plans, both keys arrive through the External Secrets Operator, out of a namespace of their own—which is to say, not the namespace the database runs in.
 That's the operational answer to the obvious objection about one vault holding everything: one place, two keys, and both of them outside the reach of what they protect.
+On a host without that operator, the same two requirements hold for whatever directory or file the keys come from.
 The keys are separate because the damage radius differs; blobs and backups aren't the same loss, so they aren't the same key.
 
 A real vault is the direction of travel, and it isn't this project's business.
 That's a platform decision and belongs where the clusters are run.
 Previously asks the platform for two properties, and both are independent of whatever fulfills them: the keys lie neither in the database's namespace nor in the backup target, and there's a **rehearsed** way to obtain them again.
 So the question *which vault* isn't left open here—it's delegated, with two checkable requirements in place of an answer.
+
+## The retention is part of an erasure's promise
+
+An erasure takes content out of the log, and out of the bucket, and leaves it in every backup taken before it; {ref}`erasure` explains why it can't do more.
+So a backup's retention isn't only a question of how far back a restore can reach.
+It's also how long an erased content stays readable for whoever holds the backup and its key.
+Whoever promises erasure within a period chooses the retention of the database backups and of the write-ahead log archive by that period, and, where the bucket is backed up or copied, the retention of that copy as well.
+
+The encryption doesn't shorten that period.
+The backup and its passphrase stay together on the side of the operator, so a backup that opens for a restore opens for the erased content as well, until it's deleted.
 
 ## Three paths, and what would overturn the chosen one
 

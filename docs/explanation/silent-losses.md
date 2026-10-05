@@ -35,6 +35,7 @@ SQL `NULL` in the payload column marks a tombstone after an erasure, and the cha
 The driver maps SQL `NULL` and JSON `null` both onto Python `None`, so a row holding JSON `null` was taken for a tombstone by the check—while `SELECT id FROM event WHERE payload IS NULL` didn't list it.
 Content erased as far as the check could tell, and invisible to any bookkeeping that asks the database rather than Python, which also meant that the announced remedy for tombstones would have skipped it: the row is no tombstone *in the sense of that query*.
 A check constraint in the schema closes it, and {ref}`tombstone-seam` explains why that constraint restricts nothing the contract ever allowed.
+Since stage 1c, a tombstone isn't silent in the other sense either: an erasure is an event in the chain, and `verify` reports a tombstone that no redaction ordered as a finding, which {ref}`erasure` explains.
 
 ## The batch entry that vanished
 

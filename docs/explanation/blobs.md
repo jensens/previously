@@ -6,6 +6,7 @@ An event can carry more than text: a scanned letter, a recording, a spreadsheet 
 Previously keeps such a content as a blob, outside the database, in an S3 bucket, and seals it before it leaves the process.
 This page explains how a blob is addressed, why the store only ever sees ciphertext, why the format is `age`, and what "first wins" does and doesn't promise.
 It then explains how a blob comes to an event, and why the log names it twice, once in the payload and once in a register.
+Last, it explains when a blob leaves the store again, which {ref}`erasure` gives the rule for, and what `verify --blobs` checks there.
 
 ## The address is the hash of the content
 
@@ -53,7 +54,7 @@ AES-GCM in one piece holds the whole blob in memory at once, and a chunked AES-G
 And `age` can be opened in an emergency without this software.
 The `age` command-line tool and the identity are enough to read any blob in the bucket.
 That turns a recovery that depends on Previously still running into one that depends on a widely packaged tool and one line of text.
-That emergency path isn't measured yet: on 2026-10-05 neither `age` nor `rage` was installed on the machine the measurements on this page come from.
+Measured on 2026-10-05 with `age` 1.2.1 in a container: an object fetched from the bucket with the AWS command-line interface opened with the identity file alone, and its plaintext hashed to its address; {ref}`keep-the-blob-key-safe` makes that a routine to rehearse.
 It's also why the dependency on the Python binding, `pyrage`, is judged by the format rather than by the binding: should the binding be orphaned, every other `age` implementation still reads the blobs.
 
 ## Why there is no size limit
@@ -69,7 +70,7 @@ The sealed form was 262,406 bytes larger than the content, the per-chunk overhea
 
 The price is disk space, not memory: the temporary file is as large as the blob while it's being stored.
 Whoever takes in attachments needs room for the largest one.
-The test suite holds the memory bound as a test, `test_memory_stays_bounded`, with both sides of its bound measured: with the test run on its own, the path stored and fetched 256 MiB and raised the peak of the test process by 120 MiB in each of three runs, while a reader that takes the object in one piece raised it by 478 to 502 MiB.
+The test suite holds the memory bound as a test, `test_memory_stays_bounded`, with both sides of its bound measured on 2026-10-05: with the test run on its own, the path stored and fetched 256 MiB and raised the peak of the test process by 120 MiB in each of three runs, while a reader that takes the object in one piece raised it by 478 to 502 MiB.
 
 ## "First wins" is a look, not a lock
 

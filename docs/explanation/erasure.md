@@ -27,7 +27,7 @@ So an erasure that forgot a column fails when it's written instead of leaving ha
 ## Why an erasure is an event
 
 Before stage 1c, a tombstone and a forgery looked the same.
-Setting a payload to `NULL` by hand left the chain check satisfied, measured as `verify() -> []`, because every hash still held and nothing anywhere said whether a warranted erasure or a quiet deletion had taken the payload.
+Setting a payload to `NULL` by hand left the chain check satisfied, measured in stage 1a as `verify() -> []`, because every hash still held and nothing anywhere said whether a warranted erasure or a quiet deletion had taken the payload.
 {ref}`tombstone-seam` disclosed that price when the seam was opened and named the way to pay it off.
 
 An erasure writes a redaction: an event of kind `action`, without units and without a source key, whose payload names what it erases and why.
@@ -42,10 +42,10 @@ An erasure writes a redaction: an event of kind `action`, without units and with
 The redaction and its tombstones are written in one transaction, so neither exists without the other.
 Because the redaction is an event, its warrant stands in the chain, with its time and its reason, hashed like everything else and as unchangeable as everything else.
 And because it stands in the chain, the check can hold every tombstone against it.
-The same statement that passed in stage 1a is a finding now:
+The same statement that passed in stage 1a is a finding now, measured on 2026-10-05 against the seventh event of a log, its payload and salt set to `NULL` by hand:
 
 ```text
-FINDING 1: payload is erased without a redaction
+FINDING 7: payload is erased without a redaction
 ```
 
 `verify` demands both directions, the order and its execution.
@@ -103,6 +103,10 @@ Units are different because hash format 2 gives each unit a digest of its own.
 An event written in hash format 1 has one digest over the texts of all its units, so its units can only be erased all together, with the event.
 `redact units` refuses such an event and says so, and `verify` reports a version 1 event with only some of its units erased, whoever ordered it.
 
+A unit's own digest pays off only where the payload doesn't repeat the unit.
+`previously append --text` keeps the whole text in the payload as well, under `text`, so erasing units of an event it wrote leaves their wording standing in the payload; only an erasure of the event takes it.
+Which events carry their text in the payload alone, in the units alone, or in both is for the contract of the connectors to settle, and until it does, erasing units reaches less than its name suggests.
+
 Erasing all of them has a cost of its own, and version 1 carries it beside its unsalted digests.
 Once every text is gone, nothing is left to recompute the units digest from, so the check computes nothing for the units of that event.
 The rows stay as tombstones, but their number and their `seq` values are attested by nothing.
@@ -121,7 +125,7 @@ The command can't check that.
 ## What "covered" means
 
 An erasure doesn't order the same thing twice.
-Before it writes, it locks the row of its target and reads the redactions, and whatever a redaction already covers it leaves out: an event that a redaction of the event covers, and a unit that a redaction of that unit or of its event covers.
+Before it writes, it locks the row of its target event, or for a blob the rows of the events that use it, and reads the redactions, and whatever a redaction already covers it leaves out: an event that a redaction of the event covers, and a unit that a redaction of that unit or of its event covers.
 If nothing is left, it writes no event and reports the redaction that covers the target.
 It still sets the tombstones and computes which blobs no longer have to lie, so a second call finishes an erasure whose order stands and whose execution doesn't.
 For a blob, covered means that every reference to it has been erased already, and the redaction it reports is the newest of those that erased them.
@@ -152,8 +156,8 @@ The promise of an erasure is therefore as long as the longer of the two retentio
 **Restoring brings it back.**
 Whoever restores to a point before an erasure has the content again and the redaction no longer.
 Nothing reports that for a payload or a unit, because the restored state is consistent with itself.
-For a blob it shows: the store doesn't go back with the database, so `verify --blobs` reports every blob that an erasure since that point deleted as missing.
-An object uploaded after that point is named by no event in the restored log, and nothing reports it, since `verify --blobs` checks only the blobs the register names.
+For a blob it shows, as far as the restored log names it: the store doesn't go back with the database, so `verify --blobs` reports as missing every blob that an erasure since that point deleted and that an event of the restored log names.
+A blob attached after that point and erased since is named by no event of the restored log, and neither is an object uploaded after that point for a content no restored event names; nothing reports either, since `verify --blobs` checks only the blobs the register names.
 The erasures since that point have to be repeated, and the log can't say which ones they were, since its record of them is what the restore took away.
 
 **The hashes stay.**

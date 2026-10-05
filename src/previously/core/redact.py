@@ -222,11 +222,15 @@ def redact_event[Conn](
         # rows of an event are written with it and never change, so the
         # first list is final. The second can grow while this runs, through
         # an append that names one of the blobs, and an event appended after
-        # the read goes unlocked. That is still correct: its reference is
-        # not erased, so the blob is kept for it (`_blobs_after` reads the
-        # register again), and any erasure that touches that event later
-        # locks every user of the blob, this target included, so the two
-        # meet on a shared row.
+        # the read goes unlocked. If that event commits before `_blobs_after`
+        # reads the register again, its reference is not erased and the blob
+        # is kept for it. If it commits later, this erasure does not see it
+        # and deletes the blob it names: the race between attaching and
+        # erasing that {ref}`concurrency` names, which no lock here prevents.
+        # A later `redact event` or `redact blob` that touches that event
+        # locks every user of the blob, this target included, so those two
+        # meet on a shared row; `redact units` locks only its target, and
+        # erases no reference.
         registered = [
             sha256.hex() for sha256 in log.blobs_by_event(conn, [event_id]).get(event_id, [])
         ]
