@@ -1,0 +1,332 @@
+# The way out: the package to PyPI and the image to ghcr.io, built only from
+# a tree that passed the six gates.
+#
+# Three triggers, and what each one reaches:
+#
+#   push to main       gates -> build -> publish-testpypi
+#   manual start       the same, when started on main; elsewhere build only
+#   published release  gates -> tag -> build -> publish-pypi
+#                      -> image (amd64 and arm64) -> manifest
+#
+# A tag alone publishes nothing, and neither does a merge: only publishing the
+# GitHub release does. The environments hold the second lock: `testpypi`
+# accepts a deployment only from the branch main, `pypi` only from a tag
+# `v*`, and the trusted publishers on PyPI and Test-PyPI name this file and
+# those two environments, so no upload token lies in the repository.
+#
+# Every job after `tag` states its whole condition, `!cancelled()` and the
+# result of the job it needs, instead of leaning on the implicit `success()`.
+# On a push to main `tag` is skipped, and the implicit `success()` counts a
+# skipped job as not passed: directly upstream (actions/runner#491), and also
+# further up, below a job that did run (actions/runner#2205, still open on
+# 2026-10-05) — `publish-testpypi` would never run. Spelled out, a failing
+# gate or a failing tag check leaves `build` skipped, and every job below it
+# is skipped with it, because each one asks for `success` from the one above.
+name: Release
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [published]
+  workflow_dispatch:
+
+# One run per ref at a time, and none cancelled by a newer one: a run cut off
+# halfway could leave a version on PyPI without its image.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+# The default for every job; the jobs that publish widen it for themselves.
+permissions:
+  contents: read
+
+jobs:
+  gates:
+    # The same file a push and a pull request run, so the gates stand in one
+    # place. On a push to main they therefore run twice, once there and once
+    # here: the price of not copying them.
+    uses: ./.github/workflows/gates.yml
+
+  tag:
+    # Before anything is uploaded: a tag in another form would otherwise only
+    # be refused after the package is on PyPI. The version on PyPI and in the
+    # image is the tag without its `v` (hatch-vcs reads it, `image` strips
+    # it), so the tag must have a form that PEP 440 normalization leaves as
+    # it is. The four forms do; a leading zero (`v1.02.3`) passes this check
+    # and does not, because hatch-vcs makes it `1.2.3` while `image` waits for
+    # `1.02.3`. That is a mistake in the tag, named here, not tested for.
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check the tag's form
+        run: |
+          re='^v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+)?$'
+          [[ "$GITHUB_REF_NAME" =~ $re ]] || {
+            echo "::error::tag $GITHUB_REF_NAME is not vX.Y.Z, vX.Y.ZaN, vX.Y.ZbN or vX.Y.ZrcN"; exit 1; }
+
+  build:
+    needs: [gates, tag]
+    # `tag` is skipped everywhere but on a release, so skipped counts as
+    # passed here; failed and cancelled do not.
+    if: >-
+      ${{ !cancelled() && needs.gates.result == 'success'
+      && (needs.tag.result == 'success' || needs.tag.result == 'skipped') }}
+    runs-on: ubuntu-latest
+    steps:
+      # Pinned by commit with the version beside it, as in `gates.yml`, and
+      # these two with the same commits.
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # hatch-vcs reads the version from the tags, so it needs the
+          # history: on a release the tag itself, on main a development
+          # version such as 0.1.0a2.dev3 counted from the last tag.
+          fetch-depth: 0
+
+      - name: Set up uv and Python 3.14
+        # No `enable-cache`: its default, `auto`, leaves the cache off for
+        # release and tag-push events (the input's own description in
+        # setup-uv's action.yml), so what goes to PyPI is built without
+        # anything an earlier run left behind.
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          python-version: "3.14"
+
+      - name: Build the sdist and the wheel
+        run: uv build
+
+      - name: Upload the distributions
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  publish-testpypi:
+    needs: build
+    # `github.ref` and not the event: a manual start on main publishes here
+    # as a push does, a manual start anywhere else reaches nothing beyond
+    # the build.
+    if: ${{ !cancelled() && needs.build.result == 'success' && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    environment: testpypi
+    # Trusted publishing: the OIDC token is the only credential.
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to Test-PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+        with:
+          repository-url: https://test.pypi.org/legacy/
+          # A rerun on main would otherwise fail on the files the first run
+          # already uploaded.
+          skip-existing: true
+
+  publish-pypi:
+    needs: build
+    # No `skip-existing` here: a version that is on PyPI never comes back,
+    # and a release that finds its version taken has to fail, not pass.
+    if: ${{ !cancelled() && needs.build.result == 'success' && github.event_name == 'release' }}
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download the distributions
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # v1.14.2
+
+  image:
+    needs: publish-pypi
+    # The image installs Previously from PyPI, so it comes after PyPI and
+    # never on main, where `publish-pypi` is skipped.
+    if: ${{ !cancelled() && needs.publish-pypi.result == 'success' }}
+    strategy:
+      matrix:
+        include:
+          - {platform: linux/amd64, runner: ubuntu-latest}
+          - {platform: linux/arm64, runner: ubuntu-24.04-arm}
+    # Each platform on a runner of its own architecture: no emulation, and the
+    # smoke test runs the image natively.
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Version from the tag
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for the version on PyPI
+        # The upload has finished, but the index may answer a moment later.
+        # 30 attempts, 10 seconds apart: five minutes of waiting at most,
+        # plus the time the requests take.
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          echo "waiting for previously==$VERSION on PyPI"
+          for i in $(seq 1 30); do
+            if curl -sf "https://pypi.org/pypi/previously/$VERSION/json" > /dev/null; then
+              echo "available on PyPI"
+              exit 0
+            fi
+            echo "attempt $i: not yet available, waiting 10 s"
+            sleep 10
+          done
+          echo "::error::previously==$VERSION did not appear on PyPI"
+          exit 1
+
+      - name: Platform suffix and an empty wheels context
+        # `linux/amd64` becomes `linux-amd64` for the intermediate tag.
+        # `wheels` stays empty, so the Dockerfile has nothing to find there and
+        # installs the package from PyPI.
+        id: platform
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          echo "suffix=${PLATFORM//\//-}" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/wheels"
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build and push the platform image
+        # Under an intermediate tag `<version>-linux-<arch>` that nobody is
+        # meant to use: the tags people use arise only in `manifest`, once both
+        # platforms passed the smoke test.
+        id: build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          # `.` and not the default, a git context of the ref: the build reads
+          # the checked-out `pyproject.toml` and `uv.lock`.
+          context: .
+          build-contexts: wheels=${{ runner.temp }}/wheels
+          push: true
+          platforms: ${{ matrix.platform }}
+          tags: ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}-${{ steps.platform.outputs.suffix }}
+          build-args: |
+            PREVIOUSLY_VERSION=${{ steps.version.outputs.version }}
+
+      - name: Set up uv
+        # For `uv export` in the smoke test, which reads `uv.lock` and needs no
+        # Python: measured on 2026-10-05 with UV_PYTHON_DOWNLOADS=never in an
+        # image that has uv and no interpreter, exit 0.
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
+      - name: Smoke test
+        # Against the image as pushed: nothing is loaded locally, so
+        # `docker run` pulls it from ghcr.io. If it fails, this job fails,
+        # `manifest` does not run, and the version stays without the tags
+        # anyone uses — only the intermediate ones exist. The package is on
+        # PyPI by then; that is the price of an image installed from PyPI.
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}-${{ steps.platform.outputs.suffix }}
+        run: bash scripts/smoke-image.sh "$IMAGE"
+
+      - name: Export the digest
+        # An empty file named after the digest: `manifest` needs the names,
+        # not the contents.
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/digests"
+          touch "$RUNNER_TEMP/digests/${DIGEST#sha256:}"
+
+      - name: Upload the digest
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: digests-${{ steps.platform.outputs.suffix }}
+          path: ${{ runner.temp }}/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  manifest:
+    needs: image
+    # A matrix job's result is `success` only when every platform succeeded.
+    if: ${{ !cancelled() && needs.image.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Download the digests
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          path: ${{ runner.temp }}/digests
+          pattern: digests-*
+          merge-multiple: true
+
+      - name: Log in to ghcr.io
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Image tags
+        # `pep440`, not `semver`: `v0.1.0a1` is no valid semver, and the
+        # `semver` type skips such a tag with a warning — the first release
+        # would get no tag at all. Measured on 2026-10-05 by running this
+        # action's own `dist/index.cjs` at the pinned commit with these inputs:
+        # `v1.2.3` gives `1.2.3`, `1.2` and `latest`; `v0.1.0a1` and
+        # `v1.2.3rc4` give the version alone, because the action extends a
+        # pre-release to `{{version}}` only; and the `semver` rules give
+        # `v0.1.0a1` no tag, with "No Docker tag has been generated".
+        #
+        # `latest=false` takes away the automatic `latest`, which the action
+        # derives from the tag's form — without it, `v1.2.3` marked as a
+        # pre-release still got `latest` in the same measurement. The rule
+        # below derives it from the release's mark instead. A tag whose form
+        # and mark disagree is a mistake made when publishing, and this file
+        # does not second-guess it: the mark decides.
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ghcr.io/${{ github.repository }}
+          flavor: |
+            latest=false
+          tags: |
+            type=pep440,pattern={{version}}
+            type=pep440,pattern={{major}}.{{minor}}
+            type=raw,value=latest,enable=${{ github.event.release.prerelease == false }}
+
+      - name: Create and push the manifest list
+        # One manifest list over both platform images, under every tag of the
+        # step above.
+        env:
+          IMAGE: ghcr.io/${{ github.repository }}
+        run: |
+          tags=()
+          while IFS= read -r tag; do
+            tags+=(-t "$tag")
+          done < <(jq -r '.tags[]' <<< "$DOCKER_METADATA_OUTPUT_JSON")
+          sources=()
+          for digest in "$RUNNER_TEMP"/digests/*; do
+            sources+=("$IMAGE@sha256:${digest##*/}")
+          done
+          docker buildx imagetools create "${tags[@]}" "${sources[@]}"

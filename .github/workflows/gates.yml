@@ -12,11 +12,14 @@
 # reports, no secrets, no access to anything outside the repository. The
 # repository is public (AGPL-3.0-or-later) and compute minutes are free, but a
 # workflow with write permissions would be attack surface without a use.
+# `release.yml` calls this file as its first job, through `workflow_call`, and
+# it is there, not here, that anything gets published.
 name: Gates
 
 on:
   push:
   pull_request:
+  workflow_call:
 
 # The minimum, stated explicitly instead of inherited from the repository's
 # default. Nothing here writes: the gates read the tree and report their exit
