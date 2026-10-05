@@ -50,6 +50,8 @@ from previously.core.verify import BlobCheck
 from previously.core.verify import examine
 from previously.storage.errors import StorageError
 from previously.storage.keys import DirectoryKeys
+from previously.storage.migrate import migrate
+from previously.storage.migrate import Migrated
 from previously.storage.postgres import from_dsn
 from previously.storage.postgres import PostgresStorage
 from previously.storage.s3 import from_settings
@@ -179,6 +181,14 @@ def _lag_line(tip_id: int, up_to_id: int) -> str | None:
     return f"projection is {_plural(lag, 'event')} behind; run `previously project`"
 
 
+def _dsn() -> str:
+    """`PREVIOUSLY_DSN`, or the error that says it is not set."""
+    dsn = os.environ.get("PREVIOUSLY_DSN")
+    if not dsn:
+        raise PreviouslyError("PREVIOUSLY_DSN is not set")
+    return dsn
+
+
 @contextmanager
 def _storage() -> Generator[PostgresStorage]:
     """The storage a command works with, closed when the command is done,
@@ -192,10 +202,7 @@ def _storage() -> Generator[PostgresStorage]:
     a storage left open keeps its connections until the garbage collector
     finds it.
     """
-    dsn = os.environ.get("PREVIOUSLY_DSN")
-    if not dsn:
-        raise PreviouslyError("PREVIOUSLY_DSN is not set")
-    storage = from_dsn(dsn)
+    storage = from_dsn(_dsn())
     try:
         yield storage
     finally:
@@ -296,6 +303,21 @@ def _read_anchors(source: str) -> tuple[Anchor, ...]:
     except UnicodeDecodeError as error:
         raise InvalidPayload(f"{name} is not UTF-8 text") from error
     return parse_anchors(io.StringIO(text, newline=None))
+
+
+def _migrated_line(result: Migrated) -> str:
+    """The one line `migrate` prints on standard output."""
+    if result.before == result.head:
+        return f"up to date: {result.head}"
+    return f"migrated: {result.before or '(empty)'} -> {result.head}"
+
+
+def _cmd_migrate(_args: argparse.Namespace) -> int:
+    """Brings the database schema up to the newest revision
+    ({ref}`cli-reference`). `UnknownRevision` is a `StorageError` and ends
+    in `main`'s one sentence like every other."""
+    print(_migrated_line(migrate(_dsn())))
+    return 0
 
 
 def _append_arguments(parser: argparse.ArgumentParser) -> None:
@@ -1093,6 +1115,9 @@ class Command:
 # Public because a test reads it: `tests/test_cli.py` holds the commands the
 # help names against these names.
 COMMANDS: tuple[Command, ...] = (
+    # First, because it comes first in the life of a database: nothing else
+    # runs before the schema stands.
+    Command("migrate", "bring the database schema up to the newest revision", _cmd_migrate),
     Command("append", "submit text", _cmd_append, _append_arguments),
     Command("redact", "erase an event, units of it, or a blob", _cmd_redact, _redact_arguments),
     # "print the chronicle" until stage 1b, which is now the other command:

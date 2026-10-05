@@ -15,6 +15,7 @@ The point of the boundaries is narrow and worth stating before the mechanics.
 Since stage 1b `contract` also holds the row types and the store protocol that `core` is typed against, and both are types in the same sense—no logic, no dependency outside the standard library.
 `migrations` is the Alembic environment and the revisions that build the schema.
 It reads the table metadata from `storage.schema` and nothing from `core`, and `core` reads nothing from it, so it sits beside `core` rather than above or below it.
+`storage.migrate` runs those revisions for `previously migrate`, and it names them by the package path rather than by an import, so `storage` reaches `alembic` without an edge up to `migrations`.
 
 ## The edges
 
@@ -23,7 +24,7 @@ The two arrows that stage 1c added, to `pyrage` and to `boto3`, each have a cont
 The arrows to `sqlalchemy` and `alembic` are held the other way round: their contracts name the modules that mustn't draw them, `core` for both and `contract` for `sqlalchemy`, as the section on the contracts explains.
 
 ```{mermaid}
-:caption: The import edges on 2026-10-05: seven between its own modules, and not one of them exempted. Five arrows leave the package.
+:caption: The import edges on 2026-10-05: seven between its own modules, and not one of them exempted. Six arrows leave the package.
 
 graph TD
     cli[cli] --> core[core]
@@ -34,8 +35,9 @@ graph TD
     migrations[migrations] --> storage
     storage --> contract
     storage --> sqlalchemy[sqlalchemy]
+    storage --> alembic[alembic]
     migrations --> sqlalchemy
-    migrations --> alembic[alembic]
+    migrations --> alembic
     core --> pyrage[pyrage]
     storage --> boto3[boto3]
 ```

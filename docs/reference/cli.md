@@ -3,7 +3,7 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has ten subcommands: `append`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, and `stats`.
+It has eleven subcommands: `migrate`, `append`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, and `stats`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
 `append --attach`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
 A missing setting is an input error that names the first variable missing, in the form `Error: PREVIOUSLY_BLOB_BUCKET is not set`.
@@ -13,6 +13,7 @@ A transaction the database aborts in a conflict with a concurrent one, a deadloc
 
 | Command | 0 | 1 | 2 |
 |---|---|---|---|
+| `migrate` | The schema stands at the newest revision, whether `migrate` ran a migration or found it up to date. | Not used. | The database is at a revision this version doesn't know, or storage raised an error. |
 | `append` | The event was recorded, or an event with the same `--source` and `--external-id` already existed. | Not used. | The input was invalid, an attachment couldn't be read, a blob setting is missing or invalid, or storage or the blob store raised an error. |
 | `redact` | The redaction was recorded and carried out, or the target was already covered by one, every blob it made obsolete is gone from the blob store, and every projection stands at the tip of the log. | Not used. | The input was invalid, the redaction was refused, storage raised an error, or after the redaction was recorded a blob couldn't be deleted or the projections couldn't be caught up. |
 | `log` | The log was printed. | Not used. | The input was invalid, or storage raised an error. |
@@ -23,6 +24,38 @@ A transaction the database aborts in a conflict with a concurrent one, a deadloc
 | `project` | Every projection stands at the tip of the log. | Not used. | Storage raised an error, the worker found a gap in the log, or a catch-up at another version rebuilt a projection while this one ran. |
 | `chronicle` | The chronicle was printed, even when the window holds no row. | Not used. | The input was invalid, or storage raised an error. |
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
+
+## `migrate`
+
+Brings the database schema up to the newest revision this version of previously carries.
+It takes no arguments.
+
+`migrate` reads `PREVIOUSLY_DSN` and nothing else, and needs neither a checkout nor `alembic.ini`: the migrations ship inside the package.
+
+`migrate` prints one line to standard output, in one of two forms:
+
+```text
+migrated: (empty) -> 0004_event_blob
+migrated: 0002_projections -> 0004_event_blob
+up to date: 0004_event_blob
+```
+
+The first form names the revision the database was at, or `(empty)` for a database without a schema, and the newest revision, which the database is at now.
+The second means that the database was at the newest revision already, and nothing ran.
+
+`migrate` only goes forward.
+Going back to an older revision is `alembic downgrade` in a checkout, with the refusals {ref}`database-schema` lists.
+
+`migrate` holds a PostgreSQL advisory lock on the database for as long as it runs.
+A second `migrate` against the same database, such as a second job of the same release, waits until the first is done, and then finds the schema up to date.
+
+A database at a revision this version doesn't know, such as one that a newer version of previously has migrated already, is refused, and nothing changes:
+
+```text
+Error: the database is at revision 0005_example, which this version of previously does not know; it knows revisions up to 0004_event_blob
+```
+
+A connection string that can't be parsed, a server that doesn't answer, and a password the server refuses each print one sentence to standard error, the same sentence every other command prints for it, without the password.
 
 ## `append`
 

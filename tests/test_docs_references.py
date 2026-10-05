@@ -443,13 +443,15 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     five restrictions below" with a row missing. Deriving the payloads from
     the code is the fix and it is not built yet.
 
-    The second half holds the ten standard-error sentences and the two
-    lines of `redact` on standard output that `cli.md` quotes, in nine
-    blocks, against the literals in `cli.py` — not the line `blob get`
-    prints on success, which `_message_patterns` does not collect, since it
-    reads standard-error sentences and returned lines only; the seven
-    refusals of `redact` against the messages `core/redact.py` and `cli.py`
-    raise as `RedactionRefused`; the nine errors of the blob commands and of
+    The second half holds the ten standard-error sentences, the two
+    lines of `redact` and the three of `migrate` on standard output that
+    `cli.md` quotes, in ten blocks, against the literals in `cli.py` — not
+    the line `blob get` prints on success, which `_message_patterns` does
+    not collect, since it reads standard-error sentences and returned lines
+    only; the seven refusals of `redact` against the messages
+    `core/redact.py` and `cli.py` raise as `RedactionRefused`; the refusal
+    of `migrate` against the message `storage/migrate.py` raises as
+    `UnknownRevision`; the nine errors of the blob commands and of
     an unfinished redaction against the messages `cli.py` raises as
     `PreviouslyError` or `InvalidPayload` and `core/blob.py` raises as
     `BlobError`;
@@ -500,6 +502,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         ("one notice goes to standard error, naming the blob and those events", 2),
         ("When a string anywhere in the payload of the target", 1),
         ("`redact` prints one of two lines to standard output", 2),
+        ("`migrate` prints one line to standard output, in one of two forms", 3),
         ("When no event names the blob, `blob get` returns 1", 1),
         ("When every reference to the blob is erased, `blob get` returns 1", 1),
     ):
@@ -527,6 +530,20 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
             f"cli.md quotes the refusal {refusal!r} and no `RedactionRefused` raises it. "
             "Either the code's wording changed, or the page's did."
         )
+
+    # The refusal of `migrate` comes out of `storage/migrate.py`, raised as
+    # `UnknownRevision`, and the command line prints it behind `Error: `.
+    unknown = _raised_patterns(
+        ROOT / "src" / "previously" / "storage" / "migrate.py", "UnknownRevision"
+    )
+    quoted = _quoted_block(page, "is refused, and nothing changes")
+    assert len(quoted) == 1, quoted
+    prefix, _, refusal = quoted[0].partition(": ")
+    assert prefix == "Error", f"cli.md quotes the refusal {quoted[0]!r} without `Error: `"
+    assert any(_is_the_same_sentence(parts, refusal) for parts in unknown), (
+        f"cli.md quotes the refusal {refusal!r} and no `UnknownRevision` raises it. "
+        "Either the code's wording changed, or the page's did."
+    )
 
     # The errors of `blob get` and the input errors of the blob commands come
     # out of `cli.py`, raised as `PreviouslyError` or `InvalidPayload`; the

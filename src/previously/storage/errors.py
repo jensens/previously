@@ -72,6 +72,18 @@ class MigrationPending(StorageError):
     """
 
 
+class UnknownRevision(StorageError):
+    """The database is at a schema revision this version of previously does
+    not know.
+
+    An older package against a database that a newer one has migrated
+    already. Doing nothing would leave the old code working against a schema
+    it was not written for, and Alembic itself would stop at the unknown
+    revision with a traceback; this says what was found and what is known,
+    and `migrate` touches nothing.
+    """
+
+
 class BlobStoreUnreachable(StorageError):
     """The blob store does not answer, or broke off while it was sending.
 

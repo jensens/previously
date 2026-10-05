@@ -66,7 +66,14 @@ def run_migrations_online() -> None:
     # `sqlalchemy.*` options out of the ini (none at present, but
     # `engine_from_config` is there for exactly that) keep being taken into
     # account, not only the URL.
-    config.set_main_option("sqlalchemy.url", resolve_dsn(config))
+    #
+    # `%` doubled, because `set_main_option` goes through a `ConfigParser`
+    # that reads `%` as the start of an interpolation, while
+    # `get_main_option`, which `resolve_dsn` reads, hands the value back
+    # unescaped. A password with a character a URL has to escape arrives
+    # percent-encoded, and unescaped it raised `ValueError: invalid
+    # interpolation syntax`, quoting the whole string, password included.
+    config.set_main_option("sqlalchemy.url", resolve_dsn(config).replace("%", "%%"))
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",

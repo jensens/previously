@@ -58,9 +58,10 @@ merely described.
 - **checking the blobs** (`verify --blobs`): every blob that has to lie in
   the store is read, opened and held against its address, and every erased one
   has to be gone
-- the ten commands `append`, `redact`, `log`, `verify`, `anchor`, `show`,
-  `blob`, `project`, `chronicle` and `stats`
-- the schema as Alembic migrations
+- the eleven commands `migrate`, `append`, `redact`, `log`, `verify`,
+  `anchor`, `show`, `blob`, `project`, `chronicle` and `stats`
+- the schema as Alembic migrations inside the package, applied by
+  `previously migrate`
 
 **What it does not do:** no header — a header rests on assertions, and those
 come out of the gate; no assignment of events to projects, so the chronicle is

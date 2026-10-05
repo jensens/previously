@@ -9,10 +9,13 @@ Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables ar
 
 | Variable | Form | Used by |
 |---|---|---|
-| `PREVIOUSLY_DSN` | `postgresql+psycopg://user:pass@host:5432/database` | The `previously` command line, and Alembic migrations. |
+| `PREVIOUSLY_DSN` | `postgresql+psycopg://user:pass@host:5432/database` | The `previously` command line, `previously migrate` included, and `alembic` in a checkout. |
 
-Alembic migrations resolve the connection string through `previously.migrations.dsn.resolve_dsn`.
-An explicit `sqlalchemy.url` in `alembic.ini`, or set programmatically on the `Config` object, takes precedence over `PREVIOUSLY_DSN`.
+`previously migrate` reads the connection string from `PREVIOUSLY_DSN` alone.
+A character of the password that the connection string has to escape, such as `@`, stands in it as its escape sequence, such as `%40`, and `migrate` reads it as the character.
+
+`alembic`, run in a checkout during development, resolves the connection string through `previously.migrations.dsn.resolve_dsn`.
+There, an explicit `sqlalchemy.url` in `alembic.ini`, or set programmatically on the `Config` object, takes precedence over `PREVIOUSLY_DSN`.
 With neither set, the migration fails with an error that names both.
 
 ```{important}
