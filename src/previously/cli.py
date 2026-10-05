@@ -792,7 +792,7 @@ def _unfinished(redaction_id: int, outstanding: str) -> PreviouslyError:
     )
 
 
-def _delete_obsolete(result: Redacted) -> None:
+def _delete_obsolete(result: Redacted) -> str | None:
     """Deletes from the store every blob the redaction says no longer has
     to lie there ({ref}`erasure`), after its transaction: the store takes
     part in none, and a blob deleted before the redaction stands would be
@@ -800,14 +800,14 @@ def _delete_obsolete(result: Redacted) -> None:
     is no error, so a second call deletes again what the first did.
 
     The blob settings are read only when there is something to delete, so
-    a redaction that touches no blob runs without them. A failure names the
-    blobs still to delete; the error that caused it is quoted in the
-    sentence and raised after the `except`, so that it is not carried along
-    as the context of the new one.
+    a redaction that touches no blob runs without them. A failure is
+    returned, not raised, as what is outstanding: the blobs still to delete,
+    with the error that stopped it quoted, so that the catch-up after it
+    runs all the same.
     """
     pending = list(result.obsolete_blobs)
     if not pending:
-        return
+        return None
     try:
         with _blob_store() as store:
             while pending:
@@ -816,22 +816,23 @@ def _delete_obsolete(result: Redacted) -> None:
     except (PreviouslyError, StorageError) as error:
         failure = str(error)
     else:
-        return
+        return None
     if len(pending) == 1:
         outstanding = f"blob {pending[0]} is not deleted from the store ({failure})"
     else:
         outstanding = f"blobs {', '.join(pending)} are not deleted from the store ({failure})"
-    raise _unfinished(result.redaction_id, outstanding)
+    return outstanding
 
 
-def _catch_up_after(storage: PostgresStorage, redaction_id: int) -> None:
+def _catch_up_after(storage: PostgresStorage) -> str | None:
     """Brings every projection up to the tip once a redaction is recorded, so
     the chronicle stops showing what was erased without waiting for the next
     `project` ({ref}`projections`).
 
-    A failure here comes after the redaction committed, and the message says
-    so: what stands, what does not, and that the same command finishes it —
-    the second call finds the target covered, writes nothing and catches up.
+    A failure here comes after the redaction committed, and is returned as
+    what is outstanding, for the caller to say in its one sentence: what
+    stands, what does not, and that the same command finishes it — the
+    second call finds the target covered, writes nothing and catches up.
     Only the errors `main` turns into a sentence are caught; anything foreign
     goes through as a stack trace, as everywhere else.
 
@@ -846,11 +847,11 @@ def _catch_up_after(storage: PostgresStorage, redaction_id: int) -> None:
         try:
             outcome = catch_up(storage, storage, projection)
         except (PreviouslyError, StorageError) as error:
-            raise _unfinished(
-                redaction_id, f"projection {projection.name} is not caught up ({error})"
-            ) from error
+            outstanding = f"projection {projection.name} is not caught up ({error})"
+            return outstanding
         if outcome.rebuilt_from is not None:
             print(f"{outcome.name:<15} {_describe(outcome)}", file=sys.stderr)
+    return None
 
 
 def _redact(storage: PostgresStorage, args: argparse.Namespace) -> Redacted:
@@ -878,6 +879,12 @@ def _cmd_redact(args: argparse.Namespace) -> int:
     projections, then what is printed. If deleting or catching up fails, the
     redaction stands, and the error says so and what is outstanding; the
     same command again finds the target covered and does what is left.
+
+    Both steps after the transaction are attempted whatever happens to the
+    other, and the one sentence names everything outstanding. In either
+    fixed order, a step that kept failing would keep the other from ever
+    running: a store that is down would leave the chronicle showing what
+    was erased, though the catch-up needs only the database.
     """
     # Blanks alone count as empty: a reason that says nothing brakes nothing.
     if not args.reason.strip():
@@ -891,8 +898,11 @@ def _cmd_redact(args: argparse.Namespace) -> int:
         )
     with _storage() as storage:
         result = _redact(storage, args)
-        _delete_obsolete(result)
-        _catch_up_after(storage, result.redaction_id)
+        deletion = _delete_obsolete(result)
+        catching_up = _catch_up_after(storage)
+    left = [step for step in (deletion, catching_up) if step is not None]
+    if left:
+        raise _unfinished(result.redaction_id, ", and ".join(left))
     print(_redacted_line(result))
     for seq in result.skipped_units:
         print(f"unit {seq} was already erased", file=sys.stderr)

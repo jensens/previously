@@ -2530,15 +2530,67 @@ def test_a_delete_that_fails_is_finished_by_the_second_call(
     )
     assert line.endswith("); run the same command again")
     assert "http://127.0.0.1:1" in line
+    assert "is not caught up" not in line
     assert blobs.secret not in err
     assert _events(blobs.engine) == 2
     assert _bucket(blobs.store) == [address, other_address]
+    # The catch-up ran although the deletion failed: the chronicle no longer
+    # shows the erased text, and stands at the tip. Measured on 2026-10-05
+    # with a deletion that raised before the catch-up: the chronicle still
+    # printed the erased unit, and the lag on standard error.
+    assert main(["chronicle"]) == 0
+    assert capsys.readouterr() == ("", "")
 
     monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", s3_settings["endpoint"])
     assert main(["redact", "event", "1", "--reason", "r"]) == 0
     assert capsys.readouterr() == ("already redacted by event 2\n", "")
     assert _bucket(blobs.store) == []
     assert _events(blobs.engine) == 2
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_a_delete_and_a_catch_up_that_both_fail_are_named_in_one_sentence(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The store does not answer, and the log has a gap above the
+    chronicle's `up_to_id`, forged with plain SQL the way
+    `test_a_catch_up_that_fails_after_the_redaction_says_what_is_outstanding`
+    forges it: the sentence names the deletion and then the catch-up, and
+    still ends in the advice to run the same command again. Measured on
+    2026-10-05 with the deletion raising as it used to: the sentence named
+    the blob alone."""
+    from sqlalchemy import text
+
+    content = b"the attachment to erase"
+    address = hashlib.sha256(content).hexdigest()
+    assert main(_attach("a", _file(tmp_path, "a.txt", content))) == 0
+    assert main(["project"]) == 0
+    _append("cli", "b", "Two", "2026-10-02T09:00:00Z")
+    _append("cli", "c", "Three", "2026-10-03T09:00:00Z")
+    with blobs.engine.begin() as c:
+        c.execute(text("DELETE FROM source_key WHERE event_id = 2"))
+        c.execute(text("DELETE FROM unit WHERE event_id = 2"))
+        c.execute(text("DELETE FROM event WHERE id = 2"))
+    capsys.readouterr()
+
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "http://127.0.0.1:1")
+    assert main(["redact", "event", "1", "--reason", "r"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    line = _single_line(err)
+    assert line.startswith(
+        "Error: the redaction is recorded as event 4, but it is not finished: "
+        f"blob {address} is not deleted from the store ("
+    )
+    assert line.endswith(
+        "), and projection chronicle is not caught up (expected events 2.. above id 1, "
+        "read [3, 4]; the tip is 4); run the same command again"
+    )
+    assert blobs.secret not in err
 
 
 @pytest.mark.db

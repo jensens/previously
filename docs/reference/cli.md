@@ -143,7 +143,8 @@ Error: the redaction is recorded as event 42, but it is not finished: projection
 
 The text in parentheses is the error that stopped it.
 When several blobs are still to delete, the first form names them all, separated by a comma and a space, as `blobs <hashes> are not deleted from the store`.
-A failed deletion leaves the catch-up undone as well.
+`redact` attempts the catch-up whether or not the deletion failed.
+When both fail, the sentence names the deletion first and then the catch-up, joined by `, and `, and ends in the same advice.
 Once the cause is gone, running the same command again finds the target covered, prints `already redacted by event 42`, deletes what's left, and catches up.
 The cause in the second example, a gap in the log, doesn't go away by itself, so until it does the same command fails with the same sentence; a server that didn't answer for a moment is a cause that does go away.
 
