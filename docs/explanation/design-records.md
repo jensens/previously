@@ -2,8 +2,8 @@
 
 # About the frozen design records
 
-Five German documents under `docs/superpowers/specs/` hold how this project was decided: the design, the architecture, the detailed specification of stage 1a, the one for stage 1b, and the one for the external anchor.
-The first three froze on 2026-10-03, the other two on 2026-10-04, and nothing pulls any of them forward again.
+Six German documents under `docs/superpowers/specs/` hold how this project was decided: the design, the architecture, the detailed specification of stage 1a, the one for stage 1b, the one for the external anchor, and the one for stage 1c.
+The first three froze on 2026-10-03, the next two on 2026-10-04, and the sixth on 2026-10-05, and nothing pulls any of them forward again.
 The reasoning that gets maintained along with the code lives in this quadrant instead, and where a specification and a page disagree, the page is what holds.
 
 Until this documentation existed, those first three documents were the only place a reason was written down, so the code cited them: 72 paragraph references across 21 files in `src/`, `tests/` and `migrations/`, pointing at 20 paragraphs.
@@ -26,6 +26,11 @@ Projections got their own German specification, dated 2026-10-04, and it froze t
 The specification of the external anchor, dated 2026-10-04 as well, is no stage but a promise kept: the chain says nothing about completeness by itself, and the anchor is the one reference point outside the database that can, up to the newest anchor.
 It froze once its pages stood.
 {ref}`external-anchor` on the hash chain page carries its reasoning, {ref}`cli-reference` the facts of `anchor` and `verify --anchors`, and the two guides {ref}`verify-the-chain` and {ref}`restore-from-a-backup` the routines it implies for running the system.
+
+The specification of stage 1c, blobs and erasure, is dated 2026-10-04 and froze on 2026-10-05, once the last of its pages stood.
+Two explanation pages and a section of a third carry its reasoning: {ref}`erasure` for what an erasure takes, why it's an event, and what it doesn't achieve; {ref}`blobs` for the address, the sealing in `age`, "first wins" and the keys; and {ref}`hash-version-2`, on the hash chain page, for the salt and the digest each unit carries.
+{ref}`cli-reference`, {ref}`configuration-reference`, {ref}`hash-format` and {ref}`database-schema` took the facts, and four guides took the routines: {ref}`erase-something`, {ref}`attach-and-fetch-a-file`, {ref}`run-a-blob-store-on-your-machine` and {ref}`keep-the-blob-key-safe`.
+Its open points went into the map, `docs/superpowers/landkarte.md`, each under the unit of work it belongs to.
 
 ## What a frozen record is still good for
 
@@ -91,6 +96,10 @@ Two citations in the test suite did point at this specification, as `§6.2` and 
 No row names the specification of the external anchor either, for the same reason.
 Measured over the same three directories on 2026-10-04, every paragraph sign in them carries the `(frozen design record)` marking, and the fifteen lines that hold one are the same fifteen as before the anchor was built: the anchor's code and tests added none.
 Not one of them points at its specification.
+
+No row names the specification of stage 1c either.
+Measured over the same three directories on 2026-10-05, the paragraph signs stand on the same fifteen lines in the same seven files as at the start of the stage, each with the `(frozen design record)` marking, and `grep -rn "§" src tests migrations | grep -v "frozen design record"` prints nothing.
+Its code cites {ref}`erasure`, {ref}`blobs` and {ref}`hash-version-2` instead, and the gate checks that each label resolves.
 
 ## Two kinds of citation, and the code shows which is which
 

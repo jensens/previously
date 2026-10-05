@@ -21,7 +21,16 @@ Gebaut und abgenommen, auf `main`:
 | 1b | Projektionen: Arbeiter, `p_chronicle`, `p_source_stats`, `project`, `chronicle`, `stats` | `specs/2026-10-04-stufe-1b-projektionen.md` | PR #1, `b0396b6` |
 | — | Der äußere Anker: `anchor`, `verify --anchors [--exact]`, `examine` in einem Schnappschuss | `specs/2026-10-04-aeusserer-anker.md` | PR #2, `2bc42d4` |
 
-Nicht gebaut: Stufe 1c (Blobs, Verschlüsselung, Tilgung), die Suche, jede
+Gebaut, auf dem Zweig `worktree-stufe-1c-blobs`, und zur Abnahme:
+
+| Stufe | Inhalt | Spec | Abnahme |
+|---|---|---|---|
+| 1c | Hash-Format v=2 mit Salz; Tilgung von Event, Einheiten und Blob als Event der Art `action`, mit Anordnung und Vollzug in `verify`; Projektionen folgen einer Tilgung; Blobs im Format `age` auf S3, `append --attach`, `blob get`, `verify --blobs`; `redact` | `specs/2026-10-04-stufe-1c-blobs-und-tilgung.md` | steht aus: der Merge nach `main` |
+
+Mit Stufe 1c ist Teilprojekt 1 gebaut, wie die Architektur es in §12.1
+zuschneidet: Log, Projektionen, Blobs. Abgeschlossen ist es mit ihrem Merge.
+
+Nicht gebaut: die Suche, jede
 Feststellung und jede Entität, der Konnektor-Vertrag über `RawEvent` hinaus,
 MCP-Server, Gate, KI-Schicht, jeder Konnektor — und kein Betrieb: das System
 läuft bisher nur aus dem Arbeitsverzeichnis, gegen eine Wegwerf-Datenbank, und
@@ -29,18 +38,12 @@ hat **noch kein einziges echtes Event** gehalten.
 
 ## Was als Nächstes kommt
 
-Zwei Dinge, in dieser Reihenfolge, beide vom Betreuer am 2026-10-04
-entschieden, nach dem Prüfpunkt und der kleinen Wartungsrunde (ihre vier
-Punkte stehen unten unter *Erledigt*).
-
-### 1. Stufe 1c: Blobs, Verschlüsselung, Tilgung
-
-Sie schließt Teilprojekt 1 ab, wie die Architektur es in §12.1 vorsieht, und
-sie kommt **vor** dem Piloten: gebraucht wird sie, wie auch immer der Pilot
-ausgeht. Mit ihr bekommt der Pilot, was er sonst umgehen müsste — einen Ort
-für Rohmails und Anhänge, und eine Tilgung, die eine einzelne Mail aus dem Log
-nimmt, ohne dass die Kette bricht. Was sie entscheiden muss, steht unten unter
-*Stufe 1c: Blobs und Tilgung*. Ihr Spec ist der nächste.
+Der Pilot an einem echten Kunden, jetzt an erster Stelle. Die Reihenfolge
+hat der Betreuer am 2026-10-04 entschieden, nach dem Prüfpunkt und der kleinen
+Wartungsrunde (ihre vier Punkte stehen unten unter *Erledigt*): erst Stufe 1c,
+dann der Pilot. Stufe 1c ist gebaut (oben); was sie offen lässt, steht unten
+unter *Tilgung* und *Blobs und Speicher*, und an den Einheiten, zu denen es
+gehört.
 
 Der Weg dorthin hatte zwei Umwege, und sie stehen hier, damit die Reihenfolge
 nicht wie ein Versehen aussieht: der Prüfpunkt empfahl zuerst den Einwurf mit
@@ -48,7 +51,7 @@ eigenen Notizen, weil das System noch kein echtes Event gehalten hatte; der
 Betreuer machte daraus den Piloten an einem Kunden; und an echter Kundenpost
 wog dann schwerer, was 1c liefert.
 
-### 2. Der Pilot an einem echten Kunden
+### Der Pilot an einem echten Kunden
 
 Der Zuschnitt, den der Prüfpunkt zuerst festhielt — der Einwurf per Prompt,
 zuerst eigene Notizen —, ist verworfen: reine Gedankennotizen wären Theorie
@@ -70,7 +73,7 @@ Spec:
 
 | # | Einheit | bringt | Spec |
 |---|---|---|---|
-| 1 | Aufnahme aus dem IMAP-Ordner, mit dem Einwurf- und dem Konnektor-Vertrag | Chronik des Kunden; echte Post im Log | ein Entwurf **ruht** auf dem Zweig `worktree-pilot-imap-aufnahme` (Commit `9b493f0`), geschrieben, bevor 1c vorgezogen wurde; er wird neu gefasst, wenn der Pilot anfängt |
+| 1 | Aufnahme aus dem IMAP-Ordner, mit dem Einwurf- und dem Konnektor-Vertrag | Chronik des Kunden; echte Post im Log | ein Entwurf **ruht** auf dem Zweig `worktree-pilot-imap-aufnahme` (Commit `9b493f0`), geschrieben, bevor 1c vorgezogen wurde. Er umgeht 1c an drei Stellen, die sein eigener Kopf nennt — das wegwerfbare Pilot-Log (dort §1.1), der Rohverweis an Stelle der Rohbytes (§2.3), Anhänge ohne Inhalt (§1, §3.4) — und wird neu gefasst, bevor der Pilot anfängt |
 | 2 | Betrieb in kup6s: Image, Datenbank mit Sicherung, Restore-Probe, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | — |
 | 3 | Gate und Policy: Organisationsprofil des Pilotkunden, ein Anbieter-Adapter, Audit, Offenlegungsprüfung | die Grenze, hinter der ein Modell Inhalt sieht | — |
 | 4 | MCP-Lesezugang, mit der Offenlegungsprüfung davor | Claude Code fragt das Log | — |
@@ -93,8 +96,8 @@ ihren Beleg im Prüfpunkt.
 | Der Einwurf-Vertrag entscheidet, was mit geändertem Inhalt unter bekanntem Schlüssel geschieht | jeder Konnektor | `append` verwirft ihn heute stumm; wer die Issue-Nummer als `external_id` nimmt, verliert jede Änderung nach der ersten |
 | `RawEvent` bekommt Rohbytes und Kanalidentitäten, oder die Architektur gibt sie auf | IMAP, Drop-Ordner | Leitsatz 6: was nicht aufgenommen wurde, ist nicht nachholbar |
 | Feststellungen: zweiter Schreibweg, Art und Unterart, Regeln je Art in `verify` | Triage, `record_assertion`, KI-Schicht, Identitätsgraph, jede fachliche Projektion | `append` schreibt nur `observation`; `verify` kennt keine Art-Regeln |
-| Blobs mit Verschlüsselung | Drop-Ordner mit Dateien, IMAP mit Anhängen und Rohmail, Voice | es gibt keinen Ort für Bytes |
-| Tilgung als Event, die Einheiten und Projektionen mitnimmt | Inhalte Dritter im Log (Mail, Dokumente) — also der Pilot | heute ist ein Grabstein von einer Fälschung nicht zu unterscheiden, und die Einheiten bleiben stehen |
+| Blobs mit Verschlüsselung — **gebaut mit Stufe 1c** | Drop-Ordner mit Dateien, IMAP mit Anhängen und Rohmail, Voice | es gab keinen Ort für Bytes |
+| Tilgung als Event, die Einheiten und Projektionen mitnimmt — **gebaut mit Stufe 1c** | Inhalte Dritter im Log (Mail, Dokumente) — also der Pilot | ein Grabstein war von einer Fälschung nicht zu unterscheiden, und die Einheiten blieben stehen |
 | Ein Betrieb mit Sicherung, Restore-Probe und Anker-Routine | Daten, deren Verlust weh tut | bisher gibt es nur Wegwerf-Datenbanken |
 | Echte, gemischtsprachige Einheiten im Log | die Messung zur Textsuche und die Wahl des Embedding-Modells | beide verlangen einen Testsatz aus echten gemischten Einheiten (Architektur §11, Nachtrag) |
 | Warteschlange mit Sperre auf der Zustandszeile | der erste asynchrone Produzent | zwei gleichzeitige Läufe einer Projektion schreiben heute beide |
@@ -120,10 +123,11 @@ das MVP braucht, stehen in keinem:
 
 ## Offene Punkte, nach ihrem Zuhause
 
-Herkunft in Klammern: **A** Architektur, **E** Entwurf, **1a**/**1b**/**AA**
+Herkunft in Klammern: **A** Architektur, **E** Entwurf, **1a**/**1b**/**AA**/**1c**
 die Stufen-Specs mit Abschnitt, **P-1b**/**P-AA** das `index.md` des
-jeweiligen Ausführungsprotokolls, **PP** der Prüfpunkt vom 2026-10-04 mit der
-Zeile seines Belegberichts.
+jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
+1c (`sdd/2026-10-04-stufe-1c-blobs-und-tilgung/`), **PP** der Prüfpunkt vom
+2026-10-04 mit der Zeile seines Belegberichts.
 
 ### Einwurf-Vertrag (`contract`, Teilprojekt 2)
 
@@ -140,8 +144,6 @@ Zeile seines Belegberichts.
 - Der Nutzlastbereich weist Mail-Header-Schlüssel, Bytes und Gleitkommazahlen
   ab; ein Konnektor muss umformen, bevor er aufnimmt (PP, A1 Zeile 14 und
   Leitsatz 4).
-- `evidence` steht in der Nutzlast; eine Tilgung nimmt die Belegart mit (PP,
-  A1 Zeilen 10 und 11).
 - `--occurred-at` fällt auf „jetzt" zurück, `--evidence` auf `recollection`:
   zwei Vorgabewerte, die als Tatsache in der Kette stehen; und was
   `occurred_at` bei einer Erinnerung meint, die Notiz oder das Ereignis, ist
@@ -150,18 +152,30 @@ Zeile seines Belegberichts.
 - Interne Abgleichlogik je Konnektor (A §11).
 - Der Einwurf per Prompt, der Drop-Ordner mit Textextraktion und OCR, „Quelle
   verlinken" (E §11.4).
+- Textextraktion aus Blobs, und damit ihr Inhalt in Einheiten (1c §12 Punkt 8).
+- Der Quellschlüssel überlebt jede Tilgung: `source` und `external_id` stehen
+  im Event-Hash, und eine Message-ID trägt eine Domain (1c §4.5, §12 Punkt 4).
+- Eine Wiedersichtung nach der Tilgung: dass ein getilgtes Event unter seinem
+  Schlüssel bekannt bleibt und nicht wieder aufgenommen wird, ist im ruhenden
+  Pilot-Spec entworfen; der Hash, an dem er Inhalt wiedererkennt, trüge kein
+  Salz (1c §12 Punkt 12).
 
 ### Feststellungen und Entitäten (ohne Teilprojekt)
 
 - Ein zweiter Schreibweg neben `append` für `assertion` und `action`; ihre
   Idempotenz ist heute „Sache des Aufrufers" (PP, A1 S1 und Zeile 19).
-- `verify` prüft keine Regeln je Art: eine Feststellung ohne `sources` und
-  eine Wahrnehmung ohne `evidence` und ohne Schlüssel bestehen (PP, A1 S2,
-  Messungen M3 und M4).
+- `verify` prüft Regeln je Art erst für `action` (eine Handlung braucht eine
+  lesbare Unterart, eine Tilgung genau ihre Form); eine Feststellung ohne
+  `sources` und eine Wahrnehmung ohne `evidence` und ohne Schlüssel bestehen
+  weiter (PP, A1 S2, Messungen M3 und M4).
 - Keine Validierung der Nutzlast gegen ein Schema je Art, gegen Architektur
   §4.1 (PP, A1 Zeile 20).
 - `kind` heißt zweierlei: die Event-Art mit drei Werten und die Unterart einer
-  Feststellung oder Handlung, die keine Spalte hat (PP, A1 S3).
+  Feststellung, die keine Spalte und noch keinen Ort hat; die Unterart einer
+  Handlung steht seit Stufe 1c in der Nutzlast unter `action` (PP, A1 S3).
+- Wer tilgt: der 1a-Spec nennt für das Tilgungs-Event „Zeitpunkt, Anlass und
+  Urheber", es trägt die ersten beiden; das System kennt noch keine Personen
+  (1c §12 Punkt 5).
 - Verweise einer Feststellung auf Einheiten sind ungeprüftes JSON; ein Event
   ohne Einheiten erscheint in `p_chronicle` gar nicht (PP, A1 S4).
 - `p_obligation` passt nicht durch den Projektionsmechanismus, wie die
@@ -203,6 +217,8 @@ Zeile seines Belegberichts.
   (1b §10 Punkt 7).
 - Die Projektionsnamen stehen zweimal: in `core` und als Abbildung auf die
   Tabelle in `storage` (PP, A2).
+- `_catch_up_after` in `cli.py` hört an der ersten Projektion auf, die
+  scheitert; heute folgenlos, weil beide dasselbe Log lesen (P-1c).
 - `p_chronicle` hält den Inhalt jeder Einheit ein zweites Mal und ist damit
   größer als die Tabelle `unit`: 1,9 GB gegen 1,4 GB bei 700 000 Events; ihr
   Schreiben ist mit 48 % der größte Posten eines Neubaus (PP, Bericht C).
@@ -226,17 +242,47 @@ Zeile seines Belegberichts.
   Kommentar gilt nur, solange nichts ein Event nach dem Commit umschreibt
   (P-AA).
 
-### Stufe 1c: Blobs und Tilgung
+### Tilgung
 
-- Blobs inhaltsadressiert, clientseitig verschlüsselt, Schlüsselbehandlung,
-  Dateisystem-Adapter; keine Versionierung auf dem Bucket (A §4.6
-  Vorkehrungen 2 und 3, §10.3, §12.1).
-- Tilgung als Event im Log (`action`, Unterart `redaction`); erst damit ist
-  ein Grabstein von einer Fälschung unterscheidbar (1a §12; A §4.6).
-- Eine Tilgung der Nutzlast tilgt die Einheiten nicht, und `p_source_stats`
-  stimmt danach nicht ohne Neubau (1b §10 Punkt 2, AA §10 Punkt 5).
-- Zeitpunkt für den Bau der Tilgung (A §13).
-- Fassungsangabe je Zeile, `hash_version`, mit dem ersten `v = 2` (1a §12).
+- Aufnehmen und Tilgen zugleich: sieht ein `append --attach`, dass ein Blob
+  schon liegt, und tilgt ein `redact` in diesem Augenblick dessen letzte
+  Referenz, zeigt das neue Event auf ein Objekt, das fehlt. `verify --blobs`
+  meldet es, `concurrency.md` benennt es, verhindert wird es nicht (1c §12
+  Punkt 2; P-1c).
+- Die Weigerung „is a redaction" trifft jedes Event der Art `action`; heute
+  ist jede Handlung eine Tilgung, mit der zweiten Art von Handlung ist der
+  Satz falsch (`core/redact.py`, der Kommentar daneben sagt es; P-1c).
+- `redact units` lässt den Wortlaut der Einheiten in der Nutzlast stehen, wenn
+  die Nutzlast ihn wiederholt — und `append --text` legt den ganzen Text unter
+  `text` ab. An einem Event der Kommandozeile erreicht nur `redact event` den
+  Text. Gemessen am 2026-10-05 (Aufgabe 8, P-1c); steht auf `erasure.md` und
+  in der Anleitung; zu entscheiden mit dem Einwurf-Vertrag, wo der Text steht.
+- Ein Schlüssel je Betroffenem und das Krypto-Schreddern (1c §12 Punkt 6).
+
+### Blobs und Speicher
+
+- Verwaiste Blobs: scheitert das Anfügen nach dem Speichern, bleibt ein Blob
+  ohne Event; ihn zu finden heißt, den Bucket gegen `event_blob` zu halten,
+  gebaut ist das nicht (1c §12 Punkt 1).
+- Hochladen ohne Zwischendatei; heute braucht das Aufnehmen Platz in der
+  Größe des größten Blobs (1c §2.3, §12 Punkt 10).
+- Bedingtes Schreiben (`If-None-Match: *`) machte aus „erster gewinnt" ein
+  Schloss statt eines Nachsehens; dafür müsste das Hochladen in Teilen von
+  Hand gebaut und an Hetzner gemessen werden (1c §2.7, §12 Punkt 13).
+- Ein beschädigtes Objekt ersetzen: „erster gewinnt" lässt es liegen, ein
+  Kommando, das einen Inhalt bewusst neu ablegt, gibt es nicht (1c §2.7, §12
+  Punkt 14).
+- `pyrage` 1.4.0 kehrt beim Versiegeln eines kleinen Inhalts normal zurück,
+  wenn der eine Schreibzugriff der Senke scheitert (gemessen am 2026-10-05,
+  12 Bytes; bei größerem Inhalt wirft es). Im Baum umgangen, `core/sealing.py`
+  beobachtet Quelle und Senke selbst; dem Projekt `pyrage` nicht gemeldet
+  (P-1c).
+- `s3transfer` hält den Fehler eines abgewiesenen Hochladens in Zyklen, samt
+  der Verbindung. Im Baum umgangen, `put` in `storage/s3.py` wirft den
+  eigenen Fehler unverkettet; nicht gemeldet (P-1c).
+- Die Lesefrist des S3-Clients, 20 s (`_READ_TIMEOUT` in `storage/s3.py`), ist
+  gegen keinen langsamen echten Speicher erprobt, auch nicht der Fall, dass
+  die Antwort auf einen Teil eines Hochladens länger braucht (P-1c).
 
 ### Suche
 
@@ -264,6 +310,29 @@ Zeile seines Belegberichts.
   Ankerns (AA §10 Punkt 4).
 - Der Container-Weg der Anker-Routine ist für `kubectl exec` ungemessen
   (P-AA).
+- Der Bucket der Blobs bei Hetzner, ohne Versionierung und ohne Object Lock,
+  mit eigenen Zugangsdaten; die Identität über External Secrets als
+  Verzeichnis eingehängt (1c §7). Was bei Hetzner anders ist als beim
+  Testserver, hat seit der Ausführung Namen: ob der Speicher das Metadatum
+  `key-id` so zurückgibt; was ein Leser sieht, während ein Objekt ersetzt
+  wird (bei RustFS bricht sein Lesen ab); ob ein bedingtes Schreiben
+  angenommen wird; ob Löschen ohne Version und ohne Löschmarke löscht (1c §12
+  Punkt 11; P-1c).
+- Ein Tresor hinter der Schlüssel-Naht; heute ein Verzeichnis mit einer Datei
+  je Empfänger (1c §12 Punkt 7).
+- Die Aufbewahrungsfrist der Sicherungen ist Teil der Tilgungszusage: die der
+  Datenbank und des WAL-Archivs, und die der Sicherungen oder Kopien des
+  Buckets, wenn es sie gibt (1c §4.5, §7; P-1c). Steht auf `erasure.md`,
+  `blobs.md` und `backup-encryption.md`; gewählt ist keine Frist.
+- Ein Verzeichnis der Tilgungen außerhalb der Datenbank: nach einer
+  Wiederherstellung auf einen älteren Stand weiß das Log nicht mehr, was
+  seither getilgt wurde, und die Tilgungen sind zu wiederholen; die Anker-Datei
+  wäre ein Muster (1c §4.5, §12 Punkt 3). Die Anleitung
+  `restore-from-a-backup.md` verlangt es, gebaut ist nichts.
+- Der Notfallweg mit dem Werkzeug `age`: am 2026-10-05 in einem Container mit
+  `age` 1.2.1 gegangen, ein Objekt mit der AWS-Kommandozeile geholt und mit
+  der Identität allein geöffnet (Aufgabe 8, P-1c); von Hand, mit installiertem
+  Werkzeug, steht er für die Abnahme aus (1c §11 Bedingung 14).
 - „Kettenprüfung schlägt an → alles Schreiben anhalten" (A §7.4) ist nicht
   gebaut; es gibt nur den Alarm. Kein Grund aufgeschrieben (PP, A2).
 - Zwei gleichzeitig laufende Anker-Routinen hängen beide an; folgenlos, aber
@@ -289,6 +358,15 @@ Zeile seines Belegberichts.
   Prüfung, die beim jüngsten Anker beginnt, gibt es nicht; und ein so lange
   offener Schnappschuss hält `VACUUM` zurück, was niemand gemessen hat (PP,
   Bericht C).
+- `verify --blobs` liest alles: eine Prüfung nur der Blobs seit dem letzten
+  Lauf gibt es nicht (1c §12 Punkt 9); und es hält die Referenzen aller Blobs
+  im Speicher des Prozesses, im Docstring gesagt, nicht gemessen (P-1c).
+- In v=1 ist an einem ganz getilgten Event nichts mehr über seine Einheiten
+  bezeugt: Zahl und `seq` der Grabstein-Zeilen prüft nichts. In v=2 fällt
+  beides auf. Steht auf `erasure.md`, festgenagelt von
+  `test_the_tombstone_rows_of_a_fully_erased_version_1_event_are_attested_by_nothing`
+  in `tests/test_verify.py`; wer die Grenze schließt, dreht den Test bewusst
+  um (P-1c).
 - `previously anchor` allein prüft keine alten Anker (P-AA).
 - Ein Befund nennt die `id`, nicht die Zeile der Ankerdatei (P-AA).
 - `anchored event is missing (the log ends at 5)` für ein Event aus der Mitte
@@ -304,7 +382,7 @@ Zeile seines Belegberichts.
 - `show` druckt Einheiten roh; eine Einheit mit Umbruch bricht die
   Zeilenstruktur (1b §10 Punkt 3).
 - Eine Obergrenze für `--limit` (P-1b).
-- Die Kommandozeile ist mit acht Kommandos, Ausgabeverträgen und Rückgabecodes
+- Die Kommandozeile ist mit zehn Kommandos, Ausgabeverträgen und Rückgabecodes
   faktisch eine Oberfläche mit Vertrag geworden, obwohl sie nur der Einstieg
   ist, bis der MCP-Server steht (PP, A2 §11 Zeile 8).
 
@@ -320,6 +398,18 @@ Zeile seines Belegberichts.
   gemessene Mutation (P-AA).
 - `ruling`-Labels im Baum lösen nicht auf; das Hauptbuch der Stufe 1a ist
   verloren (`CLAUDE.md`).
+- Der Testlauf ist mit Stufe 1c von rund 31 s auf 73 s gewachsen (`606 passed in 72.97s`, gemessen am 2026-10-05): ein
+  zweiter Container, und Tests, die wirklich hochladen (P-1c).
+- Der Zitat-Test in `tests/test_docs_references.py` lässt hinter einem
+  eingesetzten Wert am Satzende beliebigen Text zu; eine Verschärfung auf
+  „kein Leerzeichen im eingesetzten Ende" bräche an Sätzen, die mit einem
+  Grund enden (P-1c).
+- Drei Tests laufen nur unter Linux und werden sonst übersprungen
+  (`ru_maxrss`, `/proc`); zwei senken für die Dauer eines Kommandos die
+  Dateigrößengrenze des Testprozesses (P-1c).
+- Der Test zum abgebrochenen Lesen verlässt sich darauf, dass RustFS das
+  Senden einstellt, wenn das Objekt gelöscht wird; an den ersten CI-Läufen
+  beobachten (P-1c).
 
 ### Spätere Teilprojekte, unverändert offen
 
@@ -360,3 +450,27 @@ Zeile seines Belegberichts.
 - Renovate konfiguriert, `renovate.json5`; die App muss der Betreuer noch auf
   dem Repository installieren (A §10.7; PP, A2) — Wartungsrunde, Commit
   `b36e715`.
+- ~~Fassungsangabe je Zeile, `hash_version`, mit dem ersten `v = 2`~~ (1a
+  §12) — Stufe 1c, Commits `72a0044` und `4c078ad`.
+- ~~Tilgung als Event im Log (`action`, Unterart `redaction`); erst damit ist
+  ein Grabstein von einer Fälschung unterscheidbar~~ (1a §12; A §4.6) —
+  Stufe 1c, Commit `a0377ba`; die Blob-Form Commit `a65d1cc`.
+- ~~Zeitpunkt für den Bau der Tilgung~~ (A §13) — Stufe 1c, Commit `a0377ba`.
+- ~~Eine Tilgung der Nutzlast tilgt die Einheiten nicht, und `p_source_stats`
+  stimmt danach nicht ohne Neubau~~ (1b §10 Punkt 2, AA §10 Punkt 5) — eine
+  Tilgung des Events nimmt die Einheiten mit, Commit `a0377ba`; die Chronik
+  folgt, und `p_source_stats` zählt einen Grabstein inkrementell wie neu
+  gebaut weiter, Commit `600f757`.
+- ~~Blobs inhaltsadressiert, clientseitig verschlüsselt, Schlüsselbehandlung,
+  Dateisystem-Adapter; keine Versionierung auf dem Bucket~~ (A §4.6
+  Vorkehrungen 2 und 3, §10.3, §12.1) — Stufe 1c, Commits `13d0d5e` und
+  `9efb419`. Statt eines Dateisystem-Adapters gibt es einen einzigen, für
+  S3 (1c §1.1); „ohne Versionierung" steht in `configuration.md` und in der
+  Anleitung für den eigenen Rechner, geprüft wird es nicht.
+- ~~`evidence` steht in der Nutzlast; eine Tilgung nimmt die Belegart mit~~
+  (PP, A1 Zeilen 10 und 11) — entschieden: die Belegart geht mit der Nutzlast,
+  `erasure.md` sagt es; Stufe 1c, Commit `a0377ba`.
+- Die Unterart einer Handlung hat einen Ort, die Nutzlast unter `action`, und
+  `verify` kennt eine erste Regel je Art, für `action` (PP, A1 S2 und S3, je
+  zur Hälfte; die andere Hälfte steht oben unter *Feststellungen und
+  Entitäten*) — Stufe 1c, Commit `a0377ba`.

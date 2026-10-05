@@ -1,8 +1,22 @@
 # Previously — Stufe 1c: Blobs und Tilgung
 
+> **Eingefrorener Entwurfsbericht, Stand 2026-10-05.**
+> Dieses Dokument wird nicht mehr nachgezogen.
+> Es hält fest, **wie und warum** entschieden wurde, und bleibt dafür im
+> Repository. Die lebende Begründung steht in der Dokumentation unter
+> `docs/` — soweit sie dort steht; wo sie fehlt, ist dieses Dokument die
+> einzige Quelle. Weicht es von der Doku ab, gilt die Doku.
+>
+> Ein neuer Spec für eine neue Stufe entsteht wieder auf Deutsch — das ist
+> die Sprache, in der die Absicht formuliert wird. Er friert ein, sobald
+> seine Explanation-Seiten stehen. Das Einfrieren als **Ablauf**, und die
+> Karte von jedem zitierten Paragraphen zu seiner Seite, stehen in
+> [About the frozen design records](../../explanation/design-records.md).
+
 **Datum:** 2026-10-04
-**Status:** Entwurf, vom Betreuer am 2026-10-04 durchgesehen; Grundlage des
-Plans `docs/superpowers/plans/2026-10-04-stufe-1c-blobs-und-tilgung.md`
+**Status:** eingefroren am 2026-10-05; zuvor Entwurf, vom Betreuer am
+2026-10-04 durchgesehen, Grundlage des Plans
+`docs/superpowers/plans/2026-10-04-stufe-1c-blobs-und-tilgung.md`
 
 Detail-Spec für Teilprojekt 1, Stufe 1c (§12.1 der Architektur). Setzt die
 Architektur (`2026-10-01-architektur.md`), die Stufen 1a und 1b und den
@@ -800,8 +814,10 @@ Abgenommen ist die Arbeit mit dem Merge nach `main`.
 
 ## 12. Was offen bleibt
 
-Gepflegt, solange der Spec lebt; beim Einfrieren gehen die Punkte in die
-Landkarte.
+Gepflegt, solange der Spec lebte; beim Einfrieren am 2026-10-05 gingen die
+Punkte in die Landkarte (`docs/superpowers/landkarte.md`), jeder unter die
+Einheit, zu der er gehört, und dort leben sie weiter. Die Liste hier ist der
+Stand dieses Tages.
 
 1. **Verwaiste Blobs.** Scheitert das Anfügen nach dem Speichern, bleibt ein
    Blob ohne Event. Ihn zu finden heißt, den Bucket gegen `event_blob` zu
