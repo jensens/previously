@@ -51,6 +51,18 @@ class ServerUnreachable(StorageError):
     """
 
 
+class TransactionAborted(StorageError):
+    """The database aborted a transaction because of a concurrent one: a
+    deadlock or a serialization failure (SQLSTATE class 40), or a lock it
+    could not get in time (`55P03`).
+
+    Translates the `sqlalchemy.exc.OperationalError` that carries one of
+    those states. Nothing was committed by the aborted transaction, and the
+    same command run again starts it afresh; the server answered, so
+    `ServerUnreachable` would send the operator to the wrong place.
+    """
+
+
 class MigrationPending(StorageError):
     """The database schema is incomplete (review finding W2).
 

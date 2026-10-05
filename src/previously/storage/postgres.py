@@ -34,6 +34,7 @@ from previously.storage.errors import InvalidDsn
 from previously.storage.errors import MigrationPending
 from previously.storage.errors import ServerUnreachable
 from previously.storage.errors import SourceKeyTaken
+from previously.storage.errors import TransactionAborted
 from previously.storage.schema import event
 from previously.storage.schema import event_blob
 from previously.storage.schema import p_chronicle
@@ -183,11 +184,26 @@ class PostgresStorage:
         `insert_event` translates itself) this `try` deliberately does not
         catch: an unknown error dressed up as a handy message is worse than a
         stack trace.
+
+        An `OperationalError` is not always an unreachable server, though.
+        Since stage 1c the log has row locks, and a transaction the server
+        aborts in a conflict with another one — a deadlock, a serialization
+        failure, a lock not granted in time — arrives as one as well, from
+        inside the `with` block. Its SQLSTATE says which, read off the
+        driver's exception with `getattr` for the reason `_constraint_name`
+        gives, and that case becomes `TransactionAborted`: the server
+        answered, and the advice is to run again, not to look at the network.
         """
         try:
             with engine.begin() as conn:
                 yield conn
         except OperationalError as error:
+            state = getattr(error.orig, "sqlstate", None)
+            if isinstance(state, str) and (state.startswith("40") or state == "55P03"):
+                raise TransactionAborted(
+                    "the database aborted the operation in a conflict with a concurrent one; "
+                    "run the command again"
+                ) from error
             address = engine.url.render_as_string(hide_password=True)
             raise ServerUnreachable(
                 f"database server at {address} does not answer — is PostgreSQL "
@@ -483,14 +499,28 @@ class PostgresStorage:
     # leave a digest that can still be tried against.
 
     def lock_event(self, conn: Connection, event_id: int) -> EventRow | None:
-        """The row of one event, locked `FOR UPDATE` until the caller's
-        transaction ends, or `None` when there is none.
+        """The row of one event, locked `FOR NO KEY UPDATE` until the
+        caller's transaction ends, or `None` when there is none.
 
-        The lock is on the target of an erasure, not on the tip: the chain
-        position stays the unique indexes' to decide ({ref}`concurrency`).
+        An erasure calls it for every event whose redactions it is about to
+        read: for `redact units` its target, for `redact event` its target
+        and every event that shares a blob with it, for `redact blob` every
+        event that uses the blob. Never on the tip: the chain position stays
+        the unique indexes' to decide ({ref}`concurrency`).
+
+        `FOR NO KEY UPDATE` and not `FOR UPDATE`: the two conflict with each
+        other alike, so two erasures that lock one row still run one after
+        the other, but only `FOR UPDATE` conflicts with the `FOR KEY SHARE`
+        that a foreign-key check takes on the row it references. Every row a
+        catch-up writes into `p_chronicle` or `p_source_stats` references an
+        event. Measured on 2026-10-05 with `FOR UPDATE`: the lock waited
+        behind an open transaction that had inserted a chronicle row of the
+        same event, and such an insert waited behind the lock. An erasure
+        changes no key of the row, so the weaker mode is the one its own
+        `UPDATE` takes anyway.
         """
         row = conn.execute(
-            select(event).where(event.c.id == event_id).with_for_update()
+            select(event).where(event.c.id == event_id).with_for_update(key_share=True)
         ).one_or_none()
         return None if row is None else _event_row(row)
 

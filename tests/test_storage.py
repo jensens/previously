@@ -4,6 +4,7 @@
 from dataclasses import replace
 from datetime import datetime
 from datetime import UTC
+from previously.contract.rows import ChronicleRow
 from previously.contract.rows import EventRow
 from previously.contract.rows import UnitRow
 from previously.storage.errors import ChainPositionTaken
@@ -12,6 +13,7 @@ from previously.storage.errors import MigrationPending
 from previously.storage.errors import ServerUnreachable
 from previously.storage.errors import SourceKeyTaken
 from previously.storage.errors import StorageError
+from previously.storage.errors import TransactionAborted
 from previously.storage.postgres import from_dsn
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import create_engine
@@ -21,6 +23,7 @@ from sqlalchemy.exc import OperationalError
 from typing import TYPE_CHECKING
 
 import pytest
+import threading
 
 
 if TYPE_CHECKING:
@@ -632,6 +635,106 @@ def test_lock_event_makes_a_second_locker_wait(db: Engine) -> None:
     with db.connect() as second:
         second.execute(text("SET lock_timeout = '200ms'"))
         assert storage.lock_event(second, 1) is not None
+
+
+def _chronicle_row(event_id: int) -> ChronicleRow:
+    return ChronicleRow(
+        event_id=event_id,
+        seq=1,
+        content="a",
+        occurred_at=datetime(2026, 10, 4, 12, 0, tzinfo=UTC),
+        kind="observation",
+        evidence="recollection",
+        source="cli",
+        external_id="x1",
+        speaker=None,
+        start_ms=None,
+        end_ms=None,
+    )
+
+
+@pytest.mark.db
+def test_lock_event_and_a_foreign_key_check_on_the_event_do_not_wait_for_each_other(
+    db: Engine,
+) -> None:
+    """A catch-up that inserts a chronicle row of an event takes a key-share
+    lock on that event's row through the foreign key, and an erasure that
+    locks the row must not wait behind it, nor the insert behind the
+    erasure. Each direction with a `lock_timeout`, which a wait would run
+    into. Measured on 2026-10-05 with `lock_event` at `FOR UPDATE`: both
+    directions ran into it. `test_lock_event_makes_a_second_locker_wait` is
+    the control: two lockers still wait for each other."""
+    storage = PostgresStorage(db)
+    with storage.begin() as c:
+        storage.insert_event(c, _salted(1, None), [_unit(1, 1, "a")], ("cli", "x1"))
+
+    with db.connect() as first:
+        storage.insert_chronicle(first, [_chronicle_row(1)])
+        with db.connect() as second:
+            second.execute(text("SET lock_timeout = '200ms'"))
+            assert storage.lock_event(second, 1) is not None
+            second.rollback()
+        first.rollback()
+
+    with db.connect() as first:
+        assert storage.lock_event(first, 1) is not None
+        with db.connect() as second:
+            second.execute(text("SET lock_timeout = '200ms'"))
+            storage.insert_chronicle(second, [_chronicle_row(1)])
+            second.rollback()
+        first.rollback()
+
+
+@pytest.mark.db
+def test_a_deadlock_becomes_a_storage_error_that_says_to_run_again(db: Engine) -> None:
+    """Two transactions lock two rows in opposite order, and PostgreSQL
+    aborts one of them. That arrives as an `OperationalError` from inside the
+    transaction, and is reported as an aborted operation, not as a server
+    that does not answer. Measured on 2026-10-05 with the translation taken
+    out: the deadlock came out as `ServerUnreachable`."""
+    storage = PostgresStorage(db)
+    with storage.begin() as c:
+        storage.insert_event(c, _salted(1, None), [_unit(1, 1, "a")], ("cli", "x1"))
+        storage.insert_event(c, _salted(2, b"\x01" * 32), [], None)
+    both_hold_one = threading.Barrier(2)
+    errors: list[BaseException] = []
+
+    def lock(first: int, then: int) -> None:
+        try:
+            with storage.begin() as c:
+                assert storage.lock_event(c, first) is not None
+                both_hold_one.wait(timeout=10)
+                storage.lock_event(c, then)
+        except BaseException as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=lock, args=pair) for pair in ((1, 2), (2, 1))]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+        assert not t.is_alive(), "thread is hanging"
+
+    (error,) = errors
+    assert isinstance(error, TransactionAborted)
+    assert str(error) == (
+        "the database aborted the operation in a conflict with a concurrent one; "
+        "run the command again"
+    )
+
+
+@pytest.mark.db
+def test_a_lock_not_granted_in_time_becomes_the_same_storage_error(db: Engine) -> None:
+    """`55P03`, a `lock_timeout` run out inside a transaction of `begin`,
+    is the same case: the server answered and refused to wait longer."""
+    storage = PostgresStorage(db)
+    with storage.begin() as c:
+        storage.insert_event(c, _salted(1, None), [_unit(1, 1, "a")], ("cli", "x1"))
+    with storage.begin() as first:
+        assert storage.lock_event(first, 1) is not None
+        with pytest.raises(TransactionAborted), storage.begin() as second:
+            second.execute(text("SET LOCAL lock_timeout = '200ms'"))
+            storage.lock_event(second, 1)
 
 
 @pytest.mark.db

@@ -90,12 +90,13 @@ class RedactionStore[Conn](Protocol):
     about `LogStore` and the exception is a type: nothing typed against
     `LogStore` can erase, and what can erase is listed here.
 
-    `lock_event` reads the row with `FOR UPDATE`, so that two erasures of the
-    same target run one after the other. `erase_payload` sets `payload` and
-    `payload_salt` to `NULL` in one `UPDATE`; `erase_units` sets `content`,
-    `salt`, `speaker`, `start_ms` and `end_ms` of the named units to `NULL` in
-    one `UPDATE`, and an empty sequence is no statement. Every digest stays:
-    the chain depends on them.
+    `lock_event` reads the row with `FOR NO KEY UPDATE`, so that two erasures
+    that lock the same event run one after the other, while a foreign-key
+    check on that event does not wait for either. `erase_payload` sets
+    `payload` and `payload_salt` to `NULL` in one `UPDATE`; `erase_units` sets
+    `content`, `salt`, `speaker`, `start_ms` and `end_ms` of the named units
+    to `NULL` in one `UPDATE`, and an empty sequence is no statement. Every
+    digest stays: the chain depends on them.
     """
 
     def lock_event(self, conn: Conn, event_id: int) -> EventRow | None: ...

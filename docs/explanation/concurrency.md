@@ -76,7 +76,9 @@ Nothing prevents that: the store takes part in neither transaction, and a lock i
 Attaching the same file again to any event stores it again, because `append` asks the store whether the object is there, not the register.
 
 An erasure takes one lock that `append` doesn't, and the lock isn't on the tip.
-It locks event rows with `SELECT … FOR UPDATE` before it reads which redactions exist: the row of its target event, for `redact event` and `redact units`, and for `redact blob`, whose target is a blob and has no row of its own, the rows of the events that use it.
+It locks event rows with `SELECT … FOR NO KEY UPDATE` before it reads which redactions exist: the row of its target event, for `redact event` and `redact units`, and for `redact blob`, whose target is a blob and has no row of its own, the rows of the events that use it.
+That mode conflicts with itself, so two erasures that lock one row still take turns, and it doesn't conflict with the key-share lock that a foreign-key check takes on the row it references.
+Every row a catch-up writes into a projection table references an event, so with `FOR UPDATE` a catch-up and an erasure would wait for each other.
 Two erasures of the same target then run one after the other, and the second, once it holds the lock, sees the redaction the first one wrote and writes none of its own.
 Without the lock both would read before either had committed, find nothing, and both write a redaction for the same target.
 
