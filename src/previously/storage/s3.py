@@ -180,15 +180,38 @@ class S3BlobStore:
 
     def put(self, address: str, sealed: IO[bytes], *, key_id: str) -> None:
         """Uploads the ciphertext under `address`, with `key_id` beside it,
-        in parts when it is large, so that memory stays bounded."""
+        in parts when it is large, so that memory stays bounded.
+
+        A failure is raised as the project's error after the `except`, not
+        chained from `botocore`'s, and the foreign error lets go of its
+        traceback first: ruling T6-a of the 2026-10-04 stage 1c plan. The
+        transfer manager keeps the exception of a failed upload in its
+        `TransferCoordinator`, which sits in reference cycles, and the
+        exception's traceback holds the frame of botocore's `_make_api_call`,
+        whose response holds the socket. `close` empties the pool and cannot
+        reach a connection a response still holds. Measured on 2026-10-05:
+        three refused uploads of 9 MiB, each store closed, the collector
+        off, left 4 connections against 1 before; with the traceback let go,
+        1 (`tests/test_s3.py`). Letting go is what does it: with the
+        traceback let go and the error still chained, it was 1 as well. It
+        is not chained all the same, so that a caller who keeps the error —
+        a long run that collects its failures — does not keep the foreign
+        one with it. The message keeps what an operator needs, endpoint,
+        bucket and code.
+        """
+        failure: BlobStoreRefused | BlobStoreUnreachable | None = None
         try:
             self._client.upload_fileobj(
                 sealed, self._bucket, _checked(address), ExtraArgs={"Metadata": {_KEY_ID: key_id}}
             )
         except ClientError as error:
-            raise self._refused(error) from error
+            failure = self._refused(error)
+            error.__traceback__ = None
         except BotoCoreError as error:
-            raise self._translated(error) from error
+            failure = self._translated(error)
+            error.__traceback__ = None
+        if failure is not None:
+            raise failure
 
     def get(self, address: str) -> tuple[StoredBlob, ClosableSource] | None:
         """The metadata and the stream of the object, out of one answer, or

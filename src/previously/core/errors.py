@@ -83,6 +83,17 @@ class CannotOpen(BlobError):
     — the wrong identity, or bytes that are not an age file."""
 
 
+class SourceUnreadable(BlobError):
+    """The content to be stored could not be read: the source raised an
+    `OSError` while it was hashed or sealed. `reason` is the system's
+    description of the failure, which a caller that knows the source's name
+    puts beside it; the source itself says nothing about its name."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"the content cannot be read: {reason}")
+        self.reason = reason
+
+
 class AddressMismatch(BlobError):
     """An object opened, and its plaintext is not the content its address
     names. The bytes written so far are to be thrown away."""

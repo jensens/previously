@@ -44,14 +44,21 @@ It prints the existing event's `id` and returns 0.
 
 With `--attach`, `append` reads `PREVIOUSLY_BLOB_RECIPIENT` and the five settings of the blob store, opens every file, stores each file as a blob, and then appends the event; see {ref}`blobs`.
 It checks the recipient before it stores anything, and a recipient that isn't an age X25519 recipient is an input error, quoted in the sentence.
-A file that can't be opened, or that can't be read twice, such as a pipe, is an input error:
+A file that can't be opened, that can't be read twice, such as a pipe, or that fails while it's read is an input error:
 
 ```text
 Error: cannot read the attachment notes/minutes.txt: No such file or directory
 ```
 
-On any of these errors, nothing is stored and nothing is appended.
-A blob stored before the append fails stays in the store, and no event names it.
+A temporary file for the sealed form that can't be created or written is an error as well, with the system's reason after the colon:
+
+```text
+Error: cannot write a temporary file: Permission denied
+```
+
+On any of these errors, nothing is appended.
+A file that can't be opened stores nothing, since `append` opens every file before it stores the first.
+A blob stored before a later attachment or the append fails stays in the store, and no event names it.
 
 The payload of the event carries one reference per `--attach`, in the order given, under the key `blobs`:
 
@@ -336,6 +343,7 @@ Error: cannot write out/hello.txt: No such file or directory
 ```
 
 After `cannot be opened:` stands the reason: the object names no key, no identity for its key is in the directory, or `age` refuses the object.
+`cannot write` covers a directory of `--output` that doesn't exist or doesn't allow writing, an `--output` that's a directory, and a write that fails while the content passes through.
 On every error, the temporary file is gone and an existing `--output` is unchanged.
 
 ## `project`

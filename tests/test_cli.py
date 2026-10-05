@@ -1789,6 +1789,102 @@ def test_blob_get_leaves_an_existing_target_alone_when_it_fails(
     assert list(directory.iterdir()) == [target]
 
 
+# What the write side and the read side of the blob path can fail with, for
+# real. A directory without write permission is no obstacle to root, so the
+# tests that need one are skipped there, with that reason.
+_ROOT = sys.platform != "win32" and os.geteuid() == 0
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.parametrize("failure", ["parent-missing", "not-writable", "target-a-directory"])
+def test_blob_get_that_cannot_write_is_one_sentence_and_leaves_nothing(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], failure: str
+) -> None:
+    """Ruling T6-a of the 2026-10-04 stage 1c plan: a target whose directory
+    does not exist, a directory that does not allow writing, and a target
+    that is a directory, so that the rename fails after the fetch. Each is
+    `cannot write <file>: <reason>` and exit code 2, and no temporary file
+    stays behind."""
+    if failure == "not-writable" and _ROOT:
+        pytest.skip("root writes into a directory without write permission")
+    content = b"fetched, and then nowhere to put it"
+    assert main(_attach("a", _file(tmp_path, "a.txt", content))) == 0
+    capsys.readouterr()
+    address = hashlib.sha256(content).hexdigest()
+    directory = tmp_path / "out"
+    directory.mkdir()
+    target, reason = {
+        "parent-missing": (directory / "missing" / "a.txt", "No such file or directory"),
+        "not-writable": (directory / "a.txt", "Permission denied"),
+        "target-a-directory": (directory / "a.txt", "Is a directory"),
+    }[failure]
+    if failure == "target-a-directory":
+        target.mkdir()
+    if failure == "not-writable":
+        directory.chmod(0o500)
+    try:
+        assert main(["blob", "get", address, "--output", str(target)]) == 2
+    finally:
+        directory.chmod(0o700)
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _single_line(err) == f"Error: cannot write {target}: {reason}"
+    expected = [target] if failure == "target-a-directory" else []
+    assert list(directory.iterdir()) == expected
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.skipif(sys.platform != "linux", reason="/proc/self/mem is Linux's")
+def test_an_attachment_that_opens_and_cannot_be_read_appends_nothing(
+    blobs: _Blobs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A file that opens, can be rewound, and fails at its first read with a
+    real `EIO`: `/proc/self/mem`, whose offset 0 no process maps. One
+    sentence naming the attachment, exit code 2, nothing appended and
+    nothing stored."""
+    from pathlib import Path
+
+    assert main(_attach("a", Path("/proc/self/mem"))) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _single_line(err) == (
+        "Error: cannot read the attachment /proc/self/mem: Input/output error"
+    )
+    assert _events(blobs.engine) == 0
+    assert _bucket(blobs.store) == []
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.skipif(_ROOT, reason="root writes into a directory without write permission")
+def test_a_temporary_file_that_cannot_be_made_appends_nothing(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sealed form goes into a temporary file, here in a directory that
+    does not allow writing: one sentence, exit code 2, nothing appended and
+    nothing stored."""
+    import tempfile
+
+    closed = tmp_path / "closed"
+    closed.mkdir()
+    closed.chmod(0o500)
+    monkeypatch.setattr(tempfile, "tempdir", str(closed))
+    try:
+        assert main(_attach("a", _file(tmp_path, "a.txt", b"to be sealed"))) == 2
+    finally:
+        closed.chmod(0o700)
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _single_line(err) == "Error: cannot write a temporary file: Permission denied"
+    assert _events(blobs.engine) == 0
+    assert _bucket(blobs.store) == []
+
+
 @pytest.mark.db
 @pytest.mark.s3
 def test_a_mistyped_recipient_is_refused_before_anything_is_stored(
@@ -1991,6 +2087,7 @@ def test_main_releases_the_blob_store_it_opened(
     blobs: _Blobs,
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
     s3_connections: ConnectionCount,
 ) -> None:
     """Every command that builds a blob store closes it, on success and on
@@ -2004,18 +2101,20 @@ def test_main_releases_the_blob_store_it_opened(
     so only the garbage collector would free a store left open, and the
     collector is off for the loop and the count after it, as in
     `tests/test_s3.py::test_close_releases_the_connections_the_store_opened`.
-    The failing call is a fetch of an object that names a key no identity in
-    the directory belongs to: it fails after the store has answered.
+    Two calls fail: a fetch of an object that names a key no identity in the
+    directory belongs to, and an attachment uploaded in parts into a bucket
+    that does not exist. The second is the one that holds the "on error"
+    half: a failing fetch uploads nothing, and a store without an upload is
+    freed by reference counting even unclosed, while a refused upload in
+    parts leaves the store in reference cycles.
 
-    Measured on 2026-10-05: 1 connection before the sixteen calls and 1
-    after; with `store.close()` taken out of `_blob_store`, 9 after. The
-    half "on error" is not held by this test: with the close moved out of
-    the `finally`, so that it runs on success only, it stayed 1 and 1. A
-    failing fetch uploads nothing, and a store without an upload is freed by
-    reference counting once the command's error is printed. The one failure
-    after which a store does hold a connection is an upload in parts that
-    the store refuses, and that one stays open after `close` too, until the
-    garbage collector runs — so it cannot serve as the control here either.
+    Measured on 2026-10-05, after ruling T6-a of the 2026-10-04 stage 1c
+    plan had the adapter let go of what a refused upload kept: 1 connection
+    before the twenty calls and 1 after; with the close moved out of the
+    `finally` of `_blob_store`, so that it runs on success only, 5 after;
+    with `store.close()` taken out, 13 after. Before that ruling the
+    refused upload kept its connection through `close` as well, and the
+    test had to leave it out.
     """
     import gc
 
@@ -2038,6 +2137,9 @@ def test_main_releases_the_blob_store_it_opened(
             assert main(["blob", "get", address, "--output", str(target)]) == 0
             assert main(["blob", "get", broken_address, "--output", str(target)]) == 2
             assert main(["blob", "get", address, "--output", str(target)]) == 0
+            monkeypatch.setenv("PREVIOUSLY_BLOB_BUCKET", "previously-no-such-bucket")
+            assert main(_attach(f"refused-{round_}", attachment)) == 2
+            monkeypatch.setenv("PREVIOUSLY_BLOB_BUCKET", blobs.store.bucket)
         after = s3_connections()
     finally:
         gc.enable()

@@ -31,6 +31,7 @@ from previously.core.errors import CannotOpen
 from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
 from previously.core.errors import RedactionRefused
+from previously.core.errors import SourceUnreadable
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
 from previously.core.projection import Outcome
@@ -355,7 +356,15 @@ def _attach(paths: Sequence[str]) -> tuple[BlobRef, ...]:
             handles.append(handle)
         references: list[BlobRef] = []
         for path, handle in zip(paths, handles, strict=True):
-            stored = store_blob(store, handle, recipient=recipient)
+            # A file that opened can still fail to read, a disk that gives
+            # out among them: `core` says that it was the content, and only
+            # this function knows which file it was.
+            try:
+                stored = store_blob(store, handle, recipient=recipient)
+            except SourceUnreadable as error:
+                raise InvalidPayload(
+                    f"cannot read the attachment {path}: {error.reason}"
+                ) from error
             name = Path(path).name
             references.append(
                 BlobRef(stored.address, stored.size, media_type_of(name), filename=name)

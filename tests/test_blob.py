@@ -12,7 +12,9 @@ reads.
 from previously.core.blob import fetch_blob
 from previously.core.blob import store_blob
 from previously.core.errors import AddressMismatch
+from previously.core.errors import BlobError
 from previously.core.errors import CannotOpen
+from previously.core.errors import SourceUnreadable
 from previously.core.sealing import recipient_of
 from previously.core.sealing import seal
 from previously.core.sealing import unseal
@@ -20,12 +22,14 @@ from previously.storage.keys import DirectoryKeys
 from previously.storage.s3 import from_settings
 from typing import TYPE_CHECKING
 
+import errno
 import hashlib
 import io
 import os
 import pytest
 import resource
 import sys
+import tempfile
 import threading
 
 
@@ -286,6 +290,73 @@ def test_an_identity_file_that_holds_another_key_cannot_open(
         fetch_blob(blob_store, DirectoryKeys(str(directory)), stored.address, io.BytesIO())
     assert other_age_identity not in str(caught.value)
     assert "AGE-SECRET-KEY" not in str(caught.value)
+
+
+class _FailsOnTheSecondPass:
+    """A source that reads like a file until it is rewound for the second
+    pass, and then fails the way a disk does: an `OSError` with `EIO`. A
+    small source of the test's own, not a stand-in for the store."""
+
+    def __init__(self, content: bytes) -> None:
+        self._content = io.BytesIO(content)
+        self._passes = 0
+
+    def seek(self, offset: int, whence: int = 0, /) -> int:
+        if offset == 0 and whence == 0:
+            self._passes += 1
+        return self._content.seek(offset, whence)
+
+    def read(self, size: int = -1, /) -> bytes:
+        # `address_of` rewinds before its pass and after it, and `seal` reads
+        # without rewinding: the reads after the second rewind are the
+        # sealing pass.
+        if self._passes >= 2:
+            raise OSError(errno.EIO, "Input/output error")
+        return self._content.read(size)
+
+
+def test_a_source_that_fails_while_it_is_sealed_is_an_error_of_its_own(
+    blob_store: S3BlobStore, age_identity: str
+) -> None:
+    """Ruling T6-a of the 2026-10-04 stage 1c plan: nothing foreign leaves
+    `core`. The hashing pass reads the source, the sealing pass fails on it,
+    and what arrives is `SourceUnreadable` with the reason, not the
+    `OSError` and not `age`'s wrapping of it; nothing is uploaded."""
+    with pytest.raises(SourceUnreadable) as caught:
+        store_blob(
+            blob_store,
+            _FailsOnTheSecondPass(b"read once, then no more"),
+            recipient=recipient_of(age_identity),
+        )
+    assert caught.value.reason == "Input/output error"
+    assert _objects(blob_store) == []
+
+
+def test_a_temporary_file_that_cannot_be_made_is_an_error_of_its_own(
+    blob_store: S3BlobStore,
+    age_identity: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The sealed form goes into a temporary file, and a directory for
+    temporary files that does not allow writing makes that fail with a real
+    `PermissionError`. What leaves `core` is a `BlobError` with one
+    sentence; nothing is uploaded."""
+    if os.geteuid() == 0:
+        pytest.skip("root writes into a directory without write permission")
+    closed = tmp_path / "closed"
+    closed.mkdir()
+    closed.chmod(0o500)
+    monkeypatch.setattr(tempfile, "tempdir", str(closed))
+    try:
+        with pytest.raises(BlobError) as caught:
+            store_blob(
+                blob_store, io.BytesIO(b"to be sealed"), recipient=recipient_of(age_identity)
+            )
+    finally:
+        closed.chmod(0o700)
+    assert str(caught.value) == "cannot write a temporary file: Permission denied"
+    assert _objects(blob_store) == []
 
 
 def test_a_missing_object_is_none(

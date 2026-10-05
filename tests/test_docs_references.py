@@ -413,8 +413,9 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     prints on success, which `_message_patterns` does not collect, since it
     reads standard-error sentences and returned lines only; the six
     refusals of `redact` against the messages `core/redact.py` and `cli.py`
-    raise as `RedactionRefused`; the six errors of the blob commands against
-    the messages `cli.py` raises as `PreviouslyError` or `InvalidPayload`;
+    raise as `RedactionRefused`; the seven errors of the blob commands against
+    the messages `cli.py` raises as `PreviouslyError` or `InvalidPayload` and
+    `core/blob.py` raises as `BlobError`;
     and the thirteen findings it quotes, three from the anchors, nine from
     the hash formats and erasure and one from the blob register, against the
     reasons `core/verify.py` hands to `Finding`. The first two sentences
@@ -486,17 +487,20 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         )
 
     # The errors of `blob get` and the input errors of the blob commands come
-    # out of `cli.py`, raised as `PreviouslyError` or `InvalidPayload`.
+    # out of `cli.py`, raised as `PreviouslyError` or `InvalidPayload`; the
+    # one about the temporary file out of `core/blob.py`, as `BlobError`.
     errors = [
         *_raised_patterns(ROOT / "src" / "previously" / "cli.py", "PreviouslyError"),
         *_raised_patterns(ROOT / "src" / "previously" / "cli.py", "InvalidPayload"),
+        *_raised_patterns(ROOT / "src" / "previously" / "core" / "blob.py", "BlobError"),
     ]
     quoted = [
-        *_quoted_block(page, "A file that can't be opened, or that can't be read twice"),
+        *_quoted_block(page, "A file that can't be opened, that can't be read twice"),
+        *_quoted_block(page, "A temporary file for the sealed form that can't be created"),
         *_quoted_block(page, "and refuses anything else as an input error"),
         *_quoted_block(page, "Four errors of `blob get`"),
     ]
-    assert len(quoted) == 6, quoted
+    assert len(quoted) == 7, quoted
     for line in quoted:
         prefix, _, error = line.partition(": ")
         assert prefix == "Error", f"cli.md quotes the error {line!r} without `Error: `"

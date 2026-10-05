@@ -250,6 +250,50 @@ def test_close_releases_the_connections_the_store_opened(
     assert after <= before
 
 
+def test_a_refused_upload_in_parts_leaves_no_connection_behind_after_close(
+    blob_store: S3BlobStore, s3_settings: dict[str, str], s3_connections: ConnectionCount
+) -> None:
+    """Ruling T6-a of the 2026-10-04 stage 1c plan: a store closed after an
+    upload in parts that the store refused holds no connection, on the error
+    path as on the success path.
+
+    Measured on 2026-10-05 before the fix, with the collector off as here:
+    four refused uploads of 9 MiB into a bucket that does not exist, each
+    store closed, left 4 connections established, still 4 two seconds
+    later, and 0 after `gc.collect()`. What held each one, walked by
+    `gc.get_referrers`: the socket <- the `urllib3` response <- botocore's
+    `AWSResponse` <- the frame of `_make_api_call` that raised `NoSuchBucket`
+    <- the traceback of that exception <- the exception, kept by the
+    transfer's `s3transfer.futures.TransferCoordinator`, which sits in
+    reference cycles. `close` empties the pool, and a connection a response
+    still holds is not in it. The message keeps endpoint, bucket and code.
+
+    This test, measured the same day: 1 before and 1 after with the fix;
+    with the traceback kept, 4 after.
+    """
+    import gc
+
+    data = os.urandom(9 * 1024 * 1024)  # above the 8 MiB of an upload in parts
+    gc.collect()
+    before = s3_connections()
+    gc.disable()
+    try:
+        for _ in range(3):
+            refused = from_settings(**s3_settings, bucket="previously-no-such-bucket")
+            with pytest.raises(BlobStoreRefused) as caught:
+                refused.put(ADDRESS, io.BytesIO(data), key_id=KEY_ID)
+            refused.close()
+            message = str(caught.value)
+            del refused, caught
+            assert s3_settings["endpoint"] in message
+            assert "'previously-no-such-bucket'" in message
+            assert message.endswith(": NoSuchBucket")
+        after = s3_connections()
+    finally:
+        gc.enable()
+    assert after <= before, f"{after} connections after the refused uploads, {before} before"
+
+
 def test_settings_the_client_will_not_send_are_refused_not_unreachable(
     s3_settings: dict[str, str],
 ) -> None:
