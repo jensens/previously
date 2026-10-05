@@ -1491,6 +1491,63 @@ def test_a_catch_up_that_fails_after_the_redaction_says_what_is_outstanding(
     )
 
 
+@pytest.mark.db
+def test_an_unfinished_redact_units_still_says_that_the_payload_stays(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The units are erased and the catch-up fails on a forged gap, as in
+    `test_a_catch_up_that_fails_after_the_redaction_says_what_is_outstanding`:
+    the payload still stands, so the notice comes on standard error beside
+    the sentence of the unfinished redaction, and the exit code stays 2.
+    Measured on 2026-10-05 with the notice printed only on success: the
+    sentence came alone."""
+    from sqlalchemy import text
+
+    engine = _connect(db, monkeypatch)
+    _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
+    assert main(["project"]) == 0
+    _append("cli", "b", "Three", "2026-10-02T09:00:00Z")
+    _append("cli", "c", "Four", "2026-10-03T09:00:00Z")
+    with engine.begin() as c:
+        c.execute(text("DELETE FROM source_key WHERE event_id = 2"))
+        c.execute(text("DELETE FROM unit WHERE event_id = 2"))
+        c.execute(text("DELETE FROM event WHERE id = 2"))
+    capsys.readouterr()
+
+    assert main(["redact", "units", "1", "2", "--reason", "r"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == (
+        f"{_payload_standing(1)}"
+        "Error: the redaction is recorded as event 4, but it is not finished: "
+        "projection chronicle is not caught up (expected events 2.. above id 1, "
+        "read [3, 4]; the tip is 4); run the same command again\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("target", "sentence"),
+    [
+        ("event", "erase the payload and the content of every unit"),
+        ("units", "erase the content of the named units; the payload of the event stays"),
+        ("blob", "erase a blob for every event that uses it"),
+    ],
+)
+def test_each_form_of_redact_says_in_its_own_help_what_it_erases(
+    capsys: pytest.CaptureFixture[str], target: str, sentence: str
+) -> None:
+    """`previously redact units --help` says that the payload stays, and the
+    other two forms say what they erase the same way, not only in the list
+    `previously redact --help` prints. argparse rewraps the text to the
+    terminal, so the comparison ignores where the lines break. Measured on
+    2026-10-05 with the sentence passed as `help=` only: the subcommand's own
+    help did not carry it."""
+    with pytest.raises(SystemExit) as exit_:
+        main(["redact", target, "--help"])
+    assert exit_.value.code == 0
+    assert sentence in " ".join(capsys.readouterr().out.split())
+
+
 class _HoldingProject(PostgresStorage):
     """The real store, except that a catch-up through it, once it has
     written the rows of its first batch that reads an event and the new

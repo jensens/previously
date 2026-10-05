@@ -776,17 +776,24 @@ def _erased(by: Redaction | None) -> str:
 def _redact_arguments(parser: argparse.ArgumentParser) -> None:
     # The first command with a second level: what is erased is a word of its
     # own, `event`, `units` or `blob`, each with its own arguments.
+    #
+    # Each sentence is both the `help` and the `description`: argparse prints
+    # `help` only in the list of `previously redact --help`, and `description`
+    # only in the form's own `--help`, which is where somebody about to erase
+    # looks.
     targets = parser.add_subparsers(dest="target", required=True)
-    event = targets.add_parser("event", help="erase the payload and the content of every unit")
+
+    def form(name: str, sentence: str) -> argparse.ArgumentParser:
+        return targets.add_parser(name, help=sentence, description=sentence)
+
+    event = form("event", "erase the payload and the content of every unit")
     event.add_argument("event_id", type=int)
     event.add_argument("--reason", required=True, help="why; it stays in the log for good")
-    units = targets.add_parser(
-        "units", help="erase the content of the named units; the payload of the event stays"
-    )
+    units = form("units", "erase the content of the named units; the payload of the event stays")
     units.add_argument("event_id", type=int)
     units.add_argument("seqs", type=int, nargs="+", metavar="SEQ")
     units.add_argument("--reason", required=True, help="why; it stays in the log for good")
-    blob = targets.add_parser("blob", help="erase a blob for every event that uses it")
+    blob = form("blob", "erase a blob for every event that uses it")
     blob.add_argument("address", metavar="HASH", help="the SHA-256 of the content, in hex")
     blob.add_argument("--reason", required=True, help="why; it stays in the log for good")
 
@@ -943,15 +950,25 @@ def _cmd_redact(args: argparse.Namespace) -> int:
         catching_up = _catch_up_after(storage)
     left = [step for step in (deletion, catching_up) if step is not None]
     if left:
+        # The units are erased whether or not what follows is finished, and
+        # the payload stands either way, so the notice comes beside the
+        # sentence of the unfinished redaction too.
+        _notice_payload(result, args)
         raise _unfinished(result.redaction_id, ", and ".join(left))
     print(_redacted_line(result))
     for seq in result.skipped_units:
         print(f"unit {seq} was already erased", file=sys.stderr)
     for address, users in result.kept_blobs.items():
         print(_kept_line(address, users), file=sys.stderr)
+    _notice_payload(result, args)
+    return 0
+
+
+def _notice_payload(result: Redacted, args: argparse.Namespace) -> None:
+    """The notice of `_payload_line`, on standard error, when the payload of
+    the target still stands after a redaction of units."""
     if result.payload_stands:
         print(_payload_line(args.event_id), file=sys.stderr)
-    return 0
 
 
 def _cmd_project(_args: argparse.Namespace) -> int:

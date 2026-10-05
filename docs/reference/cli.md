@@ -142,6 +142,7 @@ Error: the redaction is recorded as event 42, but it is not finished: projection
 ```
 
 The text in parentheses is the error that stopped it.
+For `redact units`, the notice that the payload stays, described below, can come before that sentence.
 When several blobs are still to delete, the first form names them all, separated by a comma and a space, as `blobs <hashes> are not deleted from the store`.
 `redact` attempts the catch-up whether or not the deletion failed.
 When both fail, the sentence names the deletion first and then the catch-up, joined by `, and `, and ends in the same advice.
@@ -163,7 +164,7 @@ blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 stays in t
 blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 stays in the store: events 7, 9 still use it
 ```
 
-When the payload of the target still stands after `redact units`, one notice goes to standard error, last, whether the redaction was written or the units were already covered:
+When the payload of the target still stands after `redact units`, one notice goes to standard error, whether the redaction was written or the units were already covered: last on success, and before the sentence of an unfinished redaction, whose exit code stays 2:
 
 ```text
 the payload of event 7 is not erased and may hold the same text; `previously redact event 7` erases it
