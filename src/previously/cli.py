@@ -23,14 +23,15 @@ from previously.core.anchor import format_anchor
 from previously.core.anchor import parse_anchors
 from previously.core.append import append
 from previously.core.blob import fetch_blob
-from previously.core.blob import reason_of
 from previously.core.blob import store_blob
 from previously.core.chain import read_references
 from previously.core.errors import AddressMismatch
 from previously.core.errors import CannotOpen
 from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
+from previously.core.errors import reason_of
 from previously.core.errors import RedactionRefused
+from previously.core.errors import SinkUnwritable
 from previously.core.errors import SourceUnreadable
 from previously.core.hashing import is_address
 from previously.core.projection import catch_up
@@ -616,12 +617,23 @@ def _fetch_to(store: BlobStore, keys: KeyProvider, address: str, target: str) ->
         raise InvalidPayload(f"cannot write {target}: {reason_of(error)}") from error
     kept = False
     try:
-        with os.fdopen(descriptor, "wb") as sink:
+        # Unbuffered, so that a write that fails does so inside `fetch_blob`,
+        # where `unseal` names it, and not at the close, after `fetch_blob`
+        # has returned a size. Measured on 2026-10-05 with a file size limit:
+        # buffered, `test_blob_get_whose_output_cannot_be_written_leaves_nothing`
+        # stayed green with the translation of `SinkUnwritable` below taken
+        # out, so the failure had come from the flush at the close.
+        with os.fdopen(descriptor, "wb", buffering=0) as sink:
             size = fetch_blob(store, keys, address, sink)
         if size is not None:
             os.replace(part, target)
             kept = True
+    except SinkUnwritable as error:
+        # A write into the temporary file failed while the content passed
+        # through; `fetch_blob` returns no size then.
+        raise InvalidPayload(f"cannot write {target}: {error.reason}") from error
     except OSError as error:
+        # Closing the temporary file, or renaming it onto the target.
         raise InvalidPayload(f"cannot write {target}: {reason_of(error)}") from error
     finally:
         if not kept:

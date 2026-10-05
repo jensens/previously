@@ -94,6 +94,25 @@ class SourceUnreadable(BlobError):
         self.reason = reason
 
 
+class SinkUnwritable(BlobError):
+    """What sealing or opening writes into could not take it: the sink
+    raised an `OSError`. `reason` is the system's description of the
+    failure, which a caller that knows the sink's name puts beside it."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(f"the output cannot be written: {reason}")
+        self.reason = reason
+
+
 class AddressMismatch(BlobError):
     """An object opened, and its plaintext is not the content its address
     names. The bytes written so far are to be thrown away."""
+
+
+def reason_of(error: OSError) -> str:
+    """The system's description of an `OSError`, for the sentence that
+    names it: `strerror` when it has an error number, its own text when it
+    was raised without one, and its class when it has neither. An `OSError`
+    raised without an error number has `strerror` set to `None`, which would
+    print as the word."""
+    return error.strerror or str(error) or type(error).__name__

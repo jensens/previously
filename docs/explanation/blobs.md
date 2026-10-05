@@ -36,6 +36,8 @@ The address isn't protected the same way: `age` doesn't bind a ciphertext to the
 So the reader hashes the plaintext as it comes out of the opening, and compares the result with the address at the end.
 A ciphertext put under a foreign address, by mistake or on purpose, opens and then fails that comparison.
 The comparison comes at the end, so the plaintext has already passed into the caller's sink by then; whoever fetches into a file writes into a temporary one and renames it only once the fetch has returned.
+A fetch whose writing failed doesn't return, and so nothing is renamed.
+That doesn't rest on the sealing library: measured on 2026-10-05, `pyrage` returned as though it had sealed when the one write of a 12-byte content failed, so sealing and opening watch every read and write themselves.
 
 ## Why `age` and not a custom scheme
 

@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from previously.core.errors import AddressMismatch
 from previously.core.errors import BlobError
 from previously.core.errors import CannotOpen
+from previously.core.errors import reason_of
+from previously.core.errors import SinkUnwritable
 from previously.core.errors import SourceUnreadable
 from previously.core.sealing import HashingSink
 from previously.core.sealing import seal
@@ -29,7 +31,6 @@ import tempfile
 if TYPE_CHECKING:
     from previously.contract.blobs import BlobStore
     from previously.contract.blobs import ByteSink
-    from previously.contract.blobs import ByteSource
     from previously.contract.blobs import KeyProvider
     from previously.contract.blobs import SeekableSource
 
@@ -98,91 +99,29 @@ def store_blob(store: BlobStore, source: SeekableSource, *, recipient: str) -> S
     if store.stat(address) is not None:
         return Stored(address=address, size=size, uploaded=False)
     with ExitStack() as files:
-        # Making the temporary file and rewinding it; the writes into it are
-        # watched in `seal_into`, because `pyrage` hides them. The upload
+        # Making the temporary file, sealing into it and rewinding it. A
+        # failed write into it comes out of `seal` as `SinkUnwritable`, which
+        # `seal` raises even where `pyrage` would have returned. The upload
         # stands outside: it reads the file inside the store's client, and
         # what fails there is the store's to name. That the client turns
         # every failure of its own into a `botocore` error, which the store
         # translates, is assumed and not measured; an `OSError` it let
         # through would leave here as it is.
+        #
+        # Unbuffered, so that every write reaches the file inside `seal`,
+        # where it is watched, and none is left for the close to flush:
+        # buffered, a failed flush at the close replaced the error with a
+        # bare `OSError`, measured on 2026-10-05 with a file size limit.
         try:
-            sealed = files.enter_context(tempfile.TemporaryFile())
-            seal_into(source, sealed, recipient)
+            sealed = files.enter_context(tempfile.TemporaryFile(buffering=0))
+            seal(source, sealed, recipient)
             sealed.seek(0)
         except OSError as error:
             raise BlobError(f"cannot write a temporary file: {reason_of(error)}") from None
+        except SinkUnwritable as error:
+            raise BlobError(f"cannot write a temporary file: {error.reason}") from None
         store.put(address, sealed, key_id=recipient.lower())
     return Stored(address=address, size=size, uploaded=True)
-
-
-def reason_of(error: OSError) -> str:
-    """The system's description of an `OSError`, or its class when it has
-    none: an `OSError` raised without an error number has `strerror` set to
-    `None`, which would print as the word.
-
-    Public because the command line uses the same rule for the errors it
-    names itself."""
-    return error.strerror or type(error).__name__
-
-
-class _WatchedSource:
-    """A source that remembers the `OSError` its `read` raised."""
-
-    def __init__(self, source: ByteSource) -> None:
-        self._source = source
-        self.failure: OSError | None = None
-
-    def read(self, size: int = -1, /) -> bytes:
-        try:
-            return self._source.read(size)
-        except OSError as error:
-            self.failure = error
-            raise
-
-
-class _WatchedSink:
-    """A sink that remembers the `OSError` its `write` raised."""
-
-    def __init__(self, sink: ByteSink) -> None:
-        self._sink = sink
-        self.failure: OSError | None = None
-
-    def write(self, data: bytes, /) -> int:
-        try:
-            return self._sink.write(data)
-        except OSError as error:
-            self.failure = error
-            raise
-
-
-def seal_into(source: ByteSource, sink: ByteSink, recipient: str) -> None:
-    """The sealing pass, with what failed named by kind: the source as
-    `SourceUnreadable`, the sink — the temporary file — as a `BlobError`
-    that says so ({ref}`blobs`).
-
-    Both are watched, because `pyrage` hides which one it was. It wraps an
-    `OSError` of either into its own error, with the original's name and
-    message as text and no cause: measured on 2026-10-05, `cannot seal:
-    OSError: [Errno 5] Input/output error` for a source, and `[Errno 28] No
-    space left on device` the same way for a sink. And for a content of
-    12 bytes, a sink whose one write failed made `pyrage` return as though
-    it had sealed — no error at all, and a temporary file without the sealed
-    form, which would have been uploaded. So the sink is asked after a
-    return as well as after an error.
-
-    Public because a test hands it a sink of its own that fails.
-    """
-    watched_source = _WatchedSource(source)
-    watched_sink = _WatchedSink(sink)
-    try:
-        seal(watched_source, watched_sink, recipient)
-    except BlobError:
-        if watched_source.failure is not None:
-            raise SourceUnreadable(reason_of(watched_source.failure)) from None
-        if watched_sink.failure is None:
-            raise
-    if watched_sink.failure is not None:
-        raise BlobError(f"cannot write a temporary file: {reason_of(watched_sink.failure)}")
 
 
 def fetch_blob(store: BlobStore, keys: KeyProvider, address: str, sink: ByteSink) -> int | None:
@@ -203,11 +142,13 @@ def fetch_blob(store: BlobStore, keys: KeyProvider, address: str, sink: ByteSink
     identity for its key, or when `age` cannot open it — an identity of
     another key included; `InvalidKey` when what the key source holds for
     the key is not an age identity; `AddressMismatch` when the plaintext is
-    not the content the address names. A store error passes through as it
-    is, a stream that breaks off included, and so does an error of the key
-    source — `DirectoryKeys` raises `IdentityUnreadable` for an identity file
-    that is there and cannot be read. The stream is closed on every path,
-    whatever is raised.
+    not the content the address names; `SinkUnwritable` when `sink` fails
+    with an `OSError`, and then no size is returned, whatever the digest of
+    what got through says. A store error passes through as it is, a stream
+    that breaks off included, even at its first read, and so does an error
+    of the key source — `DirectoryKeys` raises `IdentityUnreadable` for an
+    identity file that is there and cannot be read. The stream is closed on
+    every path, whatever is raised.
     """
     found = store.get(address)
     if found is None:

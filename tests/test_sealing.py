@@ -10,11 +10,14 @@ the tree: the repository is public.
 from previously.core.errors import BlobError
 from previously.core.errors import CannotOpen
 from previously.core.errors import InvalidKey
+from previously.core.errors import SinkUnwritable
+from previously.core.errors import SourceUnreadable
 from previously.core.sealing import HashingSink
 from previously.core.sealing import recipient_of
 from previously.core.sealing import seal
 from previously.core.sealing import unseal
 
+import errno
 import hashlib
 import io
 import pytest
@@ -152,6 +155,71 @@ def test_a_source_that_breaks_off_while_sealing_is_a_blob_error(age_identity: st
         seal(BreaksOff(), io.BytesIO(), recipient_of(age_identity))
 
 
+class Full:
+    """A sink that fails the way a full disk does, at every write."""
+
+    def write(self, data: bytes, /) -> int:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+
+class StoreBrokeOff(Exception):
+    """What a store's stream raises when it breaks off — not an `OSError`."""
+
+
+class BreaksOffAt:
+    """A source that gives `data` for `reads` reads and then raises
+    `StoreBrokeOff`."""
+
+    def __init__(self, data: bytes, reads: int) -> None:
+        self._inner = io.BytesIO(data)
+        self._left = reads
+
+    def read(self, size: int = -1, /) -> bytes:
+        if self._left == 0:
+            raise StoreBrokeOff("the store broke off")
+        self._left -= 1
+        return self._inner.read(size)
+
+
+# Ruling T6-c of the 2026-10-04 stage 1c plan. Measured on 2026-10-05 against
+# `pyrage` 1.4.0, before `seal` and `unseal` watched for themselves: with a
+# sink whose `write` raises, `encrypt_io` *returned* for a content of 12
+# bytes (one write call) and raised its own `EncryptError` for 70,000 bytes
+# and 1 MiB; `decrypt_io` let the sink's `OSError` through at all three
+# sizes. A source that failed at the first read of `decrypt_io` came back as
+# `DecryptError`, whatever it raised; at a later read it passed through.
+SIZES = pytest.mark.parametrize("size", [12, 70_000], ids=["12-bytes", "70000-bytes"])
+
+
+@SIZES
+def test_seal_into_a_sink_that_fails_does_not_return(age_identity: str, size: int) -> None:
+    with pytest.raises(SinkUnwritable) as caught:
+        seal(io.BytesIO(b"x" * size), Full(), recipient_of(age_identity))
+    assert caught.value.reason == "No space left on device"
+
+
+@SIZES
+def test_unseal_into_a_sink_that_fails_does_not_return(age_identity: str, size: int) -> None:
+    sealed = _sealed(b"x" * size, recipient_of(age_identity))
+    with pytest.raises(SinkUnwritable) as caught:
+        unseal(io.BytesIO(sealed), Full(), age_identity)
+    assert caught.value.reason == "No space left on device"
+
+
+def test_a_source_that_fails_is_told_apart_from_a_sink(age_identity: str) -> None:
+    """The source's `OSError` is `SourceUnreadable` in both directions, and
+    what a store's stream raises comes through as itself even at the first
+    read, where `pyrage` would have called it a file it cannot open."""
+    with pytest.raises(SourceUnreadable):
+        seal(BreaksOff(), io.BytesIO(), recipient_of(age_identity))
+    with pytest.raises(SourceUnreadable):
+        unseal(BreaksOff(), io.BytesIO(), age_identity)
+    sealed = _sealed(b"x" * 200_000, recipient_of(age_identity))
+    for reads in (0, 1, 3):
+        with pytest.raises(StoreBrokeOff):
+            unseal(BreaksOffAt(sealed, reads), io.BytesIO(), age_identity)
+
+
 def test_the_hashing_sink_counts_and_hashes_what_passes() -> None:
     target = OnlyWrite()
     sink = HashingSink(target)
@@ -161,3 +229,35 @@ def test_the_hashing_sink_counts_and_hashes_what_passes() -> None:
     assert sink.size == 6
     assert sink.hexdigest() == hashlib.sha256(b"abcdef").hexdigest()
     assert bytes(target.data) == b"abcdef"
+
+
+class Takes:
+    """A sink that takes at most `most` bytes per call and says so in the
+    count it returns, the way an unbuffered file may."""
+
+    def __init__(self, most: int) -> None:
+        self.most = most
+        self.data = bytearray()
+
+    def write(self, data: bytes, /) -> int:
+        taken = bytes(data[: self.most])
+        self.data.extend(taken)
+        return len(taken)
+
+
+@pytest.mark.parametrize("size", [12, 70_000], ids=["12-bytes", "70000-bytes"])
+def test_a_sink_that_takes_less_gets_the_rest_and_one_that_takes_nothing_fails(
+    age_identity: str, size: int
+) -> None:
+    """Ruling T6-c of the 2026-10-04 stage 1c plan: a short write is
+    finished, not lost, whatever `pyrage` makes of the count, in both
+    directions; a sink that takes nothing is `SinkUnwritable`."""
+    content = b"y" * size
+    sealed = Takes(7)
+    seal(io.BytesIO(content), sealed, recipient_of(age_identity))
+    opened = Takes(7)
+    unseal(io.BytesIO(bytes(sealed.data)), opened, age_identity)
+    assert bytes(opened.data) == content
+    with pytest.raises(SinkUnwritable) as caught:
+        seal(io.BytesIO(content), Takes(0), recipient_of(age_identity))
+    assert caught.value.reason == "the output took no bytes"

@@ -1,6 +1,7 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from contextlib import contextmanager
 from datetime import datetime
 from datetime import UTC
 from previously.cli import COMMANDS
@@ -34,6 +35,7 @@ import time
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from collections.abc import Generator
     from collections.abc import Sequence
     from previously.storage.s3 import S3BlobStore
     from sqlalchemy import Engine
@@ -1832,6 +1834,72 @@ def test_blob_get_that_cannot_write_is_one_sentence_and_leaves_nothing(
     assert _single_line(err) == f"Error: cannot write {target}: {reason}"
     expected = [target] if failure == "target-a-directory" else []
     assert list(directory.iterdir()) == expected
+
+
+@contextmanager
+def _file_size_limit(limit: int) -> Generator[None]:
+    """A real limit on the size of every file this process writes, for the
+    duration of one command: a write past it fails with `EFBIG`, `File too
+    large`. CPython ignores the `SIGXFSZ` the kernel would send instead
+    (`signal.getsignal(signal.SIGXFSZ)` is `SIG_IGN`, read on 2026-10-05).
+    Only the soft limit moves, and it is put back."""
+    import resource
+
+    soft, hard = resource.getrlimit(resource.RLIMIT_FSIZE)
+    resource.setrlimit(resource.RLIMIT_FSIZE, (limit, hard))
+    try:
+        yield
+    finally:
+        resource.setrlimit(resource.RLIMIT_FSIZE, (soft, hard))
+
+
+_LARGE = 1024 * 1024
+_LIMIT = 256 * 1024
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.skipif(sys.platform != "linux", reason="RLIMIT_FSIZE as measured on Linux")
+def test_blob_get_whose_output_cannot_be_written_leaves_nothing(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Ruling T6-c of the 2026-10-04 stage 1c plan: the temporary output
+    fills up while the content passes into it — a file size limit below
+    the blob's size, for real. One sentence, exit code 2, no target, and no
+    temporary file; `fetch_blob` returns no size for bytes that never
+    arrived."""
+    content = os.urandom(_LARGE)
+    assert main(_attach("a", _file(tmp_path, "large.bin", content))) == 0
+    capsys.readouterr()
+    directory = tmp_path / "out"
+    directory.mkdir()
+    target = directory / "large.bin"
+    with _file_size_limit(_LIMIT):
+        code = main(["blob", "get", hashlib.sha256(content).hexdigest(), "--output", str(target)])
+    out, err = capsys.readouterr()
+    assert code == 2
+    assert out == ""
+    assert _single_line(err) == f"Error: cannot write {target}: File too large"
+    assert list(directory.iterdir()) == []
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.skipif(sys.platform != "linux", reason="RLIMIT_FSIZE as measured on Linux")
+def test_a_sealed_form_that_cannot_be_written_appends_nothing(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same limit while the attachment is sealed into its temporary
+    file: one sentence, exit code 2, nothing appended and nothing stored."""
+    attachment = _file(tmp_path, "large.bin", os.urandom(_LARGE))
+    with _file_size_limit(_LIMIT):
+        code = main(_attach("a", attachment))
+    out, err = capsys.readouterr()
+    assert code == 2
+    assert out == ""
+    assert _single_line(err) == "Error: cannot write a temporary file: File too large"
+    assert _events(blobs.engine) == 0
+    assert _bucket(blobs.store) == []
 
 
 @pytest.mark.db
