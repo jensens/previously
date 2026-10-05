@@ -12,6 +12,13 @@ ARG PREVIOUSLY_VERSION
 
 WORKDIR /app
 ENV PATH="/app/.venv/bin:$PATH"
+# Compiled at build time, by both installs below: the venv belongs to root, so
+# the user the image runs as cannot write a `__pycache__`, and without this
+# every command compiled its imports again at every start. Measured on
+# 2026-10-05, the median of three runs inside the container: `previously
+# --help` took 1.70 s without it and 0.83 s with it, for an image of 332 MB
+# instead of 313 MB.
+ENV UV_COMPILE_BYTECODE=1
 
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
@@ -25,11 +32,27 @@ RUN --mount=type=bind,from=wheels,target=/wheels \
 
 RUN groupadd --system --gid 1000 previously \
     && useradd --system --uid 1000 --gid 1000 --home-dir /app --no-create-home --shell /usr/sbin/nologin previously
-USER previously
+# By number, not by name: the kubelet cannot tell whether a name is root, and
+# refuses to start a pod with `runAsNonRoot` and no `runAsUser` on an image
+# whose user is a name. The name above stays, so `id` still says `previously`.
+USER 1000:1000
 
-LABEL org.opencontainers.image.source="https://github.com/jensens/previously" \
+# The commit and the moment of the release, passed in by the release
+# workflow. Without them, the two labels stay empty rather than keep the
+# values of the base image, which name a commit and a day of `uv`.
+ARG PREVIOUSLY_REVISION=""
+ARG PREVIOUSLY_CREATED=""
+
+# Every label the base image sets is set here as well, so that none of them
+# describes `uv`.
+LABEL org.opencontainers.image.title="previously" \
+      org.opencontainers.image.description="An append-only knowledge store for project histories" \
+      org.opencontainers.image.url="https://github.com/jensens/previously" \
+      org.opencontainers.image.source="https://github.com/jensens/previously" \
       org.opencontainers.image.licenses="AGPL-3.0-or-later" \
-      org.opencontainers.image.version="${PREVIOUSLY_VERSION}"
+      org.opencontainers.image.version="${PREVIOUSLY_VERSION}" \
+      org.opencontainers.image.revision="${PREVIOUSLY_REVISION}" \
+      org.opencontainers.image.created="${PREVIOUSLY_CREATED}"
 
 ENTRYPOINT ["previously"]
 CMD ["--help"]

@@ -39,10 +39,10 @@ done
 
 # Every container but the one that checks the default user runs as the host
 # user. What it writes into $WORK then belongs to the host user, which can read
-# and remove all of it whatever its uid is (a GitHub runner is 1001): a file the
-# container wrote as uid 1000 would be unreadable for `cmp` (`blob get` writes
-# mode 0600) and the key could not be removed. It also proves the image works
-# under a foreign uid, as it does in Kubernetes with `runAsUser`.
+# and remove all of it whatever its uid is (a GitHub runner is 1001). As uid
+# 1000 on a host with another uid, the container could not write into $WORK at
+# all, which `mktemp -d` makes mode 0700 for the host user. It also proves the
+# image works under a foreign uid, as it does in Kubernetes with `runAsUser`.
 run() {
   docker run --rm --user "$(id -u):$(id -g)" --network "$NET" -v "$WORK:/work" -w /work \
     -e PREVIOUSLY_DSN="postgresql+psycopg://previously:previously@$PG:5432/previously" \

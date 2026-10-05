@@ -5,7 +5,7 @@
 #
 #   push to main       gates -> build -> publish-testpypi
 #   manual start       the same, when started on main; elsewhere build only
-#   published release  gates -> tag -> build -> publish-pypi
+#   published release  gates and tag, side by side -> build -> publish-pypi
 #                      -> image (amd64 and arm64) -> manifest
 #
 # A tag alone publishes nothing, and neither does a merge: only publishing the
@@ -31,13 +31,19 @@ on:
     types: [published]
   workflow_dispatch:
 
-# One run per ref at a time, and none cancelled by a newer one: a run cut off
-# halfway could leave a version on PyPI without its image.
+# One run per ref at a time, and a running one is never cancelled by a newer
+# one: a run cut off halfway could leave a version on PyPI without its image.
+# A run that still waits can be: GitHub keeps one waiting run per group, and
+# a newer one replaces it. A release has a ref of its own, its tag, so that
+# touches only pushes and manual starts on a branch, where the newer run
+# builds the newer tree.
 concurrency:
   group: release-${{ github.ref }}
   cancel-in-progress: false
 
-# The default for every job; the jobs that publish widen it for themselves.
+# The default for every job. A job that sets `permissions:` of its own
+# replaces this default instead of adding to it, so each such job names all
+# it needs, `contents: read` included where it checks out.
 permissions:
   contents: read
 
@@ -80,8 +86,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           # hatch-vcs reads the version from the tags, so it needs the
-          # history: on a release the tag itself, on main a development
-          # version such as 0.1.0a2.dev3 counted from the last tag.
+          # history: on a release the tag itself; on main a development
+          # version, `0.1.devN` before the first tag (`0.1.dev178`, measured
+          # on 2026-10-05), and after it one counted from the last tag.
           fetch-depth: 0
 
       - name: Set up uv and Python 3.14
@@ -226,8 +233,13 @@ jobs:
           push: true
           platforms: ${{ matrix.platform }}
           tags: ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}-${{ steps.platform.outputs.suffix }}
+          # The revision and the moment the labels name: the commit of the
+          # release and the time it was published, both fixed for the
+          # release, so a rerun labels the image the same way.
           build-args: |
             PREVIOUSLY_VERSION=${{ steps.version.outputs.version }}
+            PREVIOUSLY_REVISION=${{ github.sha }}
+            PREVIOUSLY_CREATED=${{ github.event.release.published_at }}
 
       - name: Set up uv
         # For `uv export` in the smoke test, which reads `uv.lock` and needs no
@@ -260,7 +272,11 @@ jobs:
           name: digests-${{ steps.platform.outputs.suffix }}
           path: ${{ runner.temp }}/digests/*
           if-no-files-found: error
-          retention-days: 1
+          # A week: `manifest` reads both digests, also when it is rerun on
+          # its own, days later, after a failure. Expired, they are gone, and
+          # the rerun fails with the package on PyPI and no image. The files
+          # are empty, so keeping them costs nothing.
+          retention-days: 7
 
   manifest:
     needs: image
