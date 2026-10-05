@@ -4,12 +4,17 @@
 """The store protocols: what `core` may ask of a store, and nothing more.
 
 `LogStore` is what the modules of `core` that write or read the log call —
-thirteen methods, counted on 2026-10-05 as the distinct names that
-`grep -ohE '(storage|log)\\.[a-z_]*\\(' FILES | sort -u` prints, with FILES
+thirteen methods, counted on 2026-10-05, after the final fixes of stage 1c,
+as the lines that
+`grep -ohE '(storage|log)\\.[a-z_]*\\(' FILES | sed 's/.*\\.//' | sort -u`
+prints, with FILES
 the five modules that name `LogStore` today — `append.py`, `verify.py`,
 `redact.py`, `redaction.py` and `projection/worker.py` under
 `src/previously/core/` — and not copied from the method list of the
-implementation. It was eight until the chain
+implementation. Without the `sed` stage, as the command stood here until
+then, it prints 21 lines, a name once for each of the two prefixes it is
+called through, and the claim was a count of those by hand. It was eight
+until the chain
 check took `snapshot` instead of `begin` for its reads, and `append` still
 takes `begin`, so both stay; it was nine until stage 1c, whose redactions
 are read with `read_by_kind`, and ten until `verify` and `redact` read the
