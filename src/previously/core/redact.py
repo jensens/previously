@@ -92,12 +92,14 @@ class Redacted:
     # a second call finish a deletion the first did not get to.
     obsolete_blobs: tuple[str, ...] = ()
     kept_blobs: Mapping[str, tuple[int, ...]] = field(default_factory=dict[str, tuple[int, ...]])
-    # Whether the payload of the target still stands after an erasure of
-    # units, read from the row the erasure locked. A redaction of units
-    # leaves the payload as it is, and the payload can hold the same text:
-    # `previously append --text` writes it into both. That is a fact about
-    # the target, and the command line says what follows from it.
-    payload_stands: bool = False
+    # Whether the payload of the target holds the wording of a unit this
+    # erasure of units erased: some string in it, at any depth, contains the
+    # content of one of those units. A redaction of units leaves the payload
+    # as it is, so that wording can still be read there afterwards. Decided
+    # under the lock, from the units as they were read before they were
+    # erased; that is a fact about the target, and the command line says what
+    # follows from it.
+    payload_holds_wording: bool = False
 
 
 def _check_input(reason: str, recorded_at: datetime) -> None:
@@ -205,6 +207,22 @@ def _seqs[Conn](log: LogStore[Conn], conn: Conn, event_id: int) -> list[int]:
     return [unit.seq for unit in log.units_by_event(conn, [event_id]).get(event_id, [])]
 
 
+def _holds_any(value: object, wordings: Sequence[str]) -> bool:
+    """Whether a string anywhere in `value` — nested objects and arrays
+    included — contains one of `wordings`. Only the values are searched: a
+    key is limited to `^[a-z][a-z0-9_]*$` ({ref}`payload-range`), and it
+    names a field rather than holding what somebody wrote."""
+    if isinstance(value, str):
+        return any(wording in value for wording in wordings)
+    if isinstance(value, Mapping):
+        return any(
+            _holds_any(item, wordings) for item in cast("Mapping[str, object]", value).values()
+        )
+    if isinstance(value, list):
+        return any(_holds_any(item, wordings) for item in cast("list[object]", value))
+    return False
+
+
 def redact_event[Conn](
     log: LogStore[Conn],
     eraser: RedactionStore[Conn],
@@ -306,10 +324,20 @@ def redact_units[Conn](
             raise RedactionRefused(
                 f"event {event_id} names hash format {target.hash_version}, which is not known"
             )
-        present = set(_seqs(log, conn, event_id))
+        units = log.units_by_event(conn, [event_id]).get(event_id, [])
+        present = {unit.seq for unit in units}
         for seq in wanted:
             if seq not in present:
                 raise RedactionRefused(f"event {event_id} has no unit {seq}")
+        # The wording of the named units, read before they are erased below.
+        # A unit already erased has no content left to compare, so on a call
+        # that finds every named unit covered there is nothing to look for,
+        # and `payload_holds_wording` is `False` although the payload may
+        # still hold that wording: the gone content cannot be compared, and
+        # the call that erased it is the one that could say so. An empty content
+        # is left out too: every string contains it, and it holds nothing that
+        # could still be read.
+        wordings = [unit.content for unit in units if unit.seq in wanted and unit.content]
         index = read_index(log, conn)
         covering = {seq: index.of_unit(event_id, seq) for seq in wanted}
         skipped = tuple(seq for seq, by in covering.items() if by is not None)
@@ -324,7 +352,7 @@ def redact_units[Conn](
             redaction_id=redaction_id,
             written=bool(fresh),
             skipped_units=skipped,
-            payload_stands=target.payload is not None,
+            payload_holds_wording=_holds_any(target.payload, wordings),
         )
 
     return _retrying(log, once)

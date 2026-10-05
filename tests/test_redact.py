@@ -11,6 +11,7 @@ from previously.contract.types import Anchor
 from previously.contract.types import BlobRef
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
+from previously.contract.types import RawUnit
 from previously.core.append import append
 from previously.core.append import MAX_RETRIES
 from previously.core.chain import link
@@ -159,7 +160,7 @@ def test_redacting_units_leaves_the_others_attested(db: Engine) -> None:
 
     result = redact_units(storage, storage, 1, [2], reason="a price", recorded_at=LATER)
 
-    assert result == Redacted(redaction_id=2, written=True, payload_stands=True)
+    assert result == Redacted(redaction_id=2, written=True, payload_holds_wording=True)
     assert _unit_state(db, 1) == [
         (1, False, False, False),
         (2, True, True, False),
@@ -227,34 +228,89 @@ def test_redacting_units_again_skips_what_is_covered(db: Engine) -> None:
 
     result = redact_units(storage, storage, 1, [3, 2], reason="more", recorded_at=LATER)
 
-    assert result == Redacted(redaction_id=3, written=True, skipped_units=(2,), payload_stands=True)
+    assert result == Redacted(
+        redaction_id=3, written=True, skipped_units=(2,), payload_holds_wording=True
+    )
     newest = _rows(storage)[-1]
     assert newest.payload is not None
     assert parse(newest.id, newest.payload).units == (3,)
     assert verify(storage) == []
 
+    # Both units are erased, so there is no wording left to compare.
     again = redact_units(storage, storage, 1, [2, 3], reason="all of it", recorded_at=LATER)
-    assert again == Redacted(
-        redaction_id=3, written=False, skipped_units=(2, 3), payload_stands=True
-    )
+    assert again == Redacted(redaction_id=3, written=False, skipped_units=(2, 3))
     assert len(_rows(storage)) == 3
 
 
 @pytest.mark.db
-def test_redacting_units_says_whether_the_payload_still_stands(db: Engine) -> None:
-    """A redaction of units leaves the payload, and says so; once a
-    redaction of the whole event has erased the payload, a redaction of its
-    units says it does not stand, on the path that writes nothing as well.
-    Measured on 2026-10-05 with `payload_stands` always `False`: the first
-    assertion failed."""
+def test_redacting_units_says_whether_the_payload_holds_the_wording(db: Engine) -> None:
+    """A redaction of units leaves the payload, and says when the payload
+    holds the wording of a unit it erased; once a redaction of the whole
+    event has erased the payload, a redaction of its units says it does
+    not, on the path that writes nothing as well. Measured on 2026-10-05
+    with `payload_holds_wording` always `False`: the first assertion failed;
+    always `True`: the second."""
     storage = PostgresStorage(db)
     append(storage, [_message("m"), _message("n")], recorded_at=NOW)
 
-    assert redact_units(storage, storage, 1, [1], reason="r", recorded_at=LATER).payload_stands
+    assert redact_units(
+        storage, storage, 1, [1], reason="r", recorded_at=LATER
+    ).payload_holds_wording
 
     redact_event(storage, storage, 2, reason="r", recorded_at=LATER)
     covered = redact_units(storage, storage, 2, [1], reason="r", recorded_at=LATER)
-    assert (covered.written, covered.payload_stands) == (False, False)
+    assert (covered.written, covered.payload_holds_wording) == (False, False)
+
+
+@pytest.mark.parametrize(
+    ("units", "payload", "seq", "holds"),
+    [
+        pytest.param(split_plaintext(TEXT), {}, 2, False, id="nothing-but-evidence"),
+        pytest.param(
+            split_plaintext(TEXT), {"subject": "Please confirm."}, 2, True, id="a-whole-string"
+        ),
+        pytest.param(
+            split_plaintext(TEXT),
+            {"thread": {"quotes": ["> Please confirm. Thanks"]}},
+            2,
+            True,
+            id="nested-in-a-list",
+        ),
+        pytest.param(
+            split_plaintext(TEXT),
+            {"thread": {"quotes": ["> Please confirm."]}},
+            1,
+            False,
+            id="another-unit",
+        ),
+        pytest.param(split_plaintext("confirm\n\nregards"), {"confirm": 1}, 1, False, id="a-key"),
+        pytest.param(
+            (RawUnit(seq=1, content=""), RawUnit(seq=2, content="kept")),
+            {"subject": "anything"},
+            1,
+            False,
+            id="an-empty-unit",
+        ),
+    ],
+)
+@pytest.mark.db
+def test_the_payload_holds_the_wording_only_where_a_string_contains_it(
+    db: Engine, units: tuple[RawUnit, ...], payload: dict[str, object], seq: int, holds: bool
+) -> None:
+    """Any string at any depth, objects and arrays included, that contains
+    the content of an erased unit; not the content of a unit left standing,
+    not a key, and not an empty content, which every string contains.
+    Measured on 2026-10-05 with the check replaced by `True`: the four
+    `False` cases failed; by `False`: the two `True` cases; with every unit
+    of the event compared instead of the erased ones: `another-unit`; with
+    the keys searched as well: `a-key`; with an empty content compared:
+    `an-empty-unit`."""
+    storage = PostgresStorage(db)
+    append(storage, [replace(_message("m"), units=units, payload=payload)], recorded_at=NOW)
+
+    result = redact_units(storage, storage, 1, [seq], reason="r", recorded_at=LATER)
+
+    assert result.payload_holds_wording is holds
 
 
 @pytest.mark.db

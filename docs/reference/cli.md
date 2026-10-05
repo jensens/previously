@@ -37,14 +37,14 @@ Submits one event and prints its `id`.
 | `--evidence` | No | `recollection` | `verbatim` or `recollection`. |
 | `--attach FILE` | No | — | A file to store as a blob and name at the event; may repeat. |
 
-The payload of the event is a JSON object that holds the whole `--text` under `text`, and the kind of evidence under `evidence`:
+`append` splits `--text` into units, one per paragraph, and the text stands in those units alone.
+The payload of the event is a JSON object that holds the kind of evidence under `evidence`, and nothing of the text:
 
 ```json
-{"evidence": "recollection", "text": "The client approved the new homepage design.\n\nNext milestone: content migration starts Monday."}
+{"evidence": "recollection"}
 ```
 
-The same text is split into units as well, so every event `append` writes carries its text twice: once in the payload, and once in its units.
-With `--attach`, the payload carries a third key, `blobs`; see *Attachments* below.
+With `--attach`, the payload carries a second key, `blobs`; see *Attachments* below.
 
 `append` prints exactly one line to standard output: the new event's `id`.
 Calling `append` again with the same `--source` and `--external-id` doesn't create a second event.
@@ -104,7 +104,8 @@ previously redact blob HASH --reason TEXT
 
 `redact event` erases the event's payload, and the content, speaker, timestamps and salt of every unit.
 `redact units` erases the content, speaker, timestamps and salt of the named units, and leaves the event's payload as it is.
-The payload of every event `append` writes holds the whole text under `text`, so for such an event `redact units` takes the units and leaves their wording readable in the payload, where `show` prints it; `redact event` erases it.
+A payload that holds the wording of a unit keeps it after `redact units`, readable where `show` prints the payload; `redact event` erases it.
+The payload of an event `append` writes holds no text, so for such an event `redact units` takes the wording with the units.
 The order of the `SEQ` arguments doesn't matter, and a `SEQ` given twice counts once.
 `redact blob` erases the blob for every event whose reference to it isn't erased yet; their payloads and units stay as they are.
 Every hash, the source key, the rows of the units and the rows of the blob register stay, and after `redact units` the payload as well.
@@ -152,7 +153,7 @@ Error: the redaction is recorded as event 42, but it is not finished: projection
 ```
 
 The text in parentheses is the error that stopped it.
-For `redact units`, the notice that the payload stays, described below, can come before that sentence.
+For `redact units`, the notice that the payload holds the wording of an erased unit, described below, can come before that sentence.
 When several blobs are still to delete, the first form names them all, separated by a comma and a space, as `blobs <hashes> are not deleted from the store`.
 `redact` attempts the catch-up whether or not the deletion failed.
 When both fail, the sentence names the deletion first and then the catch-up, joined by `, and `, and ends in the same advice.
@@ -174,13 +175,15 @@ blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 stays in t
 blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 stays in the store: events 7, 9 still use it
 ```
 
-When the payload of the target still stands after `redact units`, one notice goes to standard error, whether the redaction was written or the units were already covered: last on success, and before the sentence of an unfinished redaction, whose exit code stays 2:
+When a string anywhere in the payload of the target, at any depth, contains the content of a unit `redact units` erases, one notice goes to standard error: last on success, and before the sentence of an unfinished redaction, whose exit code stays 2:
 
 ```text
-the payload of event 7 is not erased and may hold the same text; `previously redact event 7` erases it
+the payload of event 7 is not erased and holds the wording of an erased unit; `previously redact event 7` erases it
 ```
 
-The notice says what the first paragraph of this section says: `append --text` writes the whole text into the payload as well as into the units, so after `redact units` the same text can still stand in the payload.
+`redact units` compares the content of the named units before it erases them, and compares the values of the payload, not its keys.
+A unit already erased has no content left to compare, so a call that finds every named unit covered prints no such notice.
+An empty unit is never compared.
 
 Seven refusals print one sentence to standard error, print nothing to standard output, write nothing, delete nothing, and return 2:
 

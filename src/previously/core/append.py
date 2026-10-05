@@ -223,6 +223,18 @@ def _check_units(units: Sequence[RawUnit]) -> None:
         seen_seqs.add(unit.seq)
         if "\x00" in unit.content:
             raise InvalidPayload(f"unit {unit.seq} contains a null byte")
+        # The unit digest would refuse a lone surrogate as well, but its
+        # canonicalisation names the path inside the digest's own header,
+        # `$.content`, and not the unit. Until `append --text` stopped copying
+        # the text into the payload, the payload check got there first and
+        # named `$.text`; now this check is the first, and it names the unit.
+        try:
+            unit.content.encode("utf-8")
+        except UnicodeEncodeError as error:
+            raise InvalidPayload(
+                f"unit {unit.seq}: not representable as UTF-8 ({error.reason}) — "
+                "a lone UTF-16 surrogate, for instance"
+            ) from error
         for field, value in (("start_ms", unit.start_ms), ("end_ms", unit.end_ms)):
             if value is not None and not (_UNIT_INT_MIN <= value <= _UNIT_INT_MAX):
                 raise InvalidPayload(

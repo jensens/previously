@@ -497,7 +497,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         ("On an empty log, one notice goes to standard error", 1),
         ("For each unit it skips, one notice goes to standard error", 1),
         ("one notice goes to standard error, naming the blob and those events", 2),
-        ("When the payload of the target still stands after `redact units`", 1),
+        ("When a string anywhere in the payload of the target", 1),
         ("`redact` prints one of two lines to standard output", 2),
         ("When no event names the blob, `blob get` returns 1", 1),
         ("When every reference to the blob is erased, `blob get` returns 1", 1),

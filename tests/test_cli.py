@@ -175,8 +175,11 @@ def test_show_displays_the_evidence_and_the_payload(
     output = capsys.readouterr().out
     assert "evidence=verbatim" in output
     # The payload as canonical-ish JSON with sorted keys, so the line is
-    # stable: jsonb does not give the keys back in the order written.
-    assert 'payload={"evidence": "verbatim", "text": "Hello"}' in output
+    # stable: jsonb does not give the keys back in the order written. The
+    # text is in the units alone: `append --text` adds nothing to the payload
+    # but the kind of evidence. Measured on 2026-10-05 with the text copied
+    # into the payload again: this comparison failed.
+    assert 'payload={"evidence": "verbatim"}\n  ¶1 Hello\n' in output
 
 
 @pytest.mark.db
@@ -526,7 +529,7 @@ def test_show_does_not_display_the_next_event_instead(
         ("--source", "\x00", "source contains a null byte"),
         ("--external-id", "\ud800", "external_id: not representable as UTF-8"),
         ("--external-id", "\x00", "external_id contains a null byte"),
-        ("--text", "\ud800", "$.text: string not representable as UTF-8"),
+        ("--text", "\ud800", "unit 1: not representable as UTF-8"),
         # The text becomes units before it becomes a payload, so the unit
         # check gets there first. That message is pinned in
         # `test_append.py::test_a_null_byte_in_a_unit_is_refused`; what is new
@@ -1262,23 +1265,38 @@ def test_redact_event_prints_the_redaction_and_show_names_it(
 
 def _payload_standing(event_id: int) -> str:
     return (
-        f"the payload of event {event_id} is not erased and may hold the same text; "
-        f"`previously redact event {event_id}` erases it\n"
+        f"the payload of event {event_id} is not erased and holds the wording of an "
+        f"erased unit; `previously redact event {event_id}` erases it\n"
+    )
+
+
+def _append_with_text_in_payload(engine: Engine, text_: str) -> None:
+    """Event 1, written through `core` with its text in the units and, which
+    `append --text` does not write, under `text` in the payload as well."""
+    append(
+        PostgresStorage(engine),
+        [
+            RawEvent(
+                source="cli",
+                external_id="a",
+                occurred_at=datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC),
+                evidence=Evidence.RECOLLECTION,
+                units=split_plaintext(text_),
+                payload={"text": text_},
+            )
+        ],
+        recorded_at=datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC),
     )
 
 
 @pytest.mark.db
-def test_redact_units_says_that_the_payload_stays(
+def test_redact_units_on_an_event_of_append_leaves_no_text_and_says_nothing(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """`append --text` writes the text into the payload as well as into the
-    units, so after `redact units` the text can still be read in the
-    payload. Standard output keeps its one line and the exit code stays 0;
-    the notice on standard error says so, on a rerun that finds the units
-    covered as well. The control: once `redact event` has erased the
-    payload, `redact units` on the same event prints no such notice.
-    Measured on 2026-10-05 with `payload_stands` always `False`: the first
-    comparison failed."""
+    """`append --text` writes the text into the units alone, so `redact
+    units` erases it, `show` no longer has it anywhere, and no notice about
+    the payload comes. Measured on 2026-10-05 with the text copied into the
+    payload again: the notice came."""
     _connect(db, monkeypatch)
     submit = ["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"]
     assert main(submit) == 0
@@ -1286,12 +1304,35 @@ def test_redact_units_says_that_the_payload_stays(
     capsys.readouterr()
 
     assert main(["redact", "units", "1", "2", "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("redacted by event 2\n", "")
+
+    assert main(["show", "1"]) == 0
+    output = capsys.readouterr().out
+    assert 'payload={"evidence": "recollection"}\n  ¶1 One\n  ¶2 <erased by event 2>\n' in output
+    assert "Two" not in output
+
+
+@pytest.mark.db
+def test_redact_units_says_when_the_payload_holds_the_wording(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A payload that holds the wording of an erased unit keeps it after
+    `redact units`. Standard output keeps its one line and the exit code
+    stays 0; the notice on standard error says so. A rerun that finds the
+    units covered has no wording left to compare and says nothing. The
+    control: once `redact event` has erased the payload, `redact units` on
+    the same event prints no such notice either. Measured on 2026-10-05
+    with `payload_holds_wording` always `False`: the first comparison
+    failed; always `True`: the second."""
+    engine = _connect(db, monkeypatch)
+    _append_with_text_in_payload(engine, "One\n\nTwo")
+    assert main(["project"]) == 0
+    capsys.readouterr()
+
+    assert main(["redact", "units", "1", "2", "--reason", "r"]) == 0
     assert capsys.readouterr() == ("redacted by event 2\n", _payload_standing(1))
     assert main(["redact", "units", "1", "2", "--reason", "r"]) == 0
-    assert capsys.readouterr() == (
-        "already redacted by event 2\n",
-        f"unit 2 was already erased\n{_payload_standing(1)}",
-    )
+    assert capsys.readouterr() == ("already redacted by event 2\n", "unit 2 was already erased\n")
 
     assert main(["show", "1"]) == 0
     assert '"text": "One\\n\\nTwo"' in capsys.readouterr().out
@@ -1308,16 +1349,16 @@ def test_redact_units_names_each_tombstone(
 ) -> None:
     """Each erased unit names the redaction that ordered it, and the payload
     and the unit left standing print as before."""
-    _connect(db, monkeypatch)
-    text_ = "One\n\nTwo\n\nThree"
-    assert main(["append", "--source", "cli", "--external-id", "a", "--text", text_]) == 0
+    engine = _connect(db, monkeypatch)
+    _append_with_text_in_payload(engine, "One\n\nTwo\n\nThree")
     assert main(["redact", "units", "1", "3", "--reason", "r"]) == 0
     assert main(["redact", "units", "1", "1", "3", "--reason", "r"]) == 0
     out, err = capsys.readouterr()
-    assert out == "1\nredacted by event 2\nredacted by event 3\n"
+    assert out == "redacted by event 2\nredacted by event 3\n"
     # The first `redact` builds the projections, which nobody had built; the
     # second only catches up and says nothing about it. Both say that the
-    # payload, which `append --text` wrote the same text into, still stands.
+    # payload, which holds the whole text under `text`, holds the wording of
+    # a unit they erased: unit 3 in the first, unit 1 in the second.
     standing = _payload_standing(1)
     assert err == (
         "chronicle       built: 2 events, up_to_id 2\n"
@@ -1492,19 +1533,20 @@ def test_a_catch_up_that_fails_after_the_redaction_says_what_is_outstanding(
 
 
 @pytest.mark.db
-def test_an_unfinished_redact_units_still_says_that_the_payload_stays(
+def test_an_unfinished_redact_units_still_says_that_the_payload_holds_the_wording(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """The units are erased and the catch-up fails on a forged gap, as in
     `test_a_catch_up_that_fails_after_the_redaction_says_what_is_outstanding`:
-    the payload still stands, so the notice comes on standard error beside
+    the payload still holds the wording of the erased unit, so the notice
+    comes on standard error beside
     the sentence of the unfinished redaction, and the exit code stays 2.
     Measured on 2026-10-05 with the notice printed only on success: the
     sentence came alone."""
     from sqlalchemy import text
 
     engine = _connect(db, monkeypatch)
-    _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
+    _append_with_text_in_payload(engine, "One\n\nTwo")
     assert main(["project"]) == 0
     _append("cli", "b", "Three", "2026-10-02T09:00:00Z")
     _append("cli", "c", "Four", "2026-10-03T09:00:00Z")

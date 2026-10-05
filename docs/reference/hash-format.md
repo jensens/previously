@@ -29,6 +29,7 @@ Any other type is refused by name, for example `type set not allowed`.
 
 `append` reserves the payload key `evidence` for the kind of evidence and refuses a payload that already carries it.
 `append` applies the null-byte and surrogate restrictions to `source` and `external_id` as well, before either value reaches the driver.
+It applies them to the content of every unit too, and names the unit instead of a path: `unit 1 contains a null byte`, and `unit 1: not representable as UTF-8 (surrogates not allowed) — a lone UTF-16 surrogate, for instance`.
 
 For why the range is drawn here and not wider, see {ref}`canonicalization`.
 

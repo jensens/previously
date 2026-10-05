@@ -423,7 +423,6 @@ def _cmd_append(args: argparse.Namespace) -> int:
             occurred_at=occurred,
             evidence=evidence,
             units=units,
-            payload={"text": args.text},
             blobs=blobs,
         )
         ids = append(storage, [event], recorded_at=datetime.now(UTC))
@@ -815,17 +814,19 @@ def _kept_line(address: str, users: Sequence[int]) -> str:
 
 
 def _payload_line(event_id: int) -> str:
-    """The notice for a payload a redaction of units left standing.
+    """The notice for a payload that holds the wording of a unit a redaction
+    of units erased.
 
     `redact units` erases units and nothing else, and the line on standard
-    output says the redaction is done. But `previously append --text` writes
-    the whole text into the payload as well as into the units, so after the
-    units are erased the same text can still be read in the payload; this
-    says so, and names the command that erases it, rather than leave the
-    line on standard output to read as "the content is gone"."""
+    output says the redaction is done. A payload written beside the units can
+    hold their wording too, and then it can still be read there after the
+    units are erased; this says so, and names the command that erases it,
+    rather than leave the line on standard output to read as "the content is
+    gone". `append --text` writes nothing of the text into the payload, so an
+    event it wrote never gets this notice."""
     return (
-        f"the payload of event {event_id} is not erased and may hold the same text; "
-        f"`previously redact event {event_id}` erases it"
+        f"the payload of event {event_id} is not erased and holds the wording of an "
+        f"erased unit; `previously redact event {event_id}` erases it"
     )
 
 
@@ -951,8 +952,8 @@ def _cmd_redact(args: argparse.Namespace) -> int:
     left = [step for step in (deletion, catching_up) if step is not None]
     if left:
         # The units are erased whether or not what follows is finished, and
-        # the payload stands either way, so the notice comes beside the
-        # sentence of the unfinished redaction too.
+        # the payload is left as it was either way, so the notice comes beside
+        # the sentence of the unfinished redaction too.
         _notice_payload(result, args)
         raise _unfinished(result.redaction_id, ", and ".join(left))
     print(_redacted_line(result))
@@ -966,8 +967,8 @@ def _cmd_redact(args: argparse.Namespace) -> int:
 
 def _notice_payload(result: Redacted, args: argparse.Namespace) -> None:
     """The notice of `_payload_line`, on standard error, when the payload of
-    the target still stands after a redaction of units."""
-    if result.payload_stands:
+    the target holds the wording of a unit the redaction erased."""
+    if result.payload_holds_wording:
         print(_payload_line(args.event_id), file=sys.stderr)
 
 
