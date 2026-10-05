@@ -9,23 +9,31 @@ from previously.contract.types import BlobRef
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
+from previously.core.blob import store_blob
 from previously.core.chain import link
 from previously.core.chain import prepare
 from previously.core.errors import InvalidPayload
 from previously.core.hashing import unit_digest
+from previously.core.redact import redact_blob
 from previously.core.redact import redact_event
+from previously.core.redaction import blob_payload
 from previously.core.redaction import event_payload
 from previously.core.redaction import units_payload
+from previously.core.sealing import recipient_of
+from previously.core.sealing import seal
 from previously.core.units import split_plaintext
+from previously.core.verify import BlobCheck
 from previously.core.verify import Examination
 from previously.core.verify import examine
 from previously.core.verify import Finding
 from previously.core.verify import verify
+from previously.storage.keys import DirectoryKeys
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import Engine
 from sqlalchemy import text
 from typing import TYPE_CHECKING
 
+import io
 import pytest
 
 
@@ -33,6 +41,12 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from collections.abc import Mapping
     from collections.abc import Sequence
+    from pathlib import Path
+    from previously.contract.blobs import ClosableSource
+    from previously.contract.blobs import StoredBlob
+    from previously.core.redact import Redacted
+    from previously.storage.s3 import S3BlobStore
+    from typing import IO
 
 
 NOW = datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC)
@@ -1146,3 +1160,209 @@ def test_the_register_of_an_erased_event_is_held_against_its_redaction(db: Engin
             {"s": bytes.fromhex(_OTHER_BLOB)},
         )
     assert verify(storage) == [Finding(1, _REGISTER_FINDING)]
+
+
+@pytest.mark.db
+def test_a_blob_redaction_naming_an_event_that_does_not_use_the_blob_fires(db: Engine) -> None:
+    """A blob redaction is held against its target like the others: every
+    event it names stands before it and names the blob in the register.
+    Event 2 names no blob."""
+    storage = PostgresStorage(db)
+    append(storage, [_attached("a", _BLOB), _event("b")], recorded_at=NOW)
+    _action(storage, blob_payload(_BLOB, [2], reason="r"))
+    assert verify(storage) == [Finding(3, "redaction names a target that does not exist")]
+
+
+# --- verify --blobs ({ref}`blobs`) -------------------------------------------
+#
+# Against a real S3 server. The blobs are stored through `core`, sealed to an
+# identity drawn at run time, and the identities lie in a directory under
+# `tmp_path`, the form `DirectoryKeys` reads.
+
+
+def _keys(tmp_path: Path, *identities: str) -> DirectoryKeys:
+    directory = tmp_path / "keys"
+    directory.mkdir(exist_ok=True)
+    for identity in identities:
+        (directory / recipient_of(identity)).write_text(identity + "\n", encoding="utf-8")
+    return DirectoryKeys(str(directory))
+
+
+def _stored(store: S3BlobStore, identity: str, content: bytes) -> str:
+    return store_blob(store, io.BytesIO(content), recipient=recipient_of(identity)).address
+
+
+def _carry_out(store: S3BlobStore, result: Redacted) -> None:
+    """What the command line does after a redaction: delete what no longer
+    has to lie."""
+    for address in result.obsolete_blobs:
+        store.delete(address)
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_an_intact_store_passes_and_counts(
+    db: Engine, blob_store: S3BlobStore, age_identity: str, tmp_path: Path
+) -> None:
+    """Two blobs, one of them named by two events: no finding, and two
+    blobs checked."""
+    storage = PostgresStorage(db)
+    one = _stored(blob_store, age_identity, b"one")
+    two = _stored(blob_store, age_identity, b"two")
+    append(storage, [_attached("a", one, two), _attached("b", one)], recorded_at=NOW)
+
+    examination = examine(storage, blobs=BlobCheck(blob_store, _keys(tmp_path, age_identity)))
+
+    assert examination.findings == ()
+    assert examination.blobs_checked == 2
+
+
+@pytest.mark.parametrize("case", ["missing", "foreign", "garbage", "erased-and-present"])
+@pytest.mark.db
+@pytest.mark.s3
+def test_verify_blobs_finds_each_of_the_four(
+    db: Engine, blob_store: S3BlobStore, age_identity: str, tmp_path: Path, case: str
+) -> None:
+    """The object deleted by hand; another content sealed and laid under the
+    address; bytes that are no `age` file under it; and, after the event is
+    erased and the object deleted as the command line deletes it, the object
+    laid back."""
+    storage = PostgresStorage(db)
+    content = b"the content the event names"
+    address = _stored(blob_store, age_identity, content)
+    append(storage, [_attached("a", address)], recorded_at=NOW)
+    recipient = recipient_of(age_identity)
+    if case == "missing":
+        blob_store.delete(address)
+        expected = f"blob {address} is missing"
+    elif case == "foreign":
+        sealed = io.BytesIO()
+        seal(io.BytesIO(b"another content"), sealed, recipient)
+        sealed.seek(0)
+        blob_store.put(address, sealed, key_id=recipient)
+        expected = f"blob {address} does not match its address"
+    elif case == "garbage":
+        blob_store.put(address, io.BytesIO(b"not an age file"), key_id=recipient)
+        expected = f"blob {address} cannot be opened"
+    else:
+        _carry_out(blob_store, redact_event(storage, storage, 1, reason="r", recorded_at=NOW))
+        assert blob_store.stat(address) is None
+        _stored(blob_store, age_identity, content)
+        expected = f"blob {address} is erased and still present"
+
+    examination = examine(storage, blobs=BlobCheck(blob_store, _keys(tmp_path, age_identity)))
+
+    assert examination.findings == (Finding(1, expected),)
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_a_blob_whose_key_is_not_at_hand_cannot_be_opened_and_the_check_goes_on(
+    db: Engine,
+    blob_store: S3BlobStore,
+    age_identity: str,
+    other_age_identity: str,
+    tmp_path: Path,
+) -> None:
+    """The directory holds no identity for the key the first object names:
+    that is a finding about the blob, and the check goes on to the next,
+    which is missing."""
+    storage = PostgresStorage(db)
+    sealed_away = _stored(blob_store, other_age_identity, b"sealed to a key not at hand")
+    gone = _stored(blob_store, age_identity, b"deleted by hand")
+    blob_store.delete(gone)
+    append(storage, [_attached("a", sealed_away), _attached("b", gone)], recorded_at=NOW)
+
+    examination = examine(storage, blobs=BlobCheck(blob_store, _keys(tmp_path, age_identity)))
+
+    assert sorted(examination.findings, key=lambda finding: finding.event_id) == [
+        Finding(1, f"blob {sealed_away} cannot be opened"),
+        Finding(2, f"blob {gone} is missing"),
+    ]
+    assert examination.blobs_checked == 2
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_a_blob_finding_stands_under_the_first_event_that_names_the_blob(
+    db: Engine, blob_store: S3BlobStore, age_identity: str, tmp_path: Path
+) -> None:
+    storage = PostgresStorage(db)
+    address = _stored(blob_store, age_identity, b"named twice")
+    blob_store.delete(address)
+    append(
+        storage,
+        [_event("x"), _attached("a", address), _attached("b", address)],
+        recorded_at=NOW,
+    )
+
+    examination = examine(storage, blobs=BlobCheck(blob_store, _keys(tmp_path, age_identity)))
+
+    assert examination.findings == (Finding(2, f"blob {address} is missing"),)
+
+
+class _Untouchable:
+    """A blob store that fails at every call."""
+
+    def stat(self, address: str) -> StoredBlob | None:
+        raise AssertionError("stat was called")
+
+    def put(self, address: str, sealed: IO[bytes], *, key_id: str) -> None:
+        raise AssertionError("put was called")
+
+    def get(self, address: str) -> tuple[StoredBlob, ClosableSource] | None:
+        raise AssertionError("get was called")
+
+    def delete(self, address: str) -> None:
+        raise AssertionError("delete was called")
+
+    def close(self) -> None:
+        raise AssertionError("close was called")
+
+
+@pytest.mark.db
+def test_without_the_switch_no_blob_is_touched(db: Engine, tmp_path: Path) -> None:
+    """Without `blobs`, the register is held against the payloads and no
+    store is asked: the reference names a blob no store holds, and the chain
+    passes. With the same store handed in, it is asked, which is the control
+    that a call would have been noticed."""
+    storage = PostgresStorage(db)
+    append(storage, [_attached("a", _BLOB)], recorded_at=NOW)
+
+    examination = examine(storage)
+    assert (examination.findings, examination.blobs_checked) == ((), 0)
+
+    with pytest.raises(AssertionError, match="was called"):
+        examine(storage, blobs=BlobCheck(_Untouchable(), _keys(tmp_path)))
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_the_rule_holds_end_to_end(
+    db: Engine, blob_store: S3BlobStore, age_identity: str, tmp_path: Path
+) -> None:
+    """A blob shared by two events; one event erased, then the blob, then
+    the same content at a new event. After every step, carried out as the
+    command line carries it out, `verify --blobs` finds nothing."""
+    storage = PostgresStorage(db)
+    keys = _keys(tmp_path, age_identity)
+    content = b"one attachment, two mails"
+    shared = _stored(blob_store, age_identity, content)
+    append(storage, [_attached("a", shared), _attached("b", shared)], recorded_at=NOW)
+
+    def findings() -> tuple[Finding, ...]:
+        return examine(storage, blobs=BlobCheck(blob_store, keys)).findings
+
+    assert findings() == ()
+
+    _carry_out(blob_store, redact_event(storage, storage, 1, reason="r", recorded_at=NOW))
+    assert blob_store.stat(shared) is not None
+    assert findings() == ()
+
+    _carry_out(blob_store, redact_blob(storage, storage, shared, reason="r", recorded_at=NOW))
+    assert blob_store.stat(shared) is None
+    assert findings() == ()
+
+    _stored(blob_store, age_identity, content)
+    append(storage, [_attached("c", shared)], recorded_at=NOW)
+    assert findings() == ()

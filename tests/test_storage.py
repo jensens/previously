@@ -401,6 +401,26 @@ def test_events_by_blob_lists_every_event_that_uses_it(db: Engine) -> None:
 
 
 @pytest.mark.db
+def test_blob_references_come_ordered_by_hash_and_then_by_event(db: Engine) -> None:
+    """Every row of the register, by hash and then by event. Written so that
+    neither the order of insertion nor the order within an event is the
+    order asked for."""
+    storage = PostgresStorage(db)
+    with storage.begin() as c:
+        storage.insert_event(c, _row(1, None), [], ("cli", "x1"), [_BLOB_B])
+        storage.insert_event(c, _row(2, b"\x01" * 32), [], ("cli", "x2"), [_BLOB_C, _BLOB_A])
+        storage.insert_event(c, _row(3, b"\x02" * 32), [], ("cli", "x3"), [_BLOB_B, _BLOB_A])
+    with storage.begin() as c:
+        assert list(storage.blob_references(c)) == [
+            (_BLOB_A, 2),
+            (_BLOB_A, 3),
+            (_BLOB_B, 1),
+            (_BLOB_B, 3),
+            (_BLOB_C, 2),
+        ]
+
+
+@pytest.mark.db
 def test_blobs_by_event_with_an_empty_batch(db: Engine) -> None:
     """`IN ()` is not valid SQL — the empty batch returns without a query,
     and the statements the engine sends are counted to show it. The batch of

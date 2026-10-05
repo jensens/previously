@@ -72,7 +72,14 @@ An erasure takes one lock that `append` doesn't, and the lock isn't on the tip.
 It locks the row of its *target* with `SELECT … FOR UPDATE` before it reads which redactions exist.
 Two erasures of the same event then run one after the other, and the second, once it holds the lock, sees the redaction the first one wrote and writes none of its own.
 Without the lock both would read before either had committed, find nothing, and both write a redaction for the same target.
-The lock decides nothing about the chain position: an append never asks for it, and two erasures of different targets never wait for each other.
+
+An erasure that touches a blob locks more than its target: every event that uses the blob, in ascending order of `id`.
+Two erasures of different events that share a blob then run one after the other as well, and the second sees the first one's redaction when it decides whether the blob still has to lie in the store.
+Without that, each could read the redactions before the other had committed and keep the blob for the other's sake, and nothing would ever delete it.
+The race between them on the chain position doesn't settle that: an erasure that reads the redactions before the other commits and the tip after it wins its position all the same.
+The ascending order is what keeps two such erasures from each holding a row the other waits for.
+
+The lock decides nothing about the chain position: an append never asks for it, and two erasures that share neither a target nor a blob never wait for each other.
 
 ## The index clause that isn't optional
 

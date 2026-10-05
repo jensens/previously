@@ -5,7 +5,7 @@
 `previously` is the command-line entry point.
 It has ten subcommands: `append`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, and `stats`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
-`append --attach` and `blob get` also read the blob settings, and no other subcommand reads any of them.
+`append --attach`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
 A missing setting is an input error that names the first variable missing, in the form `Error: PREVIOUSLY_BLOB_BUCKET is not set`.
 
 ## Exit codes
@@ -13,12 +13,12 @@ A missing setting is an input error that names the first variable missing, in th
 | Command | 0 | 1 | 2 |
 |---|---|---|---|
 | `append` | The event was recorded, or an event with the same `--source` and `--external-id` already existed. | Not used. | The input was invalid, an attachment couldn't be read, a blob setting is missing or invalid, or storage or the blob store raised an error. |
-| `redact` | The redaction was recorded and carried out, or the target was already covered by one, and every projection stands at the tip of the log. | Not used. | The input was invalid, the redaction was refused, storage raised an error, or the projections couldn't be caught up after the redaction was recorded. |
+| `redact` | The redaction was recorded and carried out, or the target was already covered by one, every blob it made obsolete is gone from the blob store, and every projection stands at the tip of the log. | Not used. | The input was invalid, the redaction was refused, storage raised an error, or after the redaction was recorded a blob couldn't be deleted or the projections couldn't be caught up. |
 | `log` | The log was printed. | Not used. | The input was invalid, or storage raised an error. |
-| `verify` | The chain has no finding, and every anchor holds. | The chain or an anchor has at least one finding. | The input was invalid, or storage raised an error. |
+| `verify` | The chain has no finding, every anchor holds, and with `--blobs` no blob has a finding. | The chain, an anchor or, with `--blobs`, a blob has at least one finding. | The input was invalid, a blob setting is missing or invalid, an identity file can't be read, or storage or the blob store raised an error. |
 | `anchor` | The anchor line was printed, or the log is empty. | The chain has at least one finding. | Storage raised an error. |
 | `show` | The event was printed. | No event exists at the given `event_id`. | The input was invalid, or storage raised an error. |
-| `blob` | The blob was written to the file. | No event names the blob. | The input was invalid, a blob setting is missing, the blob is missing from the store, can't be opened or doesn't match its address, the file can't be written, or storage or the blob store raised an error. |
+| `blob` | The blob was written to the file. | No event names the blob, or the blob is erased. | The input was invalid, a blob setting is missing, the blob is missing from the store, can't be opened or doesn't match its address, the file can't be written, or storage or the blob store raised an error. |
 | `project` | Every projection stands at the tip of the log. | Not used. | Storage raised an error, or the worker found a gap in the log. |
 | `chronicle` | The chronicle was printed, even when the window holds no row. | Not used. | The input was invalid, or storage raised an error. |
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
@@ -74,12 +74,13 @@ An event without `--attach` carries no key `blobs`, and a payload must not carry
 
 ## `redact`
 
-Erases an event or units of one event, and records the erasure as a redaction event; see {ref}`erasure`.
-It has two forms:
+Erases an event, units of one event, or a blob, and records the erasure as a redaction event; see {ref}`erasure`.
+It has three forms:
 
 ```text
 previously redact event ID --reason TEXT
 previously redact units ID SEQ [SEQ] --reason TEXT
+previously redact blob HASH --reason TEXT
 ```
 
 `[SEQ]` may repeat.
@@ -88,17 +89,27 @@ previously redact units ID SEQ [SEQ] --reason TEXT
 |---|---|---|---|
 | `ID` | Yes | — | The `id` of the event to erase from, as a positional argument. |
 | `SEQ` | Yes, for `units` | — | The `seq` of each unit to erase, as positional arguments, one or more. |
+| `HASH` | Yes, for `blob` | — | The blob's address, the SHA-256 of its content in 64 lowercase hexadecimal characters, as a positional argument. |
 | `--reason` | Yes | — | Why the erasure happens, not empty and not blanks alone. It stays in the log for good and must not contain what's erased. |
 
 `redact event` erases the event's payload, and the content, speaker, timestamps and salt of every unit.
 `redact units` erases the content, speaker, timestamps and salt of the named units.
 The order of the `SEQ` arguments doesn't matter, and a `SEQ` given twice counts once.
-Every hash, the source key and the rows of the units stay.
+`redact blob` erases the blob for every event whose reference to it isn't erased yet; their payloads and units stay as they are.
+Every hash, the source key, the rows of the units and the rows of the blob register stay.
+
+A blob has to lie in the blob store as long as at least one event names it whose reference isn't erased.
+A reference is erased when its event is erased whole, or when a `redact blob` names its event.
+After either `redact event` or `redact blob`, `redact` deletes from the blob store every blob of the target that no longer has to lie there.
+Deleting a blob that isn't there is no error.
+`redact units` erases no reference and deletes no blob.
 
 The redaction is an event of kind `action`, written in the same transaction as the tombstones.
-Its payload holds four keys: `action` with the value `redaction`, `scope` with `event` or `units`, `target`, and `reason`.
-`target` holds the erased event's `id` under `event`, and either `blobs` with the hashes the blob register names for the event, in ascending order and empty for an event without attachments, for `event`, or `units` with the erased `seq` values in ascending order, for `units`.
-A unit a redaction already covers isn't named again.
+Its payload holds four keys: `action` with the value `redaction`, `scope` with `event`, `units` or `blob`, `target`, and `reason`.
+For `event`, `target` holds the erased event's `id` under `event`, and under `blobs` the hashes the blob register names for the event, in ascending order and empty for an event without attachments.
+For `units`, `target` holds the event's `id` under `event`, and under `units` the erased `seq` values in ascending order.
+For `blob`, `target` holds the blob's hash under `blob`, and under `events` the `id` of every event whose reference it erases, in ascending order.
+A unit a redaction already covers isn't named again, and neither is an event whose reference to the blob is already erased.
 
 `redact` prints one of two lines to standard output:
 
@@ -108,10 +119,11 @@ already redacted by event 42
 ```
 
 The first names the redaction it wrote.
-The second means that a redaction already covers the target and nothing was written; it names that redaction, or for units the newest of the redactions that cover them.
-In both cases the tombstones are set.
+The second means that a redaction already covers the target and nothing was written; it names that redaction, for units the newest of the redactions that cover them, and for a blob the newest of the redactions that erased its references.
+In both cases the tombstones are set, and the blobs that no longer have to lie are deleted.
 
-After either line, `redact` brings every projection up to the tip of the log, the way `project` does.
+`redact` works in this order: it records the redaction and sets the tombstones in one transaction, deletes the blobs that no longer have to lie, and brings every projection up to the tip of the log, the way `project` does.
+Only then does it print the line to standard output.
 The chronicle then holds no row of what was erased, without a separate `project`.
 An ordinary catch-up prints nothing.
 A catch-up that builds a projection for the first time, or rebuilds it because its version changed, prints the line `project` prints for that projection, on standard error:
@@ -121,16 +133,20 @@ chronicle       rebuilt: version 1 -> 2, 12000 events, up_to_id 12000
 ```
 
 Standard output carries the one line either way.
-If that catch-up fails, the redaction stays recorded, the line on standard output stands, one sentence goes to standard error, and the exit code is 2:
+If deleting a blob or the catch-up fails, the redaction stays recorded, nothing goes to standard output, one sentence goes to standard error, and the exit code is 2:
 
 ```text
+Error: the redaction is recorded as event 42, but it is not finished: blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 is not deleted from the store (the blob store at http://localhost:9000 is not reachable: EndpointConnectionError); run the same command again
 Error: the redaction is recorded as event 42, but it is not finished: projection chronicle is not caught up (expected events 2.. above id 1, read [3, 4]; the tip is 4); run the same command again
 ```
 
-The text in parentheses is the error the catch-up raised.
-Once its cause is gone, running the same command again finds the target covered, prints `already redacted by event 42`, and catches up.
-The cause in the example, a gap in the log, doesn't go away by itself, so until it does the same command fails with the same sentence; a server that didn't answer for a moment is a cause that does go away.
+The text in parentheses is the error that stopped it.
+When several blobs are still to delete, the first form names them all, separated by a comma and a space, as `blobs <hashes> are not deleted from the store`.
+A failed deletion leaves the catch-up undone as well.
+Once the cause is gone, running the same command again finds the target covered, prints `already redacted by event 42`, deletes what's left, and catches up.
+The cause in the second example, a gap in the log, doesn't go away by itself, so until it does the same command fails with the same sentence; a server that didn't answer for a moment is a cause that does go away.
 
+After the line on standard output come the notices.
 For each unit it skips, one notice goes to standard error:
 
 ```text
@@ -138,8 +154,14 @@ unit 3 was already erased
 ```
 
 `redact units` skips a unit that a redaction already covers, and names the remaining units in the redaction it writes.
+For each blob of the target that stays in the store because another event still uses it, one notice goes to standard error, naming the blob and those events:
 
-Six refusals print one sentence to standard error, print nothing to standard output, write nothing, and return 2:
+```text
+blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 stays in the store: event 7 still uses it
+blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 stays in the store: events 7, 9 still use it
+```
+
+Seven refusals print one sentence to standard error, print nothing to standard output, write nothing, delete nothing, and return 2:
 
 ```text
 Error: there is no event 9
@@ -147,11 +169,13 @@ Error: event 3 is a redaction, and a redaction cannot be redacted
 Error: event 2 was written in hash format 1, which attests its units only together: use `previously redact event`
 Error: event 4 names hash format 3, which is not known
 Error: event 1 has no unit 7
+Error: no event uses blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03
 Error: --reason must not be empty
 ```
 
 The fourth refuses `redact units` on an event whose `hash_version` is neither 1 nor 2, which only a row this version didn't write can carry.
 `--reason` counts as empty when it holds nothing but blanks.
+A `HASH` that isn't 64 lowercase hexadecimal characters is an input error in the words `blob get` uses for it.
 
 ## `log`
 
@@ -175,6 +199,7 @@ With `--anchors`, it also checks the log against anchor lines kept outside the d
 |---|---|---|---|
 | `--anchors FILE` | No | — | A file of anchor lines to check against; `-` reads standard input. |
 | `--exact` | No | Off | The tip of the log has to be the newest anchor; requires `--anchors`. |
+| `--blobs` | No | Off | Also read every blob the blob register names from the blob store and check it. |
 
 An anchor line holds two fields separated by whitespace: an event `id`, a positive integer of at most 19 digits, and that event's `hash`, 64 hexadecimal characters.
 `anchor` prints lines in this format.
@@ -230,7 +255,7 @@ FINDING 9: action has no valid form
 | `unit <seq> is erased without a redaction` | The unit has no content, and no redaction names it or its event. | The event of the unit. |
 | `redaction of event <id> is not carried out` | The event a redaction erased still carries its payload or the content of a unit. | The redaction. |
 | `redaction of unit <seq> of event <id> is not carried out` | A unit a redaction erased still carries its content. | The redaction. |
-| `redaction names a target that does not exist` | The event a redaction names doesn't stand before the redaction in the chain, or doesn't have a unit it names. | The redaction. |
+| `redaction names a target that does not exist` | The event a redaction names doesn't stand before the redaction in the chain, or doesn't have a unit it names; for a redaction of a blob, an event it names doesn't stand before it or doesn't name the blob in the blob register. | The redaction. |
 | `units are erased in part, which version 1 cannot attest` | An event in hash format 1 has some units without content, and others with it. | The event. |
 | `action has no valid form` | An event of kind `action` carries no `action` name in its payload, or a redaction's payload doesn't have exactly the form `redact` writes. | The action. |
 
@@ -246,6 +271,29 @@ For an erased payload, it compares the rows with `blobs` in the redaction of the
 
 `verify` matches tombstones and redactions, and the register of an erased event, after it has read the whole chain, in the same snapshot.
 
+With `--blobs`, `verify` reads `PREVIOUSLY_BLOB_IDENTITIES` and the five settings of the blob store, and after the snapshot it checks every blob the blob register names.
+A blob that has to lie in the store is fetched, opened with the identity for the key the object names, and its content hashed against its address; the content isn't kept.
+A blob that doesn't have to lie in the store is only asked for.
+Four findings come from the blobs:
+
+```text
+FINDING 7: blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 is missing
+FINDING 7: blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 does not match its address
+FINDING 7: blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 cannot be opened
+FINDING 7: blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 is erased and still present
+```
+
+| Finding | Condition |
+|---|---|
+| `blob <hex> is missing` | The blob has to lie in the store, and the store holds no object under its address. |
+| `blob <hex> does not match its address` | The object opens, and the SHA-256 of its content isn't its address. |
+| `blob <hex> cannot be opened` | The object names no key, the identity directory holds no identity for its key, or `age` refuses the object. |
+| `blob <hex> is erased and still present` | Every reference to the blob is erased, and the store still holds an object under its address. |
+
+Each stands under the smallest `id` of the events that name the blob.
+`verify` reads the blob store after the snapshot of the chain, so a blob erased and deleted while it runs can appear as missing.
+A blob store that doesn't answer or refuses, an identity file that exists and can't be read, and a stream that breaks off aren't findings: `verify` prints one sentence to standard error, nothing to standard output, and returns 2.
+
 With no finding, `verify` prints a single line, which depends on the arguments:
 
 | Arguments | Line |
@@ -255,6 +303,7 @@ With no finding, `verify` prints a single line, which depends on the arguments:
 | `--anchors` and `--exact` | `chain intact, <n> anchors hold, the tip is the newest anchor` |
 
 `<n>` is the number of anchor lines in the file, and a count of one prints as `1 anchor holds`.
+With `--blobs`, the line ends in `, <m> blobs match`, where `<m>` is the number of distinct blobs the blob register names, erased ones included; a count of one prints as `, 1 blob matches`.
 
 Without anchors, one notice goes to standard error, and the exit code stays 0:
 
@@ -294,6 +343,8 @@ Otherwise it prints `evidence=<verbatim|recollection>` when the payload carries 
 A redaction carries no `evidence`, so `show` prints no `evidence=` line for it.
 It then prints one line per unit, in `seq` order: `  ¶<seq> <content>`, or for a unit without content `  ¶<seq> <erased by event <id>>`, or `  ¶<seq> <erased>` when no redaction covers it.
 Last, it prints one line per reference in the payload's `blobs`, in their order: `  blob <sha256> <size> <media_type> <filename>`, with `-` for a reference without a file name.
+A reference that a redaction erased ends in ` <erased by event <id>>`, naming the earliest redaction that erased it.
+For an erased payload, the lines come from the redaction of the event instead, one per hash it names, as `  blob <sha256> <erased by event <id>>`; without a redaction, `show` prints no blob line.
 `media_type` and `filename` are escaped the way `chronicle` escapes its fields.
 `show` reads these lines from the log and doesn't ask the blob store, so it needs no blob setting.
 Without an event at the given `event_id`, `show` prints `No event <event_id>` to standard error.
@@ -323,6 +374,12 @@ When no event names the blob, `blob get` returns 1 and prints one notice to stan
 
 ```text
 no event uses blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03
+```
+
+When every reference to the blob is erased, `blob get` returns 1, prints one notice to standard error that names the newest of the redactions that erased them, and writes nothing, whether or not the store still holds the object:
+
+```text
+blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 is erased (event 42)
 ```
 
 Otherwise it writes the content to a temporary file in the directory of `--output`, and renames that file to `--output` only once the content matched its address.

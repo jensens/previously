@@ -346,6 +346,41 @@ def _raised_patterns(path: pathlib.Path, error: str) -> list[list[str]]:
     ]
 
 
+def _outstanding_patterns(path: pathlib.Path) -> list[list[str]]:
+    """The static parts of what a module hands to `_unfinished` as what is
+    outstanding: the second argument of each call, and every f-string
+    assigned to `outstanding`."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: list[list[str]] = []
+    for node in ast.walk(tree):
+        if (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_unfinished"
+            and len(node.args) == 2
+        ):
+            found.append(_static_parts(node.args[1]))
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "outstanding" for target in node.targets
+        ):
+            found.append(_static_parts(node.value))
+    return [parts for parts in found if parts]
+
+
+def _string_constants(path: pathlib.Path, function: str) -> set[str]:
+    """Every string literal in the body of one function of a module, its
+    docstring included, which matches no finding's wording."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == function:
+            return {
+                found.value
+                for found in ast.walk(node)
+                if isinstance(found, ast.Constant) and isinstance(found.value, str)
+            }
+    raise AssertionError(f"{path.name} has no function {function}")
+
+
 def _is_the_same_sentence(parts: list[str], line: str) -> bool:
     """Whether `line` is that message with its interpolations filled in.
 
@@ -407,18 +442,21 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     five restrictions below" with a row missing. Deriving the payloads from
     the code is the fix and it is not built yet.
 
-    The second half holds the six standard-error sentences and the two
-    lines of `redact` on standard output that `cli.md` quotes, in six
+    The second half holds the nine standard-error sentences and the two
+    lines of `redact` on standard output that `cli.md` quotes, in eight
     blocks, against the literals in `cli.py` — not the line `blob get`
     prints on success, which `_message_patterns` does not collect, since it
-    reads standard-error sentences and returned lines only; the six
+    reads standard-error sentences and returned lines only; the seven
     refusals of `redact` against the messages `core/redact.py` and `cli.py`
-    raise as `RedactionRefused`; the seven errors of the blob commands against
-    the messages `cli.py` raises as `PreviouslyError` or `InvalidPayload` and
-    `core/blob.py` raises as `BlobError`;
-    and the thirteen findings it quotes, three from the anchors, nine from
+    raise as `RedactionRefused`; the nine errors of the blob commands and of
+    an unfinished redaction against the messages `cli.py` raises as
+    `PreviouslyError` or `InvalidPayload` and `core/blob.py` raises as
+    `BlobError`;
+    the thirteen findings it quotes, three from the anchors, nine from
     the hash formats and erasure and one from the blob register, against the
-    reasons `core/verify.py` hands to `Finding`. The first two sentences
+    reasons `core/verify.py` hands to `Finding`; and the four findings about
+    blobs against the reasons `_blob_reason` in `core/verify.py` returns,
+    since the `Finding` they stand in interpolates the reason whole. The first two sentences
     were quoted and covered by nothing until 2026-10-04: the first half of
     this test reads the *Payload range* table and nothing else, and the
     command line's notices reach no other check. They cannot be produced by
@@ -458,8 +496,10 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         ("Without anchors, one notice goes to standard error", 1),
         ("On an empty log, one notice goes to standard error", 1),
         ("For each unit it skips, one notice goes to standard error", 1),
+        ("one notice goes to standard error, naming the blob and those events", 2),
         ("`redact` prints one of two lines to standard output", 2),
         ("When no event names the blob, `blob get` returns 1", 1),
+        ("When every reference to the blob is erased, `blob get` returns 1", 1),
     ):
         notices = _quoted_block(page, after)
         assert len(notices) == expected, f"{after!r}: {notices}"
@@ -476,8 +516,8 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         *_raised_patterns(ROOT / "src" / "previously" / "core" / "redact.py", "RedactionRefused"),
         *_raised_patterns(ROOT / "src" / "previously" / "cli.py", "RedactionRefused"),
     ]
-    quoted = _quoted_block(page, "Six refusals")
-    assert len(quoted) == 6, quoted
+    quoted = _quoted_block(page, "Seven refusals")
+    assert len(quoted) == 7, quoted
     for line in quoted:
         prefix, _, refusal = line.partition(": ")
         assert prefix == "Error", f"cli.md quotes the refusal {line!r} without `Error: `"
@@ -503,6 +543,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         ("A temporary file for the sealed form that can't be created", from_blob, "core/blob.py"),
         ("and refuses anything else as an input error", from_cli, "cli.py"),
         ("Four errors of `blob get`", from_cli, "cli.py"),
+        ("If deleting a blob or the catch-up fails", from_cli, "cli.py"),
     )
     quoted = 0
     for after, errors, module in blocks:
@@ -514,7 +555,19 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
                 f"cli.md quotes the error {error!r} and {module} raises no such message. "
                 "Either the code's wording changed, or the page's did."
             )
-    assert quoted == 7, quoted
+    assert quoted == 9, quoted
+
+    # An unfinished redaction says what is outstanding inside an interpolation
+    # of `_unfinished`, so the sentence above holds only its frame; what
+    # stands between `finished: ` and `; run` is held against the phrases
+    # `cli.py` builds for it, in the assignments and calls that name it.
+    outstanding = _outstanding_patterns(ROOT / "src" / "previously" / "cli.py")
+    for line in _quoted_block(page, "If deleting a blob or the catch-up fails"):
+        phrase = line.split("but it is not finished: ", 1)[1].rsplit("; run the same", 1)[0]
+        assert any(_is_the_same_sentence(parts, phrase) for parts in outstanding), (
+            f"cli.md quotes {phrase!r} as outstanding and cli.py builds no such phrase. "
+            "Either the code's wording changed, or the page's did."
+        )
 
     reasons = _finding_patterns(ROOT / "src" / "previously" / "core" / "verify.py")
     findings = [
@@ -539,6 +592,22 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         assert any(_is_the_same_sentence(parts, reason) for parts in reasons), (
             f"cli.md quotes the finding {reason!r} and core/verify.py produces no such "
             "reason. Either the code's wording changed, or the page's did."
+        )
+
+    # The findings about blobs are `f"blob {sha256} {reason}"`, whose static
+    # parts would let any line that begins with `blob ` pass; the reason is
+    # held against the strings `_blob_reason` returns instead.
+    blob_reasons = _string_constants(
+        ROOT / "src" / "previously" / "core" / "verify.py", "_blob_reason"
+    )
+    blob_findings = _quoted_block(page, "Four findings come from the blobs")
+    assert len(blob_findings) == 4, blob_findings
+    for line in blob_findings:
+        matched = re.fullmatch(r"FINDING [0-9]+: blob [0-9a-f]{64} (.+)", line)
+        assert matched is not None, f"cli.md quotes the blob finding {line!r} in another form"
+        assert matched[1] in blob_reasons, (
+            f"cli.md quotes the blob finding {matched[1]!r} and `_blob_reason` returns "
+            "no such reason. Either the code's wording changed, or the page's did."
         )
 
 

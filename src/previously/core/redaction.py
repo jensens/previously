@@ -12,8 +12,11 @@ asks it for one thing, the events of one kind.
 `parse` is strict. The one writer of a redaction is `core.redact`, through the
 builders below, so a payload that is not exactly one of the three forms was
 not written that way, and `verify` reports it rather than guessing what it
-meant. All three forms are accepted, the one for a blob included, because the
-form is one thing and `verify` holds every action against it.
+meant.
+
+`blob_expected` is the rule that says when a blob has to lie in the store,
+and the one place it is computed: `redact` deletes what it says no longer has
+to lie, and `verify --blobs` reports what breaks it ({ref}`erasure`).
 """
 
 from dataclasses import dataclass
@@ -26,6 +29,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from collections.abc import Iterable
     from collections.abc import Iterator
     from collections.abc import Mapping
     from collections.abc import Sequence
@@ -85,6 +89,17 @@ def units_payload(event_id: int, seqs: Sequence[int], *, reason: str) -> dict[st
         "action": REDACTION,
         "scope": "units",
         "target": {"event": event_id, "units": sorted(set(seqs))},
+        "reason": reason,
+    }
+
+
+def blob_payload(sha256: str, event_ids: Sequence[int], *, reason: str) -> dict[str, object]:
+    """The payload of a redaction that erases a blob for the named events,
+    ordered and each named once."""
+    return {
+        "action": REDACTION,
+        "scope": "blob",
+        "target": {"blob": sha256, "events": sorted(set(event_ids))},
         "reason": reason,
     }
 
@@ -179,9 +194,14 @@ class RedactionIndex:
         self._all: list[Redaction] = []
         self._events: dict[int, Redaction] = {}
         self._units: dict[tuple[int, int], Redaction] = {}
+        # (event, blob) -> the blob redaction that names the event.
+        self._references: dict[tuple[int, str], Redaction] = {}
 
     def add(self, redaction: Redaction) -> None:
         self._all.append(redaction)
+        if redaction.blob is not None:
+            for event_id in redaction.events:
+                self._references.setdefault((event_id, redaction.blob), redaction)
         if redaction.event is None:
             return
         if redaction.scope == "event":
@@ -198,8 +218,45 @@ class RedactionIndex:
         redaction of its whole event, or `None`."""
         return self._units.get((event_id, seq)) or self.of_event(event_id)
 
+    def of_reference(self, event_id: int, sha256: str) -> Redaction | None:
+        """The redaction that erased the reference of an event to a blob, or
+        `None`: the redaction of the whole event, or a blob redaction that
+        names the event. When both exist, the earlier one, for the reason
+        the class gives."""
+        found = [
+            redaction
+            for redaction in (self.of_event(event_id), self._references.get((event_id, sha256)))
+            if redaction is not None
+        ]
+        return min(found, key=lambda redaction: redaction.id, default=None)
+
     def __iter__(self) -> Iterator[Redaction]:
         return iter(self._all)
+
+
+def blob_expected(index: RedactionIndex, sha256: str, event_ids: Iterable[int]) -> bool:
+    """Whether a blob has to lie in the store: as long as at least one of its
+    references is not erased ({ref}`erasure`).
+
+    `event_ids` are the events the register names for the blob, all of them,
+    erased or not. Without any, the blob has nothing to lie for.
+    """
+    return any(index.of_reference(event_id, sha256) is None for event_id in event_ids)
+
+
+def blob_erasure(index: RedactionIndex, sha256: str, event_ids: Iterable[int]) -> Redaction | None:
+    """The redaction to name for a blob that no longer has to lie — the
+    newest of those that erased its references, the one after which none
+    stood — or `None` while it has to lie, or when no event names it."""
+    users = list(event_ids)
+    if blob_expected(index, sha256, users):
+        return None
+    erasures = [index.of_reference(event_id, sha256) for event_id in users]
+    return max(
+        (redaction for redaction in erasures if redaction is not None),
+        key=lambda redaction: redaction.id,
+        default=None,
+    )
 
 
 def read_index[Conn](log: LogStore[Conn], conn: Conn) -> RedactionIndex:

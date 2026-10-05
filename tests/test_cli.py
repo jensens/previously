@@ -17,6 +17,7 @@ from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
 from previously.core.errors import InvalidPayload
+from previously.core.redact import redact_blob
 from previously.core.redact import redact_event
 from previously.core.sealing import recipient_of
 from previously.core.sealing import seal
@@ -37,8 +38,11 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from collections.abc import Generator
     from collections.abc import Sequence
+    from previously.contract.blobs import ClosableSource
+    from previously.contract.blobs import StoredBlob
     from previously.storage.s3 import S3BlobStore
     from sqlalchemy import Engine
+    from typing import IO
 
     import pathlib
 
@@ -1307,6 +1311,12 @@ def test_redacting_twice_says_already(
             id="version-1-units",
         ),
         pytest.param(["units", "1", "1", "7"], "event 1 has no unit 7", id="missing-unit"),
+        pytest.param(["blob", "c" * 64], f"no event uses blob {'c' * 64}", id="unused-blob"),
+        pytest.param(
+            ["blob", "C" * 64],
+            f"{'C' * 64} is not a blob address: 64 hexadecimal characters, lower case",
+            id="not-a-blob-address",
+        ),
         pytest.param(
             ["event", "1", "--reason", ""], "--reason must not be empty", id="empty-reason"
         ),
@@ -1401,11 +1411,12 @@ def test_a_second_redact_finishes_what_the_first_left_behind(
 def test_a_catch_up_that_fails_after_the_redaction_says_what_is_outstanding(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The redaction is written and the catch-up fails: one line on standard
-    output, as for a call that finished, and the error says what stands and
-    what does not. The failure is a gap in the log, forged with plain SQL the
-    way `test_projection_worker` forges it — nothing in the write paths can
-    produce one, which makes it a failure no wrapper has to stand in for."""
+    """The redaction is written and the catch-up fails: nothing on standard
+    output, which carries its line only once the redaction is carried out,
+    and the error says what stands and what does not. The failure is a gap
+    in the log, forged with plain SQL the way `test_projection_worker` forges
+    it — nothing in the write paths can produce one, which makes it a
+    failure no wrapper has to stand in for."""
     from sqlalchemy import text
 
     engine = _connect(db, monkeypatch)
@@ -1421,7 +1432,7 @@ def test_a_catch_up_that_fails_after_the_redaction_says_what_is_outstanding(
 
     assert main(["redact", "event", "1", "--reason", "r"]) == 2
     out, err = capsys.readouterr()
-    assert out == "redacted by event 4\n"
+    assert out == ""
     assert err == (
         "Error: the redaction is recorded as event 4, but it is not finished: "
         "projection chronicle is not caught up (expected events 2.. above id 1, "
@@ -2252,3 +2263,325 @@ def test_main_releases_the_blob_store_it_opened(
         gc.enable()
     capsys.readouterr()
     assert after <= before, f"{after} connections after the commands, {before} before"
+
+
+# --- Erasing and checking blobs ({ref}`erasure`) ------------------------------
+
+
+def _stays(address: str, *event_ids: int) -> str:
+    users = ", ".join(str(event_id) for event_id in event_ids)
+    verb = "event" if len(event_ids) == 1 else "events"
+    use = "uses" if len(event_ids) == 1 else "use"
+    return f"blob {address} stays in the store: {verb} {users} still {use} it\n"
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_redact_event_deletes_its_blob_and_says_which_one_stays(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Event 1 has a blob of its own and one it shares with events 2 and 3.
+    Erasing event 1 deletes its own blob and leaves the shared one, named
+    with the events that still use it, on standard error after the lines of
+    the catch-up; erasing event 2 names the one event left."""
+    own, shared = b"only in the first mail", b"in three mails"
+    own_address = hashlib.sha256(own).hexdigest()
+    shared_address = hashlib.sha256(shared).hexdigest()
+    assert (
+        main(_attach("a", _file(tmp_path, "own.txt", own), _file(tmp_path, "s.txt", shared))) == 0
+    )
+    assert main(_attach("b", tmp_path / "s.txt")) == 0
+    assert main(_attach("c", tmp_path / "s.txt")) == 0
+    assert sorted(_bucket(blobs.store)) == sorted([own_address, shared_address])
+    capsys.readouterr()
+
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    assert capsys.readouterr() == (
+        "redacted by event 4\n",
+        "chronicle       built: 4 events, up_to_id 4\n"
+        "source-stats    built: 4 events, up_to_id 4\n" + _stays(shared_address, 2, 3),
+    )
+    assert _bucket(blobs.store) == [shared_address]
+
+    assert main(["redact", "event", "2", "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("redacted by event 5\n", _stays(shared_address, 3))
+    assert _bucket(blobs.store) == [shared_address]
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_redact_blob_and_then_blob_get_says_erased(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    content = b"a scan that must go"
+    address = hashlib.sha256(content).hexdigest()
+    assert main(_attach("a", _file(tmp_path, "scan.pdf", content))) == 0
+    assert main(["project"]) == 0
+    capsys.readouterr()
+
+    assert main(["redact", "blob", address, "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("redacted by event 2\n", "")
+    assert _bucket(blobs.store) == []
+
+    target = tmp_path / "out.pdf"
+    assert main(["blob", "get", address, "--output", str(target)]) == 1
+    assert capsys.readouterr() == ("", f"blob {address} is erased (event 2)\n")
+    assert not target.exists()
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_a_delete_that_fails_is_finished_by_the_second_call(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    s3_settings: dict[str, str],
+) -> None:
+    """The store does not answer when the first call deletes: the redaction
+    stands, the sentence names the blobs still to delete, and the same
+    command with a store that answers deletes them without a second
+    redaction."""
+    content, other = b"the attachment to erase", b"the second attachment"
+    address, other_address = sorted(hashlib.sha256(c).hexdigest() for c in (content, other))
+    assert (
+        main(_attach("a", _file(tmp_path, "a.txt", content), _file(tmp_path, "b.txt", other))) == 0
+    )
+    assert main(["project"]) == 0
+    capsys.readouterr()
+
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "http://127.0.0.1:1")
+    assert main(["redact", "event", "1", "--reason", "r"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    line = _single_line(err)
+    assert line.startswith(
+        "Error: the redaction is recorded as event 2, but it is not finished: "
+        f"blobs {address}, {other_address} are not deleted from the store ("
+    )
+    assert line.endswith("); run the same command again")
+    assert "http://127.0.0.1:1" in line
+    assert blobs.secret not in err
+    assert _events(blobs.engine) == 2
+    assert _bucket(blobs.store) == [address, other_address]
+
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", s3_settings["endpoint"])
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("already redacted by event 2\n", "")
+    assert _bucket(blobs.store) == []
+    assert _events(blobs.engine) == 2
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_a_refused_redaction_deletes_nothing(
+    blobs: _Blobs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """An object no event names, the kind an append that failed after its
+    upload leaves behind: `redact blob` refuses it, and the object stays,
+    since deleting comes only after a redaction stands."""
+    address = hashlib.sha256(b"left behind").hexdigest()
+    blobs.store.put(address, io.BytesIO(b"sealed bytes"), key_id=recipient_of(blobs.identity))
+
+    assert main(["redact", "blob", address, "--reason", "r"]) == 2
+    assert capsys.readouterr() == ("", f"Error: no event uses blob {address}\n")
+    assert _bucket(blobs.store) == [address]
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_verify_blobs_prints_the_count(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    assert main(_attach("a", _file(tmp_path, "a.txt", b"first"))) == 0
+    capsys.readouterr()
+    assert main(["verify", "--blobs"]) == 0
+    assert capsys.readouterr().out == "chain intact, 1 blob matches\n"
+
+    assert main(_attach("b", _file(tmp_path, "b.txt", b"second"), tmp_path / "a.txt")) == 0
+    capsys.readouterr()
+    assert main(["verify", "--blobs"]) == 0
+    assert capsys.readouterr().out == "chain intact, 2 blobs match\n"
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_verify_blobs_reports_a_missing_blob_and_returns_1(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    content = b"deleted by hand"
+    address = hashlib.sha256(content).hexdigest()
+    assert main(_attach("a", _file(tmp_path, "a.txt", content))) == 0
+    blobs.store.delete(address)
+    capsys.readouterr()
+
+    assert main(["verify", "--blobs"]) == 1
+    assert capsys.readouterr() == (f"FINDING 1: blob {address} is missing\n", "")
+
+
+@pytest.mark.db
+def test_show_marks_an_erased_blob(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At an event with its payload, the line of a blob a blob redaction
+    erased for the event names that redaction. At an erased event the blobs
+    come from its redaction, each with the redaction that erased the
+    reference first. Written through `core`, with references to blobs no
+    store holds and without any blob setting: `show` does not ask the
+    store."""
+    engine = _connect(db, monkeypatch)
+    for name in _BLOB_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    erased, kept = "1" * 64, "2" * 64
+    storage = PostgresStorage(engine)
+    append(
+        storage,
+        [
+            RawEvent(
+                source="cli",
+                external_id="a",
+                occurred_at=datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC),
+                evidence=Evidence.VERBATIM,
+                units=split_plaintext("See attached."),
+                payload={"text": "See attached."},
+                blobs=(
+                    BlobRef(sha256=erased, size=12, media_type="text/plain", filename="a.txt"),
+                    BlobRef(sha256=kept, size=3, media_type="text/plain", filename="b.txt"),
+                ),
+            )
+        ],
+        recorded_at=datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC),
+    )
+    now = datetime.now(UTC)
+    redact_blob(storage, storage, erased, reason="r", recorded_at=now)
+
+    assert main(["show", "1"]) == 0
+    assert capsys.readouterr().out.endswith(
+        "  ¶1 See attached.\n"
+        f"  blob {erased} 12 text/plain a.txt <erased by event 2>\n"
+        f"  blob {kept} 3 text/plain b.txt\n"
+    )
+
+    redact_event(storage, storage, 1, reason="r", recorded_at=now)
+    assert main(["show", "1"]) == 0
+    assert capsys.readouterr().out.endswith(
+        "  ¶1 <erased by event 3>\n"
+        f"  blob {erased} <erased by event 2>\n"
+        f"  blob {kept} <erased by event 3>\n"
+    )
+
+
+@pytest.mark.db
+def test_redacting_an_event_without_blobs_needs_no_blob_setting(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _connect(db, monkeypatch)
+    for name in _BLOB_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    assert main(["append", "--source", "cli", "--external-id", "a", "--text", "One"]) == 0
+    capsys.readouterr()
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    assert capsys.readouterr().out == "redacted by event 2\n"
+
+
+class _CountedStore:
+    """The real store, counting the times it is closed."""
+
+    def __init__(self, inner: S3BlobStore, closed: list[int]) -> None:
+        self._inner = inner
+        self._closed = closed
+
+    def stat(self, address: str) -> StoredBlob | None:
+        return self._inner.stat(address)
+
+    def put(self, address: str, sealed: IO[bytes], *, key_id: str) -> None:
+        self._inner.put(address, sealed, key_id=key_id)
+
+    def get(self, address: str) -> tuple[StoredBlob, ClosableSource] | None:
+        return self._inner.get(address)
+
+    def delete(self, address: str) -> None:
+        self._inner.delete(address)
+
+    def close(self) -> None:
+        self._closed.append(1)
+        self._inner.close()
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_every_command_closes_each_blob_store_it_builds(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`verify --blobs` and the deletion after a redaction build a store
+    and never upload, and a store that never uploads is freed by reference
+    counting whether or not it is closed: with either one's close taken out,
+    `test_main_releases_the_blob_store_it_opened` stayed green with both
+    commands in its loop, measured on 2026-10-05. So the stores are counted
+    instead, each one the command line builds against each `close`, on
+    success and on error: the store the command line builds is the real one,
+    wrapped so that its closing is seen."""
+    from previously.storage import s3
+
+    built: list[int] = []
+    closed: list[int] = []
+
+    def counted(**settings: str) -> _CountedStore:
+        built.append(1)
+        return _CountedStore(s3.from_settings(**settings), closed)
+
+    monkeypatch.setattr("previously.cli.from_settings", counted)
+    content = b"counted"
+    address = hashlib.sha256(content).hexdigest()
+    target = tmp_path / "out.txt"
+    assert main(_attach("a", _file(tmp_path, "a.txt", content))) == 0
+    assert main(_attach("b", tmp_path / "a.txt")) == 0
+    assert main(["blob", "get", address, "--output", str(target)]) == 0
+    assert main(["verify", "--blobs"]) == 0
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0  # keeps the blob
+    assert main(["redact", "event", "2", "--reason", "r"]) == 0  # deletes it
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "http://127.0.0.1:1")
+    assert main(["verify", "--blobs"]) == 2
+    assert main(["redact", "blob", address, "--reason", "r"]) == 2
+    capsys.readouterr()
+    assert (len(built), len(closed)) == (7, 7)
+
+
+@pytest.mark.parametrize("failure", ["store-does-not-answer", "identity-cannot-be-read"])
+@pytest.mark.db
+@pytest.mark.s3
+def test_verify_blobs_that_cannot_check_is_an_error_and_no_finding(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    failure: str,
+) -> None:
+    """A store that does not answer, or an identity file that is there and
+    cannot be read, says nothing about the blobs: one sentence, exit code 2,
+    no `FINDING` line, and neither the secret of the store nor an identity
+    in any output. The finding on the other side of the line is
+    `test_a_blob_whose_key_is_not_at_hand_cannot_be_opened_and_the_check_goes_on`
+    in `tests/test_verify.py`."""
+    assert main(_attach("a", _file(tmp_path, "a.txt", b"checked"))) == 0
+    capsys.readouterr()
+    if failure == "store-does-not-answer":
+        monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "http://127.0.0.1:1")
+        expected = "http://127.0.0.1:1"
+    else:
+        path = blobs.keys / recipient_of(blobs.identity)
+        path.unlink()
+        path.mkdir()
+        expected = "cannot be read: IsADirectoryError"
+
+    assert main(["verify", "--blobs"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    line = _single_line(err)
+    assert line.startswith("Error: ")
+    assert expected in line
+    for secret in (blobs.secret, blobs.identity, "AGE-SECRET-KEY"):
+        assert secret not in out + err

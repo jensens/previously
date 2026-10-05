@@ -459,6 +459,21 @@ class PostgresStorage:
             ).scalars()
         )
 
+    def blob_references(self, conn: Connection) -> Iterator[tuple[bytes, int]]:
+        """Every row of the register as `(sha256, event_id)`, ordered by hash
+        and then by event, through a server-side cursor like `read`.
+
+        What a blob has to do with the events that name it is decided in
+        `core` ({ref}`erasure`); this hands over the rows and nothing else.
+        """
+        query = (
+            select(event_blob.c.sha256, event_blob.c.event_id)
+            .order_by(event_blob.c.sha256, event_blob.c.event_id)
+            .execution_options(stream_results=True, yield_per=100)
+        )
+        for row in conn.execute(query):
+            yield row.sha256, row.event_id
+
     # --- RedactionStore ({ref}`erasure`) -------------------------------------
     #
     # The two `UPDATE`s this module runs on the log, and the lock in front of

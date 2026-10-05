@@ -4,7 +4,7 @@
 """The store protocols: what `core` may ask of a store, and nothing more.
 
 `LogStore` is what the modules of `core` that write or read the log call —
-eleven methods, counted on 2026-10-05 as the distinct names that
+thirteen methods, counted on 2026-10-05 as the distinct names that
 `grep -ohE '(storage|log)\\.[a-z_]*\\(' FILES | sort -u` prints, with FILES
 the five modules that name `LogStore` today — `append.py`, `verify.py`,
 `redact.py`, `redaction.py` and `projection/worker.py` under
@@ -13,11 +13,11 @@ implementation. It was eight until the chain
 check took `snapshot` instead of `begin` for its reads, and `append` still
 takes `begin`, so both stay; it was nine until stage 1c, whose redactions
 are read with `read_by_kind`, and ten until `verify` and `redact` read the
-blob register with `blobs_by_event`. The protocol declares a twelfth,
-`events_by_blob`, which no module of `core` calls on 2026-10-05: the
-command line asks it before `blob get` fetches, and it stands here so that
-`core` can be typed against it when an erasure of a blob asks the same
-question. Typing `core` against
+blob register with `blobs_by_event`. The erasure of blobs took it to
+thirteen: `redact` asks `events_by_blob`, which until then only the command
+line asked, and `verify --blobs` reads the whole register with
+`blob_references`. Every method the protocol declares is called by `core`
+on that day. Typing `core` against
 this protocol instead of against `PostgresStorage` removes the edge
 `core -> storage.postgres`, and with it the two named exemptions in
 `.importlinter` and the test that guarded them ({ref}`module-boundaries`).
@@ -80,6 +80,7 @@ class LogStore[Conn](Protocol):
     def read_by_kind(self, conn: Conn, kind: str) -> Iterator[EventRow]: ...
     def blobs_by_event(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, list[bytes]]: ...
     def events_by_blob(self, conn: Conn, sha256: bytes) -> list[int]: ...
+    def blob_references(self, conn: Conn) -> Iterator[tuple[bytes, int]]: ...
 
 
 class RedactionStore[Conn](Protocol):

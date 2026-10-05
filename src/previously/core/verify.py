@@ -22,12 +22,20 @@ been manipulated into a floating point number or an upper-case key — one
 single poisoned row thereby blinded the check of the **whole** chain. That is
 the opposite of what an integrity check is supposed to deliver: whoever can
 forge one row could have hidden every further forgery behind it.
+
+With `blobs`, the check also holds the blob store against the rule of
+{ref}`erasure`, after the snapshot (`_blob_findings`).
 """
 
 from dataclasses import dataclass
+from previously.contract.blobs import BlobStore
+from previously.contract.blobs import KeyProvider
 from previously.contract.types import Anchor
+from previously.core.blob import fetch_blob
 from previously.core.canonical import canonical
 from previously.core.chain import read_references
+from previously.core.errors import AddressMismatch
+from previously.core.errors import CannotOpen
 from previously.core.errors import InvalidPayload
 from previously.core.hashing import event_hash
 from previously.core.hashing import event_hash_v2
@@ -39,10 +47,12 @@ from previously.core.hashing import unit_digest
 from previously.core.hashing import units_hash
 from previously.core.hashing import units_hash_v2
 from previously.core.redaction import action_name
+from previously.core.redaction import blob_expected
 from previously.core.redaction import MalformedAction
 from previously.core.redaction import parse
 from previously.core.redaction import REDACTION
 from previously.core.redaction import RedactionIndex
+from previously.core.sealing import NullSink
 from typing import cast
 from typing import Protocol
 from typing import TYPE_CHECKING
@@ -68,16 +78,29 @@ class Finding:
 
 
 @dataclass(frozen=True)
+class BlobCheck:
+    """What `examine` needs to check the blobs: the store, and the identities
+    that open what lies in it ({ref}`blobs`)."""
+
+    store: BlobStore
+    keys: KeyProvider
+
+
+@dataclass(frozen=True)
 class Examination:
     """What one pass over the chain found, and where the chain ended.
 
     `tip` is the last row the pass saw, not the answer to a second query
     after it ({ref}`external-anchor`), whether or not the pass found
     something — it is where the log ends. `None` for an empty log.
+
+    `blobs_checked` is the number of distinct blobs the register names, each
+    held against the store; 0 without a `BlobCheck`.
     """
 
     findings: tuple[Finding, ...]
     tip: Anchor | None
+    blobs_checked: int = 0
 
     @property
     def anchor(self) -> Anchor | None:
@@ -363,6 +386,12 @@ class _Erasures:
         self._partial: list[int] = []
         self._registered: dict[int, frozenset[bytes]] = {}
 
+    @property
+    def redactions(self) -> RedactionIndex:
+        """The redactions the pass has read so far, all of them once it has
+        ended."""
+        return self._redactions
+
     def observe(
         self, row: EventRow, units: Sequence[UnitRow], blobs: Sequence[bytes]
     ) -> list[Finding]:
@@ -437,12 +466,18 @@ def _execution_findings[Conn](
     redaction whose unit still carries its text has to be told apart from one
     whose unit does not. One read per redaction, because redactions are few.
     """
-    if redaction.event is None:
-        # A redaction of a blob names no event to read here; what it erased
-        # lies in the blob store, and its check comes with the blobs.
-        return []
-    target = redaction.event
     missing = [Finding(redaction.id, "redaction names a target that does not exist")]
+    if redaction.event is None:
+        # A redaction of a blob, the one scope without an event of its own
+        # (`redaction.parse`), which the cast states. It erased nothing in
+        # the log: every event it names has to stand before it and use the
+        # blob. What it erased in the store is checked with the blobs.
+        blob = cast("str", redaction.blob)
+        users = set(storage.events_by_blob(conn, bytes.fromhex(blob)))
+        if all(event_id < redaction.id and event_id in users for event_id in redaction.events):
+            return []
+        return missing
+    target = redaction.event
     row = next(iter(storage.read(conn, from_id=target, limit=1)), None)
     if target >= redaction.id or row is None or row.id != target:
         return missing
@@ -537,6 +572,7 @@ def examine[Conn](
     anchors: Sequence[Anchor] = (),
     exact: bool = False,
     batch: int = 1000,
+    blobs: BlobCheck | None = None,
 ) -> Examination:
     """The one pass: the chain, and the anchors against it.
 
@@ -545,6 +581,10 @@ def examine[Conn](
     — "contains" — and with `exact` that the tip is the newest anchor
     ({ref}`external-anchor`). The anchors are checked as the pass comes by
     them; there is no second read.
+
+    With `blobs`, it also holds every blob the register names against the
+    store, after the snapshot; `_blob_findings` says how. Without it, no
+    blob is touched.
 
     Returns structured results and no sentences: the command line formats
     them today, and a second entry point formats them its own way.
@@ -588,6 +628,9 @@ def examine[Conn](
                 # In the same snapshot for the same reason: the targets read
                 # here have to be the rows the pass checked.
                 findings.extend(erasures.reconcile(storage, conn))
+                # And the references of every blob, so that the rule is
+                # applied to the register the pass checked.
+                references = _references(storage, conn, blobs)
                 break
 
             # Source attributions **and** units of the whole batch, each in
@@ -611,18 +654,18 @@ def examine[Conn](
 
             for row in rows:
                 units = units_of.get(row.id, [])
-                blobs = blobs_of.get(row.id, [])
+                registered = blobs_of.get(row.id, [])
                 findings.extend(
                     _check_event(
                         row,
                         units,
                         keys.get(row.id),
-                        blobs,
+                        registered,
                         previous_hash=previous_hash,
                         first=expect_first,
                     )
                 )
-                findings.extend(erasures.observe(row, units, blobs))
+                findings.extend(erasures.observe(row, units, registered))
                 for anchored in pending.pop(row.id, ()):
                     if anchored != row.hash:
                         findings.append(Finding(row.id, "hash does not match the anchor"))
@@ -633,7 +676,80 @@ def examine[Conn](
                 tip = Anchor(row.id, row.hash)
 
     findings.extend(_closing_findings(pending, anchors, tip, exact=exact))
-    return Examination(tuple(findings), tip)
+    blob_findings = _blob_findings(references, erasures.redactions, blobs)
+    findings.extend(blob_findings)
+    return Examination(tuple(findings), tip, blobs_checked=len(references))
+
+
+def _references[Conn](
+    storage: LogStore[Conn], conn: Conn, blobs: BlobCheck | None
+) -> dict[str, list[int]]:
+    """Every row of the register, as the events that name each blob,
+    ascending — or nothing at all without a `BlobCheck`.
+
+    All of it is held in the memory of the process until the blobs are
+    checked, one address and its event ids per blob: that is the limit of
+    `verify --blobs`, and a register of millions of rows costs that much
+    memory. The alternative was to check each blob while the cursor still
+    stands, inside the snapshot, which would hold a transaction open for as
+    long as reading every byte in the store takes.
+    """
+    if blobs is None:
+        return {}
+    grouped: dict[str, list[int]] = {}
+    for sha256, event_id in storage.blob_references(conn):
+        grouped.setdefault(sha256.hex(), []).append(event_id)
+    return grouped
+
+
+def _blob_findings(
+    references: Mapping[str, Sequence[int]], index: RedactionIndex, blobs: BlobCheck | None
+) -> list[Finding]:
+    """Every blob the register names, held against the store by the rule of
+    {ref}`erasure`, each finding under the smallest `id` that names the blob.
+
+    Run after the snapshot and not in it: reading every byte in the store
+    takes as long as the store is large, and a transaction held open for
+    that long holds back the database's cleanup. So the store is seen later
+    than the log, and a blob erased and deleted since the snapshot is
+    reported as missing; the next run does not report it.
+
+    A blob that has to lie is fetched whole into a `NullSink`, through the
+    check of its address: one that is not there is missing, one that opens
+    to another content does not match its address, and one that names no
+    key, whose key has no identity at hand, or that `age` refuses cannot be
+    opened. A blob that does not have to lie is only asked for, and if it is
+    there, it is erased and still present.
+
+    Where the line runs: a finding says something about the log and its
+    blobs. What says that the check could not be made is raised and ends
+    the check — a store that does not answer or refuses (`storage.errors`),
+    an identity file that exists and cannot be read (`IdentityUnreadable`),
+    an identity that is not one (`InvalidKey`), a stream that breaks off.
+    Turned into findings, they would report blobs as broken that nobody
+    looked at.
+    """
+    if blobs is None:
+        return []
+    findings: list[Finding] = []
+    for sha256, event_ids in references.items():
+        reason = _blob_reason(blobs, sha256, expected=blob_expected(index, sha256, event_ids))
+        if reason is not None:
+            findings.append(Finding(min(event_ids), f"blob {sha256} {reason}"))
+    return findings
+
+
+def _blob_reason(blobs: BlobCheck, sha256: str, *, expected: bool) -> str | None:
+    """What is wrong with one blob in the store, or `None`."""
+    if not expected:
+        return None if blobs.store.stat(sha256) is None else "is erased and still present"
+    try:
+        size = fetch_blob(blobs.store, blobs.keys, sha256, NullSink())
+    except AddressMismatch:
+        return "does not match its address"
+    except CannotOpen:
+        return "cannot be opened"
+    return "is missing" if size is None else None
 
 
 def _closing_findings(

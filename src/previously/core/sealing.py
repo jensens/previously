@@ -253,3 +253,16 @@ class HashingSink:
 
     def hexdigest(self) -> str:
         return self._digest.hexdigest()
+
+
+class NullSink:
+    """Takes bytes and throws them away, saying it took all of them.
+
+    For a check that only needs what passes to be hashed — `verify --blobs`
+    fetches every blob into one, through `HashingSink` — and nothing to be
+    kept. It returns the length of what it was given, because `HashingSink`
+    hashes and counts what its sink says it took.
+    """
+
+    def write(self, data: bytes, /) -> int:
+        return len(data)

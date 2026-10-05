@@ -374,10 +374,12 @@ def test_a_fetch_into_a_sink_that_takes_little_at_a_time_is_whole_and_counted_on
 def test_a_fetch_into_a_sink_that_fails_returns_no_size(
     blob_store: S3BlobStore, age_identity: str, tmp_path: Path, size: int
 ) -> None:
-    """Ruling T6-c of the 2026-10-04 stage 1c plan: `fetch_blob` hashes what
-    passes before the sink writes it, so a write that failed without a word
-    would leave a digest that holds and a size returned for bytes nobody
-    has. The sink's failure is raised, and no size is returned."""
+    """Ruling T6-c of the 2026-10-04 stage 1c plan: a write that failed
+    without a word would leave a size returned for bytes nobody has, and
+    before fix round 2 of task 6, when `fetch_blob` hashed what passed before
+    the sink wrote it, a digest that held as well. Since then the hashing
+    sink writes first and hashes only what the sink took. The sink's failure
+    is raised, and no size is returned."""
     content = b"x" * size
     stored = store_blob(blob_store, io.BytesIO(content), recipient=recipient_of(age_identity))
     with pytest.raises(SinkUnwritable) as caught:

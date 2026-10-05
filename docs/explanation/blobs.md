@@ -181,7 +181,7 @@ An event without attachments carries no such key at all, so its payload is the o
 
 Next to the payload stands a table, `event_blob`, with one row per event and blob.
 It answers a question the payload can't answer cheaply: which events use this blob?
-Asking the payloads would mean reading every event, and `blob get` asks it before every fetch, as an erasure of a blob will.
+Asking the payloads would mean reading every event, and `blob get` asks it before every fetch, as an erasure does.
 
 The register carries no truth of its own, and that's the point of keeping it beside the payload rather than instead of it.
 The chain covers the payload and not the register, so the register can be wrong in a way the chain doesn't see: a row added, a row deleted.
@@ -199,6 +199,30 @@ The name is the file's name without its directory: where the file lay on the mac
 The media type is derived from that name alone, never guessed from the content, and only from the table built into Python itself, not from the files of the system it runs on.
 Both stand in the event hash forever, so neither may depend on which machine attached the file.
 
-## What this page doesn't say yet
+## When a blob goes again
 
-When a blob goes again, through an erasure of the events that use it or of the blob itself, and how `verify` checks the bytes in the store, comes with the next step of stage 1c; {ref}`erasure` describes erasure as it stands today.
+A blob leaves the store through an erasure, of the events that use it or of the blob itself, and only once every reference to it has been erased.
+A blob shared by two mails stays when one of them is erased, because the other still names it.
+{ref}`erasure` gives the rule, its consequences, and why the store is touched only after the redaction stands.
+
+The register is what makes that rule cheap to compute.
+An erasure asks it which events use a blob, holds each of them against the redactions, and knows whether the blob still has to lie, without reading a single payload.
+
+## What verify checks in the store
+
+Without a switch, `verify` touches no blob: it holds the register against the payloads and the redactions, inside the database.
+With `--blobs` it also reads the store, after the pass over the chain, and holds every blob the register names against the rule.
+A blob that has to lie is fetched whole, opened, and its plaintext hashed against its address; a blob that doesn't have to lie is only asked for, and if it's still there, that's a finding.
+
+It reads every byte because nothing short of that shows that a blob is the content its address names.
+The address is the hash of the plaintext, and the store holds ciphertext only, so asking whether an object exists, or how large its ciphertext is, says nothing about which content it opens to.
+Only the opened plaintext, hashed, answers the question the log asks.
+That makes the switch as slow as the store is large, which is a check for the night and not for every run of the anchor routine.
+
+The blobs are read after the snapshot of the chain, not inside it.
+A transaction held open for as long as reading the whole store takes holds back the database's cleanup for that long.
+The price is that the store is seen a little later than the log: a blob erased and deleted while the check runs is reported as missing, and the next run doesn't report it.
+The references of every blob are held in memory until then, one address and its event identifiers per blob.
+
+A finding says something about the log and its blobs: a blob is missing, doesn't match its address, can't be opened, or is erased and still present.
+A store that doesn't answer, an identity file that can't be read, or a stream that breaks off says nothing about the blobs, only that the check couldn't be made, so it ends the command as an error instead of reporting blobs as broken that nobody looked at.

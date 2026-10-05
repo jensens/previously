@@ -19,9 +19,11 @@ from previously.core.errors import ChainConflict
 from previously.core.errors import RedactionRefused
 from previously.core.hashing import payload_hash_v2
 from previously.core.hashing import unit_digest
+from previously.core.redact import redact_blob
 from previously.core.redact import redact_event
 from previously.core.redact import redact_units
 from previously.core.redact import Redacted
+from previously.core.redaction import blob_expected
 from previously.core.redaction import parse
 from previously.core.redaction import read_index
 from previously.core.units import split_plaintext
@@ -37,6 +39,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 import threading
+import time
 
 
 if TYPE_CHECKING:
@@ -502,11 +505,11 @@ def test_read_index_passes_over_what_it_cannot_read(db: Engine) -> None:
     """`read_index` takes every redaction it can read, the form for a blob
     included, and passes over an action without a valid form and an action
     whose payload is gone: reporting those is `verify`'s business, and the
-    findings below are that report. A redaction of a blob names no event, so
-    `verify` holds nothing against the log for it."""
+    findings below are that report. The redaction of a blob names an event
+    that uses the blob, so `verify` finds nothing against it."""
     storage = PostgresStorage(db)
-    append(storage, [_message("m")], recorded_at=NOW)
     blob = "ab" * 32
+    append(storage, [_attached("m", blob)], recorded_at=NOW)
     for payload in (
         {"action": "redaction", "scope": "blob", "target": {"blob": blob, "events": [1]},
          "reason": "r"},
@@ -593,6 +596,9 @@ class _ContestedLog:
     def events_by_blob(self, conn: Connection, sha256: bytes) -> list[int]:
         return self._inner.events_by_blob(conn, sha256)
 
+    def blob_references(self, conn: Connection) -> Iterator[tuple[bytes, int]]:
+        return self._inner.blob_references(conn)
+
 
 @pytest.mark.db
 def test_a_lost_chain_position_is_retried_and_leaves_nothing_behind(db: Engine) -> None:
@@ -643,3 +649,232 @@ def test_units_of_an_event_in_an_unknown_hash_format_are_refused(db: Engine) -> 
         redact_units(storage, storage, 1, [1], reason="r", recorded_at=LATER)
     assert str(refused.value) == "event 1 names hash format 3, which is not known"
     assert len(_rows(storage)) == 1
+
+
+# --- Erasing blobs ({ref}`erasure`) ------------------------------------------
+#
+# The references below name blobs no store holds: `core` does not delete, it
+# says what no longer has to lie, and the command line deletes it.
+
+_OWN = "b" * 64
+_SHARED = "5" * 64
+
+
+def _attached(external_id: str, *addresses: str) -> RawEvent:
+    return replace(
+        _message(external_id),
+        blobs=tuple(
+            BlobRef(sha256=address, size=1, media_type="text/plain") for address in addresses
+        ),
+    )
+
+
+@pytest.mark.db
+def test_redacting_the_only_event_of_a_blob_makes_it_obsolete(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    append(storage, [_attached("m", _OWN)], recorded_at=NOW)
+
+    result = redact_event(storage, storage, 1, reason="r", recorded_at=LATER)
+
+    assert result == Redacted(redaction_id=2, written=True, obsolete_blobs=(_OWN,))
+
+
+@pytest.mark.db
+def test_a_shared_blob_is_kept_until_its_last_event_goes(db: Engine) -> None:
+    """Erasing one of two events that share a blob leaves the blob, named
+    with the event that still uses it; erasing the second lets it go."""
+    storage = PostgresStorage(db)
+    append(storage, [_attached("m", _SHARED), _attached("n", _SHARED)], recorded_at=NOW)
+
+    first = redact_event(storage, storage, 1, reason="r", recorded_at=LATER)
+    assert (first.obsolete_blobs, first.kept_blobs) == ((), {_SHARED: (2,)})
+
+    second = redact_event(storage, storage, 2, reason="r", recorded_at=LATER)
+    assert (second.obsolete_blobs, second.kept_blobs) == ((_SHARED,), {})
+
+
+@pytest.mark.db
+def test_redacting_a_blob_names_every_event_that_uses_it(db: Engine) -> None:
+    """The redaction carries the form of a blob and names both events; the
+    payloads and units of the events stay as they were, the other blob of
+    the first event included, and `verify` finds nothing."""
+    storage = PostgresStorage(db)
+    append(storage, [_attached("m", _SHARED, _OWN), _attached("n", _SHARED)], recorded_at=NOW)
+    before = _rows(storage)
+    units_before = [_unit_state(db, 1), _unit_state(db, 2)]
+
+    result = redact_blob(storage, storage, _SHARED, reason="r", recorded_at=LATER)
+
+    assert result == Redacted(redaction_id=3, written=True, obsolete_blobs=(_SHARED,))
+    *events, redaction = _rows(storage)
+    assert redaction.payload == {
+        "action": "redaction",
+        "scope": "blob",
+        "target": {"blob": _SHARED, "events": [1, 2]},
+        "reason": "r",
+    }
+    assert events == before
+    assert [_unit_state(db, 1), _unit_state(db, 2)] == units_before
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_the_same_content_at_a_new_event_after_a_blob_redaction_is_expected_again(
+    db: Engine,
+) -> None:
+    """The redaction named the events that used the blob when it was
+    written, and not the event that comes after it: that reference is not
+    erased, so the blob has to lie again. Erasing it again names that event
+    alone."""
+    storage = PostgresStorage(db)
+    append(storage, [_attached("m", _OWN)], recorded_at=NOW)
+    redact_blob(storage, storage, _OWN, reason="r", recorded_at=LATER)
+    append(storage, [_attached("n", _OWN)], recorded_at=LATER)
+
+    with storage.begin() as c:
+        users = storage.events_by_blob(c, bytes.fromhex(_OWN))
+        index = read_index(storage, c)
+    assert users == [1, 3]
+    assert blob_expected(index, _OWN, users)
+
+    again = redact_blob(storage, storage, _OWN, reason="r", recorded_at=LATER)
+    assert again == Redacted(redaction_id=4, written=True, obsolete_blobs=(_OWN,))
+    payload = _rows(storage)[-1].payload
+    assert payload is not None
+    assert parse(4, payload).events == (3,)
+
+
+@pytest.mark.db
+def test_a_second_blob_redaction_writes_nothing_and_still_names_the_blob_obsolete(
+    db: Engine,
+) -> None:
+    """What the second call says is what lets it finish a deletion the first
+    did not get to: `obsolete_blobs` is computed whether or not anything is
+    written."""
+    storage = PostgresStorage(db)
+    append(storage, [_attached("m", _OWN)], recorded_at=NOW)
+    redact_blob(storage, storage, _OWN, reason="r", recorded_at=LATER)
+
+    second = redact_blob(storage, storage, _OWN, reason="r", recorded_at=LATER)
+
+    assert second == Redacted(redaction_id=2, written=False, obsolete_blobs=(_OWN,))
+    assert len(_rows(storage)) == 2
+
+
+@pytest.mark.db
+def test_redacting_a_blob_no_event_uses_is_refused(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    append(storage, [_attached("m", _SHARED)], recorded_at=NOW)
+
+    with pytest.raises(RedactionRefused, match=f"^no event uses blob {_OWN}$"):
+        redact_blob(storage, storage, _OWN, reason="r", recorded_at=LATER)
+
+    assert len(_rows(storage)) == 1
+
+
+class _StaleReader(PostgresStorage):
+    """The real store, except that it says when it has read the redactions,
+    and reads the tip only once `ready` is set: an erasure through it reads
+    the redactions at one moment and the tip at a later one."""
+
+    def __init__(self, engine: Engine, ready: threading.Event) -> None:
+        super().__init__(engine)
+        self.has_read = threading.Event()
+        self._ready = ready
+
+    def read_by_kind(self, conn: Connection, kind: str) -> Iterator[EventRow]:
+        self.has_read.set()
+        return super().read_by_kind(conn, kind)
+
+    def tip(self, conn: Connection) -> Tip | None:
+        assert self._ready.wait(timeout=10)
+        return super().tip(conn)
+
+
+class _HoldingEraser:
+    """The real store, except that `erase_payload` — after the lock, after
+    the redaction is written, before the commit — says it is there and then
+    waits until `go_on` says so."""
+
+    def __init__(self, inner: PostgresStorage, go_on: Callable[[], bool]) -> None:
+        self._inner = inner
+        self._go_on = go_on
+        self.holding = threading.Event()
+
+    def lock_event(self, conn: Connection, event_id: int) -> EventRow | None:
+        return self._inner.lock_event(conn, event_id)
+
+    def erase_payload(self, conn: Connection, event_id: int) -> None:
+        self.holding.set()
+        deadline = time.monotonic() + 10
+        while not self._go_on():
+            assert time.monotonic() < deadline, "the other erasure never came"
+            time.sleep(0.01)
+        self._inner.erase_payload(conn, event_id)
+
+    def erase_units(self, conn: Connection, event_id: int, seqs: Sequence[int]) -> None:
+        self._inner.erase_units(conn, event_id, seqs)
+
+
+def _waiting_on_a_lock(db: Engine) -> bool:
+    with db.connect() as c:
+        return bool(
+            c.execute(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                )
+            ).scalar_one()
+        )
+
+
+@pytest.mark.db
+def test_two_redactions_of_events_sharing_a_blob_let_it_go_however_they_meet(
+    db: Engine,
+) -> None:
+    """Two events share a blob, and their erasures overlap in the one order
+    the chain position does not settle: the second reads the redactions
+    before the first commits, and the tip after. The first holds its
+    transaction open until the second has either read the redactions or is
+    waiting on a lock. Each erasure locks every event that uses a blob of its
+    target, in ascending order, so the second waits at the lock of the first
+    event, reads the redactions once the first has committed, and says the
+    blob is obsolete. Locking the target alone, the second would read no
+    redaction of the first event, write on the tip after it, and keep the
+    blob — and nothing would delete it."""
+    storage = PostgresStorage(db)
+    append(storage, [_attached("m", _SHARED), _attached("n", _SHARED)], recorded_at=NOW)
+
+    first_done = threading.Event()
+    second_log = _StaleReader(db, first_done)
+    first_eraser = _HoldingEraser(
+        storage, lambda: second_log.has_read.is_set() or _waiting_on_a_lock(db)
+    )
+    results: dict[int, Redacted] = {}
+    errors: list[BaseException] = []
+
+    def first() -> None:
+        try:
+            results[1] = redact_event(storage, first_eraser, 1, reason="r", recorded_at=LATER)
+        except BaseException as e:
+            errors.append(e)
+        finally:
+            first_done.set()
+
+    def second() -> None:
+        try:
+            assert first_eraser.holding.wait(timeout=10)
+            results[2] = redact_event(second_log, storage, 2, reason="r", recorded_at=LATER)
+        except BaseException as e:
+            errors.append(e)
+
+    threads = [threading.Thread(target=first), threading.Thread(target=second)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+        assert not t.is_alive(), "thread is hanging"
+
+    assert not errors, errors
+    assert (results[1].obsolete_blobs, results[2].obsolete_blobs) == ((), (_SHARED,))
+    assert verify(storage) == []

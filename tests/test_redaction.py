@@ -6,6 +6,8 @@
 
 from previously.core.canonical import canonical
 from previously.core.redaction import action_name
+from previously.core.redaction import blob_expected
+from previously.core.redaction import blob_payload
 from previously.core.redaction import event_payload
 from previously.core.redaction import MalformedAction
 from previously.core.redaction import parse
@@ -17,6 +19,7 @@ import pytest
 
 
 BLOB = "ab" * 32
+OTHER_BLOB = "cd" * 32
 
 
 def _units_form(**target: object) -> dict[str, object]:
@@ -120,8 +123,8 @@ def test_an_action_without_a_name_is_malformed() -> None:
 
 
 def test_the_blob_form_parses() -> None:
-    """The third form, written by hand: its builder comes with the erasure of
-    a blob, and the form is one thing already."""
+    """The third form, written by hand rather than by `blob_payload`, so that
+    the parser is held against the form and not against its own builder."""
     payload: dict[str, object] = {
         "action": "redaction",
         "scope": "blob",
@@ -148,3 +151,72 @@ def test_the_index_finds_a_unit_through_its_own_redaction_and_through_its_event(
 def test_every_payload_a_builder_makes_is_canonical() -> None:
     canonical(event_payload(5, blobs=[BLOB, BLOB], reason="r"))
     canonical(units_payload(5, [2, 1], reason="r"))
+    canonical(blob_payload(BLOB, [7, 2, 7], reason="r"))
+
+
+def test_the_blob_form_round_trips() -> None:
+    payload = blob_payload(BLOB, [7, 2, 7], reason="r")
+    assert payload["target"] == {"blob": BLOB, "events": [2, 7]}
+    assert parse(9, payload) == Redaction(id=9, scope="blob", reason="r", blob=BLOB, events=(2, 7))
+
+
+def test_a_reference_is_erased_through_its_event_or_through_a_blob_redaction_that_names_it() -> (
+    None
+):
+    """A reference (event, blob) is erased when its event is erased whole or
+    when a blob redaction names the event ({ref}`erasure`). A blob redaction
+    that names another event leaves this reference alone, and so does one of
+    another blob."""
+    index = RedactionIndex()
+    of_event = parse(8, event_payload(2, blobs=[BLOB], reason="r"))
+    of_blob = parse(9, blob_payload(BLOB, [3], reason="r"))
+    index.add(of_event)
+    index.add(of_blob)
+    assert index.of_reference(2, BLOB) == of_event
+    assert index.of_reference(3, BLOB) == of_blob
+    assert index.of_reference(4, BLOB) is None
+    assert index.of_reference(3, OTHER_BLOB) is None
+    # The erasure of the event covers every blob it named, whichever list
+    # names them: the register is what says which, not this index.
+    assert index.of_reference(2, OTHER_BLOB) == of_event
+
+
+def _index(*payloads: dict[str, object]) -> RedactionIndex:
+    index = RedactionIndex()
+    for offset, payload in enumerate(payloads):
+        index.add(parse(100 + offset, payload))
+    return index
+
+
+@pytest.mark.parametrize(
+    ("index", "users", "expected"),
+    [
+        pytest.param(
+            _index(event_payload(1, blobs=[BLOB], reason="r")), [1, 2], True, id="one-of-two-erased"
+        ),
+        pytest.param(
+            _index(
+                event_payload(1, blobs=[BLOB], reason="r"),
+                event_payload(2, blobs=[BLOB], reason="r"),
+            ),
+            [1, 2],
+            False,
+            id="both-erased",
+        ),
+        pytest.param(
+            _index(blob_payload(BLOB, [1, 2], reason="r")), [1, 2], False, id="blob-names-both"
+        ),
+        pytest.param(
+            _index(blob_payload(BLOB, [1, 2], reason="r")),
+            [1, 2, 3],
+            True,
+            id="blob-names-both-and-a-third-comes",
+        ),
+        pytest.param(RedactionIndex(), [], False, id="no-reference"),
+    ],
+)
+def test_blob_expected(index: RedactionIndex, users: list[int], expected: bool) -> None:
+    """The rule ({ref}`erasure`): a blob has to lie in the store as long as
+    at least one of its references is not erased, and without any
+    reference it has nothing to lie for."""
+    assert blob_expected(index, BLOB, users) is expected

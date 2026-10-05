@@ -39,11 +39,14 @@ from previously.core.projection import CHRONICLE
 from previously.core.projection import Outcome
 from previously.core.projection import PROJECTIONS
 from previously.core.projection import SOURCE_STATS
+from previously.core.redact import redact_blob
 from previously.core.redact import redact_event
 from previously.core.redact import redact_units
+from previously.core.redaction import blob_erasure
 from previously.core.redaction import read_index
 from previously.core.sealing import check_recipient
 from previously.core.units import split_plaintext
+from previously.core.verify import BlobCheck
 from previously.core.verify import examine
 from previously.storage.errors import StorageError
 from previously.storage.keys import DirectoryKeys
@@ -63,13 +66,15 @@ import tempfile
 
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
     from collections.abc import Sequence
     from previously.contract.blobs import BlobStore
     from previously.contract.blobs import KeyProvider
+    from previously.contract.rows import EventRow
     from previously.contract.types import Anchor
     from previously.core.redact import Redacted
     from previously.core.redaction import Redaction
+    from previously.core.redaction import RedactionIndex
+    from previously.core.verify import Examination
     from typing import BinaryIO
 
 MAX_TEXT_BYTES = 1_000_000
@@ -456,6 +461,23 @@ def _verify_arguments(parser: argparse.ArgumentParser) -> None:
         "--anchors", metavar="FILE", help="anchor lines to check against; - reads standard input"
     )
     parser.add_argument("--exact", action="store_true", help="the tip has to be the newest anchor")
+    parser.add_argument(
+        "--blobs", action="store_true", help="also read every blob in the store and check it"
+    )
+
+
+def _examine(
+    storage: PostgresStorage, anchors: Sequence[Anchor], *, exact: bool, blobs: bool
+) -> Examination:
+    """The one pass, and with `blobs` the check of the blob store after it
+    ({ref}`blobs`). The store is built once, every blob is fetched through
+    it, and it is closed whether the pass returns or raises. Its settings
+    are read only with `blobs`."""
+    if not blobs:
+        return examine(storage, anchors=anchors, exact=exact)
+    keys = _identities()
+    with _blob_store() as store:
+        return examine(storage, anchors=anchors, exact=exact, blobs=BlobCheck(store, keys))
 
 
 def _cmd_verify(args: argparse.Namespace) -> int:
@@ -465,7 +487,11 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         raise InvalidPayload("--exact needs --anchors")
     anchors = () if args.anchors is None else _read_anchors(args.anchors)
     with _storage() as storage:
-        examination = examine(storage, anchors=anchors, exact=args.exact)
+        examination = _examine(storage, anchors, exact=args.exact, blobs=args.blobs)
+    # The count of blobs closes the line, after whatever the anchors said.
+    count = examination.blobs_checked
+    matched = f", {_plural(count, 'blob')} {'matches' if count == 1 else 'match'}"
+    blob_tail = matched if args.blobs else ""
     for finding in examination.findings:
         print(f"FINDING {finding.event_id}: {finding.reason}")
     if examination.findings:
@@ -476,7 +502,7 @@ def _cmd_verify(args: argparse.Namespace) -> int:
         # lag ({ref}`external-anchor`): without an anchor the chain attests
         # "unchanged" and nothing about "complete". Only on an intact chain —
         # beside findings the sentence would be noise.
-        print("chain intact")
+        print(f"chain intact{blob_tail}")
         print(
             "no anchor given: verify attests that the log is unchanged, "
             "not that it is complete; see `previously anchor`",
@@ -486,7 +512,7 @@ def _cmd_verify(args: argparse.Namespace) -> int:
     count = len(anchors)
     held = f"{_plural(count, 'anchor')} {'holds' if count == 1 else 'hold'}"
     tail = ", the tip is the newest anchor" if args.exact else ""
-    print(f"chain intact, {held}{tail}")
+    print(f"chain intact, {held}{tail}{blob_tail}")
     return 0
 
 
@@ -565,29 +591,42 @@ def _cmd_show(args: argparse.Namespace) -> int:
                 if content is None:
                     content = _erased(index.of_unit(row.id, unit.seq))
                 print(f"  ¶{unit.seq} {content}")
-            for line in _blob_lines(row.payload):
+            for line in _blob_lines(row, index):
                 print(line)
             return 0
     print(f"No event {args.event_id}", file=sys.stderr)
     return 1
 
 
-def _blob_lines(payload: Mapping[str, object] | None) -> list[str]:
+def _blob_lines(row: EventRow, index: RedactionIndex) -> list[str]:
     """One line per reference the payload names, in its order, out of the
     log alone: `show` does not ask the blob store whether the blob is there
-    ({ref}`blobs`).
+    ({ref}`blobs`). A reference a redaction erased names it at the end of
+    its line ({ref}`erasure`).
 
     Name and media type pass through `escape_field`, so that a newline in a
     file's name cannot end the line. A payload whose list does not have its
     form prints no line; `verify` reports it.
+
+    An erased payload took size, media type and name with it, so the blobs
+    of an erased event come from its redaction, the hash alone; without a
+    redaction there is no list to print, and `verify` reports the tombstone.
     """
-    if payload is None:
-        return []
-    return [
-        f"  blob {reference.sha256} {reference.size} {escape_field(reference.media_type)} "
-        f"{'-' if reference.filename is None else escape_field(reference.filename)}"
-        for reference in read_references(payload) or ()
-    ]
+    if row.payload is None:
+        redaction = index.of_event(row.id)
+        named = () if redaction is None else redaction.blobs
+        return [
+            f"  blob {sha256} {_erased(index.of_reference(row.id, sha256))}" for sha256 in named
+        ]
+    lines: list[str] = []
+    for reference in read_references(row.payload) or ():
+        line = (
+            f"  blob {reference.sha256} {reference.size} {escape_field(reference.media_type)} "
+            f"{'-' if reference.filename is None else escape_field(reference.filename)}"
+        )
+        by = index.of_reference(row.id, reference.sha256)
+        lines.append(line if by is None else f"{line} {_erased(by)}")
+    return lines
 
 
 def _blob_arguments(parser: argparse.ArgumentParser) -> None:
@@ -657,8 +696,14 @@ def _cmd_blob_get(args: argparse.Namespace) -> int:
     with _blob_store() as store:
         with _storage() as storage, storage.begin() as conn:
             users = storage.events_by_blob(conn, bytes.fromhex(address))
+            erasure = blob_erasure(read_index(storage, conn), address, users)
         if not users:
             print(f"no event uses blob {address}", file=sys.stderr)
+            return 1
+        # Erased is not a failure of the store but an answer about the log,
+        # given whether or not an object still lies there ({ref}`erasure`).
+        if erasure is not None:
+            print(f"blob {address} is erased (event {erasure.id})", file=sys.stderr)
             return 1
         try:
             size = _fetch_to(store, keys, address, args.output)
@@ -683,7 +728,7 @@ def _erased(by: Redaction | None) -> str:
 
 def _redact_arguments(parser: argparse.ArgumentParser) -> None:
     # The first command with a second level: what is erased is a word of its
-    # own, `event` or `units`, each with its own arguments.
+    # own, `event`, `units` or `blob`, each with its own arguments.
     targets = parser.add_subparsers(dest="target", required=True)
     event = targets.add_parser("event", help="erase the payload and the content of every unit")
     event.add_argument("event_id", type=int)
@@ -692,6 +737,9 @@ def _redact_arguments(parser: argparse.ArgumentParser) -> None:
     units.add_argument("event_id", type=int)
     units.add_argument("seqs", type=int, nargs="+", metavar="SEQ")
     units.add_argument("--reason", required=True, help="why; it stays in the log for good")
+    blob = targets.add_parser("blob", help="erase a blob for every event that uses it")
+    blob.add_argument("address", metavar="HASH", help="the SHA-256 of the content, in hex")
+    blob.add_argument("--reason", required=True, help="why; it stays in the log for good")
 
 
 def _redacted_line(result: Redacted) -> str:
@@ -699,6 +747,58 @@ def _redacted_line(result: Redacted) -> str:
     if result.written:
         return f"redacted by event {result.redaction_id}"
     return f"already redacted by event {result.redaction_id}"
+
+
+def _kept_line(address: str, users: Sequence[int]) -> str:
+    """The notice for a blob that stays in the store, with the events that
+    still use it."""
+    ids = ", ".join(str(event_id) for event_id in users)
+    if len(users) == 1:
+        return f"blob {address} stays in the store: event {ids} still uses it"
+    return f"blob {address} stays in the store: events {ids} still use it"
+
+
+def _unfinished(redaction_id: int, outstanding: str) -> PreviouslyError:
+    """The error of a redaction that stands and is not carried out to its
+    end: what stands, what is outstanding, and that the same command
+    finishes it — the second call finds the target covered, writes nothing,
+    and does what is left."""
+    return PreviouslyError(
+        f"the redaction is recorded as event {redaction_id}, but it is not finished: "
+        f"{outstanding}; run the same command again"
+    )
+
+
+def _delete_obsolete(result: Redacted) -> None:
+    """Deletes from the store every blob the redaction says no longer has
+    to lie there ({ref}`erasure`), after its transaction: the store takes
+    part in none, and a blob deleted before the redaction stands would be
+    gone for a redaction that might still fail. A blob that is gone already
+    is no error, so a second call deletes again what the first did.
+
+    The blob settings are read only when there is something to delete, so
+    a redaction that touches no blob runs without them. A failure names the
+    blobs still to delete; the error that caused it is quoted in the
+    sentence and raised after the `except`, so that it is not carried along
+    as the context of the new one.
+    """
+    pending = list(result.obsolete_blobs)
+    if not pending:
+        return
+    try:
+        with _blob_store() as store:
+            while pending:
+                store.delete(pending[0])
+                pending.pop(0)
+    except (PreviouslyError, StorageError) as error:
+        failure = str(error)
+    else:
+        return
+    if len(pending) == 1:
+        outstanding = f"blob {pending[0]} is not deleted from the store ({failure})"
+    else:
+        outstanding = f"blobs {', '.join(pending)} are not deleted from the store ({failure})"
+    raise _unfinished(result.redaction_id, outstanding)
 
 
 def _catch_up_after(storage: PostgresStorage, redaction_id: int) -> None:
@@ -723,43 +823,51 @@ def _catch_up_after(storage: PostgresStorage, redaction_id: int) -> None:
         try:
             outcome = catch_up(storage, storage, projection)
         except (PreviouslyError, StorageError) as error:
-            raise PreviouslyError(
-                f"the redaction is recorded as event {redaction_id}, but it is not "
-                f"finished: projection {projection.name} is not caught up ({error}); "
-                "run the same command again"
+            raise _unfinished(
+                redaction_id, f"projection {projection.name} is not caught up ({error})"
             ) from error
         if outcome.rebuilt_from is not None:
             print(f"{outcome.name:<15} {_describe(outcome)}", file=sys.stderr)
 
 
+def _redact(storage: PostgresStorage, args: argparse.Namespace) -> Redacted:
+    """The redaction the arguments ask for, in its own transaction."""
+    now = datetime.now(UTC)
+    if args.target == "event":
+        return redact_event(storage, storage, args.event_id, reason=args.reason, recorded_at=now)
+    if args.target == "units":
+        return redact_units(
+            storage, storage, args.event_id, args.seqs, reason=args.reason, recorded_at=now
+        )
+    return redact_blob(storage, storage, args.address, reason=args.reason, recorded_at=now)
+
+
 def _cmd_redact(args: argparse.Namespace) -> int:
-    """Erases an event or units of it ({ref}`erasure`), then catches the
+    """Erases an event, units of it, or a blob ({ref}`erasure`), deletes
+    what no longer has to lie in the blob store, then catches the
     projections up.
 
     No question before it acts: the reason is the brake, and a command that
     asked would be no tool for a script.
+
+    The order is the one the redaction needs, whether it wrote an event or
+    found its target covered: the transaction, then the store, then the
+    projections, then what is printed. If deleting or catching up fails, the
+    redaction stands, and the error says so and what is outstanding; the
+    same command again finds the target covered and does what is left.
     """
     # Blanks alone count as empty: a reason that says nothing brakes nothing.
     if not args.reason.strip():
         raise RedactionRefused("--reason must not be empty")
-    now = datetime.now(UTC)
     with _storage() as storage:
-        if args.target == "event":
-            result = redact_event(
-                storage, storage, args.event_id, reason=args.reason, recorded_at=now
-            )
-        else:
-            result = redact_units(
-                storage, storage, args.event_id, args.seqs, reason=args.reason, recorded_at=now
-            )
-        for seq in result.skipped_units:
-            print(f"unit {seq} was already erased", file=sys.stderr)
-        # The line first: the redaction stands whether or not the catch-up
-        # below gets through, and standard output says what stands. After
-        # `already` as well, so that a second call finishes what the first did
-        # not get to.
-        print(_redacted_line(result))
+        result = _redact(storage, args)
+        _delete_obsolete(result)
         _catch_up_after(storage, result.redaction_id)
+    print(_redacted_line(result))
+    for seq in result.skipped_units:
+        print(f"unit {seq} was already erased", file=sys.stderr)
+    for address, users in result.kept_blobs.items():
+        print(_kept_line(address, users), file=sys.stderr)
     return 0
 
 
@@ -880,7 +988,7 @@ class Command:
 # help names against these names.
 COMMANDS: tuple[Command, ...] = (
     Command("append", "submit text", _cmd_append, _append_arguments),
-    Command("redact", "erase an event or units of it", _cmd_redact, _redact_arguments),
+    Command("redact", "erase an event, units of it, or a blob", _cmd_redact, _redact_arguments),
     # "print the chronicle" until stage 1b, which is now the other command:
     # `log` is the chain order and `chronicle` the chronology ({ref}`projections`).
     Command("log", "print the log in chain order", _cmd_log, _log_arguments),
