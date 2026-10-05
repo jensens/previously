@@ -665,8 +665,9 @@ def test_sigterm_ends_a_migrate_that_waits_for_the_lock(empty_dsn: str) -> None:
     """In a container `previously` is process 1, which the kernel sends no
     signal it has left at the default action: `docker stop` waited the whole
     grace period and ended it with `SIGKILL`, measured on 2026-10-05; a
-    Kubernetes pod is stopped the same way, which was not measured. With a handler, `SIGTERM` ends the command with
-    143, 128 and the signal's number, and no traceback; the database is left
+    Kubernetes pod is stopped the same way, which was not measured. With a
+    handler, `SIGTERM` ends the command with 143, 128 and the signal's number,
+    and no traceback; the database is left
     without a schema and without the lock.
 
     The test runs the process as a child, not as process 1, and a child left
