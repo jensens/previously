@@ -240,9 +240,9 @@ selbst (§7.3), und Tests halten die Regel fest.
 **Antworten** tragen ihre Verweise in den Kopfzeilen: `In-Reply-To` nennt
 die Message-ID der Mail, auf die sie antworten, `References` die Kette davor.
 Beide stehen unter `headers`, und weil `external_id` die Message-ID ist, löst
-jeder Verweis auf ein Event auf. Gesprächsfäden daraus sind eine Ableitung,
-keine Aufnahme: eine spätere Projektion (§11), die sich aus dem Log neu
-aufbauen lässt, ohne erneut einzulesen.
+jeder Verweis auf ein Event auf. Ein Gesprächsfaden ist eine Form von
+Vorgang und reicht über Mail hinaus (§11); diese Einheit nimmt die Signale
+auf und baut keine Struktur darüber.
 
 Name, Typ, Größe und Hash jedes Anhangs stehen in `blobs`, nicht ein zweites
 Mal. **Der Text der Mail steht nicht in der Nutzlast**, nur in den Einheiten;
@@ -604,8 +604,14 @@ Landkarte.
    Datei) müssen erst umgewandelt oder zerlegt werden — was davon gebraucht
    wird, zeigt, was im Ordner tatsächlich landet. Vom Betreuer am 2026-10-06
    gefragt, „dann wird es nicht vergessen".
-10. **Gesprächsfäden** als Projektion über `In-Reply-To` und `References`
-    (§3.4); und ob zitierter Verlauf in Antworten in der Chronik ausgeblendet
+10. **Gesprächsfäden sind eine Form von Vorgang** — kein Begriff von Mail.
+    Eine Mail führt zu einem Termin mit Videokonferenz, der zu einem Chat, und
+    alles gehört zu einer Sache (Betreuer, 2026-10-06). Ein Faden ist darum
+    eine Zuordnung über Kanäle hinweg: Feststellung (Einheit 5), als Vorschlag
+    aus der KI-Schicht hinter dem Gate (Einheit 6). Mail liefert dafür
+    Signale, keine Struktur: `In-Reply-To` und `References` (§3.4), eine
+    Einladung als `.ics`-Anhang, ein Link zu einer Konferenz im Text. Offen
+    auch, ob zitierter Verlauf in Antworten in der Chronik ausgeblendet
     werden soll — Zitate zu erkennen ist Deutung.
 11. **Weiterleitung als zitierter Text** bleibt Text der äußeren Mail (§3.6);
    sie zu zerlegen wäre Deutung, und ob das eine spätere Einheit leisten
