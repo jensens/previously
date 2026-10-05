@@ -291,8 +291,9 @@ FINDING 7: blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03
 | `blob <hex> is erased and still present` | Every reference to the blob is erased, and the store still holds an object under its address. |
 
 Each stands under the smallest `id` of the events that name the blob.
-`verify` reads the blob store after the snapshot of the chain, so a blob erased and deleted while it runs can appear as missing.
-A blob store that doesn't answer or refuses, an identity file that exists and can't be read, and a stream that breaks off aren't findings: `verify` prints one sentence to standard error, nothing to standard output, and returns 2.
+`verify` reads the blob store after the snapshot of the chain, so a blob erased and deleted while it runs can appear as missing, and a blob still being deleted by a concurrent `redact`, or attached again after the snapshot, can appear as erased and still present; the next run doesn't report either.
+`verify --blobs` checks only the blobs the blob register names, and reports nothing about an object in the store that no event names.
+A blob store that doesn't answer or refuses, an identity file that exists and can't be read, an identity file whose content isn't an age identity, and a stream that breaks off aren't findings: `verify` prints one sentence to standard error, nothing to standard output, and returns 2.
 
 With no finding, `verify` prints a single line, which depends on the arguments:
 
@@ -369,7 +370,7 @@ previously blob get HASH --output FILE
 Error: 5891B5B522D5DF086D0FF0B110FBD9D21BB4FC7163AF34D08286A2E846F6BE03 is not a blob address: 64 hexadecimal characters, lower case
 ```
 
-It reads `PREVIOUSLY_BLOB_IDENTITIES` and the five settings of the blob store.
+It asks the database first and reads no blob setting for the two answers below.
 When no event names the blob, `blob get` returns 1 and prints one notice to standard error:
 
 ```text
@@ -382,7 +383,7 @@ When every reference to the blob is erased, `blob get` returns 1, prints one not
 blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 is erased (event 42)
 ```
 
-Otherwise it writes the content to a temporary file in the directory of `--output`, and renames that file to `--output` only once the content matched its address.
+Otherwise it reads `PREVIOUSLY_BLOB_IDENTITIES` and the five settings of the blob store, and writes the content to a temporary file in the directory of `--output`, and renames that file to `--output` only once the content matched its address.
 The file is readable by its owner only.
 On success it prints one line to standard output and never the content:
 

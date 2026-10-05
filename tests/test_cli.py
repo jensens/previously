@@ -2090,12 +2090,17 @@ def test_an_endpoint_without_a_scheme_is_one_sentence(
     """A typo in the environment, `localhost:9000` without `http://`, at
     both commands that build a store: one sentence that names the endpoint,
     exit code 2, nothing appended, and no secret. Before fix round 1 of task
-    6 it left `main` as a `ValueError` traceback."""
-    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "localhost:9000")
+    6 it left `main` as a `ValueError` traceback. `blob get` builds its store
+    only for a blob an event uses and no redaction erased, so it asks for
+    one an event names, written through `core` without a store."""
+    events = 0
     if command == "append":
         argv = _attach("a", _file(tmp_path, "a.txt", b"an attachment"))
     else:
+        _append_naming(blobs.engine, "c" * 64)
+        events = 1
         argv = ["blob", "get", "c" * 64, "--output", str(tmp_path / "out.bin")]
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "localhost:9000")
     assert main(argv) == 2
     out, err = capsys.readouterr()
     assert out == ""
@@ -2104,7 +2109,7 @@ def test_an_endpoint_without_a_scheme_is_one_sentence(
     )
     assert err.rstrip().endswith("are not usable: ValueError")
     assert blobs.secret not in out + err
-    assert _events(blobs.engine) == 0
+    assert _events(blobs.engine) == events
 
 
 @pytest.mark.db
@@ -2550,7 +2555,9 @@ def test_every_command_closes_each_blob_store_it_builds(
     assert (len(built), len(closed)) == (7, 7)
 
 
-@pytest.mark.parametrize("failure", ["store-does-not-answer", "identity-cannot-be-read"])
+@pytest.mark.parametrize(
+    "failure", ["store-does-not-answer", "identity-cannot-be-read", "identity-is-not-one"]
+)
 @pytest.mark.db
 @pytest.mark.s3
 def test_verify_blobs_that_cannot_check_is_an_error_and_no_finding(
@@ -2560,10 +2567,13 @@ def test_verify_blobs_that_cannot_check_is_an_error_and_no_finding(
     monkeypatch: pytest.MonkeyPatch,
     failure: str,
 ) -> None:
-    """A store that does not answer, or an identity file that is there and
-    cannot be read, says nothing about the blobs: one sentence, exit code 2,
-    no `FINDING` line, and neither the secret of the store nor an identity
-    in any output. The finding on the other side of the line is
+    """A store that does not answer, an identity file that is there and
+    cannot be read, or one whose content is no age identity says nothing
+    about the blobs: one sentence, exit code 2, no `FINDING` line, and
+    neither the secret of the store nor an identity nor the file's content
+    in any output. The file in the third case holds a line that looks like
+    an identity and is none, so that its content would show in the output.
+    The finding on the other side of the line is
     `test_a_blob_whose_key_is_not_at_hand_cannot_be_opened_and_the_check_goes_on`
     in `tests/test_verify.py`."""
     assert main(_attach("a", _file(tmp_path, "a.txt", b"checked"))) == 0
@@ -2571,11 +2581,15 @@ def test_verify_blobs_that_cannot_check_is_an_error_and_no_finding(
     if failure == "store-does-not-answer":
         monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "http://127.0.0.1:1")
         expected = "http://127.0.0.1:1"
-    else:
+    elif failure == "identity-cannot-be-read":
         path = blobs.keys / recipient_of(blobs.identity)
         path.unlink()
         path.mkdir()
         expected = "cannot be read: IsADirectoryError"
+    else:
+        path = blobs.keys / recipient_of(blobs.identity)
+        path.write_text("AGE-SECRET-KEY-1PREVIOUSLYTESTNOTAKEY\n", encoding="utf-8")
+        expected = "the identity is not an age X25519 identity"
 
     assert main(["verify", "--blobs"]) == 2
     out, err = capsys.readouterr()
@@ -2583,5 +2597,54 @@ def test_verify_blobs_that_cannot_check_is_an_error_and_no_finding(
     line = _single_line(err)
     assert line.startswith("Error: ")
     assert expected in line
-    for secret in (blobs.secret, blobs.identity, "AGE-SECRET-KEY"):
+    for secret in (blobs.secret, blobs.identity, "AGE-SECRET-KEY", "PREVIOUSLYTESTNOTAKEY"):
         assert secret not in out + err
+
+
+def _append_naming(engine: Engine, *addresses: str) -> None:
+    """One event per address that names it, written through `core` with
+    references to blobs no store holds."""
+    append(
+        PostgresStorage(engine),
+        [
+            RawEvent(
+                source="cli",
+                external_id=address,
+                occurred_at=datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC),
+                evidence=Evidence.VERBATIM,
+                units=split_plaintext("See attached."),
+                payload={"text": "See attached."},
+                blobs=(BlobRef(sha256=address, size=1, media_type="text/plain"),),
+            )
+            for address in addresses
+        ],
+        recorded_at=datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC),
+    )
+
+
+@pytest.mark.db
+def test_blob_get_answers_from_the_log_without_any_blob_setting(
+    db: object,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """ "No event uses it" and "it is erased" are answers about the log, and
+    come on a machine without a single blob setting. The blob that is
+    neither needs the store, and the first setting it reads is the control
+    that the settings are really missing."""
+    engine = _connect(db, monkeypatch)
+    for name in _BLOB_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    kept, erased, unused = "1" * 64, "2" * 64, "3" * 64
+    _append_naming(engine, kept, erased)
+    storage = PostgresStorage(engine)
+    redact_blob(storage, storage, erased, reason="r", recorded_at=datetime.now(UTC))
+    target = str(tmp_path / "out.bin")
+
+    assert main(["blob", "get", unused, "--output", target]) == 1
+    assert capsys.readouterr() == ("", f"no event uses blob {unused}\n")
+    assert main(["blob", "get", erased, "--output", target]) == 1
+    assert capsys.readouterr() == ("", f"blob {erased} is erased (event 3)\n")
+    assert main(["blob", "get", kept, "--output", target]) == 2
+    assert capsys.readouterr() == ("", "Error: PREVIOUSLY_BLOB_IDENTITIES is not set\n")

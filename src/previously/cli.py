@@ -692,19 +692,22 @@ def _cmd_blob_get(args: argparse.Namespace) -> int:
         raise InvalidPayload(
             f"{address} is not a blob address: 64 hexadecimal characters, lower case"
         )
+    # The log first: whether any event uses the blob, and whether its
+    # references are all erased, are answers about the log, given whether or
+    # not an object lies in the store ({ref}`erasure`). The blob settings are
+    # read only once there is something to fetch, so both answers come on a
+    # machine that has none.
+    with _storage() as storage, storage.begin() as conn:
+        users = storage.events_by_blob(conn, bytes.fromhex(address))
+        erasure = blob_erasure(read_index(storage, conn), address, users)
+    if not users:
+        print(f"no event uses blob {address}", file=sys.stderr)
+        return 1
+    if erasure is not None:
+        print(f"blob {address} is erased (event {erasure.id})", file=sys.stderr)
+        return 1
     keys = _identities()
     with _blob_store() as store:
-        with _storage() as storage, storage.begin() as conn:
-            users = storage.events_by_blob(conn, bytes.fromhex(address))
-            erasure = blob_erasure(read_index(storage, conn), address, users)
-        if not users:
-            print(f"no event uses blob {address}", file=sys.stderr)
-            return 1
-        # Erased is not a failure of the store but an answer about the log,
-        # given whether or not an object still lies there ({ref}`erasure`).
-        if erasure is not None:
-            print(f"blob {address} is erased (event {erasure.id})", file=sys.stderr)
-            return 1
         try:
             size = _fetch_to(store, keys, address, args.output)
         except AddressMismatch as error:

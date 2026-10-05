@@ -205,6 +205,10 @@ A blob leaves the store through an erasure, of the events that use it or of the 
 A blob shared by two mails stays when one of them is erased, because the other still names it.
 {ref}`erasure` gives the rule, its consequences, and why the store is touched only after the redaction stands.
 
+Gone from the store isn't gone everywhere.
+Whatever backup or replica of the bucket exists keeps the object for as long as it's kept, and the identity, backed up as the warning above asks, still opens it.
+Whoever promises erasure within a period chooses the retention of the bucket's backups by it, beside that of the database's.
+
 The register is what makes that rule cheap to compute.
 An erasure asks it which events use a blob, holds each of them against the redactions, and knows whether the blob still has to lie, without reading a single payload.
 
@@ -221,7 +225,11 @@ That makes the switch as slow as the store is large, which is a check for the ni
 
 The blobs are read after the snapshot of the chain, not inside it.
 A transaction held open for as long as reading the whole store takes holds back the database's cleanup for that long.
-The price is that the store is seen a little later than the log: a blob erased and deleted while the check runs is reported as missing, and the next run doesn't report it.
+The price is that the store is seen a little later than the log, and that can show either way.
+A blob erased and deleted while the check runs is reported as missing.
+A blob whose redaction the snapshot already holds is reported as erased and still present while a concurrent `redact` hasn't deleted it yet, or when the same content was attached again after the snapshot.
+The next run reports none of them.
+The check starts from the register, so an object in the store that no event names, such as one left by an append that failed after its upload, is reported by nothing.
 The references of every blob are held in memory until then, one address and its event identifiers per blob.
 
 A finding says something about the log and its blobs: a blob is missing, doesn't match its address, can't be opened, or is erased and still present.

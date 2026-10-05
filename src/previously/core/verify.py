@@ -711,8 +711,15 @@ def _blob_findings(
     Run after the snapshot and not in it: reading every byte in the store
     takes as long as the store is large, and a transaction held open for
     that long holds back the database's cleanup. So the store is seen later
-    than the log, and a blob erased and deleted since the snapshot is
-    reported as missing; the next run does not report it.
+    than the log, and that can show either way. A blob erased and deleted
+    since the snapshot is reported as missing. A blob whose redaction the
+    snapshot holds can be reported as erased and still present, while a
+    concurrent `redact` has not deleted it yet, or because the same content
+    was attached again after the snapshot. The next run reports none of
+    them.
+
+    Only the blobs the register names are checked: an object in the store
+    that no event names is reported by nothing.
 
     A blob that has to lie is fetched whole into a `NullSink`, through the
     check of its address: one that is not there is missing, one that opens

@@ -218,8 +218,15 @@ def redact_event[Conn](
 
     def once(conn: Conn) -> Redacted:
         # The blobs the event names, out of the register, and every event
-        # that shares one of them: the register rows of an event are written
-        # with it and never change, so they can be read before the lock.
+        # that shares one of them, both read before the lock. The register
+        # rows of an event are written with it and never change, so the
+        # first list is final. The second can grow while this runs, through
+        # an append that names one of the blobs, and an event appended after
+        # the read goes unlocked. That is still correct: its reference is
+        # not erased, so the blob is kept for it (`_blobs_after` reads the
+        # register again), and any erasure that touches that event later
+        # locks every user of the blob, this target included, so the two
+        # meet on a shared row.
         registered = [
             sha256.hex() for sha256 in log.blobs_by_event(conn, [event_id]).get(event_id, [])
         ]

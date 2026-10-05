@@ -145,13 +145,15 @@ Whoever reads the log can see the gap between the two, and the check is quiet ag
 An erasure takes content out of the log's tables, and that's less than taking it out of the world.
 
 **Backups keep it.**
-Whatever an erasure took stands in every backup of the database and in the write-ahead log archive until their retention runs out.
-The promise of an erasure is therefore as long as that retention, and whoever promises erasure within a deadline chooses the retention by it.
+Whatever an erasure took from the log stands in every backup of the database and in the write-ahead log archive until their retention runs out.
+A blob isn't in either of those: an erased blob is gone from the store and stays in every backup or replica of the bucket for as long as that copy is kept, and the identity that opens it has a backup of its own, as {ref}`blobs` asks.
+The promise of an erasure is therefore as long as the longer of the two retentions, and whoever promises erasure within a deadline chooses both by it.
 
 **Restoring brings it back.**
 Whoever restores to a point before an erasure has the content again and the redaction no longer.
 Nothing reports that for a payload or a unit, because the restored state is consistent with itself.
-For a blob it shows: the store doesn't go back with the database, so `verify --blobs` reports the blob of every erasure since that point as missing.
+For a blob it shows: the store doesn't go back with the database, so `verify --blobs` reports every blob that an erasure since that point deleted as missing.
+An object uploaded after that point is named by no event in the restored log, and nothing reports it, since `verify --blobs` checks only the blobs the register names.
 The erasures since that point have to be repeated, and the log can't say which ones they were, since its record of them is what the restore took away.
 
 **The hashes stay.**

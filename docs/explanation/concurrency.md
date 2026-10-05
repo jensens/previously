@@ -68,6 +68,13 @@ It backs off with the same jitter and starts over from the lock, up to the same 
 The tombstones are set by the attempt that wins a position, or by one that needs none, because a redaction already covers its target and it writes no event.
 So a redaction racing an append ends the way two appends do: both events stand, one after the other, on one chain.
 
+That holds for the chain, and the blob store is outside it.
+An `append --attach` that finds the object of its content already in the store doesn't upload it again.
+If a `redact` of the last event that used that content commits in the meantime, it deletes the object after its transaction, and the new event names a blob the store no longer holds.
+Nothing prevents that: the store takes part in neither transaction, and a lock in the database can't hold an object in a bucket.
+`verify --blobs` reports the blob as missing afterward.
+Attaching the same file again to any event stores it again, because `append` asks the store whether the object is there, not the register.
+
 An erasure takes one lock that `append` doesn't, and the lock isn't on the tip.
 It locks the row of its *target* with `SELECT … FOR UPDATE` before it reads which redactions exist.
 Two erasures of the same event then run one after the other, and the second, once it holds the lock, sees the redaction the first one wrote and writes none of its own.
@@ -79,7 +86,11 @@ Without that, each could read the redactions before the other had committed and 
 The race between them on the chain position doesn't settle that: an erasure that reads the redactions before the other commits and the tip after it wins its position all the same.
 The ascending order is what keeps two such erasures from each holding a row the other waits for.
 
-The lock decides nothing about the chain position: an append never asks for it, and two erasures that share neither a target nor a blob never wait for each other.
+The lock decides nothing about the chain position, and an append never asks for it.
+Two erasures wait for each other when the sets of rows they lock overlap.
+Each set is the target, and for `redact event` and `redact blob` also every event that uses one of the target's blobs.
+So two erasures can wait for each other without sharing a target or a blob: one erasing an event that shares a blob with event 2, the other erasing an event that shares another blob with event 2, both lock event 2.
+A `redact units` locks only its target, and still waits behind an erasure whose set holds that event.
 
 ## The index clause that isn't optional
 
