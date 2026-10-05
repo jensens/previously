@@ -44,11 +44,17 @@ merely described.
 - **blobs** (`append --attach`, `blob get`): a file attached to an event is
   sealed in the `age` format before it leaves the process, stored in an S3
   bucket under the SHA-256 of its content, and named in the payload; `blob get`
-  fetches it and writes it out only if it matches its address
+  fetches it and writes it out only if it matches its address. Losing the
+  identity that opens the blobs loses every blob sealed to it, for good:
+  [How to keep the blob key safe](docs/how-to/keep-the-blob-key-safe.md)
+  says how to back it up and rehearse the backup
 - **erasure** (`redact`): an event, some of its units, or a blob, erased as an
   event of its own in the same chain, so that a tombstone without an order is
   a finding; every hash stays, the salt goes, the projections follow, and a
-  blob leaves the store once no reference to it is left
+  blob leaves the store once no reference to it is left. An event written
+  before stage 1c, in hash format 1, has no salt, so short erased content
+  stays guessable from its digests; see
+  [About erasure](docs/explanation/erasure.md)
 - **checking the blobs** (`verify --blobs`): every blob that has to lie in
   the store is read, opened and held against its address, and every erased one
   has to be gone
