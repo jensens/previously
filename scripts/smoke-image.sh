@@ -14,7 +14,13 @@ NET="previously-smoke-$$"
 PG="$NET-pg"
 S3="$NET-s3"
 WORK="$(mktemp -d)"
-chmod 0777 "$WORK"
+# The container runs as uid 1000 and writes into these two directories. The
+# host user may be another one (a GitHub runner is 1001), so both are made here,
+# owned by the host user and open to everybody: a directory the container made
+# would belong to uid 1000, and `rm -rf` in `cleanup` could not remove the key
+# inside it.
+mkdir "$WORK/identities"
+chmod 0777 "$WORK" "$WORK/identities"
 
 cleanup() {
   docker rm -f -v "$PG" "$S3" > /dev/null 2>&1 || true
@@ -32,7 +38,9 @@ docker run -d --name "$S3" --network "$NET" \
   -e RUSTFS_ACCESS_KEY=smoke -e RUSTFS_SECRET_KEY="$SECRET" \
   rustfs/rustfs:1.0.1 > /dev/null
 for _ in $(seq 1 60); do
-  docker exec "$PG" pg_isready -U previously -d previously > /dev/null 2>&1 && break
+  # `-h localhost` asks over TCP: without it, the temporary server that the
+  # image starts while it initializes (socket only) would count as ready.
+  docker exec "$PG" pg_isready -h localhost -U previously -d previously > /dev/null 2>&1 && break
   sleep 1
 done
 
