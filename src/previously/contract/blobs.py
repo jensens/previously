@@ -88,6 +88,11 @@ class BlobStore(Protocol):
 class KeyProvider(Protocol):
     """The seam for keys: a `key_id` in, the identity that opens it out, as
     text — or `None` when there is none. As text, so that whatever provides
-    it needs to know nothing about the `age` format."""
+    it needs to know nothing about the `age` format.
+
+    `None` is for a key the provider does not hold. A provider that holds it
+    and cannot read it raises instead, an error of its own layer:
+    `storage.keys.DirectoryKeys` raises `storage.errors.IdentityUnreadable`,
+    and `core.blob.fetch_blob` lets it pass."""
 
     def identity(self, key_id: str) -> str | None: ...

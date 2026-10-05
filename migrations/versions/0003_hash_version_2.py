@@ -53,10 +53,12 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    # Checked before anything is dropped: the migration runs in one
-    # transaction, and an error raised here leaves the database at this
-    # revision. `CommandError` is what the `alembic` command line prints as
-    # one line instead of a traceback.
+    # Checked before anything is dropped: `migrations/env.py` runs a whole
+    # `alembic downgrade` in one transaction, and an error raised here rolls
+    # it back and leaves the database at the revision the command started
+    # from — this one, or a later one whose downgrade had already run.
+    # `CommandError` is what the `alembic` command line prints as one line
+    # instead of a traceback.
     bind = op.get_bind()
     reasons: list[str] = []
     if bind.execute(sa.text("SELECT EXISTS (SELECT 1 FROM event WHERE hash_version = 2)")).scalar():

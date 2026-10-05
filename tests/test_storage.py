@@ -362,6 +362,69 @@ def test_units_by_event_with_an_empty_batch(db: Engine) -> None:
         assert storage.units_by_event(c, []) == {}
 
 
+# --- The blob register ({ref}`blobs`) ---------------------------------------
+
+_BLOB_A = b"\xaa" * 32
+_BLOB_B = b"\xbb" * 32
+_BLOB_C = b"\xcc" * 32
+
+
+@pytest.mark.db
+def test_blobs_are_registered_with_the_event_and_read_back_by_batch(db: Engine) -> None:
+    """The hashes an event is written with come back in one query for the
+    batch, grouped by event and ascending. They are handed in descending, so
+    a reader that did not order would hand them back that way. Event 3 uses
+    no blob and event 4 does not exist: both are absent, as in `units_by_event`.
+    """
+    storage = PostgresStorage(db)
+    with storage.begin() as c:
+        storage.insert_event(c, _row(1, None), [], ("cli", "x1"), [_BLOB_B, _BLOB_A])
+        storage.insert_event(c, _row(2, b"\x01" * 32), [], ("cli", "x2"), [_BLOB_C])
+        storage.insert_event(c, _row(3, b"\x02" * 32), [], ("cli", "x3"))
+    with storage.begin() as c:
+        assert storage.blobs_by_event(c, [1, 2, 3, 4]) == {1: [_BLOB_A, _BLOB_B], 2: [_BLOB_C]}
+
+
+@pytest.mark.db
+def test_events_by_blob_lists_every_event_that_uses_it(db: Engine) -> None:
+    """Every event that names a blob, ascending, and an empty list for a
+    blob no event names."""
+    storage = PostgresStorage(db)
+    with storage.begin() as c:
+        storage.insert_event(c, _row(1, None), [], ("cli", "x1"), [_BLOB_A])
+        storage.insert_event(c, _row(2, b"\x01" * 32), [], ("cli", "x2"), [_BLOB_B])
+        storage.insert_event(c, _row(3, b"\x02" * 32), [], ("cli", "x3"), [_BLOB_B, _BLOB_A])
+    with storage.begin() as c:
+        assert storage.events_by_blob(c, _BLOB_A) == [1, 3]
+        assert storage.events_by_blob(c, _BLOB_B) == [2, 3]
+        assert storage.events_by_blob(c, _BLOB_C) == []
+
+
+@pytest.mark.db
+def test_blobs_by_event_with_an_empty_batch(db: Engine) -> None:
+    """`IN ()` is not valid SQL — the empty batch returns without a query,
+    and the statements the engine sends are counted to show it. The batch of
+    one beside it is the control: the count has to see its one statement."""
+    from sqlalchemy import event
+
+    sent: list[str] = []
+
+    def count(*args: object) -> None:
+        sent.append(str(args[2]))
+
+    storage = PostgresStorage(db)
+    with storage.begin() as c:
+        event.listen(db, "before_cursor_execute", count)
+        try:
+            assert storage.blobs_by_event(c, []) == {}
+            empty = len(sent)
+            assert storage.blobs_by_event(c, [1]) == {}
+        finally:
+            event.remove(db, "before_cursor_execute", count)
+    assert empty == 0
+    assert len(sent) == 1
+
+
 @pytest.mark.db
 def test_a_duplicate_hash_becomes_a_chain_conflict(db: Engine) -> None:
     """event_hash_idx is the same incident as event_pkey and

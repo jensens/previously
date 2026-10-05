@@ -50,16 +50,33 @@ def recipient_of(identity: str) -> str:
     return str(_identity(identity).to_public())
 
 
+def _recipient(recipient: str) -> pyrage.x25519.Recipient:
+    """The parsed recipient. A recipient is public, so a malformed one is
+    quoted in the message."""
+    try:
+        return pyrage.x25519.Recipient.from_str(recipient)
+    except pyrage.RecipientError:
+        raise InvalidKey(f"{recipient!r} is not an age X25519 recipient") from None
+
+
+def check_recipient(recipient: str) -> None:
+    """Raises `InvalidKey` unless `recipient` is an age X25519 recipient.
+
+    For a caller that has to know before it stores anything: `seal` checks
+    the recipient too, but `core.blob.store_blob` calls it only for content
+    the store does not hold yet, so a mistyped recipient would otherwise go
+    unnoticed until new content arrives.
+    """
+    _recipient(recipient)
+
+
 def seal(source: ByteSource, sink: ByteSink, recipient: str) -> None:
     """Seals what `source` gives to `recipient` and writes the `age` file
     into `sink`, a piece at a time.
 
     A recipient is public, so a malformed one is quoted in the message.
     """
-    try:
-        to = pyrage.x25519.Recipient.from_str(recipient)
-    except pyrage.RecipientError:
-        raise InvalidKey(f"{recipient!r} is not an age X25519 recipient") from None
+    to = _recipient(recipient)
     # pyrage-stubs ask for `BufferedIOBase`; at run time `read` and `write`
     # suffice, measured with a source that has nothing but `read` and a sink
     # that has nothing but `write` (`tests/test_sealing.py`).

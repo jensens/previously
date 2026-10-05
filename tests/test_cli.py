@@ -7,18 +7,25 @@ from previously.cli import COMMANDS
 from previously.cli import escape_field
 from previously.cli import main
 from previously.cli import MAX_TEXT_BYTES
+from previously.cli import media_type_of
 from previously.cli import parse_moment
 from previously.contract.rows import EventRow
 from previously.contract.rows import UnitRow
+from previously.contract.types import BlobRef
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
+from previously.core.append import append
 from previously.core.errors import InvalidPayload
 from previously.core.redact import redact_event
+from previously.core.sealing import recipient_of
+from previously.core.sealing import seal
 from previously.core.units import split_plaintext
 from previously.storage.postgres import PostgresStorage
 from typing import TYPE_CHECKING
 
+import hashlib
 import io
+import os
 import pytest
 import re
 import sys
@@ -28,6 +35,7 @@ import time
 if TYPE_CHECKING:
     from collections.abc import Callable
     from collections.abc import Sequence
+    from previously.storage.s3 import S3BlobStore
     from sqlalchemy import Engine
 
     import pathlib
@@ -1554,3 +1562,484 @@ def test_main_releases_the_connections_it_opened(
         gc.enable()
     capsys.readouterr()
     assert after <= before
+
+
+# --- Blobs at the event ({ref}`blobs`) ----------------------------------------
+
+_BLOB_VARIABLES = (
+    "PREVIOUSLY_BLOB_ENDPOINT",
+    "PREVIOUSLY_BLOB_REGION",
+    "PREVIOUSLY_BLOB_BUCKET",
+    "PREVIOUSLY_BLOB_ACCESS_KEY",
+    "PREVIOUSLY_BLOB_SECRET_KEY",
+    "PREVIOUSLY_BLOB_RECIPIENT",
+    "PREVIOUSLY_BLOB_IDENTITIES",
+)
+
+# What the `s3_connections` fixture is, spelled as `conftest.py` asks of a
+# test that takes one of its callables.
+type ConnectionCount = Callable[[], int]
+
+
+class _Blobs:
+    """What a test of the blob commands works with: the database, the bucket,
+    and the identity whose recipient the environment names.
+
+    A plain class rather than a dataclass, whose field annotations would have
+    to be importable at run time."""
+
+    def __init__(
+        self, engine: Engine, store: S3BlobStore, identity: str, keys: pathlib.Path, secret: str
+    ) -> None:
+        self.engine = engine
+        self.store = store
+        self.identity = identity
+        self.keys = keys
+        self.secret = secret
+
+
+@pytest.fixture
+def blobs(
+    db: object,
+    monkeypatch: pytest.MonkeyPatch,
+    blob_store: S3BlobStore,
+    s3_settings: dict[str, str],
+    age_identity: str,
+    tmp_path: pathlib.Path,
+) -> _Blobs:
+    """The database, a bucket of its own and a key directory with one
+    identity in it, all seven variables set to reach them. The identity and
+    the secret are drawn at run time (`conftest.py`)."""
+    engine = _connect(db, monkeypatch)
+    keys = tmp_path / "keys"
+    keys.mkdir()
+    (keys / recipient_of(age_identity)).write_text(age_identity + "\n", encoding="utf-8")
+    values = (
+        s3_settings["endpoint"],
+        s3_settings["region"],
+        blob_store.bucket,
+        s3_settings["access_key"],
+        s3_settings["secret_key"],
+        recipient_of(age_identity),
+        str(keys),
+    )
+    for name, value in zip(_BLOB_VARIABLES, values, strict=True):
+        monkeypatch.setenv(name, value)
+    return _Blobs(engine, blob_store, age_identity, keys, s3_settings["secret_key"])
+
+
+def _file(directory: pathlib.Path, name: str, content: bytes) -> pathlib.Path:
+    path = directory / name
+    path.write_bytes(content)
+    return path
+
+
+def _attach(external_id: str, *paths: pathlib.Path) -> list[str]:
+    argv = ["append", "--source", "cli", "--external-id", external_id, "--text", "See attached."]
+    for path in paths:
+        argv += ["--attach", str(path)]
+    return argv
+
+
+def _bucket(store: S3BlobStore) -> list[str]:
+    listing = store.client.list_objects_v2(Bucket=store.bucket)
+    return [entry.get("Key", "") for entry in listing.get("Contents", [])]
+
+
+def _events(engine: Engine) -> int:
+    from sqlalchemy import text
+
+    with engine.connect() as c:
+        return c.execute(text("SELECT count(*) FROM event")).scalar_one()
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_append_with_an_attachment_and_blob_get_bring_the_bytes_back(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    content = b"Minutes of the site meeting, invented for this test.\n" * 50
+    attachment = _file(tmp_path, "minutes.txt", content)
+    address = hashlib.sha256(content).hexdigest()
+
+    assert main(_attach("a", attachment)) == 0
+    assert capsys.readouterr().out == "1\n"
+
+    target = tmp_path / "out" / "fetched.txt"
+    target.parent.mkdir()
+    assert main(["blob", "get", address, "--output", str(target)]) == 0
+    assert capsys.readouterr().out == f"wrote {len(content)} bytes to {target}\n"
+    assert target.read_bytes() == content
+    # Readable by its owner only, as the temporary file was created.
+    assert target.stat().st_mode & 0o777 == 0o600
+    assert sorted(path.name for path in target.parent.iterdir()) == ["fetched.txt"]
+    assert _bucket(blobs.store) == [address]
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.parametrize("broken", ["missing", "directory"])
+def test_an_attachment_that_cannot_be_read_appends_nothing(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str], broken: str
+) -> None:
+    """Review focus 1 of the 2026-10-04 stage 1c plan. Two attachments, the
+    second unreadable: every file is opened before the first is stored, so
+    the readable one is not stored either, and nothing is appended."""
+    readable = _file(tmp_path, "readable.txt", b"stored only if every attachment opens")
+    unreadable = tmp_path / "unreadable"
+    if broken == "directory":
+        unreadable.mkdir()
+    reason = "Is a directory" if broken == "directory" else "No such file or directory"
+
+    assert main(_attach("a", readable, unreadable)) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _single_line(err) == f"Error: cannot read the attachment {unreadable}: {reason}"
+    assert _events(blobs.engine) == 0
+    assert _bucket(blobs.store) == []
+
+
+@pytest.mark.parametrize("address", ["A" * 64, "a" * 63], ids=["upper-case", "63-characters"])
+def test_a_blob_address_that_is_not_one_is_an_input_error(
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+    address: str,
+) -> None:
+    """Review focus 6 of the 2026-10-04 stage 1c plan. Refused before
+    anything is asked: there is no database and no blob setting, and the
+    sentence is still about the address."""
+    monkeypatch.setenv("PREVIOUSLY_DSN", "postgresql+psycopg://user:pw@localhost:1/db")
+    for name in _BLOB_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    target = tmp_path / "out.bin"
+    assert main(["blob", "get", address, "--output", str(target)]) == 2
+    assert _single_line(capsys.readouterr().err) == (
+        f"Error: {address} is not a blob address: 64 hexadecimal characters, lower case"
+    )
+    assert not target.exists()
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_blob_get_of_an_address_no_event_uses_returns_1(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    address = hashlib.sha256(b"never attached").hexdigest()
+    target = tmp_path / "out.bin"
+    assert main(["blob", "get", address, "--output", str(target)]) == 1
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == f"no event uses blob {address}\n"
+    assert not target.exists()
+
+
+def _forge_foreign_object(blobs: _Blobs, address: str, content: bytes) -> None:
+    """Lays a sealed object of other content under `address`: it opens with
+    the identity at hand, and its plaintext is not what the address names."""
+    sealed = io.BytesIO()
+    seal(io.BytesIO(content), sealed, recipient_of(blobs.identity))
+    sealed.seek(0)
+    blobs.store.put(address, sealed, key_id=recipient_of(blobs.identity))
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_blob_get_writes_nothing_when_the_address_does_not_match(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The plaintext passes into a temporary file before the address is
+    known to hold, so a mismatch leaves neither the target nor that file
+    behind ({ref}`blobs`)."""
+    content = b"the content the event names"
+    assert main(_attach("a", _file(tmp_path, "named.txt", content))) == 0
+    address = hashlib.sha256(content).hexdigest()
+    _forge_foreign_object(blobs, address, b"another content, laid under a foreign address")
+    capsys.readouterr()
+
+    directory = tmp_path / "out"
+    directory.mkdir()
+    target = directory / "fetched.txt"
+    assert main(["blob", "get", address, "--output", str(target)]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _single_line(err) == (
+        f"Error: blob {address} does not match its address; nothing was written"
+    )
+    assert list(directory.iterdir()) == []
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_blob_get_leaves_an_existing_target_alone_when_it_fails(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    content = b"the content the event names"
+    assert main(_attach("a", _file(tmp_path, "named.txt", content))) == 0
+    address = hashlib.sha256(content).hexdigest()
+    _forge_foreign_object(blobs, address, b"another content, laid under a foreign address")
+    capsys.readouterr()
+
+    directory = tmp_path / "out"
+    directory.mkdir()
+    target = _file(directory, "fetched.txt", b"what stood here before")
+    assert main(["blob", "get", address, "--output", str(target)]) == 2
+    capsys.readouterr()
+    assert target.read_bytes() == b"what stood here before"
+    assert list(directory.iterdir()) == [target]
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_a_mistyped_recipient_is_refused_before_anything_is_stored(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A content the store already holds is not sealed again, so the
+    recipient is not used — and a typo in it would pass unnoticed until new
+    content arrived. `append --attach` checks it first: one sentence, which
+    may quote the recipient because a recipient is public, and nothing
+    appended."""
+    attachment = _file(tmp_path, "a.txt", b"stored before the typo")
+    assert main(_attach("a", attachment)) == 0
+    capsys.readouterr()
+    mistyped = recipient_of(blobs.identity)[:-1] + "!"
+    monkeypatch.setenv("PREVIOUSLY_BLOB_RECIPIENT", mistyped)
+
+    assert main(_attach("b", attachment)) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _single_line(err) == f"Error: {mistyped!r} is not an age X25519 recipient"
+    assert _events(blobs.engine) == 1
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.parametrize("variable", _BLOB_VARIABLES)
+def test_a_missing_blob_setting_is_named(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    variable: str,
+) -> None:
+    """Each variable, taken away alone, at the command that needs it: the
+    five of the store and the recipient at `append --attach`, which then
+    appends nothing; the key directory at `blob get`."""
+    content = b"an attachment"
+    attachment = _file(tmp_path, "a.txt", content)
+    if variable == "PREVIOUSLY_BLOB_IDENTITIES":
+        assert main(_attach("a", attachment)) == 0
+        capsys.readouterr()
+        argv = ["blob", "get", hashlib.sha256(content).hexdigest(), "--output", "unused"]
+    else:
+        argv = _attach("a", attachment)
+    monkeypatch.delenv(variable)
+
+    assert main(argv) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _single_line(err) == f"Error: {variable} is not set"
+    expected_events = 1 if variable == "PREVIOUSLY_BLOB_IDENTITIES" else 0
+    assert _events(blobs.engine) == expected_events
+
+
+@pytest.mark.db
+def test_the_commands_of_today_run_without_any_blob_setting(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Assurance 17 of the 2026-10-04 stage 1c specification: every command
+    that touches no blob reads no blob setting, so an environment without a
+    single one runs as before."""
+    _connect(db, monkeypatch)
+    for name in _BLOB_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    commands = [
+        ["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"],
+        ["log"],
+        ["verify"],
+        ["anchor"],
+        ["show", "1"],
+        ["project"],
+        ["chronicle"],
+        ["stats"],
+        ["redact", "event", "1", "--reason", "r"],
+    ]
+    for command in commands:
+        assert main(command) == 0, command
+    capsys.readouterr()
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_a_store_that_does_not_answer_appends_nothing_and_shows_no_secret(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Review focus 5 of the 2026-10-04 stage 1c plan and assurance 18 of its
+    specification: an endpoint where nobody listens is one sentence with the
+    endpoint in it, exit code 2, no event — and the secret of the store
+    stands in neither output."""
+    endpoint = "http://127.0.0.1:1"
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", endpoint)
+    assert main(_attach("a", _file(tmp_path, "a.txt", b"an attachment"))) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert endpoint in _single_line(err)
+    assert blobs.secret not in out + err
+    assert _events(blobs.engine) == 0
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_no_identity_reaches_any_output(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    other_age_identity: str,
+) -> None:
+    """Assurance 18 of the 2026-10-04 stage 1c specification, on the path
+    that reads identities: the file named after the object's recipient holds
+    the identity of another key, `age` refuses it, and the sentence says the
+    blob cannot be opened without quoting either identity."""
+    content = b"sealed to the key the environment names"
+    assert main(_attach("a", _file(tmp_path, "a.txt", content))) == 0
+    capsys.readouterr()
+    (blobs.keys / recipient_of(blobs.identity)).write_text(
+        other_age_identity + "\n", encoding="utf-8"
+    )
+    address = hashlib.sha256(content).hexdigest()
+
+    assert main(["blob", "get", address, "--output", str(tmp_path / "out.bin")]) == 2
+    out, err = capsys.readouterr()
+    assert _single_line(err).startswith(f"Error: blob {address} cannot be opened: ")
+    for secret in (blobs.identity, other_age_identity, "AGE-SECRET-KEY"):
+        assert secret not in out + err
+    assert not (tmp_path / "out.bin").exists()
+
+
+@pytest.mark.db
+def test_show_lists_the_blobs_of_an_event(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One line per reference, in the payload's order, the same content
+    twice included, and `-` for a reference without a name. Written through
+    `core` with references to blobs no store holds and without any blob
+    setting: `show` reads the log and does not ask the store."""
+    engine = _connect(db, monkeypatch)
+    for name in _BLOB_VARIABLES:
+        monkeypatch.delenv(name, raising=False)
+    first, second = "1" * 64, "2" * 64
+    append(
+        PostgresStorage(engine),
+        [
+            RawEvent(
+                source="cli",
+                external_id="a",
+                occurred_at=datetime(2026, 10, 1, 9, 0, 0, tzinfo=UTC),
+                evidence=Evidence.VERBATIM,
+                units=split_plaintext("See attached."),
+                payload={"text": "See attached."},
+                blobs=(
+                    BlobRef(sha256=second, size=12, media_type="text/plain", filename="a.txt"),
+                    BlobRef(sha256=first, size=0, media_type="application/octet-stream"),
+                    BlobRef(sha256=second, size=12, media_type="text/plain", filename="b.txt"),
+                ),
+            )
+        ],
+        recorded_at=datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC),
+    )
+    assert main(["show", "1"]) == 0
+    out = capsys.readouterr().out
+    assert out.endswith(
+        "  ¶1 See attached.\n"
+        f"  blob {second} 12 text/plain a.txt\n"
+        f"  blob {first} 0 application/octet-stream -\n"
+        f"  blob {second} 12 text/plain b.txt\n"
+    )
+
+
+@pytest.mark.parametrize(
+    ("name", "media_type"),
+    [
+        ("minutes.txt", "text/plain"),
+        ("PLAN.PDF", "application/pdf"),
+        ("photo.jpeg", "image/jpeg"),
+        ("archive.tar.gz", "application/octet-stream"),
+        ("no-extension", "application/octet-stream"),
+        ("unknown.previously-test", "application/octet-stream"),
+    ],
+)
+def test_the_media_type_comes_from_the_name_and_the_built_in_table(
+    name: str, media_type: str
+) -> None:
+    """From the file's name, and from Python's own table only, not from the
+    files of the system it runs on: the value stands in the hash for good,
+    and has to be the same whichever machine attached it. A name that says
+    the content is compressed (`.gz`) names the type of what is inside, not
+    of the bytes, so it is no answer."""
+    assert media_type_of(name) == media_type
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_main_releases_the_blob_store_it_opened(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    s3_connections: ConnectionCount,
+) -> None:
+    """Every command that builds a blob store closes it, on success and on
+    error alike, the way `test_main_releases_the_connections_it_opened` holds
+    it for the database: a process that calls `main` again and again holds
+    no more connections to the store at the end than at the start.
+
+    The attachments are above the 8 MiB from which an upload goes in parts,
+    and a new content each round, since a content already stored is not
+    uploaded again: an upload in parts keeps the client in reference cycles,
+    so only the garbage collector would free a store left open, and the
+    collector is off for the loop and the count after it, as in
+    `tests/test_s3.py::test_close_releases_the_connections_the_store_opened`.
+    The failing call is a fetch of an object that names a key no identity in
+    the directory belongs to: it fails after the store has answered.
+
+    Measured on 2026-10-05: 1 connection before the sixteen calls and 1
+    after; with `store.close()` taken out of `_blob_store`, 9 after. The
+    half "on error" is not held by this test: with the close moved out of
+    the `finally`, so that it runs on success only, it stayed 1 and 1. A
+    failing fetch uploads nothing, and a store without an upload is freed by
+    reference counting once the command's error is printed. The one failure
+    after which a store does hold a connection is an upload in parts that
+    the store refuses, and that one stays open after `close` too, until the
+    garbage collector runs — so it cannot serve as the control here either.
+    """
+    import gc
+
+    broken = b"an object nobody can open"
+    assert main(_attach("broken", _file(tmp_path, "broken.txt", broken))) == 0
+    broken_address = hashlib.sha256(broken).hexdigest()
+    blobs.store.put(broken_address, io.BytesIO(b"not an age file"), key_id="age1unknown")
+    capsys.readouterr()
+    target = tmp_path / "out.bin"
+
+    gc.collect()
+    before = s3_connections()
+    gc.disable()
+    try:
+        for round_ in range(4):
+            content = os.urandom(9 * 1024 * 1024)
+            attachment = _file(tmp_path, f"large-{round_}.bin", content)
+            address = hashlib.sha256(content).hexdigest()
+            assert main(_attach(f"large-{round_}", attachment)) == 0
+            assert main(["blob", "get", address, "--output", str(target)]) == 0
+            assert main(["blob", "get", broken_address, "--output", str(target)]) == 2
+            assert main(["blob", "get", address, "--output", str(target)]) == 0
+        after = s3_connections()
+    finally:
+        gc.enable()
+    capsys.readouterr()
+    assert after <= before, f"{after} connections after the commands, {before} before"

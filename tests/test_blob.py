@@ -350,8 +350,11 @@ def test_a_fetch_that_fails_gives_its_connection_back(
     collector is off, because a collection could free what the errors keep.
     Three fetches per way of failing, and the count after them may not
     exceed the count before. Measured on 2026-10-05: 1 before and 1 after;
-    with the stream closed on success only, 10 after: one for each of the
-    nine streams left unread, and the one the pool keeps.
+    with `stream.close()` moved out of the `finally` to the line after
+    `unseal`, 10 after, twice over. That mutation closes whenever `unseal`
+    returns, so on the address mismatch too, and leaves open the nine
+    fetches of the three other ways; that the ten are those nine and one the
+    pool keeps is reckoned from that, not counted.
     Without the kept errors that mutation stayed green, 1 and 1.
     """
     import gc

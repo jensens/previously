@@ -35,6 +35,7 @@ from previously.storage.errors import MigrationPending
 from previously.storage.errors import ServerUnreachable
 from previously.storage.errors import SourceKeyTaken
 from previously.storage.schema import event
+from previously.storage.schema import event_blob
 from previously.storage.schema import p_chronicle
 from previously.storage.schema import p_source_stats
 from previously.storage.schema import projection_state
@@ -218,7 +219,15 @@ class PostgresStorage:
         row: EventRow,
         units: Sequence[UnitRow],
         key: tuple[str, str] | None,
+        blobs: Sequence[bytes] = (),
     ) -> None:
+        """Writes an event, its units, its source attribution and its rows in
+        the blob register, in the caller's transaction.
+
+        `blobs` are the distinct hashes the event names, as bytes: the same
+        content attached twice is one row ({ref}`blobs`), and a hash given
+        twice here would violate the register's primary key.
+        """
         try:
             conn.execute(
                 insert(event).values(
@@ -263,6 +272,10 @@ class PostgresStorage:
                         source=source, external_id=external_id, event_id=row.id
                     )
                 )
+            if blobs:
+                conn.execute(
+                    insert(event_blob), [{"event_id": row.id, "sha256": sha256} for sha256 in blobs]
+                )
         except IntegrityError as error:
             name = _constraint_name(error)
             if name in _CHAIN_POSITION_CONSTRAINTS:
@@ -271,12 +284,14 @@ class PostgresStorage:
                 raise SourceKeyTaken(name) from error
             raise
 
-    # The five reading methods below — `read`, `units`, `units_by_event`,
-    # `count_events` and `source_keys` — take the `Connection` in, just like
-    # `tip`, `lookup` and `insert_event` (review finding G4 of the final
-    # review). It said "three" until finding W-3: the count was right when it
-    # was written and then `count_events` and `units_by_event` arrived, so it
-    # names them now instead of counting them.
+    # The reading methods below — `read`, `read_by_kind`, `units`,
+    # `units_by_event`, `count_events`, `source_keys`, `blobs_by_event` and
+    # `events_by_blob` — take the `Connection` in, just like `tip`, `lookup`
+    # and `insert_event` (review finding G4 of the final review). It said
+    # "three" until finding W-3: the count was right when it was written and
+    # then `count_events` and `units_by_event` arrived. It said "five" until
+    # stage 1c, beside a list that by then left out `read_by_kind`; the list
+    # stands without a count now.
     #
     # Before, `read` established a connection of its own and `units` another
     # one per call — with the unit check out of K1 that would have become one
@@ -413,6 +428,36 @@ class PostgresStorage:
                 )
             )
         }
+
+    def blobs_by_event(self, conn: Connection, event_ids: Sequence[int]) -> dict[int, list[bytes]]:
+        """The registered blobs **by batch**, each list ascending, in one
+        query — the counterpart of `units_by_event` for the register
+        ({ref}`blobs`).
+
+        Events without a row are absent from the return value, and the empty
+        batch returns without a query, for the reasons `units_by_event` gives.
+        """
+        if not event_ids:
+            return {}
+        grouped: dict[int, list[bytes]] = {}
+        for row in conn.execute(
+            select(event_blob.c.event_id, event_blob.c.sha256)
+            .where(event_blob.c.event_id.in_(event_ids))
+            .order_by(event_blob.c.event_id, event_blob.c.sha256)
+        ):
+            grouped.setdefault(row.event_id, []).append(row.sha256)
+        return grouped
+
+    def events_by_blob(self, conn: Connection, sha256: bytes) -> list[int]:
+        """Every event the register names for a blob, ascending; empty when
+        none does."""
+        return list(
+            conn.execute(
+                select(event_blob.c.event_id)
+                .where(event_blob.c.sha256 == sha256)
+                .order_by(event_blob.c.event_id)
+            ).scalars()
+        )
 
     # --- RedactionStore ({ref}`erasure`) -------------------------------------
     #

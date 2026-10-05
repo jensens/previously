@@ -56,18 +56,27 @@ class DirectoryKeys:
             return None
         path = self._directory / key_id
         try:
-            text = path.read_text(encoding="utf-8")
+            text = path.read_bytes().decode("utf-8")
+            failure = None
         except FileNotFoundError:
             return None
         except (OSError, UnicodeDecodeError) as error:
+            text = ""
+            failure = type(error).__name__
+        if failure is not None:
             # The file is there and cannot be read: a permission, a directory
             # in its place, bytes that are not text. That is an operator's
             # problem with the key directory, not a missing key, so it is
             # said as such — with the path and the kind of failure, never
             # with what the file holds.
-            raise IdentityUnreadable(
-                f"the identity file {str(path)!r} cannot be read: {type(error).__name__}"
-            ) from None
+            #
+            # Raised here, after the `except`, and not inside it: an error
+            # raised inside keeps the one it replaces as its context, `from
+            # None` only hides that from a traceback, and a failed decoding
+            # carries every byte it was given — the identity included.
+            # Measured on 2026-10-05: raised inside, the context's `repr`
+            # held the whole file.
+            raise IdentityUnreadable(f"the identity file {str(path)!r} cannot be read: {failure}")
         for line in text.splitlines():
             stripped = line.strip()
             if stripped and not stripped.startswith("#"):

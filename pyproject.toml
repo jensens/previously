@@ -96,8 +96,8 @@ ban-relative-imports = "all"
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "T201"]
 # Printing to stdout is what this module is for — a `# noqa: T201` on each of
-# the twenty-seven `print` calls would be the same justification repeated
-# twenty-seven times (ruling T9-c of the stage 1a execution, whose ledger is
+# the thirty `print` calls would be the same justification repeated thirty
+# times (ruling T9-c of the stage 1a execution, whose ledger is
 # lost, so the label resolves nowhere). The count is measured against this
 # configuration with every per-file ignore emptied out, `ruff check --select
 # T201 --config 'lint.per-file-ignores = {}' src/previously/cli.py` — that
@@ -108,7 +108,8 @@ ban-relative-imports = "all"
 # The same day `anchor` and the anchor check in `verify` took it to
 # twenty-four, and `redact` took it to twenty-six in stage 1c, measured with
 # the command above on 2026-10-04. On 2026-10-05 `redact` naming a rebuild
-# its catch-up ran took it to twenty-seven, measured the same way.
+# its catch-up ran took it to twenty-seven, measured the same way, and
+# `show` printing the blobs of an event and `blob get` took it to thirty.
 "src/previously/cli.py" = ["T201"]
 
 [tool.ruff.lint.flake8-type-checking]

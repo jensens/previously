@@ -12,6 +12,10 @@ it was.
 
 Both are pure but for the randomness of the salts, and neither touches the
 store.
+
+The references to blobs are part of the content, so `prepare` mixes them
+into the payload, and `read_references` reads them back out of a payload the
+store returns ({ref}`blobs`).
 """
 
 from collections.abc import Mapping
@@ -19,6 +23,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from previously.contract.rows import EventRow
 from previously.contract.rows import UnitRow
+from previously.contract.types import BlobRef
+from previously.core.blob import is_address
 from previously.core.canonical import canonical
 from previously.core.errors import InvalidPayload
 from previously.core.hashing import event_hash_v2
@@ -27,6 +33,7 @@ from previously.core.hashing import new_salt
 from previously.core.hashing import payload_hash_v2
 from previously.core.hashing import unit_digest
 from previously.core.hashing import units_hash_v2
+from typing import cast
 from typing import TYPE_CHECKING
 
 
@@ -60,6 +67,83 @@ class Prepared:
     units: tuple[PreparedUnit, ...]
     units_digest: bytes
     key: tuple[str, str] | None
+    # The distinct hashes of the blobs the payload names, as bytes and
+    # ascending: the rows of the blob register ({ref}`blobs`).
+    blobs: tuple[bytes, ...] = ()
+
+
+# The key the references go under. Reserved like `evidence`: a payload that
+# already carries it is refused, so that it is not silently overwritten.
+_BLOBS = "blobs"
+
+
+def _references(blobs: Sequence[BlobRef]) -> list[dict[str, object]]:
+    """The references as they stand in the payload, each with its four keys,
+    in the order given. A reference that is not one is refused with its
+    index, before anything is hashed or written."""
+    references: list[dict[str, object]] = []
+    for index, blob in enumerate(blobs):
+        where = f"blob reference {index}"
+        if not is_address(blob.sha256):
+            raise InvalidPayload(f"{where}: sha256 is not 64 hexadecimal characters, lower case")
+        if blob.size < 0:
+            raise InvalidPayload(f"{where}: size must be at least 0, is {blob.size}")
+        if not blob.media_type:
+            raise InvalidPayload(f"{where}: media_type is empty")
+        references.append(
+            {
+                "sha256": blob.sha256,
+                "size": blob.size,
+                "media_type": blob.media_type,
+                "filename": blob.filename,
+            }
+        )
+    return references
+
+
+_REFERENCE_KEYS = frozenset({"sha256", "size", "media_type", "filename"})
+
+
+def _read_reference(value: object) -> BlobRef | None:
+    """One reference as `_references` writes it, or `None`."""
+    if not isinstance(value, dict):
+        return None
+    fields = cast("dict[str, object]", value)
+    if frozenset(fields) != _REFERENCE_KEYS:
+        return None
+    sha256, size = fields["sha256"], fields["size"]
+    media_type, filename = fields["media_type"], fields["filename"]
+    if not isinstance(sha256, str) or not is_address(sha256):
+        return None
+    # `bool` is a subclass of `int` in Python, and `true` in JSON is no size.
+    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
+        return None
+    if not isinstance(media_type, str) or not media_type:
+        return None
+    if filename is not None and not isinstance(filename, str):
+        return None
+    return BlobRef(sha256=sha256, size=size, media_type=media_type, filename=filename)
+
+
+def read_references(payload: Mapping[str, object]) -> tuple[BlobRef, ...] | None:
+    """The references a stored payload names under `blobs`, in their order —
+    none when it has no such key — or `None` when the list does not have the
+    form `prepare` writes ({ref}`blobs`).
+
+    For the readers of a payload that came back out of the store, where
+    anything may stand: `verify` holds the register against it, and `show`
+    prints it.
+    """
+    listed = payload.get(_BLOBS, [])
+    if not isinstance(listed, list):
+        return None
+    references: list[BlobRef] = []
+    for value in cast("list[object]", listed):
+        reference = _read_reference(value)
+        if reference is None:
+            return None
+        references.append(reference)
+    return tuple(references)
 
 
 def prepare(
@@ -69,6 +153,7 @@ def prepare(
     payload: Mapping[str, object],
     units: Sequence[RawUnit],
     key: tuple[str, str] | None,
+    blobs: Sequence[BlobRef] = (),
 ) -> Prepared:
     """Draws one salt for the payload and one per unit, and computes the
     payload digest, every unit digest and the units digest over them.
@@ -77,14 +162,27 @@ def prepare(
     digests. That is the point of the salt, and it is why `append` prepares
     an event once and keeps the result across its retries.
 
-    Raises `InvalidPayload` for whatever the canonical form refuses, and for
-    a `seq` that appears twice. That one is refused here although `append`
+    The references to blobs are mixed into the payload here, under `blobs`,
+    and only when there are any, so that an event without attachments has the
+    payload it had before blobs existed ({ref}`blobs`). Here and nowhere else:
+    mixed in at two places — once for the digest, once for the row — the two
+    could drift apart, for the reason `append` gives for `evidence`.
+
+    Raises `InvalidPayload` for a payload that already carries `blobs`, for a
+    reference that is not one, for whatever the canonical form refuses, and
+    for a `seq` that appears twice. That one is refused here although `append`
     refuses it earlier, because `prepare` has more than one caller: two units
     under one `seq` would leave one digest in the mapping the units digest is
     taken over, so the digest would attest fewer units than the event
     carries, and the store's primary key on `(event_id, seq)` would then
     refuse the second row with an exception from the driver.
     """
+    if _BLOBS in payload:
+        raise InvalidPayload(
+            f"payload already carries the key '{_BLOBS}' — it is reserved for the attachments"
+        )
+    if blobs:
+        payload = {**payload, _BLOBS: _references(blobs)}
     # The payload on its own first, before any salt is drawn, so that a
     # refusal names its path from the payload. `payload_hash_v2` wraps the
     # payload in a header, and refusing there reads `$.payload.text` where the
@@ -127,6 +225,7 @@ def prepare(
         units=tuple(prepared_units),
         units_digest=units_hash_v2({unit.seq: unit.digest for unit in prepared_units}),
         key=key,
+        blobs=tuple(sorted({bytes.fromhex(blob.sha256) for blob in blobs})),
     )
 
 

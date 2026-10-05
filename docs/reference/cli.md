@@ -3,19 +3,22 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has nine subcommands: `append`, `redact`, `log`, `verify`, `anchor`, `show`, `project`, `chronicle`, and `stats`.
+It has ten subcommands: `append`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, and `stats`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
+`append --attach` and `blob get` also read the blob settings, and no other subcommand reads any of them.
+A missing setting is an input error that names the first variable missing, in the form `Error: PREVIOUSLY_BLOB_BUCKET is not set`.
 
 ## Exit codes
 
 | Command | 0 | 1 | 2 |
 |---|---|---|---|
-| `append` | The event was recorded, or an event with the same `--source` and `--external-id` already existed. | Not used. | The input was invalid, or storage raised an error. |
+| `append` | The event was recorded, or an event with the same `--source` and `--external-id` already existed. | Not used. | The input was invalid, an attachment couldn't be read, a blob setting is missing or invalid, or storage or the blob store raised an error. |
 | `redact` | The redaction was recorded and carried out, or the target was already covered by one, and every projection stands at the tip of the log. | Not used. | The input was invalid, the redaction was refused, storage raised an error, or the projections couldn't be caught up after the redaction was recorded. |
 | `log` | The log was printed. | Not used. | The input was invalid, or storage raised an error. |
 | `verify` | The chain has no finding, and every anchor holds. | The chain or an anchor has at least one finding. | The input was invalid, or storage raised an error. |
 | `anchor` | The anchor line was printed, or the log is empty. | The chain has at least one finding. | Storage raised an error. |
 | `show` | The event was printed. | No event exists at the given `event_id`. | The input was invalid, or storage raised an error. |
+| `blob` | The blob was written to the file. | No event names the blob. | The input was invalid, a blob setting is missing, the blob is missing from the store, can't be opened or doesn't match its address, the file can't be written, or storage or the blob store raised an error. |
 | `project` | Every projection stands at the tip of the log. | Not used. | Storage raised an error, or the worker found a gap in the log. |
 | `chronicle` | The chronicle was printed, even when the window holds no row. | Not used. | The input was invalid, or storage raised an error. |
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
@@ -31,10 +34,36 @@ Submits one event and prints its `id`.
 | `--text` | Yes | — | UTF-8 text, at most 1,000,000 bytes. |
 | `--occurred-at` | No | The current UTC time. | An ISO 8601 timestamp with a UTC offset. |
 | `--evidence` | No | `recollection` | `verbatim` or `recollection`. |
+| `--attach FILE` | No | — | A file to store as a blob and name at the event; may repeat. |
 
 `append` prints exactly one line to standard output: the new event's `id`.
 Calling `append` again with the same `--source` and `--external-id` doesn't create a second event.
 It prints the existing event's `id` and returns 0.
+
+### Attachments
+
+With `--attach`, `append` reads `PREVIOUSLY_BLOB_RECIPIENT` and the five settings of the blob store, opens every file, stores each file as a blob, and then appends the event; see {ref}`blobs`.
+It checks the recipient before it stores anything, and a recipient that isn't an age X25519 recipient is an input error, quoted in the sentence.
+A file that can't be opened, or that can't be read twice, such as a pipe, is an input error:
+
+```text
+Error: cannot read the attachment notes/minutes.txt: No such file or directory
+```
+
+On any of these errors, nothing is stored and nothing is appended.
+A blob stored before the append fails stays in the store, and no event names it.
+
+The payload of the event carries one reference per `--attach`, in the order given, under the key `blobs`:
+
+```json
+{"blobs": [{"sha256": "5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03", "size": 6, "media_type": "text/plain", "filename": "hello.txt"}]}
+```
+
+`sha256` is the SHA-256 of the file's content in 64 lowercase hexadecimal characters, and `size` is its size in bytes.
+`filename` is the file's name without its directory.
+`media_type` comes from the name's extension, looked up in the table built into Python's `mimetypes` module and in no file of the system; without a match, or for a compression suffix such as `.gz`, it's `application/octet-stream`.
+The same file given twice is two references and one blob.
+An event without `--attach` carries no key `blobs`, and a payload must not carry it: `append` refuses it with `payload already carries the key 'blobs' — it is reserved for the attachments`.
 
 ## `redact`
 
@@ -61,7 +90,7 @@ Every hash, the source key and the rows of the units stay.
 
 The redaction is an event of kind `action`, written in the same transaction as the tombstones.
 Its payload holds four keys: `action` with the value `redaction`, `scope` with `event` or `units`, `target`, and `reason`.
-`target` holds the erased event's `id` under `event`, and either `blobs` with an empty list, for `event`, or `units` with the erased `seq` values in ascending order, for `units`.
+`target` holds the erased event's `id` under `event`, and either `blobs` with the hashes the blob register names for the event, in ascending order and empty for an event without attachments, for `event`, or `units` with the erased `seq` values in ascending order, for `units`.
 A unit a redaction already covers isn't named again.
 
 `redact` prints one of two lines to standard output:
@@ -81,7 +110,7 @@ An ordinary catch-up prints nothing.
 A catch-up that builds a projection for the first time, or rebuilds it because its version changed, prints the line `project` prints for that projection, on standard error:
 
 ```text
-chronicle       rebuilt: version 1 -> 2, 12000 events, up_to_id 12001
+chronicle       rebuilt: version 1 -> 2, 12000 events, up_to_id 12000
 ```
 
 Standard output carries the one line either way.
@@ -198,7 +227,17 @@ FINDING 9: action has no valid form
 | `units are erased in part, which version 1 cannot attest` | An event in hash format 1 has some units without content, and others with it. | The event. |
 | `action has no valid form` | An event of kind `action` carries no `action` name in its payload, or a redaction's payload doesn't have exactly the form `redact` writes. | The action. |
 
-`verify` matches tombstones and redactions after it has read the whole chain, in the same snapshot.
+One finding comes from the blob register:
+
+```text
+FINDING 7: blob register does not match the payload
+```
+
+It stands under the event whose register rows differ from the hashes the event names.
+For an event with a payload, `verify` compares the set of hashes under `blobs` in the payload with the set of rows in `event_blob`; a `blobs` that doesn't have the form `append` writes is the same finding.
+For an erased payload, it compares the rows with `blobs` in the redaction of the event.
+
+`verify` matches tombstones and redactions, and the register of an erased event, after it has read the whole chain, in the same snapshot.
 
 With no finding, `verify` prints a single line, which depends on the arguments:
 
@@ -247,7 +286,57 @@ For an erased payload it then prints `payload=<erased by event <id>>`, naming th
 Otherwise it prints `evidence=<verbatim|recollection>` when the payload carries the key `evidence`, and then `payload=<JSON object, with sorted keys>`.
 A redaction carries no `evidence`, so `show` prints no `evidence=` line for it.
 It then prints one line per unit, in `seq` order: `  ¶<seq> <content>`, or for a unit without content `  ¶<seq> <erased by event <id>>`, or `  ¶<seq> <erased>` when no redaction covers it.
+Last, it prints one line per reference in the payload's `blobs`, in their order: `  blob <sha256> <size> <media_type> <filename>`, with `-` for a reference without a file name.
+`media_type` and `filename` are escaped the way `chronicle` escapes its fields.
+`show` reads these lines from the log and doesn't ask the blob store, so it needs no blob setting.
 Without an event at the given `event_id`, `show` prints `No event <event_id>` to standard error.
+
+## `blob`
+
+Fetches a stored blob, opens it, checks it against its address, and writes it to a file; see {ref}`blobs`.
+It has one form:
+
+```text
+previously blob get HASH --output FILE
+```
+
+| Argument | Required | Default | Description |
+|---|---|---|---|
+| `HASH` | Yes | — | The blob's address, the SHA-256 of its content in 64 lowercase hexadecimal characters, as a positional argument. |
+| `--output FILE` | Yes | — | The file to write the content to. |
+
+`blob get` checks `HASH` before it reads a setting or asks the database, and refuses anything else as an input error:
+
+```text
+Error: 5891B5B522D5DF086D0FF0B110FBD9D21BB4FC7163AF34D08286A2E846F6BE03 is not a blob address: 64 hexadecimal characters, lower case
+```
+
+It reads `PREVIOUSLY_BLOB_IDENTITIES` and the five settings of the blob store.
+When no event names the blob, `blob get` returns 1 and prints one notice to standard error:
+
+```text
+no event uses blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03
+```
+
+Otherwise it writes the content to a temporary file in the directory of `--output`, and renames that file to `--output` only once the content matched its address.
+The file is readable by its owner only.
+On success it prints one line to standard output and never the content:
+
+```text
+wrote 6 bytes to hello.txt
+```
+
+Four errors of `blob get` print one sentence to standard error and return 2:
+
+```text
+Error: blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 is not in the store
+Error: blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 cannot be opened: No matching keys found
+Error: blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 does not match its address; nothing was written
+Error: cannot write out/hello.txt: No such file or directory
+```
+
+After `cannot be opened:` stands the reason: the object names no key, no identity for its key is in the directory, or `age` refuses the object.
+On every error, the temporary file is gone and an existing `--output` is unchanged.
 
 ## `project`
 

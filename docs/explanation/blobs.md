@@ -5,12 +5,12 @@
 An event can carry more than text: a scanned letter, a recording, a spreadsheet somebody attached to a mail.
 Previously keeps such a content as a blob, outside the database, in an S3 bucket, and seals it before it leaves the process.
 This page explains how a blob is addressed, why the store only ever sees ciphertext, why the format is `age`, and what "first wins" does and doesn't promise.
-It also says what isn't built yet.
+It then explains how a blob comes to an event, and why the log names it twice, once in the payload and once in a register.
 
 ## The address is the hash of the content
 
 A blob lies under the SHA-256 of its plaintext, written as 64 lower-case hexadecimal characters.
-That hash is its address in the store and, from the next step on, its name in the log.
+That hash is its address in the store and its name in the log.
 
 Two things follow from addressing by content, and both are the reason for it.
 The same content is one object, however often it arrives: the same attachment on five mails is stored once.
@@ -150,8 +150,52 @@ There is no recovery: the store holds ciphertext only, and nothing else holds th
 The identity is one line of text, and it has to be backed up apart from the bucket—never where the blobs are.
 ```
 
+## First the blob, then the event
+
+`previously append --attach` stores every attachment before it appends the event, and the order is forced by what the event says.
+The event names its blobs by address, and the address is known only once the content has been read; the event hash covers the names, so the event can't be written first and corrected later.
+
+Before it stores anything, the command opens every file.
+A file that can't be read then stores nothing and appends nothing, rather than leaving the first attachments in the bucket and failing on the third.
+It checks the recipient up front as well: "first wins" means that a content the store already holds isn't sealed again, so a mistyped recipient would otherwise pass unnoticed until the first new content arrived.
+
+What can still go wrong comes after the blobs are stored: the database doesn't answer, or the event is refused.
+Then the blobs stay in the bucket, and no event names them.
+That's harmless in the sense that matters—nothing reads a blob no event names, and `blob get` refuses an address no event uses—but it's storage nobody accounts for, and there is no sweep for it yet.
+The other order would be worse: an event that names a blob the store never received is a reference the chain attests and nothing can satisfy.
+
+The store takes part in no database transaction, so no order makes the two writes one.
+Blob first is the order in which a failure leaves something unused rather than something wrong.
+
+## The reference in the payload, the register beside it
+
+An event names each blob in its payload, under the key `blobs`: the address, the size, the media type and the file name.
+Because the reference stands in the payload, the payload digest covers it, and the chain attests *which* bytes belong to the event—not the bytes themselves, which lie outside the database, but their identity.
+That's the same move as for the units: the log holds a digest, and the digest pins the content wherever it lies.
+
+The key `blobs` is reserved like `evidence`: `append` refuses a payload that already carries it, rather than overwriting it.
+An event without attachments carries no such key at all, so its payload is the one it would have had before blobs existed.
+
+Next to the payload stands a table, `event_blob`, with one row per event and blob.
+It answers a question the payload can't answer cheaply: which events use this blob?
+Asking the payloads would mean reading every event, and `blob get` asks it before every fetch, as an erasure of a blob will.
+
+The register carries no truth of its own, and that's the point of keeping it beside the payload rather than instead of it.
+The chain covers the payload and not the register, so the register can be wrong in a way the chain doesn't see: a row added, a row deleted.
+`verify` therefore holds the two against each other, as sets of addresses: the same content attached twice is two references and one row.
+Once an event is erased, its payload is gone, and the redaction takes over what the payload attested: it names the blobs the erased event used, out of the register, and `verify` holds the register against that list from then on.
+
+## Why the file name belongs to the use
+
+The same bytes can arrive as `invoice.pdf` on one mail and as `scan-0042.pdf` on another.
+They make one blob, because they hold one content, and two uses with two names.
+So the name stands in the reference, at the event, and not at the object in the store.
+An object that carried a name would carry the name of whichever writer came first, and "first wins" would turn every later name into a silent loss.
+
+The name is the file's name without its directory: where the file lay on the machine that attached it says nothing about the content, and the payload is kept for good.
+The media type is derived from that name alone, never guessed from the content, and only from the table built into Python itself, not from the files of the system it runs on.
+Both stand in the event hash forever, so neither may depend on which machine attached the file.
+
 ## What this page doesn't say yet
 
-The blob path stands as a library, and the log doesn't know about it yet.
-How a blob gets attached to an event, and how the log names it, comes with the next step of stage 1c.
-When a blob goes again, through an erasure of the events that use it, comes after that; {ref}`erasure` describes erasure as it stands today.
+When a blob goes again, through an erasure of the events that use it or of the blob itself, and how `verify` checks the bytes in the store, comes with the next step of stage 1c; {ref}`erasure` describes erasure as it stands today.

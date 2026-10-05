@@ -1,9 +1,11 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
+from dataclasses import replace
 from datetime import datetime
 from datetime import UTC
 from previously.contract.types import Anchor
+from previously.contract.types import BlobRef
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
@@ -1047,3 +1049,85 @@ def test_the_tombstone_rows_of_a_fully_erased_version_1_event_are_attested_by_no
         c.execute(text(forgery))
     expected = [] if version == 1 else [Finding(1, "units_hash does not match the units")]
     assert verify(storage) == expected
+
+
+# --- The blob register against the chain ({ref}`blobs`) --------------------
+
+_BLOB = "c" * 64
+_OTHER_BLOB = "d" * 64
+_REGISTER_FINDING = "blob register does not match the payload"
+
+
+def _attached(external_id: str, *addresses: str) -> RawEvent:
+    return replace(
+        _event(external_id),
+        blobs=tuple(
+            BlobRef(sha256=address, size=5, media_type="text/plain") for address in addresses
+        ),
+    )
+
+
+@pytest.mark.db
+def test_a_register_row_without_a_reference_fires(db: Engine) -> None:
+    """A row the payload does not name, added with raw SQL beside one it
+    does; the event with the row of its own stays quiet beside it."""
+    storage = PostgresStorage(db)
+    append(storage, [_attached("a", _BLOB), _attached("b", _BLOB)], recorded_at=NOW)
+    assert verify(storage) == []
+    with db.begin() as c:
+        c.execute(
+            text("INSERT INTO event_blob (event_id, sha256) VALUES (1, :s)"),
+            {"s": bytes.fromhex(_OTHER_BLOB)},
+        )
+    assert verify(storage) == [Finding(1, _REGISTER_FINDING)]
+
+
+@pytest.mark.db
+def test_a_reference_without_a_register_row_fires(db: Engine) -> None:
+    """The payload names two blobs and the register, after one row is taken
+    away with raw SQL, one."""
+    storage = PostgresStorage(db)
+    append(storage, [_attached("a", _BLOB, _OTHER_BLOB)], recorded_at=NOW)
+    assert verify(storage) == []
+    with db.begin() as c:
+        c.execute(
+            text("DELETE FROM event_blob WHERE event_id = 1 AND sha256 = :s"),
+            {"s": bytes.fromhex(_OTHER_BLOB)},
+        )
+    assert verify(storage) == [Finding(1, _REGISTER_FINDING)]
+
+
+@pytest.mark.db
+def test_a_reference_list_without_its_form_fires(db: Engine) -> None:
+    """A list that is not the one `append` writes names no set of hashes to
+    hold the register against, and that is the same finding. Forged with raw
+    SQL, so the payload digest fires beside it: two statements about two
+    things, the content and the register."""
+    storage = PostgresStorage(db)
+    append(storage, [_attached("a", _BLOB)], recorded_at=NOW)
+    with db.begin() as c:
+        c.execute(
+            text("UPDATE event SET payload = jsonb_set(payload, '{blobs}', :b) WHERE id = 1"),
+            {"b": f'["{_BLOB}"]'},
+        )
+    assert verify(storage) == [
+        Finding(1, "payload_hash does not match the payload"),
+        Finding(1, _REGISTER_FINDING),
+    ]
+
+
+@pytest.mark.db
+def test_the_register_of_an_erased_event_is_held_against_its_redaction(db: Engine) -> None:
+    """Once the payload is gone, the list in the redaction is what attests the
+    blobs the event named: the register is held against that, at the end of
+    the pass, under the `id` of the erased event."""
+    storage = PostgresStorage(db)
+    append(storage, [_attached("a", _BLOB)], recorded_at=NOW)
+    redact_event(storage, storage, 1, reason="r", recorded_at=NOW)
+    assert verify(storage) == []
+    with db.begin() as c:
+        c.execute(
+            text("INSERT INTO event_blob (event_id, sha256) VALUES (1, :s)"),
+            {"s": bytes.fromhex(_OTHER_BLOB)},
+        )
+    assert verify(storage) == [Finding(1, _REGISTER_FINDING)]

@@ -27,6 +27,7 @@ forge one row could have hidden every further forgery behind it.
 from dataclasses import dataclass
 from previously.contract.types import Anchor
 from previously.core.canonical import canonical
+from previously.core.chain import read_references
 from previously.core.errors import InvalidPayload
 from previously.core.hashing import event_hash
 from previously.core.hashing import event_hash_v2
@@ -231,6 +232,26 @@ def _units_finding_v2(row: EventRow, units: Sequence[UnitRow]) -> Finding | None
     return None
 
 
+def _register_finding(row: EventRow, registered: Sequence[bytes]) -> Finding | None:
+    """The blob register against the references in the payload, or `None`
+    ({ref}`blobs`).
+
+    The register carries no truth of its own: what the event hash covers is
+    the payload, and the register is held against it as a set — the same
+    content twice is two references and one row. A list without its form
+    names no set, and that is the same finding. An event without a payload
+    is held against its redaction instead, at the end of the pass
+    (`_Erasures`), because the redaction stands behind it in the chain.
+    """
+    if row.payload is None:
+        return None
+    references = read_references(row.payload)
+    named = None if references is None else {bytes.fromhex(r.sha256) for r in references}
+    if named != set(registered):
+        return Finding(row.id, "blob register does not match the payload")
+    return None
+
+
 class _EventHash(Protocol):
     """The signature `event_hash` and `event_hash_v2` share, spelled out so
     that pyright checks every keyword at the call below; `Callable[..., bytes]`
@@ -329,9 +350,10 @@ class _Erasures:
     the chain, so at the target's row it has not been read yet, and it may be
     batches away.
 
-    What it keeps is small: the position of every tombstone, and the
-    redactions, which are few. The form of every action is checked as it
-    comes by, because that needs nothing but the row.
+    What it keeps is small: the position of every tombstone, the register
+    rows of every event whose payload is a tombstone, and the redactions,
+    which are few. The form of every action is checked as it comes by,
+    because that needs nothing but the row.
     """
 
     def __init__(self) -> None:
@@ -339,12 +361,17 @@ class _Erasures:
         self._payloads: list[int] = []
         self._units: list[tuple[int, int]] = []
         self._partial: list[int] = []
+        self._registered: dict[int, frozenset[bytes]] = {}
 
-    def observe(self, row: EventRow, units: Sequence[UnitRow]) -> list[Finding]:
-        """Remembers the tombstones of one row, and reads it if it is an
-        action; the finding about the form of an action, if any."""
+    def observe(
+        self, row: EventRow, units: Sequence[UnitRow], blobs: Sequence[bytes]
+    ) -> list[Finding]:
+        """Remembers the tombstones of one row and, for a payload tombstone,
+        its register rows; reads the row if it is an action; the finding
+        about the form of an action, if any."""
         if row.payload is None:
             self._payloads.append(row.id)
+            self._registered[row.id] = frozenset(blobs)
         erased = [unit.seq for unit in units if unit.content is None]
         self._units.extend((row.id, seq) for seq in erased)
         # Some units of a version 1 event and not all: its digest takes the
@@ -379,8 +406,23 @@ class _Erasures:
             Finding(event_id, "units are erased in part, which version 1 cannot attest")
             for event_id in self._partial
         )
+        findings.extend(self._register_findings())
         for redaction in index:
             findings.extend(_execution_findings(storage, conn, redaction))
+        return findings
+
+    def _register_findings(self) -> list[Finding]:
+        """The register of every erased event against the blobs its
+        redaction names ({ref}`blobs`): once the payload is gone, that list
+        is what attests them. A tombstone without a redaction has no list to
+        be held against, and its finding is already that it has no order."""
+        findings: list[Finding] = []
+        for event_id, registered in self._registered.items():
+            redaction = self._redactions.of_event(event_id)
+            if redaction is None:
+                continue
+            if frozenset(bytes.fromhex(sha256) for sha256 in redaction.blobs) != registered:
+                findings.append(Finding(event_id, "blob register does not match the payload"))
         return findings
 
 
@@ -422,6 +464,7 @@ def _check_event(
     row: EventRow,
     units: Sequence[UnitRow],
     source_key: tuple[str, str] | None,
+    blobs: Sequence[bytes],
     *,
     previous_hash: bytes | None,
     first: bool,
@@ -436,7 +479,8 @@ def _check_event(
     The linkage is checked for every row, whatever its version: `prev_hash`
     against the predecessor's `hash` needs no hash format. A version the check
     does not know is a finding, nothing else is computed for that row, and the
-    pass goes on with the next one.
+    pass goes on with the next one. The blob register needs no hash format
+    either, and is held against the payload whatever the version.
     """
     findings: list[Finding] = []
 
@@ -451,6 +495,9 @@ def _check_event(
         findings.append(Finding(row.id, f"hash_version {row.hash_version} is not known"))
     else:
         findings.extend(check(row, units, source_key))
+    register = _register_finding(row, blobs)
+    if register is not None:
+        findings.append(register)
     return findings
 
 
@@ -559,19 +606,23 @@ def examine[Conn](
             event_ids = [r.id for r in rows]
             keys = storage.source_keys(conn, event_ids)
             units_of = storage.units_by_event(conn, event_ids)
+            # The blob register by batch as well, for the same reason.
+            blobs_of = storage.blobs_by_event(conn, event_ids)
 
             for row in rows:
                 units = units_of.get(row.id, [])
+                blobs = blobs_of.get(row.id, [])
                 findings.extend(
                     _check_event(
                         row,
                         units,
                         keys.get(row.id),
+                        blobs,
                         previous_hash=previous_hash,
                         first=expect_first,
                     )
                 )
-                findings.extend(erasures.observe(row, units))
+                findings.extend(erasures.observe(row, units, blobs))
                 for anchored in pending.pop(row.id, ()):
                     if anchored != row.hash:
                         findings.append(Finding(row.id, "hash does not match the anchor"))

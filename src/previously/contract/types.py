@@ -27,6 +27,22 @@ class RawUnit:
 
 
 @dataclass(frozen=True)
+class BlobRef:
+    """A reference from an event to a stored blob ({ref}`blobs`).
+
+    `sha256` is the address, the SHA-256 of the plaintext in 64 lower-case
+    hexadecimal characters; `size` the plaintext's size in bytes. `filename`
+    belongs to this use of the content, not to the content: the same bytes
+    may carry two names at two events.
+    """
+
+    sha256: str
+    size: int
+    media_type: str
+    filename: str | None = None
+
+
+@dataclass(frozen=True)
 class RawEvent:
     source: str
     external_id: str
@@ -38,6 +54,10 @@ class RawEvent:
     # parameter is not carried over from the annotation. The generic alias is
     # callable and produces the origin type — no difference in behaviour.
     payload: Mapping[str, object] = field(default_factory=dict[str, object])
+    # The blobs the event names, stored before it is appended. `append` mixes
+    # them into the payload under `blobs`, and an event without any carries
+    # no such key.
+    blobs: tuple[BlobRef, ...] = ()
 
 
 @dataclass(frozen=True)

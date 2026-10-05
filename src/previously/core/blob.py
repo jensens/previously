@@ -20,6 +20,7 @@ from previously.core.sealing import unseal
 from typing import TYPE_CHECKING
 
 import hashlib
+import re
 import tempfile
 
 
@@ -33,6 +34,15 @@ if TYPE_CHECKING:
 # The size of a piece read while hashing. A mebibyte keeps the number of
 # calls small without making the piece itself a matter of memory.
 _PIECE = 1024 * 1024
+
+_ADDRESS = re.compile(r"[0-9a-f]{64}")
+
+
+def is_address(text: str) -> bool:
+    """Whether `text` is a blob address: a SHA-256 in 64 lower-case
+    hexadecimal characters, the spelling `hashlib` gives and the only one the
+    log and the store use."""
+    return _ADDRESS.fullmatch(text) is not None
 
 
 @dataclass(frozen=True)
@@ -112,8 +122,10 @@ def fetch_blob(store: BlobStore, keys: KeyProvider, address: str, sink: ByteSink
     another key included; `InvalidKey` when what the key source holds for
     the key is not an age identity; `AddressMismatch` when the plaintext is
     not the content the address names. A store error passes through as it
-    is, a stream that breaks off included. The stream is closed on every
-    path, whatever is raised.
+    is, a stream that breaks off included, and so does an error of the key
+    source — `DirectoryKeys` raises `IdentityUnreadable` for an identity file
+    that is there and cannot be read. The stream is closed on every path,
+    whatever is raised.
     """
     found = store.get(address)
     if found is None:

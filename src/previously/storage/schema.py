@@ -161,6 +161,26 @@ source_key = Table(
     UniqueConstraint("event_id", name="source_key_event_id_key"),
 )
 
+# The register of blobs ({ref}`blobs`): which event names which blob, so that
+# "which events use this blob" is a query and not a pass over every payload.
+# It carries no truth of its own — the reference in `payload.blobs` is what
+# the event hash covers — and `verify` holds it against the payload. One row
+# per distinct blob of an event: the same content attached twice is two
+# references in the payload and one row here.
+event_blob = Table(
+    "event_blob",
+    metadata,
+    Column("event_id", BigInteger, ForeignKey("event.id"), nullable=False),
+    # The SHA-256 of the plaintext, as bytes; the payload names it in hex.
+    Column("sha256", LargeBinary, nullable=False),
+    PrimaryKeyConstraint("event_id", "sha256"),
+    CheckConstraint("octet_length(sha256) = 32", name="event_blob_sha256_check"),
+)
+
+# The primary key answers "the blobs of an event"; this index answers the
+# other direction.
+Index("event_blob_sha256_idx", event_blob.c.sha256)
+
 # --- Projections ({ref}`projections`) ---------------------------------------
 #
 # Derivable and disposable (architecture §4.4, frozen design record): these

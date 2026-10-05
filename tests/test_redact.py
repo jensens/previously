@@ -3,10 +3,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The second write path: erasing an event or units of it ({ref}`erasure`)."""
 
+from dataclasses import replace
 from datetime import datetime
 from datetime import UTC
 from itertools import pairwise
 from previously.contract.types import Anchor
+from previously.contract.types import BlobRef
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
@@ -114,6 +116,33 @@ def test_redacting_an_event_writes_an_action_and_leaves_tombstones(db: Engine) -
     with storage.begin() as c:
         assert storage.units_by_event(c, [2]) == {}
         assert storage.source_keys(c, [2]) == {}
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_the_redaction_of_an_event_names_its_blobs(db: Engine) -> None:
+    """Once the payload is erased, the list in the redaction is what attests
+    which blobs the event named ({ref}`blobs`). It comes from the register,
+    each hash once and ascending; the references are handed in descending
+    and one of them twice, so that neither order nor repetition carries
+    through by accident."""
+    storage = PostgresStorage(db)
+    high, low = "f" * 64, "0" * 64
+    event = replace(
+        _message("m"),
+        blobs=(
+            BlobRef(sha256=high, size=1, media_type="text/plain", filename="b.txt"),
+            BlobRef(sha256=low, size=1, media_type="text/plain", filename="a.txt"),
+            BlobRef(sha256=high, size=1, media_type="text/plain", filename="b-copy.txt"),
+        ),
+    )
+    append(storage, [event], recorded_at=NOW)
+
+    redact_event(storage, storage, 1, reason="r", recorded_at=LATER)
+
+    redaction = _rows(storage)[1]
+    assert redaction.payload is not None
+    assert redaction.payload["target"] == {"event": 1, "blobs": [low, high]}
     assert verify(storage) == []
 
 
@@ -534,11 +563,12 @@ class _ContestedLog:
         row: EventRow,
         units: Sequence[UnitRow],
         key: tuple[str, str] | None,
+        blobs: Sequence[bytes] = (),
     ) -> None:
         self.inserts += 1
         if self._losses is None or self.inserts <= self._losses:
             raise ChainPositionTaken("event_prev_hash_idx")
-        self._inner.insert_event(conn, row, units, key)
+        self._inner.insert_event(conn, row, units, key, blobs)
 
     def read(self, conn: Connection, from_id: int, limit: int) -> Iterator[EventRow]:
         return self._inner.read(conn, from_id, limit)
@@ -556,6 +586,12 @@ class _ContestedLog:
 
     def read_by_kind(self, conn: Connection, kind: str) -> Iterator[EventRow]:
         return self._inner.read_by_kind(conn, kind)
+
+    def blobs_by_event(self, conn: Connection, event_ids: Sequence[int]) -> dict[int, list[bytes]]:
+        return self._inner.blobs_by_event(conn, event_ids)
+
+    def events_by_blob(self, conn: Connection, sha256: bytes) -> list[int]:
+        return self._inner.events_by_blob(conn, sha256)
 
 
 @pytest.mark.db

@@ -253,6 +253,8 @@ def _prepare(
     and then one would hash something other than what one stores. The chain
     check ({ref}`hash-chain`) computes the payload digest of `row.payload`
     against `row.payload_hash` and would uncover that, but only there.
+    The references to blobs are mixed in once for the same reason, by
+    `chain.prepare`, which every write path shares ({ref}`blobs`).
     The salts are drawn once as well, in `chain.prepare`, before the first
     attempt: what a retry repeats is the chain position, not the event, so
     the digests over its content are computed once and kept, and only
@@ -330,6 +332,7 @@ def _prepare(
                     payload=payload,
                     units=event.units,
                     key=(event.source, event.external_id),
+                    blobs=event.blobs,
                 ),
             )
         )
@@ -373,7 +376,9 @@ def append[Conn](
                     row, units = link(
                         ready, event_id=next_id, prev_hash=prev, recorded_at=recorded_at
                     )
-                    storage.insert_event(conn, row, units, ready.key)
+                    # The register rows in the same transaction as the event
+                    # that names them ({ref}`blobs`).
+                    storage.insert_event(conn, row, units, ready.key, ready.blobs)
                     ids.append(next_id)
                     prev = row.hash
                     next_id += 1

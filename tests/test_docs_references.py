@@ -407,20 +407,24 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     five restrictions below" with a row missing. Deriving the payloads from
     the code is the fix and it is not built yet.
 
-    The second half holds the five standard-error sentences and the two
-    lines of `redact` on standard output that `cli.md` quotes, in five
-    blocks, against the literals in `cli.py`; the six refusals of `redact`
-    against the messages `core/redact.py` and `cli.py` raise as
-    `RedactionRefused`; and the twelve findings it quotes, three from the
-    anchors and nine from the hash formats and erasure, against the reasons
-    `core/verify.py` hands to `Finding`. The first two sentences were quoted and covered by nothing
-    until 2026-10-04: the first half of this test reads the *Payload range*
-    table and nothing else, and the command line's notices reach no other
-    check. They cannot be produced by calling the code the way a refusal can
-    — the truncation sentence needs a cut window and the lag sentence a
-    projection that is behind — so this half matches the page's line against
-    the message's static parts instead, which is the strongest form available
-    without a database.
+    The second half holds the six standard-error sentences and the two
+    lines of `redact` on standard output that `cli.md` quotes, in six
+    blocks, against the literals in `cli.py` — not the line `blob get`
+    prints on success, which `_message_patterns` does not collect, since it
+    reads standard-error sentences and returned lines only; the six
+    refusals of `redact` against the messages `core/redact.py` and `cli.py`
+    raise as `RedactionRefused`; the six errors of the blob commands against
+    the messages `cli.py` raises as `PreviouslyError` or `InvalidPayload`;
+    and the thirteen findings it quotes, three from the anchors, nine from
+    the hash formats and erasure and one from the blob register, against the
+    reasons `core/verify.py` hands to `Finding`. The first two sentences
+    were quoted and covered by nothing until 2026-10-04: the first half of
+    this test reads the *Payload range* table and nothing else, and the
+    command line's notices reach no other check. They cannot be produced by
+    calling the code the way a refusal can — the truncation sentence needs a
+    cut window and the lag sentence a projection that is behind — so this
+    half matches the page's line against the message's static parts instead,
+    which is the strongest form available without a database.
 
     Each block is found by the sentence that introduces it, and
     a sentence that vanishes from the page fails with a message naming it.
@@ -454,6 +458,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         ("On an empty log, one notice goes to standard error", 1),
         ("For each unit it skips, one notice goes to standard error", 1),
         ("`redact` prints one of two lines to standard output", 2),
+        ("When no event names the blob, `blob get` returns 1", 1),
     ):
         notices = _quoted_block(page, after)
         assert len(notices) == expected, f"{after!r}: {notices}"
@@ -480,12 +485,33 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
             "Either the code's wording changed, or the page's did."
         )
 
+    # The errors of `blob get` and the input errors of the blob commands come
+    # out of `cli.py`, raised as `PreviouslyError` or `InvalidPayload`.
+    errors = [
+        *_raised_patterns(ROOT / "src" / "previously" / "cli.py", "PreviouslyError"),
+        *_raised_patterns(ROOT / "src" / "previously" / "cli.py", "InvalidPayload"),
+    ]
+    quoted = [
+        *_quoted_block(page, "A file that can't be opened, or that can't be read twice"),
+        *_quoted_block(page, "and refuses anything else as an input error"),
+        *_quoted_block(page, "Four errors of `blob get`"),
+    ]
+    assert len(quoted) == 6, quoted
+    for line in quoted:
+        prefix, _, error = line.partition(": ")
+        assert prefix == "Error", f"cli.md quotes the error {line!r} without `Error: `"
+        assert any(_is_the_same_sentence(parts, error) for parts in errors), (
+            f"cli.md quotes the error {error!r} and cli.py raises no such message. "
+            "Either the code's wording changed, or the page's did."
+        )
+
     reasons = _finding_patterns(ROOT / "src" / "previously" / "core" / "verify.py")
     findings = [
         *_quoted_block(page, "Three findings come from the anchors"),
         *_quoted_block(page, "Nine findings come from the hash formats and from erasure"),
+        *_quoted_block(page, "One finding comes from the blob register"),
     ]
-    assert len(findings) == 12, findings
+    assert len(findings) == 13, findings
     for line in findings:
         # The prefix is held as well, or a page quoting `FINDINGS 42: ...`
         # would pass on the strength of its reason. Its form is written down

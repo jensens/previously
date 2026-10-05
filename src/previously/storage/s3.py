@@ -250,13 +250,22 @@ class S3BlobStore:
 # attempts of five seconds each.
 #
 # A server that accepts the connection and then never answers: the read
-# timeout, which bounds each wait for the next bytes of an answer, not the
-# whole transfer, so a large object that keeps flowing is not cut off.
-# boto3's default is 60 s per attempt, which over the two attempts below would
-# come to two minutes; this was not run. With the value below,
-# a `stat` and a `get` against a socket that accepted and stayed silent
-# failed after 40.26 and 40.43 s: two attempts of twenty seconds each, with
-# `ReadTimeoutError`, which counts as unreachable.
+# timeout. With the value below, a `stat` and a `get` against a socket that
+# accepted and stayed silent failed after 40.26 and 40.43 s: two attempts of
+# twenty seconds each, with `ReadTimeoutError`, which counts as unreachable.
+# boto3's default is 60 s per attempt, which over the two attempts would come
+# to two minutes; that is arithmetic, not a run.
+#
+# Not run, and so not claimed beyond what botocore's documentation says of
+# `read_timeout`, that it bounds the wait on a socket read: a large object
+# that keeps flowing should then not be cut off, since every piece that
+# arrives ends one wait. What is not known either is the other direction:
+# an upload in parts sends each part and then waits for the store's answer,
+# and a store that takes longer than twenty seconds to answer for one part —
+# a slow disk under a large part — would fail that part, and after the
+# second attempt the upload, with `ReadTimeoutError`. No store of the
+# project's has been measured that slow; it is the first thing to look at
+# if large attachments fail as unreachable.
 _CONNECT_TIMEOUT = 5
 _READ_TIMEOUT = 20
 _ATTEMPTS = 2

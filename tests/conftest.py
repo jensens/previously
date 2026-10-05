@@ -66,9 +66,10 @@ def engine() -> Iterator[Engine]:
 def db(engine: Engine) -> Iterator[Engine]:
     """An empty schema per test. TRUNCATE instead of re-creating: faster and sufficient.
 
-    All six tables stand in one statement, and it is not the order of the
-    names that makes this compatible with the foreign keys: PostgreSQL does
-    not check foreign keys against each other within a single joint TRUNCATE.
+    Every table `metadata` declares stands in one statement, however many
+    there are, and it is not the order of the names that makes this
+    compatible with the foreign keys: PostgreSQL does not check foreign keys
+    against each other within a single joint TRUNCATE.
     """
     with engine.begin() as c:
         c.execute(text(TRUNCATE_ALL))

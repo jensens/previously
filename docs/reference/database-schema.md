@@ -2,14 +2,15 @@
 
 # Database schema
 
-Previously stores its data in six PostgreSQL tables.
+Previously stores its data in seven PostgreSQL tables.
 Three hold the log: `event`, `unit`, and `source_key`.
+One is the blob register beside the log: `event_blob`.
 Three hold projections, which are derived from the log and disposable: `projection_state`, `p_chronicle`, and `p_source_stats`; {ref}`projections` explains what that means.
-`src/previously/storage/schema.py` declares all six as SQLAlchemy Core tables, with no ORM.
-Each event relates to zero or more units, and to at most one source key.
+`src/previously/storage/schema.py` declares all seven as SQLAlchemy Core tables, with no ORM.
+Each event relates to zero or more units, to at most one source key, and to zero or more rows of the blob register.
 
 ```{mermaid}
-:caption: The three tables of the log, with their foreign keys; the projection tables are described below.
+:caption: The three tables of the log and the blob register, with their foreign keys; the projection tables are described below.
 
 erDiagram
     event {
@@ -24,8 +25,13 @@ erDiagram
         text external_id PK
         bigint event_id FK
     }
+    event_blob {
+        bigint event_id PK, FK
+        bytea sha256 PK
+    }
     event ||--o{ unit : contains
     event ||--o| source_key : "identified by"
+    event ||--o{ event_blob : "names"
 ```
 
 ## `event`
@@ -94,6 +100,30 @@ erDiagram
 | `source_key_pkey` | `source`, `external_id` | Primary key. |
 | `source_key_event_id_key` | `event_id` | Unique: at most one source attribution per event. |
 | `source_key_event_id_fkey` | `event_id` | Foreign key to `event.id`. |
+
+## `event_blob`
+
+The blob register: one row for each distinct blob an event names in its payload; see {ref}`blobs`.
+
+| Column | Type | Accepts NULL | Meaning |
+|---|---|---|---|
+| `event_id` | `bigint` | No | The event that names the blob. |
+| `sha256` | `bytea` | No | The blob's address, the SHA-256 of its content, as 32 bytes. |
+
+`append` writes the rows in the transaction that writes the event, and nothing changes or deletes them.
+The same content attached twice to one event is two references in the payload and one row here.
+`verify` holds the rows against the payload, and for an erased payload against the redaction; see {ref}`cli-reference`.
+
+### Constraints and indexes
+
+| Name | On | Enforces |
+|---|---|---|
+| `event_blob_pkey` | `event_id`, `sha256` | Primary key. |
+| `event_blob_sha256_check` | `sha256` | `octet_length(sha256) = 32`. |
+| `event_blob_event_id_fkey` | `event_id` | Foreign key to `event.id`. |
+| `event_blob_sha256_idx` | `sha256` | Index: which events name a blob. |
+
+The migration `0004_event_blob` creates the table, and refuses to go back below it while the table holds a row.
 
 Three more tables hold projections derived from the tables above.
 {ref}`projections` explains why they carry no foreign keys onto one another.

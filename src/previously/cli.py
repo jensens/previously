@@ -11,14 +11,23 @@ forgets.
 from collections.abc import Callable
 from collections.abc import Generator
 from contextlib import contextmanager
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import UTC
+from pathlib import Path
+from previously.contract.types import BlobRef
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.anchor import format_anchor
 from previously.core.anchor import parse_anchors
 from previously.core.append import append
+from previously.core.blob import fetch_blob
+from previously.core.blob import is_address
+from previously.core.blob import store_blob
+from previously.core.chain import read_references
+from previously.core.errors import AddressMismatch
+from previously.core.errors import CannotOpen
 from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
 from previously.core.errors import RedactionRefused
@@ -30,25 +39,35 @@ from previously.core.projection import SOURCE_STATS
 from previously.core.redact import redact_event
 from previously.core.redact import redact_units
 from previously.core.redaction import read_index
+from previously.core.sealing import check_recipient
 from previously.core.units import split_plaintext
 from previously.core.verify import examine
 from previously.storage.errors import StorageError
+from previously.storage.keys import DirectoryKeys
 from previously.storage.postgres import from_dsn
 from previously.storage.postgres import PostgresStorage
+from previously.storage.s3 import from_settings
+from previously.storage.s3 import S3BlobStore
 from typing import TYPE_CHECKING
 
 import argparse
 import io
 import json
+import mimetypes
 import os
 import sys
+import tempfile
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from collections.abc import Sequence
+    from previously.contract.blobs import BlobStore
+    from previously.contract.blobs import KeyProvider
     from previously.contract.types import Anchor
     from previously.core.redact import Redacted
     from previously.core.redaction import Redaction
+    from typing import BinaryIO
 
 MAX_TEXT_BYTES = 1_000_000
 
@@ -174,6 +193,54 @@ def _storage() -> Generator[PostgresStorage]:
         storage.close()
 
 
+# --- The blob settings ({ref}`blobs`) -----------------------------------------
+#
+# Read from the environment like the DSN, handed on as text, and each read
+# only by a command that needs it: a command that touches no blob reads none
+# of them, so a deployment without a blob store runs every other command as
+# before.
+
+
+def _setting(name: str) -> str:
+    value = os.environ.get(name)
+    if not value:
+        raise PreviouslyError(f"{name} is not set")
+    return value
+
+
+@contextmanager
+def _blob_store() -> Generator[S3BlobStore]:
+    """The blob store out of its five variables, the first missing one
+    named, closed when the command is done, whether it returns or raises —
+    for the reason `_storage` closes the database: `S3BlobStore.close` has
+    the measurement."""
+    store = from_settings(
+        endpoint=_setting("PREVIOUSLY_BLOB_ENDPOINT"),
+        region=_setting("PREVIOUSLY_BLOB_REGION"),
+        bucket=_setting("PREVIOUSLY_BLOB_BUCKET"),
+        access_key=_setting("PREVIOUSLY_BLOB_ACCESS_KEY"),
+        secret_key=_setting("PREVIOUSLY_BLOB_SECRET_KEY"),
+    )
+    try:
+        yield store
+    finally:
+        store.close()
+
+
+def _recipient() -> str:
+    """The recipient new blobs are sealed to, checked before anything is
+    stored: `store_blob` seals only content the store does not hold yet, so
+    a mistyped recipient would otherwise pass until new content arrives."""
+    recipient = _setting("PREVIOUSLY_BLOB_RECIPIENT")
+    check_recipient(recipient)
+    return recipient
+
+
+def _identities() -> DirectoryKeys:
+    """The directory of identities that open what was sealed."""
+    return DirectoryKeys(_setting("PREVIOUSLY_BLOB_IDENTITIES"))
+
+
 def _read_anchors(source: str) -> tuple[Anchor, ...]:
     """The anchor file, or standard input for `-` ({ref}`external-anchor`).
 
@@ -220,6 +287,80 @@ def _append_arguments(parser: argparse.ArgumentParser) -> None:
     # hand is mostly exactly that (review finding G3). No `choices=` — the
     # invalid case is translated in `_parse_evidence`, see there.
     parser.add_argument("--evidence", default="recollection")
+    parser.add_argument(
+        "--attach",
+        action="append",
+        default=[],
+        metavar="FILE",
+        help="a file to store as a blob and name at the event; may be given more than once",
+    )
+
+
+# Python's own table and nothing else. A `MimeTypes()` fills its own maps from
+# the table built into the `mimetypes` module, and from a file only when it is
+# given one; the module functions consult the system's `mime.types` as well.
+# Constructing the instance does run the module's `init()`, which reads those
+# files into the module's maps, but the instance does not look there.
+# Measured on 2026-10-05 with an extension known only to a file passed to
+# `mimetypes.init`: the module function found it, the instance did not. The
+# media type stands in the event hash for good, so it must not depend on the
+# machine that attached the file.
+_MEDIA_TYPES = mimetypes.MimeTypes()
+_OCTET_STREAM = "application/octet-stream"
+
+
+def media_type_of(name: str) -> str:
+    """The media type a file's name suggests, or `application/octet-stream`.
+
+    From the name only: guessing from the content is what the specification
+    rules out. A name with a compression suffix (`.gz`, `.bz2`, …) gives the
+    type of what is inside, `application/x-tar` for `.tar.gz`, which is not
+    the type of the bytes stored, so it counts as no answer.
+
+    Public because a test calls it directly.
+    """
+    media_type, encoding = _MEDIA_TYPES.guess_file_type(name)
+    if media_type is None or encoding is not None:
+        return _OCTET_STREAM
+    return media_type
+
+
+def _attach(paths: Sequence[str]) -> tuple[BlobRef, ...]:
+    """Stores every attachment as a blob and returns the references to them
+    ({ref}`blobs`).
+
+    Every file is opened before the first is stored, so that one that cannot
+    be read stores nothing and appends nothing. A file is read twice — once
+    to hash, once to seal — so something that can be read only once, a pipe,
+    is refused with the files that cannot be opened. What is stored stays
+    when the append after it fails: a blob no event names, which nothing
+    reads.
+
+    `filename` is the name without its directory: where the file lay on the
+    machine that attached it says nothing about the content, and it would
+    stand in the event hash for good.
+    """
+    recipient = _recipient()
+    with ExitStack() as files, _blob_store() as store:
+        handles: list[BinaryIO] = []
+        for path in paths:
+            try:
+                handle = files.enter_context(open(path, "rb"))
+            except OSError as error:
+                raise InvalidPayload(
+                    f"cannot read the attachment {path}: {error.strerror}"
+                ) from error
+            if not handle.seekable():
+                raise InvalidPayload(f"cannot read the attachment {path}: it cannot be read twice")
+            handles.append(handle)
+        references: list[BlobRef] = []
+        for path, handle in zip(paths, handles, strict=True):
+            stored = store_blob(store, handle, recipient=recipient)
+            name = Path(path).name
+            references.append(
+                BlobRef(stored.address, stored.size, media_type_of(name), filename=name)
+            )
+    return tuple(references)
 
 
 def _cmd_append(args: argparse.Namespace) -> int:
@@ -239,13 +380,19 @@ def _cmd_append(args: argparse.Namespace) -> int:
             f"text larger than {MAX_TEXT_BYTES} bytes — split it into smaller submissions"
         )
     occurred = parse_moment(args.occurred_at) if args.occurred_at else datetime.now(UTC)
+    evidence = _parse_evidence(args.evidence)
+    units = split_plaintext(args.text)
+    # First the blobs, then the event ({ref}`blobs`), and the blob settings
+    # only when there is something to attach.
+    blobs = _attach(args.attach) if args.attach else ()
     event = RawEvent(
         source=args.source,
         external_id=args.external_id,
         occurred_at=occurred,
-        evidence=_parse_evidence(args.evidence),
-        units=split_plaintext(args.text),
+        evidence=evidence,
+        units=units,
         payload={"text": args.text},
+        blobs=blobs,
     )
     with _storage() as storage:
         ids = append(storage, [event], recorded_at=datetime.now(UTC))
@@ -407,9 +554,102 @@ def _cmd_show(args: argparse.Namespace) -> int:
                 if content is None:
                     content = _erased(index.of_unit(row.id, unit.seq))
                 print(f"  ¶{unit.seq} {content}")
+            for line in _blob_lines(row.payload):
+                print(line)
             return 0
     print(f"No event {args.event_id}", file=sys.stderr)
     return 1
+
+
+def _blob_lines(payload: Mapping[str, object] | None) -> list[str]:
+    """One line per reference the payload names, in its order, out of the
+    log alone: `show` does not ask the blob store whether the blob is there
+    ({ref}`blobs`).
+
+    Name and media type pass through `escape_field`, so that a newline in a
+    file's name cannot end the line. A payload whose list does not have its
+    form prints no line; `verify` reports it.
+    """
+    if payload is None:
+        return []
+    return [
+        f"  blob {reference.sha256} {reference.size} {escape_field(reference.media_type)} "
+        f"{'-' if reference.filename is None else escape_field(reference.filename)}"
+        for reference in read_references(payload) or ()
+    ]
+
+
+def _blob_arguments(parser: argparse.ArgumentParser) -> None:
+    # A second level, like `redact`: what is done with a blob is a word of its
+    # own.
+    actions = parser.add_subparsers(dest="action", required=True)
+    get = actions.add_parser("get", help="fetch a blob, open it, check it and write it to a file")
+    get.add_argument("address", metavar="HASH", help="the SHA-256 of the content, in hex")
+    get.add_argument("--output", required=True, metavar="FILE", help="where to write the content")
+
+
+def _fetch_to(store: BlobStore, keys: KeyProvider, address: str, target: str) -> int | None:
+    """Fetches the blob into `target` and returns its size, or `None` when
+    the store has no object; on every error, `target` is as it was.
+
+    `fetch_blob` writes before it knows whether the address holds, so it
+    writes into a temporary file in the target's directory, and only a fetch
+    that returned is renamed onto the target — in one step, since a rename
+    within one directory is atomic. Every other way out removes the
+    temporary file. `mkstemp` creates it readable by its owner only, and the
+    rename keeps that ({ref}`blobs`).
+    """
+    directory = Path(target).absolute().parent
+    try:
+        descriptor, part = tempfile.mkstemp(dir=directory, prefix=".previously-", suffix=".part")
+    except OSError as error:
+        raise InvalidPayload(f"cannot write {target}: {error.strerror}") from error
+    kept = False
+    try:
+        with os.fdopen(descriptor, "wb") as sink:
+            size = fetch_blob(store, keys, address, sink)
+        if size is not None:
+            os.replace(part, target)
+            kept = True
+    except OSError as error:
+        raise InvalidPayload(f"cannot write {target}: {error.strerror}") from error
+    finally:
+        if not kept:
+            os.unlink(part)
+    return size
+
+
+def _cmd_blob_get(args: argparse.Namespace) -> int:
+    """Fetches one blob, opens it, checks its address and writes it to a
+    file ({ref}`blobs`). Standard output says how much was written, never the
+    bytes."""
+    address: str = args.address
+    # The command line checks the address before anything is read or asked,
+    # as an input error; the store's own refusal, in the same words, is a
+    # second line and raises a bare `ValueError` this command does not catch.
+    if not is_address(address):
+        raise InvalidPayload(
+            f"{address} is not a blob address: 64 hexadecimal characters, lower case"
+        )
+    keys = _identities()
+    with _blob_store() as store:
+        with _storage() as storage, storage.begin() as conn:
+            users = storage.events_by_blob(conn, bytes.fromhex(address))
+        if not users:
+            print(f"no event uses blob {address}", file=sys.stderr)
+            return 1
+        try:
+            size = _fetch_to(store, keys, address, args.output)
+        except AddressMismatch as error:
+            raise PreviouslyError(
+                f"blob {address} does not match its address; nothing was written"
+            ) from error
+        except CannotOpen as error:
+            raise PreviouslyError(f"blob {address} cannot be opened: {error}") from error
+    if size is None:
+        raise PreviouslyError(f"blob {address} is not in the store")
+    print(f"wrote {size} bytes to {args.output}")
+    return 0
 
 
 def _erased(by: Redaction | None) -> str:
@@ -625,6 +865,7 @@ COMMANDS: tuple[Command, ...] = (
     Command("verify", "check the chain, and anchors if given", _cmd_verify, _verify_arguments),
     Command("anchor", "print the tip of an intact chain as an anchor line", _cmd_anchor),
     Command("show", "show one event with its units", _cmd_show, _show_arguments),
+    Command("blob", "fetch a stored blob into a file", _cmd_blob_get, _blob_arguments),
     Command("project", "bring the projections up to the tip of the log", _cmd_project),
     Command("chronicle", "print the chronicle in time order", _cmd_chronicle, _chronicle_arguments),
     Command("stats", "print the per-source statistics", _cmd_stats),

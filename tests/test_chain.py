@@ -5,9 +5,11 @@
 
 from datetime import datetime
 from datetime import UTC
+from previously.contract.types import BlobRef
 from previously.contract.types import RawUnit
 from previously.core.chain import link
 from previously.core.chain import prepare
+from previously.core.chain import read_references
 from previously.core.errors import InvalidPayload
 from previously.core.hashing import event_hash_v2
 from previously.core.hashing import HASH_VERSION_2
@@ -125,3 +127,93 @@ def test_prepare_refuses_what_the_canonical_form_refuses() -> None:
             units=UNITS,
             key=None,
         )
+
+
+def test_prepare_mixes_the_references_in_and_keeps_the_distinct_hashes() -> None:
+    """The references go into the payload under `blobs`, in the order given
+    and each with its four keys, before the payload is hashed — so the digest
+    covers them ({ref}`blobs`). The hashes for the register are the distinct
+    ones, as bytes and ascending: the same content twice is one row there."""
+    second = "b" * 64
+    first = "a" * 64
+    references = (
+        BlobRef(sha256=second, size=3, media_type="text/plain", filename="b.txt"),
+        BlobRef(sha256=first, size=0, media_type="application/octet-stream"),
+        BlobRef(sha256=second, size=3, media_type="text/plain", filename="copy of b.txt"),
+    )
+    prepared = prepare(
+        kind="observation",
+        occurred_at=OCCURRED,
+        payload=PAYLOAD,
+        units=UNITS,
+        key=None,
+        blobs=references,
+    )
+    assert prepared.payload == {
+        **PAYLOAD,
+        "blobs": [
+            {"sha256": second, "size": 3, "media_type": "text/plain", "filename": "b.txt"},
+            {
+                "sha256": first,
+                "size": 0,
+                "media_type": "application/octet-stream",
+                "filename": None,
+            },
+            {"sha256": second, "size": 3, "media_type": "text/plain", "filename": "copy of b.txt"},
+        ],
+    }
+    assert prepared.payload_digest == payload_hash_v2(prepared.payload, prepared.payload_salt)
+    assert prepared.blobs == (bytes.fromhex(first), bytes.fromhex(second))
+    # Without references, neither the key nor a hash.
+    bare = _prepared()
+    assert "blobs" not in bare.payload
+    assert bare.blobs == ()
+    # And the reader gives back what was mixed in, in its order.
+    assert read_references(prepared.payload) == references
+    assert read_references(bare.payload) == ()
+
+
+_GOOD: dict[str, object] = {
+    "sha256": "a" * 64,
+    "size": 1,
+    "media_type": "text/plain",
+    "filename": None,
+}
+
+
+@pytest.mark.parametrize(
+    "listed",
+    [
+        "not a list",
+        ["a" * 64],
+        [{k: v for k, v in _GOOD.items() if k != "filename"}],
+        [{**_GOOD, "extra": 1}],
+        [{**_GOOD, "sha256": "A" * 64}],
+        [{**_GOOD, "sha256": 7}],
+        [{**_GOOD, "size": True}],
+        [{**_GOOD, "size": -1}],
+        [{**_GOOD, "size": "1"}],
+        [{**_GOOD, "media_type": ""}],
+        [{**_GOOD, "filename": 3}],
+        [_GOOD, {**_GOOD, "size": -1}],
+    ],
+    ids=[
+        "not-a-list",
+        "a-bare-hash",
+        "a-key-missing",
+        "a-key-too-many",
+        "upper-case-hash",
+        "hash-not-text",
+        "size-a-boolean",
+        "size-negative",
+        "size-text",
+        "media-type-empty",
+        "filename-not-text",
+        "the-second-broken",
+    ],
+)
+def test_read_references_refuses_a_list_prepare_does_not_write(listed: object) -> None:
+    """What comes back out of the store may have been written by anyone, so
+    the reader takes only the form `prepare` writes and says `None` for any
+    other — `verify` reports that, and `show` prints no line for it."""
+    assert read_references({"blobs": listed}) is None

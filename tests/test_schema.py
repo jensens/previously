@@ -451,6 +451,25 @@ def test_a_unit_tombstone_keeps_nothing_but_its_seq_and_its_digest(db: Engine) -
         )
 
 
+@pytest.mark.db
+def test_a_register_row_needs_a_hash_of_32_bytes(db: Engine) -> None:
+    """A row of `event_blob` names a SHA-256, which is 32 bytes and nothing
+    else ({ref}`blobs`): 31 are refused by name, and 32 go through."""
+    with db.begin() as c:
+        c.execute(
+            _INSERT_EVENT,
+            {"h": b"\x01" * 32, "p": b"\x02" * 32, "u": b"\x05" * 32, "salt": b"\x06" * 32},
+        )
+    insert = text("INSERT INTO event_blob (event_id, sha256) VALUES (1, :s)")
+    with pytest.raises(IntegrityError) as caught, db.begin() as c:
+        c.execute(insert, {"s": b"\x09" * 31})
+    assert _violated_constraint(caught.value) == "event_blob_sha256_check"
+
+    with db.begin() as c:
+        c.execute(insert, {"s": b"\x09" * 32})
+        assert c.execute(text("SELECT count(*) FROM event_blob")).scalar_one() == 1
+
+
 def _check_names(table: Table) -> set[str]:
     """The names of the `CHECK` constraints `metadata` declares on `table`."""
     return {

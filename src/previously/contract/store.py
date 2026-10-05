@@ -4,7 +4,7 @@
 """The store protocols: what `core` may ask of a store, and nothing more.
 
 `LogStore` is what the modules of `core` that write or read the log call —
-ten methods, counted on 2026-10-04 as the distinct names that
+eleven methods, counted on 2026-10-05 as the distinct names that
 `grep -ohE '(storage|log)\\.[a-z_]*\\(' FILES | sort -u` prints, with FILES
 the five modules that name `LogStore` today — `append.py`, `verify.py`,
 `redact.py`, `redaction.py` and `projection/worker.py` under
@@ -12,7 +12,12 @@ the five modules that name `LogStore` today — `append.py`, `verify.py`,
 implementation. It was eight until the chain
 check took `snapshot` instead of `begin` for its reads, and `append` still
 takes `begin`, so both stay; it was nine until stage 1c, whose redactions
-are read with `read_by_kind`. Typing `core` against
+are read with `read_by_kind`, and ten until `verify` and `redact` read the
+blob register with `blobs_by_event`. The protocol declares a twelfth,
+`events_by_blob`, which no module of `core` calls on 2026-10-05: the
+command line asks it before `blob get` fetches, and it stands here so that
+`core` can be typed against it when an erasure of a blob asks the same
+question. Typing `core` against
 this protocol instead of against `PostgresStorage` removes the edge
 `core -> storage.postgres`, and with it the two named exemptions in
 `.importlinter` and the test that guarded them ({ref}`module-boundaries`).
@@ -66,12 +71,15 @@ class LogStore[Conn](Protocol):
         row: EventRow,
         units: Sequence[UnitRow],
         key: tuple[str, str] | None,
+        blobs: Sequence[bytes] = (),
     ) -> None: ...
     def read(self, conn: Conn, from_id: int, limit: int) -> Iterator[EventRow]: ...
     def units_by_event(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, list[UnitRow]]: ...
     def count_events(self, conn: Conn) -> int: ...
     def source_keys(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, tuple[str, str]]: ...
     def read_by_kind(self, conn: Conn, kind: str) -> Iterator[EventRow]: ...
+    def blobs_by_event(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, list[bytes]]: ...
+    def events_by_blob(self, conn: Conn, sha256: bytes) -> list[int]: ...
 
 
 class RedactionStore[Conn](Protocol):

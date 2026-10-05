@@ -8,7 +8,9 @@ from previously.storage.errors import IdentityUnreadable
 from previously.storage.keys import DirectoryKeys
 from typing import TYPE_CHECKING
 
+import os
 import pytest
+import sys
 
 
 if TYPE_CHECKING:
@@ -79,7 +81,7 @@ def test_a_key_id_that_is_not_a_recipient_never_reaches_the_disk(
     assert DirectoryKeys(str(keys)).identity(key_id) is None
 
 
-def test_a_file_that_cannot_be_read_is_a_storage_error_that_shows_no_content(
+def test_a_directory_in_place_of_the_file_is_a_storage_error(
     tmp_path: Path, age_identity: str
 ) -> None:
     """A directory where the identity file should be: the file is there and
@@ -92,6 +94,57 @@ def test_a_file_that_cannot_be_read_is_a_storage_error_that_shows_no_content(
         DirectoryKeys(str(keys)).identity(recipient)
     assert recipient in str(caught.value)
     assert "IsADirectoryError" in str(caught.value)
+
+
+def _chain(error: BaseException) -> list[BaseException]:
+    """The error, its cause and its context, and theirs: everything a
+    traceback or a logger could reach from it, shown or suppressed."""
+    found: list[BaseException] = []
+    pending: list[BaseException | None] = [error]
+    while pending:
+        current = pending.pop()
+        if current is None or any(current is seen for seen in found):
+            continue
+        found.append(current)
+        pending += [current.__cause__, current.__context__]
+    return found
+
+
+@pytest.mark.skipif(
+    sys.platform == "win32" or os.geteuid() == 0,
+    reason="a file without read permission is readable by root, and POSIX permissions only",
+)
+@pytest.mark.parametrize("unreadable", ["no-permission", "not-utf-8"])
+def test_a_file_that_cannot_be_read_is_a_storage_error_that_shows_no_content(
+    tmp_path: Path, age_identity: str, unreadable: str
+) -> None:
+    """A file that holds an identity and cannot be read: without permission,
+    or with bytes in it that are not UTF-8. The identity stands in neither
+    the message, nor the `repr`, nor anything the error carries along —
+    the bytes a failed decoding was given are part of its exception, and
+    an exception suppressed with `from None` is still the context."""
+    keys = _directory(tmp_path)
+    recipient = recipient_of(age_identity)
+    path = keys / recipient
+    if unreadable == "no-permission":
+        path.write_text(age_identity + "\n", encoding="utf-8")
+        path.chmod(0)
+    else:
+        path.write_bytes(age_identity.encode() + b"\n\xff\n")
+    try:
+        with pytest.raises(IdentityUnreadable) as caught:
+            DirectoryKeys(str(keys)).identity(recipient)
+    finally:
+        path.chmod(0o600)
+    assert recipient in str(caught.value)
+    # A bare flag, so that a failure does not print what it found.
+    leaked = any(
+        secret in shown
+        for error in _chain(caught.value)
+        for shown in (str(error), repr(error))
+        for secret in (age_identity, "AGE-SECRET-KEY")
+    )
+    assert not leaked, "the identity stands in the error or in what it carries along"
 
 
 def test_the_provider_does_not_show_what_it_holds(tmp_path: Path, age_identity: str) -> None:

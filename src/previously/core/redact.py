@@ -165,7 +165,12 @@ def redact_event[Conn](
         # waited at the lock and now sees the redaction the first one wrote.
         covering = read_index(log, conn).of_event(event_id)
         if covering is None:
-            payload = event_payload(event_id, blobs=(), reason=reason)
+            # The blobs the event names, out of the register: once the
+            # payload is erased, this list is what attests them ({ref}`blobs`).
+            registered = log.blobs_by_event(conn, [event_id]).get(event_id, [])
+            payload = event_payload(
+                event_id, blobs=[sha256.hex() for sha256 in registered], reason=reason
+            )
             redaction_id = _write(log, conn, payload, recorded_at)
         else:
             redaction_id = covering.id

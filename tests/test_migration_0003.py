@@ -9,6 +9,7 @@ other tests share must never stand below `head`.
 
 from alembic import command
 from alembic.config import Config
+from alembic.script import ScriptDirectory
 from alembic.util import CommandError
 from datetime import datetime
 from datetime import UTC
@@ -81,7 +82,10 @@ def test_the_downgrade_refuses_once_version_2_is_written() -> None:
             with engine.connect() as c:
                 revision = c.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
                 salts = c.execute(text("SELECT count(payload_salt) FROM event")).scalar_one()
-            assert revision == "0003_hash_version_2"
+            # `head`, not this revision: the downgrade passes through every
+            # later revision first, and `migrations/env.py` runs it in one
+            # transaction, so the refusal rolls those back as well.
+            assert revision == ScriptDirectory.from_config(config).get_current_head()
             assert salts == 1
         finally:
             engine.dispose()
