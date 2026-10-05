@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SOURCE_DIRS = ["src", "tests", "migrations"]
+SOURCE_DIRS = ["src", "tests"]
 
 # Two root configuration files carry a documentation label of their own, and
 # until 2026-10-04 they lay outside every check: `.importlinter` points at
@@ -48,21 +48,21 @@ SOURCE_DIRS = ["src", "tests", "migrations"]
 # message, and neither file holds a Python literal.
 CONFIG_FILES = ["pyproject.toml", ".importlinter"]
 
-# Where a message a user reads can come from: the command line under `src/`
-# and the migration runner under `migrations/`, whose refusal
-# {ref}`configuration-reference` documents as program output. A test prints
-# to nobody, so `tests/` stays out and the name of the check below stays
-# true.
+# Where a message a user reads can come from: the command line, and the
+# migration runner whose refusal {ref}`configuration-reference` documents as
+# program output. Both are under `src/`, the runner in
+# `src/previously/migrations/` since 2026-10-05. A test prints to nobody, so
+# `tests/` stays out and the name of the check below stays true.
 #
-# Taking all of `SOURCE_DIRS` was weighed and would be free today: counted,
-# `tests/` holds nine occurrences of the sign across three files, every one of
-# them in a docstring or a `#` comment, and none in an ordinary literal --
-# which the check would not look at anyway. It was not taken because a check
-# whose scope is wider than its name is the kind of claim this whole task
-# exists to remove, and because a marked sign in a test literal reaches no
-# user. `test_no_bare_paragraph_references_remain` reads `tests/` for the
-# bare case.
-OUTPUT_DIRS = ["src", "migrations"]
+# Taking all of `SOURCE_DIRS` was weighed and would be free today: counted on
+# 2026-10-05, `tests/` holds seven occurrences of the sign across three files,
+# every one of them in a docstring or a `#` comment, and none in an ordinary
+# literal -- which the check would not look at anyway. It was not taken
+# because a check whose scope is wider than its name is the kind of claim this
+# whole task exists to remove, and because a marked sign in a test literal
+# reaches no user. `test_no_bare_paragraph_references_remain` reads `tests/`
+# for the bare case.
+OUTPUT_DIRS = ["src"]
 
 DOCS = ROOT / "docs"
 
@@ -220,8 +220,9 @@ def test_no_program_output_cites_a_specification() -> None:
     (measured on 2026-10-04), is the only file in this tree that writes to
     the terminal. Measured in fix round 2:
     with only `src/` read, a marked citation in `migrations/dsn.py` passed as
-    well, and that module raises its refusal as an implicitly concatenated
-    f-string, which is the exact shape of the two the check was built for.
+    well -- the migrations lay outside `src/` until 2026-10-05 -- and that
+    module raises its refusal as an implicitly concatenated f-string, which
+    is the exact shape of the two the check was built for.
     """
     offenders = {
         str(path.relative_to(ROOT)): found
@@ -399,6 +400,25 @@ def _is_the_same_sentence(parts: list[str], line: str) -> bool:
     return True
 
 
+def _assert_raised(quoted: list[str], raised: list[list[str]], error_class: str) -> None:
+    """Every quoted line is `Error: ` and then a message one of `raised` says.
+
+    A function of its own for ruff's `C901`, whose threshold here is ten.
+    Measured on 2026-10-05 with `ruff check --select C901 --config
+    'lint.mccabe.max-complexity = 1' tests/test_docs_references.py`: the
+    test that calls it stood at nine, the loop over the errors of `migrate`
+    with these assertions written inline took it to eleven, and with them
+    here it stands at ten.
+    """
+    for line in quoted:
+        prefix, _, error = line.partition(": ")
+        assert prefix == "Error", f"cli.md quotes the error {line!r} without `Error: `"
+        assert any(_is_the_same_sentence(parts, error) for parts in raised), (
+            f"cli.md quotes the error {error!r} and no `{error_class}` raises it. "
+            "Either the code's wording changed, or the page's did."
+        )
+
+
 def _refusal(payload: Mapping[str, object]) -> str:
     """What `canonical` says about a payload, without the path prefix.
 
@@ -442,14 +462,20 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     five restrictions below" with a row missing. Deriving the payloads from
     the code is the fix and it is not built yet.
 
-    The second half holds the ten standard-error sentences and the two
-    lines of `redact` on standard output that `cli.md` quotes, in nine
-    blocks, against the literals in `cli.py` — not the line `blob get`
-    prints on success, which `_message_patterns` does not collect, since it
-    reads standard-error sentences and returned lines only; the seven
-    refusals of `redact` against the messages `core/redact.py` and `cli.py`
-    raise as `RedactionRefused`; the nine errors of the blob commands and of
-    an unfinished redaction against the messages `cli.py` raises as
+    The second half holds the ten standard-error sentences, the two
+    lines of `redact` and the three of `migrate` on standard output that
+    `cli.md` quotes, in ten blocks, against the literals in `cli.py` — not
+    the line `blob get` prints on success, which `_message_patterns` does
+    not collect, since it reads standard-error sentences and returned lines
+    only; the seven refusals of `redact` against the messages
+    `core/redact.py` and `cli.py` raise as `RedactionRefused`; the three
+    errors of `migrate` against the messages `storage/migrate.py` raises as
+    `UnknownRevision` and `MigrationFailed`, the missing schema against the
+    one `storage/postgres.py` raises as `MigrationPending`, the four
+    failures to connect against the two it raises as `ServerUnreachable`,
+    the failed operation against `OperationFailed` and the refused
+    connection string against `InvalidDsn`; the nine errors of the blob commands and of an
+    unfinished redaction against the messages `cli.py` raises as
     `PreviouslyError` or `InvalidPayload` and `core/blob.py` raises as
     `BlobError`;
     the thirteen findings it quotes, three from the anchors, nine from
@@ -499,6 +525,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         ("one notice goes to standard error, naming the blob and those events", 2),
         ("When a string anywhere in the payload of the target", 1),
         ("`redact` prints one of two lines to standard output", 2),
+        ("`migrate` prints one line to standard output, in one of two forms", 3),
         ("When no event names the blob, `blob get` returns 1", 1),
         ("When every reference to the blob is erased, `blob get` returns 1", 1),
     ):
@@ -526,6 +553,35 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
             f"cli.md quotes the refusal {refusal!r} and no `RedactionRefused` raises it. "
             "Either the code's wording changed, or the page's did."
         )
+
+    # The errors of `migrate` come out of `storage/migrate.py`, raised as
+    # `UnknownRevision` or `MigrationFailed`, and the one every other command
+    # gives against a database without the schema out of `storage/postgres.py`,
+    # raised as `MigrationPending`, and the failure to connect, the failed
+    # operation and the refused string out of `storage/postgres.py`, raised as
+    # `ServerUnreachable`, `OperationFailed` and `InvalidDsn`; the command
+    # line prints each behind `Error: `. What `MigrationFailed`,
+    # `ServerUnreachable` and `OperationFailed` say after their last colon is
+    # the reason the server or the client library gives, which
+    # `tests/test_migrate.py` and `tests/test_cli.py` hold against a real
+    # database.
+    storage = ROOT / "src" / "previously" / "storage"
+    for after, module, error_class, expected in (
+        ("is refused, and nothing changes", "migrate.py", "UnknownRevision", 1),
+        ("the database's own reason", "migrate.py", "MigrationFailed", 2),
+        ("against a database without it prints one sentence", "postgres.py", "MigrationPending", 1),
+        ("When connecting to the database fails", "postgres.py", "ServerUnreachable", 4),
+        ("When the database ends an operation", "postgres.py", "OperationFailed", 1),
+        (
+            "is refused before anything connects, with one sentence that names no part of it",
+            "postgres.py",
+            "InvalidDsn",
+            1,
+        ),
+    ):
+        quoted = _quoted_block(page, after)
+        assert len(quoted) == expected, quoted
+        _assert_raised(quoted, _raised_patterns(storage / module, error_class), error_class)
 
     # The errors of `blob get` and the input errors of the blob commands come
     # out of `cli.py`, raised as `PreviouslyError` or `InvalidPayload`; the

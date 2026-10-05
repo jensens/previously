@@ -7,7 +7,7 @@ A module of its own instead of living in `env.py`, for a measured reason:
 `env.py` reads `context.config` at module level — that is the usual alembic
 layout, but `context` is a proxy that carries something only inside a running
 `EnvironmentContext` (that is, during a real Alembic run). A bare
-`import migrations.env` outside such a run therefore always fails with
+`import previously.migrations.env` outside such a run therefore always fails with
 `AttributeError: module 'alembic.context' has no attribute 'config'` —
 independently of any change to this file. This resolution depends only on
 `alembic.config.Config` and the environment, not on `context`, and is

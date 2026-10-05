@@ -12,7 +12,8 @@ line with its source attribution.
 ## State
 
 **Stages 1a, 1b and 1c are built and run: the append-only log with its hash
-chain, the projections derived from it, and blobs and erasure.** Not a product surface — a command line
+chain, the projections derived from it, and blobs and erasure. A release
+publishes a package on PyPI and an image on ghcr.io.** Not a product surface — a command line
 thin enough to get at the log by hand, so that each stage is *runnable* and not
 merely described.
 
@@ -58,9 +59,10 @@ merely described.
 - **checking the blobs** (`verify --blobs`): every blob that has to lie in
   the store is read, opened and held against its address, and every erased one
   has to be gone
-- the ten commands `append`, `redact`, `log`, `verify`, `anchor`, `show`,
-  `blob`, `project`, `chronicle` and `stats`
-- the schema as Alembic migrations
+- the eleven commands `migrate`, `append`, `redact`, `log`, `verify`,
+  `anchor`, `show`, `blob`, `project`, `chronicle` and `stats`
+- the schema as Alembic migrations inside the package, applied by
+  `previously migrate`
 
 **What it does not do:** no header — a header rests on assertions, and those
 come out of the gate; no assignment of events to projects, so the chronicle is
@@ -90,6 +92,30 @@ it too, and says so when a string of the payload contains a unit's wording;
 [About erasure](docs/explanation/erasure.md) says what an erasure does not
 achieve and why.
 
+## Install
+
+Each release is a package on PyPI and a container image on ghcr.io, for
+`linux/amd64` and `linux/arm64`. Until `1.0.0` every release is an alpha, so
+ask `pip` for a pre-release, or name the version:
+
+```shell
+pip install --pre previously
+```
+
+The image runs `previously` as its entry point, and an alpha has one tag only,
+its exact version — no `latest`:
+
+```shell
+docker run --rm ghcr.io/jensens/previously:0.1.0a1
+```
+
+Either way, Previously reads its settings from the environment, and
+`previously migrate` creates or upgrades the schema before any other command
+runs against a database.
+[How to run Previously from its image](docs/how-to/run-the-image.md) shows the
+image at work, and [How to cut a release](docs/how-to/cut-a-release.md) how a
+release comes about.
+
 ## Documentation
 
 The full documentation — tutorials, how-to guides, reference and explanation —
@@ -99,7 +125,7 @@ lives under `docs/`. Build it locally with `make -C docs html`, then open
 session typed out against a real PostgreSQL 17, from a fresh checkout to a
 passing test suite.
 
-The six specifications below are **frozen design records**, in German and
+The seven specifications below are **frozen design records**, in German and
 dated: they hold how and why a decision was taken, and the documentation under
 `docs/` carries the reasoning that is maintained with the code. Where the two
 disagree, the documentation wins. A new stage starts with a new German
@@ -114,6 +140,7 @@ the first one that went that way from the start.
 | [Stage 1b](docs/superpowers/specs/2026-10-04-stufe-1b-projektionen.md) | Frozen design record, 2026-10-04: detailed specification of the projections — the two derived tables, the worker, and the three commands; its reasoning is maintained in [About derived views](docs/explanation/projections.md) and [About the module boundaries](docs/explanation/module-boundaries.md) |
 | [External anchor](docs/superpowers/specs/2026-10-04-aeusserer-anker.md) | Frozen design record, 2026-10-04: detailed specification of the external anchor — the anchor line, `anchor`, and `verify --anchors`; its reasoning is maintained in [About the hash chain](docs/explanation/hash-chain.md), the routines in [How to check the chain in operation](docs/how-to/verify-the-chain.md) and [How to check how much of the chain a restore brought back](docs/how-to/restore-from-a-backup.md) |
 | [Stage 1c](docs/superpowers/specs/2026-10-04-stufe-1c-blobs-und-tilgung.md) | Frozen design record, 2026-10-05: detailed specification of blobs and erasure — hash format 2 with its salt, erasure as an event, blobs sealed in `age` on S3, and the commands `redact`, `blob get` and `verify --blobs`; its reasoning is maintained in [About erasure](docs/explanation/erasure.md), [About blobs](docs/explanation/blobs.md) and [About the hash chain](docs/explanation/hash-chain.md), its routines in the guides under [How-to guides](docs/how-to/index.md), and its open points in the [map](docs/superpowers/landkarte.md) |
+| [Delivery](docs/superpowers/specs/2026-10-05-auslieferung.md) | Frozen design record, 2026-10-05: detailed specification of the way out — the migrations in the package and `previously migrate`, the release workflow to PyPI and `ghcr.io`, the image and its smoke test, and the handoff to the maintainer's Kubernetes environment; its reasoning is maintained in [About delivery](docs/explanation/delivery.md), its routines in [How to cut a release](docs/how-to/cut-a-release.md) and [How to run Previously from its image](docs/how-to/run-the-image.md), and its open points in the [map](docs/superpowers/landkarte.md) |
 | [Execution records](docs/superpowers/sdd/) | Frozen working records, one directory per executed plan: the ledger of every decision taken while building it, and the target of the `ruling …` citations in the code |
 | [CLAUDE.md](CLAUDE.md) | The working agreements: language, attribution, dependencies, the six gates |
 | [DEPENDENCIES.md](DEPENDENCIES.md) | Every dependency with its purpose, the rejected alternative and the date it was last checked |

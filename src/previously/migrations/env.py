@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from alembic import context
 from logging.config import fileConfig
-from migrations.dsn import resolve_dsn
+from previously.migrations.dsn import resolve_dsn
 from previously.storage.schema import metadata
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
@@ -58,6 +58,15 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
+    # `previously migrate` hands its own connection over, already inside a
+    # transaction it commits itself, so that the connection string is read
+    # once, by `storage.postgres.from_dsn`, and never parsed again here.
+    connection = config.attributes.get("connection")
+    if connection is not None:
+        context.configure(connection=connection, target_metadata=target_metadata)
+        with context.begin_transaction():
+            context.run_migrations()
+        return
     # The same resolution as in the offline branch (resolve_dsn), not merely
     # the same intention: otherwise `alembic upgrade --sql` (offline) would
     # behave differently from the normal case (online), although both are
@@ -66,7 +75,14 @@ def run_migrations_online() -> None:
     # `sqlalchemy.*` options out of the ini (none at present, but
     # `engine_from_config` is there for exactly that) keep being taken into
     # account, not only the URL.
-    config.set_main_option("sqlalchemy.url", resolve_dsn(config))
+    #
+    # `%` doubled, because `set_main_option` goes through a `ConfigParser`
+    # that reads `%` as the start of an interpolation, while
+    # `get_main_option`, which `resolve_dsn` reads, hands the value back
+    # unescaped. A password with a character a URL has to escape arrives
+    # percent-encoded, and unescaped it raised `ValueError: invalid
+    # interpolation syntax`, quoting the whole string, password included.
+    config.set_main_option("sqlalchemy.url", resolve_dsn(config).replace("%", "%%"))
     connectable = engine_from_config(
         config.get_section(config.config_ini_section, {}),
         prefix="sqlalchemy.",

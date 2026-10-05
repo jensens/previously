@@ -30,38 +30,34 @@ Clone the repository, then install it with every extra: the test suite and the d
 $ uv sync --all-extras
 Using CPython 3.14.3
 Creating virtual environment at: .venv
-Resolved 101 packages in 0.98ms
-Prepared 1 package in 331ms
-Installed 98 packages in 174ms
+Resolved 109 packages in 0.74ms
+Prepared 1 package in 566ms
+Installed 106 packages in 192ms
 ```
 
-uv then lists every one of the 98 packages it installed.
+uv then lists every one of the 106 packages it installed.
 This page leaves that list out, and the two lines before `Prepared` in which uv builds Previously itself, because they name the directory of your checkout, and a warning that uv can't link its files from its cache, which it prints when its cache and your checkout lie on different file systems.
 
 ## Point the tools at the database
 
-Both the command line and the Alembic migrations read the same environment variable.
+Every command of the command line reads the database from one environment variable.
 
 ```shell
 export PREVIOUSLY_DSN=postgresql+psycopg://previously:previously@localhost:5432/previously
 ```
 
-The `+psycopg` belongs in there.
-It names the driver, and without it SQLAlchemy reaches for one that isn't installed here.
+The `+psycopg` names the driver.
+Without it, `postgresql://` reaches the same one, and the tutorial keeps it so that you can see which driver talks to the database.
 
 ## Create the schema
 
 ```console
-$ uv run alembic upgrade head
-INFO  [alembic.runtime.migration] Context impl PostgresqlImpl.
-INFO  [alembic.runtime.migration] Will assume transactional DDL.
-INFO  [alembic.runtime.migration] Running upgrade  -> 0001_log, Log, units, idempotency key
-INFO  [alembic.runtime.migration] Running upgrade 0001_log -> 0002_projections, Projections: state, chronicle, source statistics
-INFO  [alembic.runtime.migration] Running upgrade 0002_projections -> 0003_hash_version_2, Hash format version 2: version, salts and unit digests
-INFO  [alembic.runtime.migration] Running upgrade 0003_hash_version_2 -> 0004_event_blob, The blob register: which event names which blob
+$ uv run previously migrate
+migrated: (empty) -> 0004_event_blob
 ```
 
-Notice that there are four upgrade steps.
+Notice that the line names two revisions: where the database came from, `(empty)`, and where it stands now, `0004_event_blob`, the fourth.
+Four revisions ran to bring it there.
 The first one brings the log, its units, and the idempotency key.
 The second one brings three more tables: one for each derived view, and one that records how far each view has read.
 The third brings hash format 2, in which every event gets a salt of its own, and our event is written in it; the fourth prepares the log for attached files, which this tutorial doesn't use.
@@ -87,7 +83,7 @@ This is the first event in the chain, so there's no predecessor to link to.
 
 ```console
 $ uv run previously log
-1	2026-10-05T08:53:13.103557+00:00	observation	c675a31e2500
+1	2026-10-05T18:31:07.449934+00:00	observation	ac286d534003
 ```
 
 Notice that the chain now has one event.
@@ -126,8 +122,8 @@ This `anchors.txt` is this tutorial's alone, so delete it from your clone once y
 ```console
 $ uv run previously show 1
 id=1 kind=observation
-occurred_at=2026-10-05T08:53:13.103557+00:00
-hash=c675a31e25000bc9768a9fa0a08f3467e247667a303c0c43f1af7eaf2c237bc3
+occurred_at=2026-10-05T18:31:07.449934+00:00
+hash=ac286d53400316ad869450ea6189a7e9c4788cb1bd5602c850cfb9f58d6c8f8d
 evidence=recollection
 payload={"evidence": "recollection"}
   ¶1 The client approved the new homepage design.
@@ -171,8 +167,8 @@ There was nothing left to project.
 
 ```console
 $ uv run previously chronicle
-1	1	2026-10-05T08:53:13.103557+00:00	email	2026-10-03-kickoff@example.org	The client approved the new homepage design.
-1	2	2026-10-05T08:53:13.103557+00:00	email	2026-10-03-kickoff@example.org	Next milestone: content migration starts Monday.
+1	1	2026-10-05T18:31:07.449934+00:00	email	2026-10-03-kickoff@example.org	The client approved the new homepage design.
+1	2	2026-10-05T18:31:07.449934+00:00	email	2026-10-03-kickoff@example.org	Next milestone: content migration starts Monday.
 ```
 
 Notice that each line is one unit, and that each one carries `email` and the message identifier we passed to `append`.
@@ -182,7 +178,7 @@ That source attribution is what makes this a chronicle and not a copy of `log`.
 
 ```console
 $ uv run previously stats
-email	1	2	2026-10-05T08:53:13.103557+00:00	2026-10-05T08:53:13.103557+00:00
+email	1	2	2026-10-05T18:31:07.449934+00:00	2026-10-05T18:31:07.449934+00:00
 ```
 
 Notice that `email` stands at one event and two units, and that the two timestamps are the same moment: the log holds one event, so the first one seen and the last one seen are that event.
@@ -196,45 +192,49 @@ It raises its own PostgreSQL container, and a RustFS container as the S3 server 
 $ uv run pytest
 ============================= test session starts ==============================
 platform linux -- Python 3.14.3, pytest-9.1.1, pluggy-1.6.0
-Using --randomly-seed=1676039121
+Using --randomly-seed=279448194
 configfile: pyproject.toml
 testpaths: tests
-plugins: randomly-5.0.0, platformdirs-4.12.2, cov-7.1.0, hypothesis-6.168.3
-collected 644 items
+plugins: cov-7.1.0, randomly-5.0.0, platformdirs-4.12.2, hypothesis-6.168.3
+collected 803 items
 
-tests/test_migration_0003.py ..                                          [  0%]
-tests/test_schema.py ..................                                  [  3%]
-tests/test_verify.py ................................................... [ 11%]
-.............................                                            [ 15%]
-tests/test_keys.py ..............                                        [ 17%]
-tests/test_blob.py ...................                                   [ 20%]
-tests/test_sealing.py .....................                              [ 23%]
-tests/test_cli.py ...................................................... [ 32%]
-........................................................................ [ 43%]
-........                                                                 [ 44%]
-tests/test_canonical.py ...............                                  [ 47%]
-tests/test_hashing.py ........................................           [ 53%]
-tests/test_s3.py ....................                                    [ 56%]
-tests/test_properties.py ..........                                      [ 57%]
-tests/test_projection_derive.py ...........                              [ 59%]
-tests/test_migration_0004.py .                                           [ 59%]
-tests/test_projection_worker.py ....................                     [ 62%]
-tests/test_docs_typed_output.py .                                        [ 63%]
-tests/test_rows.py ......                                                [ 63%]
-tests/test_append.py ........................................            [ 70%]
-tests/test_chain.py ...............................                      [ 75%]
-tests/test_docs_build.py ......                                          [ 75%]
-tests/test_migrations_dsn.py ...                                         [ 76%]
-tests/test_redaction.py ..........................                       [ 80%]
-tests/test_projection_store.py ..........                                [ 81%]
-tests/test_storage.py ..........................................         [ 88%]
-tests/test_anchor.py .............                                       [ 90%]
-tests/test_units.py .............                                        [ 92%]
-tests/test_contracts.py ....                                             [ 93%]
-tests/test_docs_references.py .....                                      [ 93%]
-tests/test_redact.py .......................................             [100%]
+tests/test_migrate.py ....................                               [  2%]
+tests/test_docs_references.py .....                                      [  3%]
+tests/test_projection_store.py ..........                                [  4%]
+tests/test_canonical.py ...............                                  [  6%]
+tests/test_append.py ........................................            [ 11%]
+tests/test_sealing.py .....................                              [ 13%]
+tests/test_wheel.py .                                                    [ 13%]
+tests/test_redact.py .......................................             [ 18%]
+tests/test_hashing.py ........................................           [ 23%]
+tests/test_migration_0003.py ..                                          [ 24%]
+tests/test_s3.py ....................                                    [ 26%]
+tests/test_rows.py ......                                                [ 27%]
+tests/test_anchor.py .............                                       [ 28%]
+tests/test_projection_derive.py ...........                              [ 30%]
+tests/test_migrations_dsn.py ...                                         [ 30%]
+tests/test_redaction.py ..........................                       [ 33%]
+tests/test_verify.py ................................................... [ 40%]
+.............................                                            [ 43%]
+tests/test_docs_typed_output.py .                                        [ 43%]
+tests/test_projection_worker.py ....................                     [ 46%]
+tests/test_contracts.py ....                                             [ 46%]
+tests/test_schema.py ..................                                  [ 49%]
+tests/test_units.py .............                                        [ 50%]
+tests/test_properties.py ..........                                      [ 52%]
+tests/test_migration_0004.py .                                           [ 52%]
+tests/test_storage.py ...........................................        [ 57%]
+tests/test_blob.py ...................                                   [ 59%]
+tests/test_chain.py ...............................                      [ 63%]
+tests/test_keys.py ..............                                        [ 65%]
+tests/test_cli.py ...................................................... [ 72%]
+........................................................................ [ 81%]
+........................................................................ [ 90%]
+........................................................................ [ 99%]
+.                                                                        [ 99%]
+tests/test_docs_build.py ......                                          [100%]
 
-======================== 644 passed in 90.36s (0:01:30) ========================
+======================== 803 passed in 96.12s (0:01:36) ========================
 ```
 
 `pytest-randomly` reshuffles the file order on every run and prints its seed, so a hidden dependency between two tests surfaces instead of staying hidden.

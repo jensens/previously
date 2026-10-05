@@ -3,16 +3,54 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has ten subcommands: `append`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, and `stats`.
+It has eleven subcommands: `migrate`, `append`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, and `stats`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
 `append --attach`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
 A missing setting is an input error that names the first variable missing, in the form `Error: PREVIOUSLY_BLOB_BUCKET is not set`.
 A transaction the database aborts in a conflict with a concurrent one, a deadlock or a lock not granted in time, is a storage error with exit code 2, in the form `Error: the database aborted the operation in a conflict with a concurrent one; run the command again`.
 
+A message about the database names the database, the host and the port from `PREVIOUSLY_DSN`, and of the connection string nothing else, in its own words.
+The reason it quotes can say more: the line from the client library can name the user, and quote the value of a query parameter it rejects, such as an `sslmode` it doesn't know.
+`previously` takes the password from the user part of the connection string alone, so a message can carry a piece of it only where the string is mistyped, such as with the `@host` forgotten or the password in the place of another part; {ref}`the accepted form <dsn-form>` lists each such case and what gets printed.
+
+When connecting to the database fails, every subcommand prints one sentence to standard error and returns 2, followed by the first line of the reason:
+
+```text
+Error: connecting to database previously at localhost:5432 failed: connection to server at "127.0.0.1", port 5432 failed: FATAL:  password authentication failed for user "previously"
+Error: connecting to database nope at localhost:5432 failed: connection to server at "127.0.0.1", port 5432 failed: FATAL:  database "nope" does not exist
+Error: connecting to database previously at localhost:5432 failed: connection to server at "127.0.0.1", port 5432 failed: Connection refused
+Error: connecting to database previously at localhost:5432 failed: the client library refused a query parameter of PREVIOUSLY_DSN
+```
+
+The first is a password the server refuses, the second a database the server doesn't have, and the third a port where nothing listens.
+The fourth is a value of a query parameter that the client library refuses before it connects, such as a `connect_timeout` that isn't a number, and its reason is fixed: it quotes nothing of the connection string.
+In the first three, the reason is the first line of the message the driver, `psycopg`, gives for the failed connection, without the `connection failed: ` the driver puts in front.
+Most of that line comes from `libpq`, the PostgreSQL client library: `connection to server at …` and a reason from the operating system, such as `Connection refused`, come from the client, in the client's locale, and what follows `FATAL:` comes from the server, in the server's language.
+Some reasons are the driver's own text, such as `failed to resolve host '…'` for a host name that doesn't resolve.
+
+When the database ends an operation after the connection stands, such as with a statement timeout, the sentence says so and quotes the server's reason, in the server's language:
+
+```text
+Error: the operation on database previously at localhost:5432 failed: canceling statement due to statement timeout
+```
+
+A `PREVIOUSLY_DSN` outside {ref}`the accepted form <dsn-form>` is refused before anything connects, with one sentence that names no part of it:
+
+```text
+Error: PREVIOUSLY_DSN is refused — write it as postgresql://user:password@host:5432/database?key=value with the password there and nowhere else, percent-encode every character of the user name, the password, the database name and a value that is not a letter, a digit or one of -._~ (such as `%40` for `@`), and use no key but application_name, channel_binding, connect_timeout, require_auth, sslcert, sslkey, sslmode or sslrootcert
+```
+
+Every subcommand but `migrate` needs the schema that `migrate` creates, and against a database without it prints one sentence to standard error and returns 2:
+
+```text
+Error: database schema incomplete — `previously migrate` has not run yet
+```
+
 ## Exit codes
 
 | Command | 0 | 1 | 2 |
 |---|---|---|---|
+| `migrate` | The schema stands at the newest revision, whether `migrate` ran a migration or found it up to date. | Not used. | The database is at a revision this version doesn't know, the database refused to let the role read the revision or apply a migration, or storage raised an error. |
 | `append` | The event was recorded, or an event with the same `--source` and `--external-id` already existed. | Not used. | The input was invalid, an attachment couldn't be read, a blob setting is missing or invalid, or storage or the blob store raised an error. |
 | `redact` | The redaction was recorded and carried out, or the target was already covered by one, every blob it made obsolete is gone from the blob store, and every projection stands at the tip of the log. | Not used. | The input was invalid, the redaction was refused, storage raised an error, or after the redaction was recorded a blob couldn't be deleted or the projections couldn't be caught up. |
 | `log` | The log was printed. | Not used. | The input was invalid, or storage raised an error. |
@@ -23,6 +61,54 @@ A transaction the database aborts in a conflict with a concurrent one, a deadloc
 | `project` | Every projection stands at the tip of the log. | Not used. | Storage raised an error, the worker found a gap in the log, or a catch-up at another version rebuilt a projection while this one ran. |
 | `chronicle` | The chronicle was printed, even when the window holds no row. | Not used. | The input was invalid, or storage raised an error. |
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
+
+Every command that receives `SIGTERM` once it has started stops with exit code 143, 128 and the signal's number, and prints nothing to standard error.
+The handler is set after the command's imports; a `SIGTERM` in the first fraction of a second, measured at about 0.7 s in the image, isn't caught, and as process 1 of a container the command then runs on until the grace period ends.
+A transaction it had open rolls back, so a `migrate` that was applying a migration leaves the schema at the revision it found.
+That holds when `previously` runs as process 1 of a container as well.
+
+## `migrate`
+
+Brings the database schema up to the newest revision this version of previously carries.
+It takes no arguments.
+
+`migrate` reads `PREVIOUSLY_DSN` and nothing else, and needs neither a checkout nor `alembic.ini`: the migrations ship inside the package.
+
+`migrate` prints one line to standard output, in one of two forms:
+
+```text
+migrated: (empty) -> 0004_event_blob
+migrated: 0002_projections -> 0004_event_blob
+up to date: 0004_event_blob
+```
+
+The first form names the revision the database was at, or `(empty)` for a database without a schema, and the newest revision, which the database is at now.
+The second means that the database was at the newest revision already, and nothing ran.
+
+`migrate` only goes forward.
+Going back to an older revision is `alembic downgrade` in a checkout, with the refusals {ref}`database-schema` lists.
+
+`migrate` holds a PostgreSQL advisory lock on the database for as long as it runs, and releases it once its migration has committed.
+A second `migrate` against the same database, such as a second job of the same release, waits until the first is done, and then finds the schema up to date.
+The lock is a session lock outside any transaction, and a `migrate` that fails gives it up when it closes its connection.
+
+A database at a revision this version doesn't know, such as one that a newer version of previously has migrated already, is refused, and nothing changes:
+
+```text
+Error: the database is at revision 0005_example, which this version of previously does not know; it knows revisions up to 0004_event_blob
+```
+
+A database that refuses the role in `PREVIOUSLY_DSN` the reading of the revision or a step of the migration gives one sentence that names the newest revision and the database's own reason:
+
+```text
+Error: the database refused the migration to 0004_event_blob: permission denied for schema public
+Error: the database refused the migration to 0004_event_blob: permission denied for table alembic_version
+```
+
+The first comes from a role that may not create a table in schema `public`, which since PostgreSQL 15 is every role but the owner of the database and a superuser.
+The second comes from a role that may not read the table `alembic_version`, where the revision stands.
+
+A connection string outside the accepted form, a server that doesn't answer, a password the server refuses, and a database that doesn't exist each print one sentence to standard error, the same sentence every other command prints for it, as described at the top of this page.
 
 ## `append`
 

@@ -20,32 +20,40 @@ Gebaut und abgenommen, auf `main`:
 | 1a | Der Log: `event`, `unit`, `source_key`, Hash-Kette, `append`, `verify` | `specs/2026-10-02-stufe-1a-log.md` | Merge vom 2026-10-03 |
 | 1b | Projektionen: Arbeiter, `p_chronicle`, `p_source_stats`, `project`, `chronicle`, `stats` | `specs/2026-10-04-stufe-1b-projektionen.md` | PR #1, `b0396b6` |
 | — | Der äußere Anker: `anchor`, `verify --anchors [--exact]`, `examine` in einem Schnappschuss | `specs/2026-10-04-aeusserer-anker.md` | PR #2, `2bc42d4` |
+| 1c | Hash-Format v=2 mit Salz; Tilgung von Event, Einheiten und Blob als Event der Art `action`, mit Anordnung und Vollzug in `verify`; Projektionen folgen einer Tilgung; Blobs im Format `age` auf S3, `append --attach`, `blob get`, `verify --blobs`; `redact` | `specs/2026-10-04-stufe-1c-blobs-und-tilgung.md` | PR #5, `d16f3fc` |
 
-Stufe 1c ist auf dem Zweig `worktree-stufe-1c-blobs` gebaut; abgenommen ist
-sie mit dem Merge dieses Zweigs nach `main`, und nicht vorher:
+Mit Stufe 1c ist Teilprojekt 1 gebaut und abgeschlossen, wie die Architektur
+es in §12.1 zuschneidet: Log, Projektionen, Blobs.
 
-| Stufe | Inhalt | Spec | Abnahme |
+Die Auslieferung, die erste Einheit des Piloten, ist auf dem Zweig
+`worktree-auslieferung` gebaut; abgenommen ist sie mit dem Merge dieses Zweigs
+nach `main`, und nicht vorher:
+
+| Einheit | Inhalt | Spec | Abnahme |
 |---|---|---|---|
-| 1c | Hash-Format v=2 mit Salz; Tilgung von Event, Einheiten und Blob als Event der Art `action`, mit Anordnung und Vollzug in `verify`; Projektionen folgen einer Tilgung; Blobs im Format `age` auf S3, `append --attach`, `blob get`, `verify --blobs`; `redact` | `specs/2026-10-04-stufe-1c-blobs-und-tilgung.md` | der Merge des Zweigs `worktree-stufe-1c-blobs` nach `main` |
-
-Mit Stufe 1c ist Teilprojekt 1 gebaut, wie die Architektur es in §12.1
-zuschneidet: Log, Projektionen, Blobs. Abgeschlossen ist es mit dem Merge
-dieses Zweigs.
+| Auslieferung | Die Migrationen im Paket und `previously migrate` unter einer Advisory-Sperre; `PREVIOUSLY_DSN` nach einer eigenen Grammatik gelesen; ein Image aus dem Paket auf PyPI, mit Smoke-Test; `release.yml`: Test-PyPI bei jedem Push auf `main`, PyPI und Image für zwei Plattformen bei einem veröffentlichten Release; der Handoff an kup6s | `specs/2026-10-05-auslieferung.md` | der Merge des Zweigs `worktree-auslieferung` nach `main`; Bedingung 8 (Trusted Publishing, der erste Lauf auf `main`, das Release `v0.1.0a1`) folgt ihm, vom Betreuer |
 
 Nicht gebaut: die Suche, jede
 Feststellung und jede Entität, der Konnektor-Vertrag über `RawEvent` hinaus,
-MCP-Server, Gate, KI-Schicht, jeder Konnektor — und kein Betrieb: das System
-läuft bisher nur aus dem Arbeitsverzeichnis, gegen eine Wegwerf-Datenbank, und
-hat **noch kein einziges echtes Event** gehalten.
+MCP-Server, Gate, KI-Schicht, jeder Konnektor — und kein Betrieb: mit der
+Auslieferung gibt es ein Paket und ein Image, betrieben wird es noch nirgends;
+das System hat **noch kein einziges echtes Event** gehalten.
 
 ## Was als Nächstes kommt
 
 Der Pilot an einem echten Kunden, jetzt an erster Stelle. Die Reihenfolge
 hat der Betreuer am 2026-10-04 entschieden, nach dem Prüfpunkt und der kleinen
 Wartungsrunde (ihre vier Punkte stehen unten unter *Erledigt*): erst Stufe 1c,
-dann der Pilot. Stufe 1c ist gebaut (oben); was sie offen lässt, steht unten
-unter *Tilgung* und *Blobs und Speicher*, und an den Einheiten, zu denen es
-gehört.
+dann der Pilot. Stufe 1c ist abgenommen (oben); was sie offen lässt, steht
+unten unter *Tilgung* und *Blobs und Speicher*, und an den Einheiten, zu denen
+es gehört.
+
+Vor die Aufnahme aus IMAP hat der Betreuer am 2026-10-05 die Auslieferung
+gestellt: sie hängt an nichts aus der Aufnahme, und kup6s kann mit dem Image
+des heutigen Stands Datenbank, Sicherung und Werkzeug-Pod aufbauen, während
+die Aufnahme entsteht. Die Aufnahme kommt dann mit dem nächsten
+Alpha-Release. Was die Auslieferung offen lässt, steht unten unter
+*Auslieferung*.
 
 Der Weg dorthin hatte zwei Umwege, und sie stehen hier, damit die Reihenfolge
 nicht wie ein Versehen aussieht: der Prüfpunkt empfahl zuerst den Einwurf mit
@@ -75,17 +83,20 @@ Spec:
 
 | # | Einheit | bringt | Spec |
 |---|---|---|---|
+| 0 | Auslieferung: Migrationen im Paket, `previously migrate`, Image, Release-Weg, Handoff an kup6s | ein Image, aus dem kup6s alles startet | `specs/2026-10-05-auslieferung.md`, eingefroren am 2026-10-05; abgenommen mit dem Merge des Zweigs `worktree-auslieferung` (oben) |
 | 1 | Aufnahme aus dem IMAP-Ordner, mit dem Einwurf- und dem Konnektor-Vertrag | Chronik des Kunden; echte Post im Log | ein Entwurf **ruht** auf dem Zweig `worktree-pilot-imap-aufnahme` (Commit `9b493f0`), geschrieben, bevor 1c vorgezogen wurde. Er umgeht 1c an drei Stellen, die sein eigener Kopf nennt — das wegwerfbare Pilot-Log (dort §1.1), der Rohverweis an Stelle der Rohbytes (§2.3), Anhänge ohne Inhalt (§1, §3.4) — und wird neu gefasst, bevor der Pilot anfängt |
-| 2 | Betrieb in kup6s: Image, Datenbank mit Sicherung, Restore-Probe, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | — |
+| 2 | Betrieb in kup6s: Datenbank mit Sicherung, Restore-Probe, Bucket, Werkzeug-Pod, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | beginnt beim Image aus Einheit 0; gebaut wird er vom Agenten in kup6s, nie von hier. Was er braucht, sagt der Handoff `handoffs/2026-10-05-kup6s-delivery.md`, englisch; er liegt |
 | 3 | Gate und Policy: Organisationsprofil des Pilotkunden, ein Anbieter-Adapter, Audit, Offenlegungsprüfung | die Grenze, hinter der ein Modell Inhalt sieht | — |
 | 4 | MCP-Lesezugang, mit der Offenlegungsprüfung davor | Claude Code fragt das Log | — |
 | 5 | Feststellungen: Schreibweg, Verpflichtung und Entscheidung, Projektionen, Freigabe | was festgestellt ist, mit Quelle und Verantwortung | — |
 | 6 | KI-Schicht: Vorschläge hinter dem Gate | Protokoll und offene Punkte | — |
 | 7 | Nextcloud-Ordner mit Textextraktion | Dokumente | — |
 
-Offen für Einheit 2 und vom Betreuer noch zu beantworten: was kup6s heute
-bereitstellt (CloudNativePG, ArgoCD, Registry, Zugang vom Arbeitsplatz) und wo
-sein Repository liegt.
+Für Einheit 2 beantwortet, mit der Auslieferung: kup6s arbeitet mit cdk8s,
+ArgoCD und dem CloudNativePG-Operator; das Image kommt von `ghcr.io`; was dort
+entsteht, baut der Agent in kup6s nach dem Handoff (Betreuer, 2026-10-05). Der
+Zugang vom Arbeitsplatz ist bis zum MCP-Server `kubectl exec` in den
+Werkzeug-Pod.
 
 ## Was vor was kommen muss
 
@@ -100,7 +111,7 @@ ihren Beleg im Prüfpunkt.
 | Feststellungen: zweiter Schreibweg, Art und Unterart, Regeln je Art in `verify` | Triage, `record_assertion`, KI-Schicht, Identitätsgraph, jede fachliche Projektion | `append` schreibt nur `observation`; `verify` kennt keine Art-Regeln |
 | Blobs mit Verschlüsselung — **gebaut mit Stufe 1c** | Drop-Ordner mit Dateien, IMAP mit Anhängen und Rohmail, Voice | es gab keinen Ort für Bytes |
 | Tilgung als Event, die Einheiten und Projektionen mitnimmt — **gebaut mit Stufe 1c** | Inhalte Dritter im Log (Mail, Dokumente) — also der Pilot | ein Grabstein war von einer Fälschung nicht zu unterscheiden, und die Einheiten blieben stehen |
-| Ein Betrieb mit Sicherung, Restore-Probe und Anker-Routine | Daten, deren Verlust weh tut | bisher gibt es nur Wegwerf-Datenbanken |
+| Ein Betrieb mit Sicherung, Restore-Probe und Anker-Routine — das Image **gebaut mit der Auslieferung**, der Rest beim Agenten in kup6s | Daten, deren Verlust weh tut | bisher gibt es nur Wegwerf-Datenbanken |
 | Echte, gemischtsprachige Einheiten im Log | die Messung zur Textsuche und die Wahl des Embedding-Modells | beide verlangen einen Testsatz aus echten gemischten Einheiten (Architektur §11, Nachtrag) |
 | Warteschlange (die Sperre auf der Zustandszeile ist gebaut, Commit `3ae7038`) | der erste asynchrone Produzent | ein asynchroner Produzent braucht Entprellung und Wiederholung |
 | Das Gate | jeder Modellaufruf | Regel 2 der Architektur: nur `gate` ruft Modelle |
@@ -120,16 +131,20 @@ das MVP braucht, stehen in keinem:
 - **Betrieb.** Die Architektur nennt den Deployment-Mechanismus eine
   Betriebsentscheidung, an der kein Modul hängt (§11). Der Anker hängt daran,
   und `CLAUDE.md` verlangt seit dem 2026-10-04 von jedem Spec eine Aussage zum
-  Betrieb. Image, Deployment, Sicherung, Restore-Probe und Anker-Routine sind
-  eine Einheit Arbeit, die niemand zugeschnitten hat.
+  Betrieb. Image, Deployment, Sicherung, Restore-Probe und Anker-Routine waren
+  eine Einheit Arbeit, die niemand zugeschnitten hatte; seit dem 2026-10-05
+  sind sie zwei Einheiten des Piloten, die Auslieferung (das Image) und der
+  Betrieb in kup6s (alles andere), aber weiter in keinem Teilprojekt.
 
 ## Offene Punkte, nach ihrem Zuhause
 
 Herkunft in Klammern: **A** Architektur, **E** Entwurf, **1a**/**1b**/**AA**/**1c**
 die Stufen-Specs mit Abschnitt, **P-1b**/**P-AA** das `index.md` des
 jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
-1c (`sdd/2026-10-04-stufe-1c-blobs-und-tilgung/`), **PP** der Prüfpunkt vom
-2026-10-04 mit der Zeile seines Belegberichts.
+1c (`sdd/2026-10-04-stufe-1c-blobs-und-tilgung/`), **AL** der Spec der
+Auslieferung mit Abschnitt, **P-AL** das Ausführungsprotokoll der Auslieferung
+(`sdd/2026-10-05-auslieferung/`) mit dem Ruling oder der Aufgabe, **PP** der
+Prüfpunkt vom 2026-10-04 mit der Zeile seines Belegberichts.
 
 ### Einwurf-Vertrag (`contract`, Teilprojekt 2)
 
@@ -333,12 +348,81 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
 - Tabelle `job`, Entprellung, Wiederholung, `SKIP LOCKED` (A §7.1; 1b §10
   Punkt 4).
 
+### Auslieferung (Paket, Image, Release)
+
+- Signaturen und Herkunftsnachweise (Sigstore/cosign, SLSA-Provenance, SBOM)
+  für Paket und Image. PyPI erzeugt mit Trusted Publishing schon
+  Attestierungen für das Paket; für das Image ist nichts vorgesehen (AL §12
+  Punkt 1).
+- Das Image installiert aus PyPI; scheitert sein Smoke-Test, ist die Version
+  auf PyPI schon sichtbar und kommt nie wieder. Ein Image aus dem gebauten
+  Wheel des Laufs wäre die Alternative, mit dem Preis, dass es nicht beweist,
+  dass das Paket auf PyPI installierbar ist (AL §5, §12 Punkt 2;
+  `delivery.md`).
+- Der Name `previously` auf PyPI ist erst belegt, wenn das erste Release
+  veröffentlicht ist (AL §12 Punkt 6). Mit ihm steht Bedingung 8 der Abnahme
+  aus, nach dem Merge vom Betreuer: der erste Lauf auf `main` legt eine
+  Entwicklungsversion auf Test-PyPI, das Release `v0.1.0a1` Paket und Image
+  für beide Plattformen, und das Paket auf `ghcr.io` wird einmal öffentlich
+  gestellt. Den Probelauf vor dem Merge, den AL §10 Punkt 7 vorsah, gibt es
+  nicht: GitHub startet einen Workflow von Hand nur aus einer Datei auf dem
+  Standardzweig; `cut-a-release.md` sagt es (Plan, Entscheidung 1).
+- Nichts prüft, dass die gebaute Version dem Tag gleicht. Ein Tag mit
+  führender Null (`v1.02.3`) besteht die Tag-Prüfung und endet mit einer
+  Version auf PyPI ohne Image; zwei Tags auf einem Commit (rc und final)
+  scheitern sicher, gemessen. Eine Zeile in `build`, die das Wheel unter dem
+  Namen des Tags sucht, finge jede solche Klasse vor dem Hochladen ab;
+  Entscheidung des Betreuers (P-AL, Prüfung der Aufgabe 4; benannt in
+  `cut-a-release.md` und im Kommentar von `release.yml`).
+- Ein stabiles Release einer älteren Linie, nach einem neueren
+  veröffentlicht, setzt `latest` auf sich zurück: `enable` liest nur die
+  Markierung als Vorabversion (P-AL, Prüfung der Aufgabe 4; `delivery.md`,
+  `cut-a-release.md`). Folgenlos, solange es keine Wartungslinie gibt.
+- Der Warteschritt in `image` fragt die JSON-Schnittstelle von PyPI, das
+  Image installiert aus dem einfachen Index; hinkt der zweite nach, scheitert
+  der Bau nach PyPI, und „Re-run failed jobs" ist die Abhilfe (P-AL, Prüfung
+  der Aufgabe 4; `cut-a-release.md`).
+- Eine Vorabversion bekommt nur den Image-Tag `<version>`, kein
+  `<major>.<minor>`, anders als AL §3.2 Punkt 6: `docker/metadata-action`
+  verlängert eine Vorabversion nur zur genauen Fassung (ruling T4-a; P-AL).
+  Hingenommen, kup6s pinnt die genaue Version; bis `1.0.0` hat jedes Image
+  genau einen Tag.
+- `scripts/smoke-image.sh`: `trap` steht nach `mktemp`; dass das Skript `uv`
+  und `openssl` auf dem Wirt braucht, steht in `run-the-image.md`, nicht im
+  Kopf des Skripts; ein Abbruch kann einen `--rm`-Container und das Netz
+  zurücklassen; `useradd --system` mit uid 1000 warnt harmlos beim Bau (P-AL,
+  Prüfung der Aufgabe 3).
+- `scripts/smoke-image.sh` unter rootless Docker oder als uid 0: rootless
+  Docker bildet `--user` auf eine subuid ab, und ein Wirt mit uid 0 lässt die
+  Container mit `--user "$(id -u):$(id -g)"` als root laufen; dann beweist der
+  Smoke-Test nicht mehr, dass das Image unter fremder uid läuft. Die Prüfung
+  auf uid 1000 läuft ohne `--user` und hält weiter (P-AL, Prüfung der
+  Aufgabe 3; Fehlbedienung, benannt nach ruling E-2 der Auslieferung).
+- Das Wheel für PyPI baut `uv build` mit dem hatchling, der an diesem Tag
+  aktuell ist: `[build-system] requires` ist nicht gelockt, `uv.lock` hält
+  hatchling 1.32.4 nur als Dev-Abhängigkeit für `tests/test_wheel.py`. Keine
+  zweite Fassungsangabe, sondern eine fehlende; abhelfen könnte `uv build
+  --build-constraint` (Endprüfung Code, Befund Minor 9; benannt nach ruling
+  E-2 der Auslieferung).
+- Image-Etikett für die Paketseite auf `ghcr.io`: für ein Image über mehrere
+  Plattformen liest GitHub die Beschreibung womöglich aus dem Index, nicht aus
+  den Images; `docker buildx imagetools create --annotation
+  "index:org.opencontainers.image.description=…"` in `manifest` wäre der Weg.
+  Ungemessen, erst beim ersten Release sichtbar (Endprüfung Code, Befund
+  Important 3).
+
 ### Betrieb (ohne Teilprojekt)
 
-- Deployment-Mechanismus; Image; Datenbank mit Sicherung; welche
-  pgBackRest-Plugin-Implementierung (A §11, §13; `backup-encryption.md`).
+- Deployment-Mechanismus und Datenbank mit Sicherung baut der Agent in kup6s
+  nach dem Handoff (das Image ist gebaut, unten unter *Erledigt*); offen,
+  welche pgBackRest-Plugin-Implementierung (A §11, §13;
+  `backup-encryption.md`).
 - Ablageort und Intervall der Anker; benannter Restore-Point im Takt des
-  Ankerns (AA §10 Punkt 4).
+  Ankerns (AA §10 Punkt 4). Wo die Ankerdatei im Cluster liegt, entscheidet
+  der Betrieb, die Bedingungen stehen in `verify-the-chain.md`; ob Previously
+  sie selbst irgendwohin veröffentlichen soll, ist offen (AL §12 Punkt 4).
+- `previously migrate` geht nur vorwärts; ein Zurück im Betrieb ist eine
+  Wiederherstellung, kein Kommando (AL §12 Punkt 3; `delivery.md`).
 - Der Container-Weg der Anker-Routine ist für `kubectl exec` ungemessen
   (P-AA).
 - Der Bucket der Blobs bei Hetzner, ohne Versionierung und ohne Object Lock,
@@ -354,10 +438,12 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
   Befund 5).
 - Ein Tresor hinter der Schlüssel-Naht; heute ein Verzeichnis mit einer Datei
   je Empfänger (1c §12 Punkt 7).
-- Keine Seite sagt einem Betreiber, der von Stufe 1b kommt, dass er
-  `alembic upgrade head` ausführen muss, und was mit seinen Events im Format 1
-  ist: kein Salz, Einheiten nur zusammen tilgbar (Endprüfung der Doku, als
-  Lücke des Projekts zurückgestellt).
+- Keine Seite sagt einem Betreiber, der von Stufe 1b kommt, was mit seinen
+  Events im Format 1 ist: kein Salz, Einheiten nur zusammen tilgbar
+  (Endprüfung der Doku, als Lücke des Projekts zurückgestellt). Dass er die
+  Datenbank migrieren muss, sagen seit der Auslieferung `run-the-image.md`
+  und die Release-Notes für Betreiber, die `cut-a-release.md` verlangt — mit
+  `previously migrate` statt `alembic upgrade head`.
 - Die Aufbewahrungsfrist der Sicherungen ist Teil der Tilgungszusage: die der
   Datenbank und des WAL-Archivs, und die der Sicherungen oder Kopien des
   Buckets, wenn es sie gibt (1c §4.5, §7; P-1c). Steht auf `erasure.md`,
@@ -425,9 +511,43 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
 - Die Hilfe von `verify --blobs` sagt „also read every blob in the store and
   check it"; gelesen wird jeder Blob, den das Register nennt und der liegen
   muss, nach einem getilgten wird nur gefragt (Endkorrektur, Teil 2).
-- Die Kommandozeile ist mit zehn Kommandos, Ausgabeverträgen und Rückgabecodes
+- Die Kommandozeile ist mit elf Kommandos, Ausgabeverträgen und Rückgabecodes
   faktisch eine Oberfläche mit Vertrag geworden, obwohl sie nur der Einstieg
   ist, bis der MCP-Server steht (PP, A2 §11 Zeile 8).
+- `PREVIOUSLY_DSN` wird nach einer Grammatik gelesen (ruling T2-k), die einen
+  Text nur auf eine Weise liest, nicht immer so, wie er gemeint war. Eine
+  vertippte Zeichenkette, die passt, kann ein Stück Passwort in eine Meldung
+  bringen: ein Passwort aus höchstens fünf Ziffern bei vergessenem `@host`
+  (`user:12345/db`) als Port (ruling T2-j), dieselbe Form ohne Datenbank als
+  Datenbank, ein rohes `@` im Passwort bei vergessenem `@host` als Host, ein
+  Passwort als Wert von `sslmode`, `require_auth`, `channel_binding`, gegen
+  einen Server mit TLS auch von `sslrootcert` und `sslkey`, im Grund von
+  libpq, ein Passwort als Benutzer oder als Datenbank (ruling T2-m). Kein
+  Parser unterscheidet `user:12345` von `host:12345`. Benannt als Tabelle auf
+  `configuration.md` und im Docstring von `_url_of`; gejagt wird es nicht
+  (Arbeitsregel des Betreuers vom 2026-10-05: Fehlbedienung wird benannt).
+  `alembic` im Checkout liest die Zeichenkette mit SQLAlchemy, nicht mit der
+  Grammatik (P-AL).
+- `alembic` zu importieren kostet jedes Kommando rund 70 ms, nicht nur
+  `migrate` (ruling T2-e; P-AL, gemessen vom Prüfer).
+- Ein Datenbankfehler beim COMMIT von `migrate`, der weder eine aufgeschobene
+  Prüfung noch ein `OperationalError` ist, entginge `_refusals` und endete
+  als Traceback; in PostgreSQL ist keiner bekannt (P-AL, Fixrunde 5 der
+  Aufgabe 2).
+- Nur `migrate` vergleicht Revisionen. Jedes andere Kommando scheitert an
+  einem zurückliegenden Schema nur, wo es eine fehlende Tabelle oder Spalte
+  berührt, und läuft sonst: gemessen am 2026-10-05 eine Revision zurück,
+  `append`, `log` und `project` mit 0, nur `verify` verweigert; ebenso laufen
+  die Kommandos eines älteren Images gegen ein neueres Schema. Bis dahin
+  schützt allein die Reihenfolge der Jobs, und die Seiten sagen es so. Ob
+  jedes Kommando die Revision prüfen soll, etwa in `_storage()`, entscheidet
+  der Betreuer (Endprüfung der Doku, Befund Important 2; ruling E-2 der
+  Auslieferung).
+- Zwei Zeilen in `alembic_version`, von Hand oder aus einer verzweigten
+  Geschichte, lassen `migrate` mit Traceback und Code 1 enden
+  (`CommandError` aus `get_current_revision`), gemessen von der Endprüfung
+  Code; kein Passwort darin. Fehlbedienung, benannt (ruling E-2 der
+  Auslieferung).
 
 ### Tore und Werkzeuge
 
@@ -459,11 +579,34 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
 - Der Test zum abgebrochenen Lesen verlässt sich darauf, dass RustFS das
   Senden einstellt, wenn das Objekt gelöscht wird; an den ersten CI-Läufen
   beobachten (P-1c).
+- import-linter liest `src/previously/migrations/versions/` nicht: das
+  Verzeichnis hat kein `__init__.py`, und die Dateinamen der Revisionen
+  beginnen mit Ziffern, sind also keine importierbaren Modulnamen. Gemessen
+  blieb eine Kante von `0004_event_blob.py` nach `cli` ungemeldet. Ein
+  `__init__.py` dort ist in dieser Stufe nicht gebaut; was grimp dann mit den
+  Namen tut, ist ungemessen (ruling T1-d; P-AL).
+- Der `` {ref}`delivery` `` im Kommentar des `Dockerfile` (ruling P-1 der
+  Auslieferung) liegt außerhalb dessen, was `tests/test_docs_references.py`
+  liest (`*.py`); eine umbenannte Marke ließe ihn still veralten. Ebenso nennt
+  die Sprachregel in `CLAUDE.md` `scripts/`, das `Dockerfile` und
+  `.dockerignore` nicht, obwohl alle drei englisch sind (Endprüfung Code,
+  Befund Minor 10; an den Betreuer).
+- `module-boundaries.md`: die zwei alten Blöcke mit dem früheren
+  Vertragsnamen sind nur durch einen Satz weiter oben als Geschichte
+  gekennzeichnet; wer direkt dorthin springt, sieht es nicht (P-AL, Prüfung
+  der Aufgabe 1).
+- `migrate`: zwei Mechanismen, die Autocommit-Verbindung und kein Entsperren
+  im Fehlerweg, verhindern je für sich, dass das Entsperren einen Fehler
+  verdeckt; der Test wird nur rot, wenn beide fehlen, und nur eine der zwei
+  Sperr-Prüfungen fängt ein fehlendes `storage.close()` (P-AL, Fixrunde 1 der
+  Aufgabe 2).
 
 ### Spätere Teilprojekte, unverändert offen
 
 - Teilprojekt 3, MCP-Server: MRTR und Tasks in Claude Code prüfen (A §13);
-  Pydantic kommt mit dem Schemaexport (`DEPENDENCIES.md`).
+  Pydantic kommt mit dem Schemaexport (`DEPENDENCIES.md`). Mit ihm kommt der
+  Zugang ohne `kubectl exec`; bis dahin ist der Werkzeug-Pod der Zugang (AL
+  §12 Punkt 5).
 - Teilprojekt 4, Gate: Verarbeitungsräume der Anbieter (E §16);
   Trace-Verknüpfung über OpenTelemetry (A §13).
 - Teilprojekt 5, KI-Schicht und Triage: Prompt- und Templatetexte;
@@ -527,6 +670,10 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
   `verify` kennt eine erste Regel je Art, für `action` (PP, A1 S2 und S3, je
   zur Hälfte; die andere Hälfte steht oben unter *Feststellungen und
   Entitäten*) — Stufe 1c, Commit `a0377ba`.
+- ~~Image~~ (A §11, §13; aus dem Punkt „Deployment-Mechanismus; Image; …"
+  unter *Betrieb*) — Auslieferung, Commits `aa5ee8c` (Image und Smoke-Test),
+  `ea7ceb2` (Release-Weg), `05372db` und `4d7e4b9` (der Smoke-Test unter
+  fremder uid). Der Rest des Punkts steht weiter dort.
 - ~~`redact units` lässt den Wortlaut der Einheiten in der Nutzlast stehen,
   und `append --text` legt den ganzen Text unter `text` ab~~ (Aufgabe 8, P-1c;
   ruling E-3 der Endkorrektur) — entschieden vom Betreuer am 2026-10-05:
@@ -536,3 +683,17 @@ jeweiligen Ausführungsprotokolls, **P-1c** das Ausführungsprotokoll der Stufe
   Wortlaut einer getilgten Einheit enthält — Commit `09c5d81`. Dass eine
   Nutzlast, die den Wortlaut hält, ihn nach `redact units` behält, bleibt als
   Regel stehen und steht in `cli.md` und `erasure.md`.
+- ~~Vier Kommentare in `release.yml` stimmen nicht ganz: `tag` läuft neben
+  `gates`, nicht davor; „none cancelled by a newer one" gilt nur für einen
+  laufenden Lauf; „widen" statt „replace"; vor dem ersten Tag ist die Version
+  auf `main` `0.1.devN`, nicht `0.1.0a2.dev3`~~ (P-AL, Prüfung der Aufgabe 4)
+  — Fixwelle der Endprüfung, Commit `d1813df`.
+- ~~Die Etiketten `org.opencontainers.image.title`, `description`, `url` und
+  `revision` erbt das Image vom Basis-Image `uv` und beschreibt damit `uv`~~
+  (Aufgabe 5; Endprüfung Code, Befund Important 3) — Fixwelle der
+  Endprüfung, Commit `d1813df`: das `Dockerfile` setzt jedes Etikett, das das
+  Basis-Image setzt; `revision` und `created` reicht `release.yml` aus
+  `github.sha` und dem Zeitpunkt der Veröffentlichung herein.
+- ~~Der Docstring von `_unreadable` in `storage/postgres.py` sagt „every part
+  takes the escape"; Host, Port und Schema nehmen keine~~ (P-AL, Nachprüfung
+  der Fixrunde 5 der Aufgabe 2) — Fixwelle der Endprüfung, Commit `72327ea`.

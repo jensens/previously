@@ -3,7 +3,8 @@
 # About the module boundaries
 
 Previously is one code base with one dependency set and one database, divided into modules whose dependencies run one way.
-Through stage 1c there are four of them, and the order is `cli` above `core` above `storage` above `contract`.
+There are five of them, and the order is `cli` above `core` and `migrations`, which share a layer, above `storage` above `contract`.
+`migrations` joined the other four on 2026-10-05, when the Alembic migrations moved from the repository root into the package so that an installed wheel carries them.
 The order isn't a convention somebody is asked to respect.
 It's `import-linter` contracts, six of them since stage 1c, checked by a gate, and the gate prints the contract names, so the names themselves are part of the design rather than labels on it.
 
@@ -12,15 +13,18 @@ The point of the boundaries is narrow and worth stating before the mechanics.
 `storage` carries rows and knows nothing about the domain.
 `contract` is pure types and knows nothing at all, which is the only reason it can sit underneath both without closing a cycle: `core` has to be able to accept a `RawEvent`, and if the connector contract lived in `connectors` the core wouldn't know it and every connector would reinvent it.
 Since stage 1b `contract` also holds the row types and the store protocol that `core` is typed against, and both are types in the same sense—no logic, no dependency outside the standard library.
+`migrations` is the Alembic environment and the revisions that build the schema.
+It reads the table metadata from `storage.schema` and nothing from `core`, and `core` reads nothing from it, so it sits beside `core` rather than above or below it.
+`storage.migrate` runs those revisions for `previously migrate`, and it names them by the package path rather than by an import, so `storage` reaches `alembic` without an edge up to `migrations`.
 
 ## The edges
 
 The diagram shows which module imports which, and since stage 1b there's nothing dashed in it.
 The two arrows that stage 1c added, to `pyrage` and to `boto3`, each have a contract that names the one module allowed to draw them.
-The arrow to `sqlalchemy` is held the other way round: its contracts name the modules that mustn't draw it, `core` and `contract`, as the section on the contracts explains.
+The arrows to `sqlalchemy` and `alembic` are held the other way round: their contracts name the modules that mustn't draw them, `core` for both and `contract` for `sqlalchemy`, as the section on the contracts explains.
 
 ```{mermaid}
-:caption: The import edges after stage 1c: all six between its own modules, and not one of them exempted. Three arrows leave the package.
+:caption: The import edges on 2026-10-05: seven between its own modules, and not one of them exempted. Six arrows leave the package.
 
 graph TD
     cli[cli] --> core[core]
@@ -28,8 +32,12 @@ graph TD
     cli --> contract[contract]
     core --> storage
     core --> contract
+    migrations[migrations] --> storage
     storage --> contract
     storage --> sqlalchemy[sqlalchemy]
+    storage --> alembic[alembic]
+    migrations --> sqlalchemy
+    migrations --> alembic
     core --> pyrage[pyrage]
     storage --> boto3[boto3]
 ```
@@ -37,11 +45,15 @@ graph TD
 Two things in that picture answer questions the contract names don't.
 
 `contract` has no outgoing edge, and that's the property the layer order rests on.
-A layers contract settles the *order* in which modules may depend on each other; whether an edge exists is a separate question, and counted out, all six edges the order permits exist.
+A layers contract settles the *order* in which modules may depend on each other; whether an edge exists is a separate question.
+Counted out, the order permits nine edges between distinct modules: four from `cli`, two each from `core` and `migrations`, one from `storage`.
+None runs between `core` and `migrations`, because modules that share a layer may not import each other.
+Seven of the nine exist, and the two that don't are `cli → migrations` and `migrations → contract`.
 
 That count was five until stage 1b.
 `storage` had no edge to `contract` at all, not even though the layer order would have permitted one, and the sixth edge arrived when the row types moved out of `storage/rows.py` into `contract/rows.py`—the store protocol in `contract.store` names those types, and `contract` may import nothing above itself.
-Counted per module, over import statements only, because two modules under `storage` mention `previously.core` in prose rather than in an import, and a count over all text would include them:
+The seventh, `migrations → storage`, is older than the module it starts from: the migrations imported `storage.schema` while they still sat outside the package, where no contract looked, and the edge became countable on 2026-10-05 when they moved in.
+Counted per module, over import statements only, because two modules under `storage` mention `previously.core` in prose rather than in an import, and a count over all text would include them, measured on 2026-10-05:
 
 ```text
 $ grep -rhoE 'from previously\.[a-z]+' src/previously/cli.py | sort -u
@@ -54,6 +66,10 @@ from previously.contract
 from previously.core
 from previously.storage
 
+$ grep -rhoE 'from previously\.[a-z]+' src/previously/migrations | sort -u
+from previously.migrations
+from previously.storage
+
 $ grep -rhoE 'from previously\.[a-z]+' src/previously/storage | sort -u
 from previously.contract
 from previously.storage
@@ -62,8 +78,8 @@ $ grep -rhoE 'from previously\.[a-z]+' src/previously/contract | sort -u
 from previously.contract
 ```
 
-Three target packages for `cli`, three for `core` of which one is itself, two for `storage` of which one is itself, and for `contract` nothing but itself.
-That's six edges between distinct modules, and the last line is the layer order's foundation stated as a measurement.
+Three target packages for `cli`, three for `core` of which one is itself, two for `migrations` of which one is itself, two for `storage` of which one is itself, and for `contract` nothing but itself.
+That's seven edges between distinct modules, and the last line is the layer order's foundation stated as a measurement.
 
 And `cli` reaches `storage.postgres` directly, for `from_dsn` and the storage type, and it never needed an exemption for that.
 Until stage 1b this page carried two dashed edges from `core` into `storage.postgres`, and `cli` was no inconsistency beside them.
@@ -75,9 +91,9 @@ The exemptions weren't about the edge `core → storage` being forbidden—the l
 What `.importlinter` holds, in the words the gate prints:
 
 ```text
-Layers: core above storage, contract below both KEPT
+Layers: core beside migrations, both above storage, contract below all KEPT
 core knows no foreign system and no model KEPT
-Only storage imports sqlalchemy KEPT
+core and contract import no sqlalchemy KEPT
 No vendor SDK in the package KEPT
 Only core.sealing imports pyrage KEPT (1 ignored import)
 Only storage.s3 imports boto3 KEPT (2 ignored imports)
@@ -86,6 +102,16 @@ Contracts: 6 kept, 0 broken.
 ```
 
 The output was measured on 2026-10-05.
+The first line read `Layers: core above storage, contract below both` until that day, when `migrations` joined `core` in the second layer and the name followed it, because the name is what the gate prints.
+The third line read `Only storage imports sqlalchemy` until the same day, and the move made that name false: the migrations import SQLAlchemy, and they're inside the package now.
+The contract itself didn't change, because its sources were always `core` and `contract`, so the name now says what it checks; the older blocks further down keep the name of their day.
+Sharing a layer keeps the two apart in both directions: measured the same day, an import of `migrations.dsn` written into `core/units.py` broke the first contract with `previously.core is not allowed to import previously.migrations`, and the second contract as well, because `migrations.dsn` imports `alembic`.
+The other way round, an import of `core.units` written into `migrations/dsn.py` broke the first contract with `previously.migrations is not allowed to import previously.core`.
+
+The first contract holds `migrations.env` and `migrations.dsn`, and it doesn't hold the revisions.
+`versions/` has no `__init__.py`, and `import-linter` doesn't read it.
+Measured on 2026-10-05, an import of `previously.cli` written into a revision went unreported, while the same import in `migrations/dsn.py` broke the first contract.
+
 The second and third lines read `KEPT (2 ignored imports)` until 2026-10-04.
 That number was the price of typing `core` against a concrete store, and it stood in the gate log so the price stayed countable until somebody paid it.
 Stage 1b paid it, and the parentheses on the last two contracts are a different thing: no debt, but the one module each contract exists to allow, named.
@@ -284,13 +310,14 @@ That's the shape of the change as much as a consequence of it.
 The row types had to move for this, and that's the part worth knowing before another protocol is added.
 `contract.store` names `Tip`, `EventRow` and `UnitRow` in its signatures, and `contract` is the bottom layer, so it may import nothing above itself.
 Leaving the types in `storage/rows.py` would have meant a `contract → storage` import, and the first contract on this page is the one that forbids it.
-Measured on 2026-10-04, with a throwaway import from `storage` in `contract/store.py`:
+Measured on 2026-10-05, with a throwaway import from `storage` in `contract/store.py`:
 
 ```text
-Layers: core above storage, contract below both BROKEN
+Layers: core beside migrations, both above storage, contract below all BROKEN
 
 previously.contract is not allowed to import previously.storage:
-- previously.contract.store -> previously.storage.errors (l.27)
+
+- previously.contract.store -> previously.storage.errors (l.63)
 ```
 
 So `storage/rows.py` became `contract/rows.py`, six import sites followed, and no re-export stayed behind: a module that exists only to forward a name is the kind of thing this project removes rather than keeps.

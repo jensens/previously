@@ -8,9 +8,10 @@ that are tied to a date.
 
 ## Language
 
-**English** — everything in `src/`, `tests/`, `migrations/`, `.github/`: code,
-SQL, identifiers (including local variables and private helpers), comments,
-docstrings, test names, and strings such as error messages and CLI output.
+**English** — everything in `src/` (the migrations among it), `tests/`,
+`.github/`: code, SQL, identifiers (including local variables and private
+helpers), comments, docstrings, test names, and strings such as error messages
+and CLI output.
 Also `README.md`, `DEPENDENCIES.md`, this file, and the configuration at the
 repository root — `pyproject.toml`, `.importlinter`, `alembic.ini`,
 `.pre-commit-config.yaml`, `.vale.ini`, `.gitignore` — comments included.
@@ -275,7 +276,7 @@ was never written, because it gets read as current.
   the rule and not a courtesy.
 - **Sphinx does not check a documentation label that sits in a code
   comment.** `tests/test_docs_references.py` does: it resolves every `{ref}`
-  label in the `*.py` files under `src/`, `tests/` and `migrations/`, refuses
+  label in the `*.py` files under `src/` and `tests/`, refuses
   an unmarked paragraph sign, keeps a citation out of what a user reads on
   the terminal, and holds the messages a reference page quotes against the
   code that produces them. Outside its field of view: the reST form `:ref:`,
@@ -430,7 +431,7 @@ not, the hyphen carries it.
 Whoever needs the census takes it instead of trusting a number written here:
 
 ```
-grep -rEo '\b(W|G|B|K|N)-?[0-9]+\b' --include='*.py' src tests migrations
+grep -rEo '\b(W|G|B|K|N)-?[0-9]+\b' --include='*.py' src tests
 ```
 
 Case-sensitive is the load-bearing part of that pattern — ignoring case also
@@ -491,7 +492,7 @@ The census, as a command, because a number here would go stale the way the
 last one did:
 
 ```
-grep -rnioE 'ruling (P|T[0-9]+)-[a-z0-9]+' src tests migrations pyproject.toml .importlinter | sort -u
+grep -rnioE 'ruling (P|T[0-9]+)-[a-z0-9]+' src tests pyproject.toml .importlinter | sort -u
 ```
 
 `.importlinter` belongs in that path list and was missing from it until

@@ -36,18 +36,30 @@ class SourceKeyTaken(StorageError):
 class InvalidDsn(StorageError):
     """`PREVIOUSLY_DSN` is not a valid connection string (review finding W2).
 
-    Translates `sqlalchemy.exc.ArgumentError` out of `create_engine`, which
-    rejects the DSN while parsing it, before any connection attempt takes
-    place at all.
+    Raised by `storage.postgres.from_dsn` for a string outside the grammar it
+    accepts, before any connection attempt takes place at all.
     """
 
 
 class ServerUnreachable(StorageError):
-    """The database server does not answer (review finding W2).
+    """Connecting to the database failed (review finding W2).
 
-    Translates `sqlalchemy.exc.OperationalError`, which arises while the
-    connection is actually being established — the DSN was valid, but nobody
-    answers at that address.
+    Translates a `sqlalchemy.exc.OperationalError` without a SQLSTATE, which
+    is what a failure while the connection is being established brings — the
+    DSN was valid, and nobody answers at that address, or the server answers
+    and refuses: a wrong password, a database that does not exist. The
+    message names database, host and port, and quotes the first line of the
+    reason, which says which.
+    """
+
+
+class OperationFailed(StorageError):
+    """The database ended an operation after the connection stood: a
+    statement timeout, a shutdown, a disk that is full.
+
+    Translates a `sqlalchemy.exc.OperationalError` that carries a SQLSTATE,
+    other than the ones `TransactionAborted` takes. The message names
+    database, host and port, and the server's reason.
     """
 
 
@@ -67,8 +79,33 @@ class MigrationPending(StorageError):
     """The database schema is incomplete (review finding W2).
 
     Translates `sqlalchemy.exc.ProgrammingError`, which arises when something
-    is written to or read from a table that `alembic upgrade head` has not
+    is written to or read from a table that `previously migrate` has not
     created yet.
+    """
+
+
+class MigrationFailed(StorageError):
+    """The database refused a step of `previously migrate`: reading the
+    revision it is at, or applying a revision.
+
+    Translates every `sqlalchemy.exc.DBAPIError` that arises there but an
+    `OperationalError`, which stays a failure to connect: a role without the
+    right to create a table or to read `alembic_version`, an event trigger
+    that refuses DDL. It is not `MigrationPending`: the schema may well be
+    missing, but the cause is the database's answer, and the message names
+    that answer, never the connection string.
+    """
+
+
+class UnknownRevision(StorageError):
+    """The database is at a schema revision this version of previously does
+    not know.
+
+    An older package against a database that a newer one has migrated
+    already. Doing nothing would leave the old code working against a schema
+    it was not written for, and Alembic itself would stop at the unknown
+    revision with a traceback; this says what was found and what is known,
+    and `migrate` touches nothing.
     """
 
 

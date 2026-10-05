@@ -37,6 +37,8 @@ dev = [
     "pip-audit>=2.10.1",
     "pyrage-stubs>=1.4",
     "types-boto3-lite[s3]>=1.43",
+    "hatchling>=1.32",
+    "hatch-vcs>=0.5",
 ]
 docs = [
     "sphinx>=9.1",
@@ -80,9 +82,10 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 # standard library, third-party and `previously.*` imports end up in a single
 # alphabetical list, so a module no longer shows at a glance which layer it
 # depends on — in a project whose central property is the separation of
-# `cli` → `core` → `storage` → `contract`. That separation is enforced
-# mechanically by import-linter (see `.importlinter`), so this costs
-# readability at that one spot and nothing else.
+# `cli` → `core` | `migrations` → `storage` → `contract`, where `core` and
+# `migrations` share a layer and import nothing from each other. That
+# separation is enforced mechanically by import-linter (see `.importlinter`),
+# so this costs readability at that one spot and nothing else.
 force-single-line = true
 from-first = true
 lines-after-imports = 2
@@ -96,8 +99,8 @@ ban-relative-imports = "all"
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "T201"]
 # Printing to stdout is what this module is for — a `# noqa: T201` on each of
-# the thirty-three `print` calls would be the same justification repeated
-# thirty-three times (ruling T9-c of the stage 1a execution, whose ledger is
+# the thirty-four `print` calls would be the same justification repeated
+# thirty-four times (ruling T9-c of the stage 1a execution, whose ledger is
 # lost, so the label resolves nowhere). The count is measured against this
 # configuration with every per-file ignore emptied out, `ruff check --select
 # T201 --config 'lint.per-file-ignores = {}' src/previously/cli.py` — that
@@ -113,7 +116,7 @@ ban-relative-imports = "all"
 # `blob get` saying a blob is erased and `redact` naming a blob that stays in
 # the store took it to thirty-two on 2026-10-05, measured the same way.
 # `redact units` saying that the payload stays took it to thirty-three the
-# same day, measured the same way.
+# same day, measured the same way, and `migrate` took it to thirty-four.
 "src/previously/cli.py" = ["T201"]
 
 [tool.ruff.lint.flake8-type-checking]
@@ -136,11 +139,12 @@ runtime-evaluated-decorators = ["dataclasses.dataclass"]
 # not only in the ledger, so that it does not vanish along with it.
 
 [tool.pyright]
-# `migrations` is not an accessory: `migrations/versions/0001_log.py` creates
-# the schema and `migrations/dsn.py` carries the DSN resolution — both real
-# logic, which without this entry slips past the strict check unnoticed, as it
-# did until the fix round that added it.
-include = ["src", "tests", "migrations"]
+# The migrations are not an accessory: `versions/0001_log.py` creates the
+# schema and `dsn.py` carries the DSN resolution — both real logic, which
+# slipped past the strict check unnoticed while the migrations sat outside
+# `src` without an entry of their own here, until the fix round that added
+# one. They live under `src/previously/migrations/` now, so `src` covers them.
+include = ["src", "tests"]
 typeCheckingMode = "strict"
 pythonVersion = "3.14"
 
@@ -150,15 +154,14 @@ markers = [
     "db: needs PostgreSQL (testcontainer)",
     "s3: needs an S3 server (testcontainer)",
 ]
-# `migrations` is not an installed package (no entry in [project], and no
-# `__init__.py` needed thanks to implicit namespace packages), so without this
-# it is not on sys.path — `tests/test_migrations_dsn.py` could not import
-# `migrations.dsn` otherwise. Measured: without this line the import fails
-# with `ModuleNotFoundError: No module named 'migrations'`.
-pythonpath = ["."]
 
 [tool.coverage.run]
-source = ["previously"]
+# A path, not the package name. By name, coverage attributes executed code by
+# module name, and Alembic loads `migrations/env.py` and every revision with
+# `load_python_file` under module names of its own: measured on 2026-10-05,
+# `env.py` read 0% although every test session runs it, and the revisions
+# were missing from the report altogether. By path, both are measured.
+source = ["src/previously"]
 relative_files = true
 
 [tool.coverage.report]

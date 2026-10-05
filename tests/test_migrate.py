@@ -1,0 +1,729 @@
+# Previously — an append-only knowledge store for project histories
+# Copyright (C) 2026 Jens W. Klein
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""`previously migrate`: the schema brought up to the newest revision, one
+run at a time.
+
+Every test gets a database of its own, created empty on the session's
+container and dropped afterwards: the session database is migrated already,
+and the container without a migration is shared by tests that rely on every
+access to it failing.
+"""
+
+from alembic import command
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+from dataclasses import dataclass
+from previously.cli import main
+from previously.storage.errors import UnknownRevision
+from previously.storage.migrate import migrate
+from previously.storage.migrate import Migrated
+from previously.storage.migrate import MIGRATION_LOCK
+from sqlalchemy import create_engine
+from sqlalchemy import Engine
+from sqlalchemy import make_url
+from sqlalchemy import text
+from typing import TYPE_CHECKING
+
+import itertools
+import os
+import pytest
+import secrets
+import signal
+import subprocess
+import sys
+import threading
+import time
+
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
+
+
+def _head() -> str:
+    """The newest revision, read from the tree rather than typed, so that the
+    next migration does not have to come back here."""
+    config = Config()
+    config.set_main_option("script_location", "previously:migrations")
+    head = ScriptDirectory.from_config(config).get_current_head()
+    # The tree has one head; `migrate` reports it, and a `None` here would
+    # make every comparison below compare against nothing.
+    assert head is not None
+    return head
+
+
+HEAD = _head()
+_DATABASES = itertools.count(1)
+
+
+@pytest.fixture
+def empty_dsn(engine: Engine) -> Iterator[str]:
+    """A connection string to a fresh, empty database on the session's
+    container, dropped when the test is done. `WITH (FORCE)` ends whatever
+    connection a failed test left open on it."""
+    name = f"migrate_{next(_DATABASES)}"
+    admin = engine.execution_options(isolation_level="AUTOCOMMIT")
+    with admin.connect() as conn:
+        conn.execute(text(f"CREATE DATABASE {name}"))
+    try:
+        yield engine.url.set(database=name).render_as_string(hide_password=False)
+    finally:
+        with admin.connect() as conn:
+            conn.execute(text(f"DROP DATABASE {name} WITH (FORCE)"))
+
+
+_ROLES = itertools.count(1)
+
+
+@dataclass(frozen=True)
+class Role:
+    """A login role without any grant beyond what PostgreSQL gives every
+    role: it may connect and use schema `public`, and since PostgreSQL 15 it
+    may not create anything there."""
+
+    name: str
+    password: str
+
+    def on(self, dsn: str) -> str:
+        """`dsn` with this role's name and password."""
+        url = make_url(dsn).set(username=self.name, password=self.password)
+        return url.render_as_string(hide_password=False)
+
+
+@pytest.fixture
+def role(engine: Engine) -> Iterator[Role]:
+    """A fresh role, dropped when the test is done. Roles belong to the whole
+    server, not to one database, so each test gets a name of its own. A test
+    takes this fixture before `empty_dsn`, so that its database, and with it
+    whatever the role holds there, is dropped first."""
+    made = Role(f"migrate_role_{next(_ROLES)}", secrets.token_hex(16))
+    admin = engine.execution_options(isolation_level="AUTOCOMMIT")
+    with admin.connect() as conn:
+        conn.execute(text(f"CREATE ROLE {made.name} LOGIN PASSWORD '{made.password}'"))
+    try:
+        yield made
+    finally:
+        with admin.connect() as conn:
+            conn.execute(text(f"DROP ROLE {made.name}"))
+
+
+def _advisory_locks(dsn: str) -> int:
+    """How many sessions hold or wait for `MIGRATION_LOCK` in the database of
+    `dsn`. A key that fits in 32 bits stands in `objid`, with `classid` 0."""
+    engine = create_engine(dsn)
+    try:
+        with engine.connect() as conn:
+            return conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_locks WHERE locktype = 'advisory' "
+                    "AND classid = 0 AND objid = :key "
+                    "AND database = (SELECT oid FROM pg_database "
+                    "WHERE datname = current_database())"
+                ),
+                {"key": MIGRATION_LOCK},
+            ).scalar_one()
+    finally:
+        engine.dispose()
+
+
+def _no_lock_left(dsn: str) -> bool:
+    """Whether the lock is gone within ten seconds: a closed connection ends
+    its session on the server a moment after the client lets go of it."""
+    deadline = time.monotonic() + 10
+    while _advisory_locks(dsn):
+        if time.monotonic() > deadline:
+            return False
+        time.sleep(0.01)
+    return True
+
+
+@pytest.mark.db
+def test_migrate_creates_the_schema_and_then_finds_it_up_to_date(empty_dsn: str) -> None:
+    first = migrate(empty_dsn)
+    assert first.before is None
+    assert first.head == HEAD
+    second = migrate(empty_dsn)
+    assert second == Migrated(before=HEAD, head=HEAD)
+
+
+def _waiting_on_the_lock(engine: Engine) -> int:
+    """How many other backends of this database wait on an advisory lock."""
+    with engine.connect() as conn:
+        return conn.execute(
+            text(
+                "SELECT count(*) FROM pg_stat_activity "
+                "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+                "AND wait_event_type = 'Lock' AND wait_event = 'advisory'"
+            )
+        ).scalar_one()
+
+
+@pytest.mark.db
+def test_migrate_waits_for_a_migration_that_holds_the_lock(empty_dsn: str) -> None:
+    """The test takes the lock itself, starts `migrate` in a thread, sees it
+    wait in `pg_stat_activity`, releases the lock, and sees it finish.
+
+    Without the lock, two migration jobs of one release would run the same DDL
+    at once; the second would fail on a table the first just created. The
+    poll asks until a deadline instead of sleeping for a moment it hopes is
+    long enough, and it stops early once the thread has ended, which is what
+    a `migrate` that does not wait does."""
+    engine = create_engine(empty_dsn)
+    results: list[Migrated] = []
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            results.append(migrate(empty_dsn))
+        except BaseException as error:
+            errors.append(error)
+
+    thread = threading.Thread(target=run)
+    try:
+        with engine.connect() as holder:
+            holder.execute(text("SELECT pg_advisory_lock(:key)"), {"key": MIGRATION_LOCK})
+            thread.start()
+            deadline = time.monotonic() + 10
+            seen = False
+            while thread.is_alive() and time.monotonic() < deadline:
+                if _waiting_on_the_lock(engine):
+                    seen = True
+                    break
+                time.sleep(0.01)
+            assert seen, f"migrate did not wait for the lock: {results or errors}"
+            assert results == []
+            holder.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": MIGRATION_LOCK})
+            holder.commit()
+        thread.join(timeout=30)
+        assert not thread.is_alive(), "migrate is hanging"
+        assert errors == []
+        assert results == [Migrated(before=None, head=HEAD)]
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.db
+def test_migrate_holds_the_lock_until_its_upgrade_has_committed(empty_dsn: str) -> None:
+    """Two `migrate` wait behind the test's lock and are let go together:
+    exactly one migrates, and the other finds the schema up to date.
+
+    The test above shows that `migrate` waits for a lock somebody holds, and
+    not that `migrate` holds it long enough. A lock released before the
+    upgrade commits lets the second read the empty revision as well and run
+    the same DDL again, which is what the lock exists to prevent."""
+    engine = create_engine(empty_dsn)
+    results: list[Migrated] = []
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            results.append(migrate(empty_dsn))
+        except BaseException as error:
+            errors.append(error)
+
+    threads = [threading.Thread(target=run) for _ in range(2)]
+    try:
+        with engine.connect() as holder:
+            holder.execute(text("SELECT pg_advisory_lock(:key)"), {"key": MIGRATION_LOCK})
+            for thread in threads:
+                thread.start()
+            deadline = time.monotonic() + 10
+            while _waiting_on_the_lock(engine) < 2:
+                assert time.monotonic() < deadline, f"not both waited: {results or errors}"
+                time.sleep(0.01)
+            holder.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": MIGRATION_LOCK})
+            holder.commit()
+        for thread in threads:
+            thread.join(timeout=30)
+        assert not any(thread.is_alive() for thread in threads), "migrate is hanging"
+        assert errors == []
+        assert sorted(results, key=lambda result: result.before or "") == [
+            Migrated(before=None, head=HEAD),
+            Migrated(before=HEAD, head=HEAD),
+        ]
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.db
+def test_migrate_refuses_a_revision_it_does_not_know(empty_dsn: str) -> None:
+    """A database that an older package meets after a newer one migrated it.
+    Raw SQL, as the forgery tests do."""
+    migrate(empty_dsn)
+    engine = create_engine(empty_dsn)
+    try:
+        with engine.begin() as conn:
+            conn.execute(text("UPDATE alembic_version SET version_num = '9999_future'"))
+    finally:
+        engine.dispose()
+    with pytest.raises(UnknownRevision) as caught:
+        migrate(empty_dsn)
+    assert str(caught.value) == (
+        "the database is at revision 9999_future, which this version of previously "
+        f"does not know; it knows revisions up to {HEAD}"
+    )
+
+
+@pytest.mark.db
+def test_migrate_takes_a_password_with_a_percent_sign(empty_dsn: str) -> None:
+    """A password with a character a URL has to escape arrives percent-encoded
+    in the connection string. Alembic's configuration reads `%` as the start
+    of an interpolation, and measured on 2026-10-05, a string handed to it
+    unescaped raised `ValueError: invalid interpolation syntax`, a traceback
+    whose message quoted the connection string, password included. `migrate`
+    hands Alembic a connection now and not the string. Every character of
+    the container's password is encoded here, so the string carries `%` and
+    still names the same password."""
+    url = make_url(empty_dsn)
+    assert url.password is not None
+    encoded = "".join(f"%{byte:02X}" for byte in str(url.password).encode())
+    dsn = empty_dsn.replace(f":{url.password}@", f":{encoded}@", 1)
+    assert "%" in dsn
+    assert migrate(dsn) == Migrated(before=None, head=HEAD)
+
+
+@pytest.mark.db
+def test_cli_migrate_prints_one_line_each_way(
+    empty_dsn: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PREVIOUSLY_DSN", empty_dsn)
+    assert main(["migrate"]) == 0
+    assert capsys.readouterr() == (f"migrated: (empty) -> {HEAD}\n", "")
+    assert main(["migrate"]) == 0
+    assert capsys.readouterr() == (f"up to date: {HEAD}\n", "")
+
+
+@pytest.mark.db
+def test_cli_migrate_names_no_password_and_gives_one_sentence(
+    empty_dsn: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A wrong password: exit code 2, one line on standard error, the
+    password nowhere — and the same sentence `log` gives for the same
+    string, because both go through the one translation in `storage`. The
+    wrong password is drawn at run time, so that no output can hold it by
+    coincidence."""
+    secret = f"wrong-{secrets.token_hex(8)}"
+    wrong = make_url(empty_dsn).set(password=secret).render_as_string(hide_password=False)
+    monkeypatch.setenv("PREVIOUSLY_DSN", wrong)
+    assert main(["migrate"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert len(err.splitlines()) == 1, err
+    assert err.startswith("Error: ")
+    assert secret not in err
+    assert main(["log"]) == 2
+    assert capsys.readouterr() == ("", err)
+
+
+@pytest.mark.db
+def test_cli_migrate_as_a_role_that_cannot_read_the_revision_gives_one_sentence(
+    role: Role,
+    empty_dsn: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The owner migrates, and then a role without `SELECT` on
+    `alembic_version` runs `migrate`: one sentence with the database's reason,
+    exit code 2, and the lock gone afterwards.
+
+    Measured on 2026-10-05 with the lock taken inside a transaction: the read
+    aborted the transaction, the unlock in `finally` failed on the aborted
+    transaction, and its `InFailedSqlTransaction` came out as a traceback with
+    exit code 1, hiding the refusal."""
+    migrate(empty_dsn)
+    monkeypatch.setenv("PREVIOUSLY_DSN", role.on(empty_dsn))
+    assert main(["migrate"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the database refused the migration to {HEAD}: "
+        "permission denied for table alembic_version\n",
+    )
+    assert _no_lock_left(empty_dsn)
+
+
+@pytest.mark.db
+def test_cli_migrate_as_a_role_that_cannot_create_names_the_reason(
+    role: Role,
+    empty_dsn: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A role that may not create a table in `public`, which since
+    PostgreSQL 15 is every role but the database's owner, gets the
+    database's reason, not the advice to run the command it just ran.
+
+    Measured on 2026-10-05 before `MigrationFailed`: "Error: database schema
+    incomplete — `uv run alembic upgrade head` has not run yet"."""
+    monkeypatch.setenv("PREVIOUSLY_DSN", role.on(empty_dsn))
+    assert main(["migrate"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the database refused the migration to {HEAD}: "
+        "permission denied for schema public\n",
+    )
+    assert _no_lock_left(empty_dsn)
+
+
+@pytest.mark.db
+def test_cli_migrate_translates_a_failure_on_alembics_own_connection(
+    role: Role,
+    empty_dsn: str,
+    engine: Engine,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The upgrade runs on a connection of its own, which `migrate` hands to
+    `env.py`. A role allowed one connection gets the lock connection and not
+    that one, and the failure ends as one sentence with exit code 2, without
+    the password, because the upgrade's connection comes out of the same
+    storage and its translation."""
+    with engine.execution_options(isolation_level="AUTOCOMMIT").connect() as conn:
+        conn.execute(text(f"ALTER ROLE {role.name} CONNECTION LIMIT 1"))
+    monkeypatch.setenv("PREVIOUSLY_DSN", role.on(empty_dsn))
+    assert main(["migrate"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert len(err.splitlines()) == 1, err
+    url = make_url(empty_dsn)
+    assert err.startswith(f"Error: connecting to database {url.database} at {url.host}:{url.port}")
+    assert "too many connections for role" in err
+    assert role.password not in err
+
+
+@pytest.mark.db
+def test_cli_migrate_names_an_error_after_connecting_as_one_of_the_operation(
+    empty_dsn: str,
+    engine: Engine,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A database with a statement timeout of half a second, and a `migrate`
+    that waits longer than that for the lock the test holds: the server
+    cancels the wait with SQLSTATE `57014`. That is not a failure to connect —
+    psycopg gives a failure to connect no SQLSTATE, this one has one — so the
+    sentence says that the operation failed, with the server's reason."""
+    url = make_url(empty_dsn)
+    admin = engine.execution_options(isolation_level="AUTOCOMMIT")
+    with admin.connect() as conn:
+        conn.execute(text(f"ALTER DATABASE {url.database} SET statement_timeout = '500ms'"))
+    holder_engine = create_engine(empty_dsn)
+    monkeypatch.setenv("PREVIOUSLY_DSN", empty_dsn)
+    try:
+        with holder_engine.connect() as holder:
+            holder.execute(text("SELECT pg_advisory_lock(:key)"), {"key": MIGRATION_LOCK})
+            assert main(["migrate"]) == 2
+    finally:
+        holder_engine.dispose()
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the operation on database {url.database} at {url.host}:{url.port} failed: "
+        "canceling statement due to statement timeout\n",
+    )
+
+
+@pytest.mark.db
+def test_cli_migrate_as_a_role_that_may_not_take_the_lock_names_the_reason(
+    role: Role,
+    empty_dsn: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A hardened database that does not let every role call
+    `pg_advisory_lock`. Measured at `3c8e506`, with the lock statement
+    outside the `try` that translates a refusal: `migrate` answered "database
+    schema incomplete — `previously migrate` has not run yet", the advice to
+    run itself again."""
+    admin = create_engine(empty_dsn, isolation_level="AUTOCOMMIT")
+    try:
+        with admin.connect() as conn:
+            conn.execute(text("REVOKE EXECUTE ON FUNCTION pg_advisory_lock(bigint) FROM PUBLIC"))
+    finally:
+        admin.dispose()
+    monkeypatch.setenv("PREVIOUSLY_DSN", role.on(empty_dsn))
+    assert main(["migrate"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the database refused the migration to {HEAD}: "
+        "permission denied for function pg_advisory_lock\n",
+    )
+
+
+@pytest.mark.db
+def test_cli_migrate_names_the_reason_of_an_error_that_is_no_programming_error(
+    empty_dsn: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A database whose event trigger refuses every DDL statement, the way
+    some managed databases guard their schema. The trigger raises with
+    SQLSTATE `XX000`, which psycopg files under `InternalError`, not
+    `ProgrammingError`: the refusal still ends as one sentence with the
+    database's reason, not as a traceback. Not the default `P0001`: psycopg
+    files that one under `ProgrammingError`, measured on 2026-10-05, and the
+    test passed with only `ProgrammingError` caught."""
+    engine = create_engine(empty_dsn)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE FUNCTION refuse_ddl() RETURNS event_trigger LANGUAGE plpgsql AS "
+                    "$$ BEGIN RAISE EXCEPTION 'no schema changes in this database' "
+                    "USING ERRCODE = 'XX000'; END $$"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE EVENT TRIGGER refuse_ddl ON ddl_command_start "
+                    "EXECUTE FUNCTION refuse_ddl()"
+                )
+            )
+    finally:
+        engine.dispose()
+    monkeypatch.setenv("PREVIOUSLY_DSN", empty_dsn)
+    assert main(["migrate"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the database refused the migration to {HEAD}: "
+        "no schema changes in this database\n",
+    )
+    assert _no_lock_left(empty_dsn)
+
+
+@pytest.mark.db
+def test_cli_migrate_with_a_query_value_the_client_refuses_quotes_none_of_it(
+    empty_dsn: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A value of an allowed query key the client library cannot read. psycopg
+    raises `ProgrammingError` while it connects, before the server is asked
+    anything. Measured on 2026-10-05 at `fa61473`: that became
+    `MigrationPending`, and `migrate` answered "database schema incomplete —
+    `previously migrate` has not run yet", the advice to run itself; at
+    `2579eb5` the sentence quoted the library's text, which names the key or
+    value it refused, and with an unencoded `&` in a password that was a piece
+    of it. The reason is fixed now, and the value drawn at run time stands
+    nowhere in it."""
+    url = make_url(empty_dsn)
+    value = f"x{secrets.token_hex(10)}"
+    monkeypatch.setenv("PREVIOUSLY_DSN", f"{empty_dsn}?connect_timeout={value}")
+    assert main(["migrate"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: connecting to database {url.database} at {url.host}:{url.port} failed: "
+        "the client library refused a query parameter of PREVIOUSLY_DSN\n",
+    )
+
+
+@pytest.mark.db
+def test_cli_migrate_takes_the_uri_cloudnativepg_writes(
+    role: Role,
+    empty_dsn: str,
+    engine: Engine,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CloudNativePG puts a `uri` into the secret of an application's role,
+    built by Go's `url.URL` with `url.UserPassword`, which writes `/` as
+    `%2F` and leaves `$&+,;=` raw. The passwords CloudNativePG generates are
+    letters and digits; one an operator supplies can hold these, `&` among
+    them (ruling T2-l of the 2026-10-05 delivery plan), and this one holds
+    all of them. Pasted as it is into `PREVIOUSLY_DSN`, with the plain
+    `postgresql://` scheme, it is inside the grammar `from_dsn` accepts, and
+    `migrate` runs. The role owns the database, since only the owner may
+    create in `public` (PostgreSQL 15)."""
+    password = f"Ab+cd/EF=gh&$,;{secrets.token_hex(8)}=="
+    database = make_url(empty_dsn).database
+    with engine.execution_options(isolation_level="AUTOCOMMIT").connect() as conn:
+        conn.execute(text(f"ALTER ROLE {role.name} PASSWORD '{password}'"))
+        conn.execute(text(f"ALTER DATABASE {database} OWNER TO {role.name}"))
+    url = make_url(empty_dsn)
+    written = password.replace("/", "%2F")
+    dsn = f"postgresql://{role.name}:{written}@{url.host}:{url.port}/{database}"
+    monkeypatch.setenv("PREVIOUSLY_DSN", dsn)
+    assert main(["migrate"]) == 0
+    assert capsys.readouterr() == (f"migrated: (empty) -> {HEAD}\n", "")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("state", ["XX000", "P0001"])
+def test_cli_migrate_names_the_reason_of_an_error_at_commit(
+    state: str,
+    empty_dsn: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A check the database runs only at the end of the transaction: a
+    deferred constraint trigger on `alembic_version`, which an event trigger
+    adds as soon as Alembic creates the table, refuses the row Alembic
+    records. It fires at commit, after every revision ran. Both SQLSTATEs end
+    as one sentence with the database's reason: `XX000`, which psycopg files
+    under `InternalError`, and `P0001`, which it files under
+    `ProgrammingError`, which the storage would otherwise call a missing
+    schema."""
+    engine = create_engine(empty_dsn)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE FUNCTION refuse_row() RETURNS trigger LANGUAGE plpgsql AS "
+                    "$$ BEGIN RAISE EXCEPTION 'no revision may be recorded here' "
+                    f"USING ERRCODE = '{state}'; END $$"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE FUNCTION guard_versions() RETURNS event_trigger "
+                    "LANGUAGE plpgsql AS $$ BEGIN "
+                    "IF to_regclass('alembic_version') IS NOT NULL AND NOT EXISTS "
+                    "(SELECT 1 FROM pg_trigger WHERE tgname = 'refuse_row') THEN "
+                    "CREATE CONSTRAINT TRIGGER refuse_row AFTER INSERT ON alembic_version "
+                    "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION refuse_row(); "
+                    "END IF; END $$"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE EVENT TRIGGER guard_versions ON ddl_command_end "
+                    "WHEN TAG IN ('CREATE TABLE') EXECUTE FUNCTION guard_versions()"
+                )
+            )
+    finally:
+        engine.dispose()
+    monkeypatch.setenv("PREVIOUSLY_DSN", empty_dsn)
+    assert main(["migrate"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the database refused the migration to {HEAD}: no revision may be recorded here\n",
+    )
+    assert _no_lock_left(empty_dsn)
+
+
+def _start(dsn: str) -> subprocess.Popen[str]:
+    """`previously migrate` in a process of its own, against `dsn`: a signal
+    sent to the test's own process would reach pytest.
+
+    The interpreter runs `sys.exit(main())`, which is what the script
+    `previously` the package installs runs, rather than the script by its
+    path. Every argument is then a literal written in the call, or
+    `sys.executable`, which ruff's `S603` does not report, as in
+    `tests/test_docs_typed_output.py`; the script's path, or the same string
+    held in a constant, it does, measured on 2026-10-05."""
+    return subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from previously.cli import main; sys.exit(main())",
+            "migrate",
+        ],
+        env={**os.environ, "PREVIOUSLY_DSN": dsn},
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+
+
+def _waiting_on(engine: Engine, wait_event: str) -> bool:
+    """Whether another backend of this database waits on a lock of the kind
+    `wait_event` names: `advisory`, or `relation` for a table."""
+    with engine.connect() as conn:
+        return bool(
+            conn.execute(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND pid <> pg_backend_pid() "
+                    "AND wait_event_type = 'Lock' AND wait_event = :event"
+                ),
+                {"event": wait_event},
+            ).scalar_one()
+        )
+
+
+def _terminated(process: subprocess.Popen[str], engine: Engine, wait_event: str) -> tuple[int, str]:
+    """Sends `SIGTERM` once `process` waits on the lock, and returns its exit
+    code and its standard error. The poll asks until a deadline, as the lock
+    tests above do, and stops early if the process ended without waiting."""
+    deadline = time.monotonic() + 30
+    while not _waiting_on(engine, wait_event):
+        assert process.poll() is None, process.communicate()
+        assert time.monotonic() < deadline, "migrate did not wait"
+        time.sleep(0.01)
+    process.send_signal(signal.SIGTERM)
+    _, err = process.communicate(timeout=30)
+    return process.returncode, err
+
+
+@pytest.mark.db
+def test_previously_migrate_as_a_process_of_its_own_runs(empty_dsn: str) -> None:
+    """The control for the two tests below: the same process, started the
+    same way and sent no signal, migrates and ends with 0. Without it, a
+    process that cannot start at all would make them fail for a reason that
+    has nothing to do with the signal."""
+    process = _start(empty_dsn)
+    out, err = process.communicate(timeout=60)
+    assert (process.returncode, out, err) == (0, f"migrated: (empty) -> {HEAD}\n", "")
+
+
+@pytest.mark.db
+def test_sigterm_ends_a_migrate_that_waits_for_the_lock(empty_dsn: str) -> None:
+    """In a container `previously` is process 1, which the kernel sends no
+    signal it has left at the default action: `docker stop` waited the whole
+    grace period and ended it with `SIGKILL`, measured on 2026-10-05; a
+    Kubernetes pod is stopped the same way, which was not measured. With a
+    handler, `SIGTERM` ends the command with 143, 128 and the signal's number,
+    and no traceback; the database is left
+    without a schema and without the lock.
+
+    The test runs the process as a child, not as process 1, and a child left
+    at the default action would end at once with -15, which the assertion
+    tells apart from 143. The wait is gone by the time the process has ended,
+    because psycopg cancels it on the server when `SystemExit` reaches it;
+    measured on 2026-10-05, a handler that ended the process with `os._exit`
+    left the server still waiting at that moment, and this test red."""
+    engine = create_engine(empty_dsn)
+    try:
+        with engine.connect() as holder:
+            holder.execute(text("SELECT pg_advisory_lock(:key)"), {"key": MIGRATION_LOCK})
+            code, err = _terminated(_start(empty_dsn), engine, "advisory")
+            assert not _waiting_on(engine, "advisory")
+            holder.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": MIGRATION_LOCK})
+            holder.commit()
+        assert (code, err) == (143, "")
+        assert _no_lock_left(empty_dsn)
+        with engine.connect() as conn:
+            assert conn.execute(text("SELECT to_regclass('alembic_version')")).scalar() is None
+    finally:
+        engine.dispose()
+
+
+@pytest.mark.db
+def test_sigterm_in_the_middle_of_an_upgrade_rolls_it_back(empty_dsn: str) -> None:
+    """A database at `0003_hash_version_2`, and the test holding table
+    `event` locked: the upgrade to `0004_event_blob` creates `event_blob`
+    with a foreign key to `event` and waits for that lock, inside the one
+    transaction the upgrade runs in. `SIGTERM` there ends the command with
+    143, and the transaction rolls back — the database stays at the revision
+    it was at, without `event_blob` — so that the next `migrate` runs from
+    there as if nothing had happened.
+
+    The rollback is PostgreSQL's as much as the handler's: the server rolls
+    back the transaction of any client that goes away, so this test holds
+    the outcome and not how the process got there. Measured on 2026-10-05,
+    it stayed green with a handler that ended the process with `os._exit`;
+    the test above is the one that tells the two apart."""
+    engine = create_engine(empty_dsn)
+    try:
+        config = Config()
+        config.set_main_option("script_location", "previously:migrations")
+        with engine.begin() as conn:
+            config.attributes["connection"] = conn
+            command.upgrade(config, "0003_hash_version_2")
+        with engine.connect() as holder:
+            holder.execute(text("LOCK TABLE event IN ACCESS EXCLUSIVE MODE"))
+            code, err = _terminated(_start(empty_dsn), engine, "relation")
+            holder.rollback()
+        assert (code, err) == (143, "")
+        assert _no_lock_left(empty_dsn)
+        with engine.connect() as conn:
+            revision = conn.execute(text("SELECT version_num FROM alembic_version")).scalar_one()
+            table = conn.execute(text("SELECT to_regclass('event_blob')")).scalar()
+        assert (revision, table) == ("0003_hash_version_2", None)
+    finally:
+        engine.dispose()
+    assert migrate(empty_dsn) == Migrated(before="0003_hash_version_2", head=HEAD)

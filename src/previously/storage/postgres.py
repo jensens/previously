@@ -32,6 +32,7 @@ from previously.contract.rows import UnitRow
 from previously.storage.errors import ChainPositionTaken
 from previously.storage.errors import InvalidDsn
 from previously.storage.errors import MigrationPending
+from previously.storage.errors import OperationFailed
 from previously.storage.errors import ServerUnreachable
 from previously.storage.errors import SourceKeyTaken
 from previously.storage.errors import TransactionAborted
@@ -52,14 +53,19 @@ from sqlalchemy import null
 from sqlalchemy import Row
 from sqlalchemy import select
 from sqlalchemy import update
+from sqlalchemy import URL
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import ArgumentError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.exc import OperationalError
 from sqlalchemy.exc import ProgrammingError
 from typing import Any
 from typing import ClassVar
 from typing import TYPE_CHECKING
+from urllib.parse import unquote
+
+import re
+import unicodedata
 
 
 if TYPE_CHECKING:
@@ -90,20 +96,52 @@ _CHAIN_POSITION_CONSTRAINTS = frozenset({"event_prev_hash_idx", "event_pkey", "e
 _SOURCE_KEY_CONSTRAINT = "source_key_pkey"
 
 
-def _constraint_name(error: IntegrityError) -> str | None:
-    """Reads the name of the violated constraint out of the psycopg diagnosis.
+def diagnosis(error: DBAPIError, field: str) -> str | None:
+    """One field of the server's diagnosis of `error`, such as
+    `constraint_name` or `message_primary`, or `None`.
 
     `error.orig` is typed by SQLAlchemy only as `BaseException | None`; that
     type does not know `diag`. `getattr` instead of a `cast` onto the psycopg
     type, so that a driver without a `diag` attribute does not break off here
     with an `AttributeError` but yields `None`, and the original error passes
-    through untranslated. Deliberately via `diag.constraint_name`, not by a
-    substring search in the error text — the text depends on language and
-    version, the constraint name does not.
+    through untranslated.
+
+    Public because `storage.migrate` names the server's reason with it.
     """
     diag = getattr(error.orig, "diag", None)
-    name = getattr(diag, "constraint_name", None)
-    return name if isinstance(name, str) else None
+    value = getattr(diag, field, None)
+    return value if isinstance(value, str) else None
+
+
+def _where(url: URL) -> str:
+    """The database, host and port of `url`, for a message, and nothing else
+    of it.
+
+    Never the user part and never the query: a password stands in either.
+    `render_as_string(hide_password=True)` stood here until 2026-10-05 and
+    hid only the one in `user:password@`; a password given as
+    `?password=…`, which libpq takes as well, was printed in clear.
+    """
+    database = url.database or "(default)"
+    host = url.host or "(default host)"
+    port = "" if url.port is None else f":{url.port}"
+    return f"database {database} at {host}{port}"
+
+
+def _first_line(error: DBAPIError) -> str:
+    """The first line of the driver's message for a failure to connect,
+    without the `connection failed: ` psycopg puts in front of its own."""
+    return str(error.orig).partition("\n")[0].removeprefix("connection failed: ")
+
+
+def _constraint_name(error: IntegrityError) -> str | None:
+    """Reads the name of the violated constraint out of the psycopg diagnosis.
+
+    Deliberately via `diag.constraint_name`, not by a substring search in the
+    error text — the text depends on language and version, the constraint
+    name does not.
+    """
+    return diagnosis(error, "constraint_name")
 
 
 class PostgresStorage:
@@ -119,6 +157,8 @@ class PostgresStorage:
         self._snapshot_engine = engine.execution_options(
             isolation_level="REPEATABLE READ", postgresql_readonly=True
         )
+        # `migrate` holds its lock here, see `autocommit`.
+        self._autocommit_engine = engine.execution_options(isolation_level="AUTOCOMMIT")
 
     def close(self) -> None:
         """Closes every connection the engine's pool holds.
@@ -160,6 +200,19 @@ class PostgresStorage:
         """
         return self._transaction(self._snapshot_engine)
 
+    def autocommit(self) -> AbstractContextManager[Connection]:
+        """A connection on which every statement commits by itself, with no
+        transaction around them, for `storage.migrate`.
+
+        A session-level advisory lock belongs to the session and needs no
+        transaction, and a transaction around it would do harm: an error on
+        the connection aborts it, so the statement that releases the lock
+        fails in turn and hides the first error, and the open transaction
+        keeps its locks on whatever it read for as long as the migration
+        runs. The errors are translated as for `begin`.
+        """
+        return self._transaction(self._autocommit_engine)
+
     @contextmanager
     def _transaction(self, engine: Engine) -> Generator[Connection]:
         """A connection with a transaction on `engine` — and the place where
@@ -175,10 +228,9 @@ class PostgresStorage:
         caller's body (out of `tip` or `read`, say) reaches this place
         nonetheless: a `@contextmanager` generator gets an exception thrown
         inside the `with` block re-raised at its `yield` (via
-        `generator.throw`) before it travels on. The third case,
-        `ArgumentError` on an unparsable DSN, does **not** belong here,
-        because it arises in `create_engine` already, before this method
-        exists at all — see `from_dsn`.
+        `generator.throw`) before it travels on. The third case, an
+        unparsable DSN, does **not** belong here, because `from_dsn` refuses
+        it before there is an engine at all.
 
         A fourth, unnamed sqlalchemy exception (`IntegrityError`, say, which
         `insert_event` translates itself) this `try` deliberately does not
@@ -194,8 +246,10 @@ class PostgresStorage:
         gives, and that case becomes `TransactionAborted`: the server
         answered, and the advice is to run again, not to look at the network.
         """
+        connected = False
         try:
             with engine.begin() as conn:
+                connected = True
                 yield conn
         except OperationalError as error:
             state = getattr(error.orig, "sqlstate", None)
@@ -204,14 +258,47 @@ class PostgresStorage:
                     "the database aborted the operation in a conflict with a concurrent one; "
                     "run the command again"
                 ) from error
-            address = engine.url.render_as_string(hide_password=True)
-            raise ServerUnreachable(
-                f"database server at {address} does not answer — is PostgreSQL "
-                "running there, and is it reachable from here?"
-            ) from error
+            where = _where(engine.url)
+            if isinstance(state, str):
+                # The server answered after the connection stood, and said
+                # why with a SQLSTATE: a statement timeout, a shutdown, a disk
+                # that is full. Not a failure to connect, so not that sentence.
+                reason = diagnosis(error, "message_primary") or state
+                raise OperationFailed(f"the operation on {where} failed: {reason}") from error
+            # No SQLSTATE: psycopg gives none to a failure to connect, measured
+            # with psycopg 3.3.6, because it builds that error out of the
+            # client library's text alone. The reason is quoted and never
+            # matched, since parts of it are in the server's language: a
+            # refused password, a database that does not exist, nothing
+            # listening. Before, one guess stood here for all three, "does not
+            # answer — is PostgreSQL running there", which sent whoever had a
+            # wrong password to look at the network. The first line only: the
+            # lines below list every address that was tried; see
+            # `_first_line`.
+            reason = _first_line(error)
+            raise ServerUnreachable(f"connecting to {where} failed: {reason}") from error
         except ProgrammingError as error:
+            if not connected:
+                # Raised while connecting, before the server was asked
+                # anything: the client library refused a query parameter of
+                # the connection string, such as `?connect_timeout=abc`.
+                # Measured on 2026-10-05: psycopg raises `ProgrammingError`
+                # there, and the line below advised `migrate` to run itself.
+                # The reason is fixed and quotes nothing of the library's
+                # text, which names the key or the value it refused: with an
+                # unencoded `&` inside a password, measured the same day, that
+                # key was a piece of the password. `from_dsn` refuses such a
+                # string now, and this sentence does not lean on it.
+                where = _where(engine.url)
+                raise ServerUnreachable(
+                    f"connecting to {where} failed: "
+                    "the client library refused a query parameter of PREVIOUSLY_DSN"
+                ) from error
+            # `previously migrate` and not `alembic upgrade head`: an installed
+            # previously has no `alembic.ini` and no checkout to run Alembic
+            # from, and the command is what an operator has.
             raise MigrationPending(
-                "database schema incomplete — `uv run alembic upgrade head` has not run yet"
+                "database schema incomplete — `previously migrate` has not run yet"
             ) from error
 
     def tip(self, conn: Connection) -> Tip | None:
@@ -811,6 +898,178 @@ def _event_row(row: Row[Any]) -> EventRow:
     )
 
 
+def _unreadable() -> InvalidDsn:
+    """The one error for a DSN outside the grammar below.
+
+    Its sentence names no part of the DSN: whatever part was refused may be
+    a piece of the password. A function and not a constant, so that the call
+    carries the text where `tests/test_docs_references.py` reads it. The
+    query parameters it lists are `DSN_QUERY_KEYS`, and a test holds the two
+    together.
+
+    The rule it gives is the one that always works, not the whole grammar:
+    every part but the scheme, the host and the port takes the escape of any
+    character but a control or a line separator, while raw it takes only
+    some, the user part `!$&'()*+,;=` and `/` in a value among them. A
+    special character in a query value has to be percent-encoded too, or the
+    value is refused.
+    """
+    return InvalidDsn(
+        "PREVIOUSLY_DSN is refused — write it as "
+        "postgresql://user:password@host:5432/database?key=value with the password "
+        "there and nowhere else, percent-encode every character of the user name, the "
+        "password, the database name and a value that is not a letter, a digit or one "
+        "of -._~ (such as `%40` for `@`), and use no key but application_name, "
+        "channel_binding, connect_timeout, require_auth, sslcert, sslkey, sslmode or "
+        "sslrootcert"
+    )
+
+
+# The query parameters a DSN may carry, each at most once; every other key is
+# refused before anything connects. Each one is here for a reason an operator
+# has: TLS to the server and a client certificate (`sslmode`, `sslrootcert`,
+# `sslcert`, `sslkey`), keeping the password from a server that should not
+# get it (`channel_binding`, `require_auth`), how long to wait for a server
+# that is starting (`connect_timeout`), and a name in `pg_stat_activity`
+# (`application_name`). Left out on purpose: `password`, because the password
+# stands in the user part and nowhere else; `sslpassword` and `passfile`, a
+# secret and a second place for one; `host`, `hostaddr`, `port`, `dbname` and
+# `user`, which would overrule the parts in front of the query; `options` and
+# `service`, which hand the server settings or read them from a file; and
+# SQLAlchemy's own `plugin`, which loads code.
+DSN_QUERY_KEYS = frozenset(
+    {
+        "application_name",
+        "channel_binding",
+        "connect_timeout",
+        "require_auth",
+        "sslcert",
+        "sslkey",
+        "sslmode",
+        "sslrootcert",
+    }
+)
+
+# A percent-escape of any byte. What the escapes decode to is checked in
+# `_decoded`, since a control character can take more than one byte.
+_ESCAPE = r"%[0-9A-Fa-f]{2}"
+# One character of a user name or a password, after RFC 3986: an unreserved
+# character, a sub-delimiter, or an escape. `&` is a sub-delimiter like the
+# others here: it separates the pairs of the query, which begins at a `?` that
+# the user part cannot hold, and Go's `url.UserPassword`, which writes the
+# `uri` of CloudNativePG, leaves it raw. None of `@ : / ? # [ ] %` stands raw,
+# so no part can hold the character that ends it.
+_USERINFO = rf"(?:[A-Za-z0-9\-._~!$&'()*+,;=]|{_ESCAPE})"
+# One character of a database name: the same, but `&`.
+_PART = rf"(?:[A-Za-z0-9\-._~!$'()*+,;=]|{_ESCAPE})"
+# One character of a query value: an unreserved character, `/` for the path
+# of a certificate, or an escape. No `&` or `=`, which cut the query into its
+# pairs, and no `+`, which a query reader takes for a space.
+_VALUE = rf"(?:[A-Za-z0-9\-._~/]|{_ESCAPE})"
+# A host name of labels of 1 to 63 characters, an optional final dot. An
+# empty label or a longer one, `a..b` or `.`, made psycopg's name lookup raise
+# `UnicodeEncodeError` out of the `idna` codec, a traceback, measured on
+# 2026-10-05 by the review of fix round 4.
+_LABEL = r"[A-Za-z0-9_\-]{1,63}"
+_DSN = re.compile(
+    r"(?P<scheme>postgresql|postgresql\+psycopg)://"
+    rf"(?:(?P<user>{_USERINFO}+)(?::(?P<password>{_USERINFO}*))?@)?"
+    rf"(?:(?P<host>{_LABEL}(?:\.{_LABEL})*\.?)|\[(?P<ipv6>[0-9A-Fa-f:.]+)\])"
+    r"(?::(?P<port>[0-9]{1,5}))?"
+    rf"(?:/(?P<database>{_PART}*))?"
+    rf"(?:\?(?P<query>[a-z_]+={_VALUE}+(?:&[a-z_]+={_VALUE}+)*))?"
+)
+# What no decoded part may hold: a control character (category `Cc`, which
+# takes in U+0085 and the C1 range U+0080-U+009F) or a line or paragraph
+# separator (`Zl`, `Zp`). Measured on 2026-10-05 with psycopg 3.3.6: a NUL in
+# the user name, the password or the database name cut the connection
+# parameters short, so the port given with them was lost and the client went
+# to 5432. A newline, U+0085, U+2028 or U+2029 in the database name, which a
+# message prints, splits its one sentence into lines for `str.splitlines()`
+# and for a log shipper, measured the same day by the reviews of fix rounds 3
+# and 4.
+_REFUSED_CATEGORIES = frozenset({"Cc", "Zl", "Zp"})
+
+
+def _decoded(text: str) -> str:
+    """`text` with its escapes decoded as UTF-8, or `ValueError`: an escape
+    that is no UTF-8 would reach the server as a replacement character, which
+    is not what was written, and a character of `_REFUSED_CATEGORIES` is
+    refused. `UnicodeDecodeError` is a `ValueError`."""
+    decoded = unquote(text, errors="strict")
+    if any(unicodedata.category(character) in _REFUSED_CATEGORIES for character in decoded):
+        raise ValueError("a control character or a line separator")
+    return decoded
+
+
+def _url_of(dsn: str) -> URL | None:
+    """The parts of `dsn` by the grammar above, or `None` where it does not
+    match the whole string.
+
+    The grammar is the only parser `dsn` meets: the URL is built from the
+    parts it names, so SQLAlchemy never cuts the string itself, and no check
+    afterwards has to guess where it would have. Every part ends at a
+    character that no part may hold raw, so the string has one reading.
+
+    What a grammar cannot tell is what the writer meant. A mistyped string
+    that matches it is read as written, and a piece of a password can then
+    stand where a message prints it, measured on 2026-10-05 by the reviews
+    of fix rounds 3 and 4:
+
+    - the `@host` forgotten after a password of up to five digits,
+      `user:12345/database`: the user name is printed as the host and the
+      password as the port (ruling T2-j of the 2026-10-05 delivery plan);
+    - the `@host` and the database forgotten, `user:12345/rest`: the rest of
+      the password is printed as the database;
+    - a raw `@` in the password and the `@host` forgotten, `user:pw@rest`,
+      or `user:pw@[rest]` with a rest of hexadecimal digits: the rest is
+      printed as the host;
+    - a password written as the value of `sslmode`, `require_auth` or
+      `channel_binding`: the client library quotes the value, decoded; so
+      it does, against a server that offers TLS, for `sslrootcert` with
+      `sslmode` `verify-ca` or `verify-full`, and for `sslkey` beside an
+      `sslcert` that names a certificate (measured on 2026-10-05; a file
+      that is missing is otherwise passed over in silence);
+    - a password written as the user name: the client library names it when
+      the server refuses the login;
+    - a password written as the database name: the message prints it.
+
+    `alembic`, run in a checkout, parses `PREVIOUSLY_DSN` with SQLAlchemy and
+    not with this grammar.
+
+    A port is 1 to 65535. A database written as nothing, `host/`, is none.
+    """
+    match = _DSN.fullmatch(dsn)
+    if match is None:
+        return None
+    port = None if match["port"] is None else int(match["port"])
+    if port is not None and not 1 <= port <= 65535:
+        return None
+    pairs = match["query"].split("&") if match["query"] else []
+    query: dict[str, str] = {}
+    try:
+        for pair in pairs:
+            key, _, value = pair.partition("=")
+            if key not in DSN_QUERY_KEYS or key in query:
+                return None
+            query[key] = _decoded(value)
+        user, password, database = (
+            None if match[name] is None else _decoded(match[name])
+            for name in ("user", "password", "database")
+        )
+    except ValueError:
+        return None
+    return URL.create(
+        match["scheme"],
+        username=user,
+        password=password,
+        host=match["host"] or match["ipv6"],
+        port=port,
+        database=database or None,
+        query=query,
+    )
+
+
 def from_dsn(dsn: str) -> PostgresStorage:
     """Storage out of a connection string.
 
@@ -820,11 +1079,18 @@ def from_dsn(dsn: str) -> PostgresStorage:
     stage 1a plan, whose execution ledger was never shipped and is lost, so
     the label is provenance and nothing more; the reason is this sentence.
 
-    `create_engine` parses the DSN immediately, not only at the first
-    connection attempt — an unparsable DSN raises `ArgumentError` here already
-    (review finding W2, case 1). The raw `dsn` deliberately does **not** go
-    into the message: it could carry a password that failed to parse only
+    A string outside the grammar of `_url_of` is refused with one fixed
+    sentence, before anything connects. The raw `dsn` deliberately does
+    **not** go into it: it could carry a password that failed to parse only
     because there is an error somewhere else in the string.
+
+    Three rounds of checks stood here before, each after SQLAlchemy had
+    parsed the string: a count of `@`, then a comparison with SQLAlchemy's
+    rendering of what it read, a host without `@` and a port up to 65535.
+    Each was measured on 2026-10-05 to let a form through that printed a
+    piece of the password as the host, the database or the port; a check
+    afterwards can only guess how the parser cut. The grammar decides the
+    cut itself.
 
     The engine pools its connections, so the storage keeps one open between
     two transactions; the caller releases them with `PostgresStorage.close`.
@@ -832,11 +1098,7 @@ def from_dsn(dsn: str) -> PostgresStorage:
     2026-10-05 to make `previously project` over 3,000 events take about
     0.75 s instead of 0.55 s, a connection per transaction.
     """
-    try:
-        engine = create_engine(dsn)
-    except ArgumentError as error:
-        raise InvalidDsn(
-            "PREVIOUSLY_DSN is not a valid connection string — something like "
-            "postgresql+psycopg://user:pass@host:5432/database is expected"
-        ) from error
-    return PostgresStorage(engine)
+    url = _url_of(dsn)
+    if url is None:
+        raise _unreadable()
+    return PostgresStorage(create_engine(url))
