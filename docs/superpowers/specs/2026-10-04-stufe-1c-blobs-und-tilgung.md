@@ -467,7 +467,11 @@ keine Einheiten mehr; es gibt nichts, wogegen. Das ist der Übersprung, den der
 - **Die Sicherungen.** Was getilgt ist, steht in jeder Sicherung der
   Datenbank und im WAL-Archiv, bis deren Aufbewahrungsfrist abläuft. Die
   Zusage einer Tilgung ist darum so lang wie diese Frist; §7 und die
-  Anleitung sagen das.
+  Anleitung sagen das. Für einen Blob gilt dasselbe mit einer zweiten Frist:
+  das gelöschte Objekt steht in jeder Sicherung oder Kopie des Buckets,
+  solange die aufbewahrt wird, und die Identität öffnet es dort. (Nachgetragen
+  am 2026-10-05: die Prüfung der Aufgabe 7 fand, dass dieser Absatz und die
+  Seite, die ihm folgte, nur die Datenbank nannten.)
 - **Eine Wiederherstellung bringt Getilgtes zurück.** Wer auf einen Stand
   vor einer Tilgung zurückgeht, hat den Inhalt wieder und das Tilgungs-Event
   nicht mehr. Für Blobs fällt es auf: der Speicher geht nicht mit zurück, und
@@ -601,7 +605,8 @@ jeden Lauf der Anker-Routine.
   der gesicherten Identität öffnen.
 - **Die Aufbewahrungsfrist der Sicherungen ist Teil der Tilgungszusage**
   (§4.5). Wer Tilgung binnen einer Frist zusagt, wählt die Aufbewahrung
-  danach.
+  danach — die der Datenbank und, wenn der Bucket gesichert oder gespiegelt
+  wird, auch dessen.
 - **Nach einer Wiederherstellung** gehört `verify --blobs` zur Routine, und
   die Frage, welche Tilgungen zu wiederholen sind (§4.5).
 
