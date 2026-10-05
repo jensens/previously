@@ -34,7 +34,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
-SOURCE_DIRS = ["src", "tests", "migrations"]
+SOURCE_DIRS = ["src", "tests"]
 
 # Two root configuration files carry a documentation label of their own, and
 # until 2026-10-04 they lay outside every check: `.importlinter` points at
@@ -48,21 +48,21 @@ SOURCE_DIRS = ["src", "tests", "migrations"]
 # message, and neither file holds a Python literal.
 CONFIG_FILES = ["pyproject.toml", ".importlinter"]
 
-# Where a message a user reads can come from: the command line under `src/`
-# and the migration runner under `migrations/`, whose refusal
-# {ref}`configuration-reference` documents as program output. A test prints
-# to nobody, so `tests/` stays out and the name of the check below stays
-# true.
+# Where a message a user reads can come from: the command line, and the
+# migration runner whose refusal {ref}`configuration-reference` documents as
+# program output. Both are under `src/`, the runner in
+# `src/previously/migrations/` since 2026-10-05. A test prints to nobody, so
+# `tests/` stays out and the name of the check below stays true.
 #
-# Taking all of `SOURCE_DIRS` was weighed and would be free today: counted,
-# `tests/` holds nine occurrences of the sign across three files, every one of
-# them in a docstring or a `#` comment, and none in an ordinary literal --
-# which the check would not look at anyway. It was not taken because a check
-# whose scope is wider than its name is the kind of claim this whole task
-# exists to remove, and because a marked sign in a test literal reaches no
-# user. `test_no_bare_paragraph_references_remain` reads `tests/` for the
-# bare case.
-OUTPUT_DIRS = ["src", "migrations"]
+# Taking all of `SOURCE_DIRS` was weighed and would be free today: counted on
+# 2026-10-05, `tests/` holds seven occurrences of the sign across three files,
+# every one of them in a docstring or a `#` comment, and none in an ordinary
+# literal -- which the check would not look at anyway. It was not taken
+# because a check whose scope is wider than its name is the kind of claim this
+# whole task exists to remove, and because a marked sign in a test literal
+# reaches no user. `test_no_bare_paragraph_references_remain` reads `tests/`
+# for the bare case.
+OUTPUT_DIRS = ["src"]
 
 DOCS = ROOT / "docs"
 
@@ -220,8 +220,9 @@ def test_no_program_output_cites_a_specification() -> None:
     (measured on 2026-10-04), is the only file in this tree that writes to
     the terminal. Measured in fix round 2:
     with only `src/` read, a marked citation in `migrations/dsn.py` passed as
-    well, and that module raises its refusal as an implicitly concatenated
-    f-string, which is the exact shape of the two the check was built for.
+    well -- the migrations lay outside `src/` until 2026-10-05 -- and that
+    module raises its refusal as an implicitly concatenated f-string, which
+    is the exact shape of the two the check was built for.
     """
     offenders = {
         str(path.relative_to(ROOT)): found

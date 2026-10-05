@@ -7,11 +7,11 @@ root_package = previously
 include_external_packages = True
 
 [importlinter:contract:layers]
-name = Layers: core above storage, contract below both
+name = Layers: core beside migrations, both above storage, contract below all
 type = layers
 layers =
     previously.cli
-    previously.core
+    previously.core | previously.migrations
     previously.storage
     previously.contract
 

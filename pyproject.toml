@@ -37,6 +37,8 @@ dev = [
     "pip-audit>=2.10.1",
     "pyrage-stubs>=1.4",
     "types-boto3-lite[s3]>=1.43",
+    "hatchling>=1.32",
+    "hatch-vcs>=0.5",
 ]
 docs = [
     "sphinx>=9.1",
@@ -136,11 +138,12 @@ runtime-evaluated-decorators = ["dataclasses.dataclass"]
 # not only in the ledger, so that it does not vanish along with it.
 
 [tool.pyright]
-# `migrations` is not an accessory: `migrations/versions/0001_log.py` creates
-# the schema and `migrations/dsn.py` carries the DSN resolution — both real
-# logic, which without this entry slips past the strict check unnoticed, as it
-# did until the fix round that added it.
-include = ["src", "tests", "migrations"]
+# The migrations are not an accessory: `versions/0001_log.py` creates the
+# schema and `dsn.py` carries the DSN resolution — both real logic, which
+# slipped past the strict check unnoticed while the migrations sat outside
+# `src` without an entry of their own here, until the fix round that added
+# one. They live under `src/previously/migrations/` now, so `src` covers them.
+include = ["src", "tests"]
 typeCheckingMode = "strict"
 pythonVersion = "3.14"
 
@@ -150,15 +153,14 @@ markers = [
     "db: needs PostgreSQL (testcontainer)",
     "s3: needs an S3 server (testcontainer)",
 ]
-# `migrations` is not an installed package (no entry in [project], and no
-# `__init__.py` needed thanks to implicit namespace packages), so without this
-# it is not on sys.path — `tests/test_migrations_dsn.py` could not import
-# `migrations.dsn` otherwise. Measured: without this line the import fails
-# with `ModuleNotFoundError: No module named 'migrations'`.
-pythonpath = ["."]
 
 [tool.coverage.run]
-source = ["previously"]
+# A path, not the package name. By name, coverage attributes executed code by
+# module name, and Alembic loads `migrations/env.py` and every revision with
+# `load_python_file` under module names of its own: measured on 2026-10-05,
+# `env.py` read 0% although every test session runs it, and the revisions
+# were missing from the report altogether. By path, both are measured.
+source = ["src/previously"]
 relative_files = true
 
 [tool.coverage.report]

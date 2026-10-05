@@ -10,8 +10,8 @@ Create a blank revision.
 uv run alembic revision -m "add an index on occurred_at"
 ```
 
-Alembic writes a new file into `migrations/versions/`.
-Write its `upgrade()` and `downgrade()` by hand, the way `migrations/versions/0001_log.py` does.
+Alembic writes a new file into `src/previously/migrations/versions/`.
+Write its `upgrade()` and `downgrade()` by hand, the way `src/previously/migrations/versions/0001_log.py` does.
 Make the same change to the `Table` and `Index` objects in `src/previously/storage/schema.py`; see {ref}`database-schema` for the schema as it stands before your change.
 Keep the two in agreement: the migration is what runs against the database, and the metadata is what the test suite and a future `autogenerate` compare against it.
 

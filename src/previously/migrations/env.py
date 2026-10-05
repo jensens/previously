@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from alembic import context
 from logging.config import fileConfig
-from migrations.dsn import resolve_dsn
+from previously.migrations.dsn import resolve_dsn
 from previously.storage.schema import metadata
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
