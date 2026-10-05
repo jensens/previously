@@ -112,23 +112,33 @@ def fetch_blob(store: BlobStore, keys: KeyProvider, address: str, sink: ByteSink
     another key included; `InvalidKey` when what the key source holds for
     the key is not an age identity; `AddressMismatch` when the plaintext is
     not the content the address names. A store error passes through as it
-    is, a stream that breaks off included.
+    is, a stream that breaks off included. The stream is closed on every
+    path, whatever is raised.
     """
     found = store.get(address)
     if found is None:
         return None
     stored, stream = found
-    if stored.key_id is None:
-        raise CannotOpen(f"the object {address} names no key it is sealed to")
-    identity = keys.identity(stored.key_id)
-    if identity is None:
-        raise CannotOpen(f"there is no identity for the key {stored.key_id!r}")
-    # Whether the identity belongs to the key is not checked here: `age`
-    # refuses an identity of another key with "No matching keys found", and
-    # with the check taken out the test of exactly that case stayed green,
-    # measured on 2026-10-05. A check that adds nothing is not kept.
-    hashing = HashingSink(sink)
-    unseal(stream, hashing, identity)
+    # Closed on every path. A stream left unread holds its connection for as
+    # long as anything refers to it, and an error raised here refers to it
+    # through its traceback: a caller that keeps the errors of a long run,
+    # fetching blob after blob through one store, would keep one connection
+    # per failed fetch. Measured on 2026-10-05 in
+    # `test_a_fetch_that_fails_gives_its_connection_back`.
+    try:
+        if stored.key_id is None:
+            raise CannotOpen(f"the object {address} names no key it is sealed to")
+        identity = keys.identity(stored.key_id)
+        if identity is None:
+            raise CannotOpen(f"there is no identity for the key {stored.key_id!r}")
+        # Whether the identity belongs to the key is not checked here: `age`
+        # refuses an identity of another key with "No matching keys found",
+        # and with the check taken out the test of exactly that case stayed
+        # green, measured on 2026-10-05. A check that adds nothing is not kept.
+        hashing = HashingSink(sink)
+        unseal(stream, hashing, identity)
+    finally:
+        stream.close()
     if hashing.hexdigest() != address:
         raise AddressMismatch(f"the object {address} opens to {hashing.hexdigest()}")
     return hashing.size

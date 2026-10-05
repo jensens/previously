@@ -14,14 +14,17 @@ format beyond the shape of a recipient's name, so `storage` stays free of
 """
 
 from pathlib import Path
+from previously.storage.errors import IdentityUnreadable
 
 import re
 
 
-# A recipient in its `age1…` spelling: Bech32 is written in lower case, and
-# its data part uses lower-case letters and digits only. Nothing else can be
-# the name of a file in the directory, and in particular no `/` and no `.`.
-_RECIPIENT = re.compile(r"age1[a-z0-9]+")
+# An X25519 recipient in its `age1…` spelling, and nothing else: `age1`, then
+# 58 characters of the Bech32 alphabet, which leaves out `1`, `b`, `i` and
+# `o` and is written in lower case. No `/`, no `.`, and no length a file
+# system refuses — `age1` with 300 letters behind it raised `OSError: File
+# name too long` before the length was pinned (measured on 2026-10-05).
+_RECIPIENT = re.compile(r"age1[02-9ac-hj-np-z]{58}")
 
 
 class DirectoryKeys:
@@ -46,14 +49,25 @@ class DirectoryKeys:
         write to the bucket chooses it. So it is checked before it becomes
         part of a path: a `key_id` that is not a recipient's name is `None`
         without the disk being asked, and `../x` or `/etc/passwd` never
-        reaches `open`.
+        reaches `open`. A file that is there and cannot be read raises
+        `IdentityUnreadable`; no other `OSError` leaves.
         """
         if _RECIPIENT.fullmatch(key_id) is None:
             return None
+        path = self._directory / key_id
         try:
-            text = (self._directory / key_id).read_text(encoding="utf-8")
+            text = path.read_text(encoding="utf-8")
         except FileNotFoundError:
             return None
+        except (OSError, UnicodeDecodeError) as error:
+            # The file is there and cannot be read: a permission, a directory
+            # in its place, bytes that are not text. That is an operator's
+            # problem with the key directory, not a missing key, so it is
+            # said as such — with the path and the kind of failure, never
+            # with what the file holds.
+            raise IdentityUnreadable(
+                f"the identity file {str(path)!r} cannot be read: {type(error).__name__}"
+            ) from None
         for line in text.splitlines():
             stripped = line.strip()
             if stripped and not stripped.startswith("#"):

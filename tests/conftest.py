@@ -8,6 +8,7 @@ from alembic import command
 from alembic.config import Config
 from botocore.exceptions import BotoCoreError
 from botocore.exceptions import ClientError
+from pathlib import Path
 from previously.contract.rows import EventRow
 from previously.contract.rows import UnitRow
 from previously.core.hashing import event_hash
@@ -24,8 +25,10 @@ from sqlalchemy import text
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
 from typing import TYPE_CHECKING
+from urllib.parse import urlsplit
 
 import itertools
+import os
 import pyrage
 import pytest
 import secrets
@@ -264,3 +267,39 @@ def blob_store(s3_settings: dict[str, str]) -> Iterator[S3BlobStore]:
     store.client.create_bucket(Bucket=store.bucket)
     yield store
     store.close()
+
+
+type ConnectionCount = Callable[[], int]
+
+
+@pytest.fixture
+def s3_connections(s3_settings: dict[str, str]) -> ConnectionCount:
+    """Counts the TCP connections of this process to the S3 server that are
+    established, read from `/proc`: the sockets among this process's file
+    descriptors, looked up in the kernel's tables by inode.
+
+    Linux only, like `/proc`. A test that takes it is skipped elsewhere,
+    with that reason, rather than failing for a reason that is not its own.
+    """
+    port = urlsplit(s3_settings["endpoint"]).port
+    assert port is not None
+
+    def count() -> int:
+        sockets: set[str] = set()
+        for fd in Path("/proc/self/fd").iterdir():
+            try:
+                target = os.readlink(fd)
+            except OSError:
+                continue
+            if target.startswith("socket:["):
+                sockets.add(target.removeprefix("socket:[").removesuffix("]"))
+        established = 0
+        for table in ("/proc/net/tcp", "/proc/net/tcp6"):
+            for line in Path(table).read_text(encoding="ascii").splitlines()[1:]:
+                fields = line.split()
+                remote_port = int(fields[2].rsplit(":", 1)[1], 16)
+                if remote_port == port and fields[3] == "01" and fields[9] in sockets:
+                    established += 1
+        return established
+
+    return count

@@ -63,17 +63,31 @@ class MigrationPending(StorageError):
 class BlobStoreUnreachable(StorageError):
     """The blob store does not answer, or broke off while it was sending.
 
-    Translates every `botocore.exceptions.BotoCoreError`: no connection, a
-    connection that timed out, a stream that ended before its length. The
-    message names the endpoint, never the credentials.
+    Translates the `botocore` errors about a connection: no connection, a
+    connect or read timeout, a connection that closed, a stream that broke
+    off or ended before its length. The message names the endpoint, never
+    the credentials.
     """
 
 
 class BlobStoreRefused(StorageError):
-    """The blob store answered, and refused: wrong credentials, a bucket
-    that does not exist, a request it does not allow.
+    """The blob store answered and refused — wrong credentials, a bucket
+    that does not exist, a request it does not allow — or the settings are
+    such that the client will not send the request at all.
 
     Translates every `botocore.exceptions.ClientError` that does not mean
-    "no such object". The message names the endpoint, the bucket and the
-    store's own code, never the credentials.
+    "no such object", and every other `BotoCoreError` that `botocore` does
+    not file under a connection, such as `ParamValidationError`. The message
+    names the endpoint, the bucket and the store's code or the error's
+    class, never the credentials.
+    """
+
+
+class IdentityUnreadable(StorageError):
+    """A file in the key directory is there and cannot be read — no
+    permission, a directory in its place, bytes that are not text.
+
+    Distinct from a missing identity, which is `None`: this one is a fault in
+    the key directory that an operator has to fix. The message names the
+    path and the kind of failure, never what the file holds.
     """

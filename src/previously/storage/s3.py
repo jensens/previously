@@ -14,19 +14,24 @@ written beside it as the metadata `key-id`, in the same request as the
 ciphertext, so that the two are replaced together or not at all.
 """
 
-from boto3 import client as boto3_client
+from boto3.session import Session
 from botocore.config import Config
 from botocore.exceptions import BotoCoreError
 from botocore.exceptions import ClientError
+from botocore.exceptions import ConnectionError as BotoConnectionError
+from botocore.exceptions import HTTPClientError
+from botocore.exceptions import IncompleteReadError
 from previously.contract.blobs import StoredBlob
 from previously.storage.errors import BlobStoreRefused
 from previously.storage.errors import BlobStoreUnreachable
 from typing import TYPE_CHECKING
 
+import re
+
 
 if TYPE_CHECKING:
     from botocore.response import StreamingBody
-    from previously.contract.blobs import ByteSource
+    from previously.contract.blobs import ClosableSource
     from types_boto3_s3 import S3Client
     from typing import IO
 
@@ -40,12 +45,32 @@ _KEY_ID = "key-id"
 _ABSENT = frozenset({"404", "NoSuchKey", "NotFound"})
 
 
+# An address is the SHA-256 of a plaintext in hex, and nothing else becomes an
+# object key: a key with `/` or `..` in it would depend on how the server
+# normalizes a path, and the address reaches `delete` too.
+_ADDRESS = re.compile(r"[0-9a-f]{64}")
+# The errors `botocore` raises about a connection: it groups them itself, under
+# `ConnectionError` (no connection, a connect timeout, TLS, a proxy) and
+# `HTTPClientError` (a connection that closed, a read timeout, a stream that
+# broke off). `IncompleteReadError`, a body shorter than its length, stands
+# directly under `BotoCoreError` and is named on its own.
+_CONNECTION = (BotoConnectionError, HTTPClientError, IncompleteReadError)
+
+
 def _code(error: ClientError) -> str:
     return error.response.get("Error", {}).get("Code", "")
 
 
+def _checked(address: str) -> str:
+    """`address`, if it is one. A caller error otherwise, raised before
+    anything is sent."""
+    if _ADDRESS.fullmatch(address) is None:
+        raise ValueError(f"{address} is not a blob address: 64 hexadecimal characters, lower case")
+    return address
+
+
 class _Stream:
-    """The body of a `get`, with `read` translated.
+    """The body of a `get`, with `read` translated and `close` passed on.
 
     A read can break off: measured on 2026-10-05 against RustFS 1.0.1, an
     object of 64 MiB deleted while it was being read did so in five rounds
@@ -53,6 +78,11 @@ class _Stream:
     raises `ResponseStreamingError` then, and `pyrage` lets an exception out
     of `read` pass unchanged — so without this wrapper a `botocore` type
     would arrive in `core`, which is not to know it.
+
+    `close` gives the connection back at once. A body that is not read to its
+    end holds its connection for as long as anything refers to it, and a
+    reader that stops early — no key, no identity, a file `age` refuses —
+    leaves exactly such a body behind.
     """
 
     def __init__(self, body: StreamingBody, store: S3BlobStore, address: str) -> None:
@@ -69,6 +99,9 @@ class _Stream:
                 f"{self._address} from bucket {self._store.bucket!r}: {type(error).__name__}"
             ) from error
 
+    def close(self) -> None:
+        self._body.close()
+
 
 class S3BlobStore:
     """`contract.blobs.BlobStore` on one bucket of an S3 server.
@@ -84,7 +117,7 @@ class S3BlobStore:
     @property
     def client(self) -> S3Client:
         """The `boto3` client, for setting up and inspecting a bucket —
-        what tests and operations need beyond the four methods."""
+        what tests and operations need beyond the protocol."""
         return self._client
 
     @property
@@ -105,9 +138,26 @@ class S3BlobStore:
             f"{self._bucket!r}: {_code(error) or 'no code'}"
         )
 
-    def _unreachable(self, error: BotoCoreError) -> BlobStoreUnreachable:
-        return BlobStoreUnreachable(
-            f"the blob store at {self.endpoint} is not reachable: {type(error).__name__}"
+    def _translated(self, error: BotoCoreError) -> BlobStoreUnreachable | BlobStoreRefused:
+        """A `BotoCoreError` by kind: about the connection, or about the
+        settings and the request.
+
+        What `botocore` does not file under a connection falls on the side of
+        the settings. Those errors are raised by the client's own checks,
+        before a request goes out or apart from the network —
+        `ParamValidationError` for a bucket name the client will not send
+        (measured on 2026-10-05 with an empty one), `NoCredentialsError` and
+        their like — and a message that called them "not reachable" would
+        send an operator to the network for a typo in the environment. The
+        message names the class, which carries no setting's value.
+        """
+        if isinstance(error, _CONNECTION):
+            return BlobStoreUnreachable(
+                f"the blob store at {self.endpoint} is not reachable: {type(error).__name__}"
+            )
+        return BlobStoreRefused(
+            f"the settings for the blob store at {self.endpoint}, bucket {self._bucket!r}, "
+            f"are not usable: {type(error).__name__}"
         )
 
     def stat(self, address: str) -> StoredBlob | None:
@@ -119,13 +169,13 @@ class S3BlobStore:
         2026-10-05). The missing bucket shows at the first `get` or `put`.
         """
         try:
-            head = self._client.head_object(Bucket=self._bucket, Key=address)
+            head = self._client.head_object(Bucket=self._bucket, Key=_checked(address))
         except ClientError as error:
             if _code(error) in _ABSENT:
                 return None
             raise self._refused(error) from error
         except BotoCoreError as error:
-            raise self._unreachable(error) from error
+            raise self._translated(error) from error
         return StoredBlob(key_id=head["Metadata"].get(_KEY_ID), sealed_size=head["ContentLength"])
 
     def put(self, address: str, sealed: IO[bytes], *, key_id: str) -> None:
@@ -133,29 +183,29 @@ class S3BlobStore:
         in parts when it is large, so that memory stays bounded."""
         try:
             self._client.upload_fileobj(
-                sealed, self._bucket, address, ExtraArgs={"Metadata": {_KEY_ID: key_id}}
+                sealed, self._bucket, _checked(address), ExtraArgs={"Metadata": {_KEY_ID: key_id}}
             )
         except ClientError as error:
             raise self._refused(error) from error
         except BotoCoreError as error:
-            raise self._unreachable(error) from error
+            raise self._translated(error) from error
 
-    def get(self, address: str) -> tuple[StoredBlob, ByteSource] | None:
+    def get(self, address: str) -> tuple[StoredBlob, ClosableSource] | None:
         """The metadata and the stream of the object, out of one answer, or
-        `None` when there is none.
+        `None` when there is none. Whoever takes the stream closes it.
 
         One request and not a `stat` beside it: two requests could see,
         while the object is being replaced, the key of one upload and the
         body of the other.
         """
         try:
-            response = self._client.get_object(Bucket=self._bucket, Key=address)
+            response = self._client.get_object(Bucket=self._bucket, Key=_checked(address))
         except ClientError as error:
             if _code(error) in _ABSENT:
                 return None
             raise self._refused(error) from error
         except BotoCoreError as error:
-            raise self._unreachable(error) from error
+            raise self._translated(error) from error
         stored = StoredBlob(
             key_id=response["Metadata"].get(_KEY_ID), sealed_size=response["ContentLength"]
         )
@@ -165,11 +215,11 @@ class S3BlobStore:
         """Deletes the object. An object that is not there is no error: S3
         answers a delete of a missing key with success."""
         try:
-            self._client.delete_object(Bucket=self._bucket, Key=address)
+            self._client.delete_object(Bucket=self._bucket, Key=_checked(address))
         except ClientError as error:
             raise self._refused(error) from error
         except BotoCoreError as error:
-            raise self._unreachable(error) from error
+            raise self._translated(error) from error
 
     def close(self) -> None:
         """Closes every connection the client's pool holds, a stream that was
@@ -186,17 +236,29 @@ class S3BlobStore:
         self._client.close()
 
 
-# How long a call against a store that does not answer takes to fail. With
-# boto3's defaults — a connect timeout of 60 s and the legacy retry mode with
-# five attempts — one call against `http://127.0.0.1:1`, where nothing
-# listens, took between 1.95 and 11.95 s over ten calls on 2026-10-05, and
-# one against an address that drops the packets (`10.255.255.1`) had not
-# failed after 200 s. With the two values below, the calls against
-# `127.0.0.1:1` failed in at most 0.89 s over twenty (the backoff before the
-# second attempt is random, up to a second), and the two against the address
-# that drops the packets in 10.0 and 10.5 s: two attempts of five seconds
-# each.
+# How long a call against a store that does not answer takes to fail, in
+# both ways a store can fail to answer. Measured on 2026-10-05.
+#
+# Nobody there, or packets dropped: the connect timeout. With boto3's
+# defaults — 60 s and the legacy retry mode with five attempts — one call
+# against `http://127.0.0.1:1`, where nothing listens, took between 1.95 and
+# 11.95 s over ten calls, and one against an address that drops the packets
+# (`10.255.255.1`) had not failed after 200 s. With the values below, the
+# calls against `127.0.0.1:1` failed in at most 0.89 s over twenty (the
+# backoff before the second attempt is random, up to a second), and the two
+# against the address that drops the packets in 10.0 and 10.5 s: two
+# attempts of five seconds each.
+#
+# A server that accepts the connection and then never answers: the read
+# timeout, which bounds each wait for the next bytes of an answer, not the
+# whole transfer, so a large object that keeps flowing is not cut off.
+# boto3's default is 60 s per attempt, which over the two attempts below would
+# come to two minutes; this was not run. With the value below,
+# a `stat` and a `get` against a socket that accepted and stayed silent
+# failed after 40.26 and 40.43 s: two attempts of twenty seconds each, with
+# `ReadTimeoutError`, which counts as unreachable.
 _CONNECT_TIMEOUT = 5
+_READ_TIMEOUT = 20
 _ATTEMPTS = 2
 
 
@@ -208,8 +270,12 @@ def from_settings(
 
     Path-style addressing (`<endpoint>/<bucket>/<key>`), because a server
     that is not AWS rarely has a name for every bucket.
+
+    A session of its own per store: `boto3`'s default session is shared by
+    the whole process, and `boto3` documents sessions as not safe to share
+    between threads.
     """
-    client: S3Client = boto3_client(
+    client: S3Client = Session().client(
         "s3",
         endpoint_url=endpoint,
         region_name=region,
@@ -219,6 +285,7 @@ def from_settings(
             signature_version="s3v4",
             s3={"addressing_style": "path"},
             connect_timeout=_CONNECT_TIMEOUT,
+            read_timeout=_READ_TIMEOUT,
             retries={"mode": "standard", "total_max_attempts": _ATTEMPTS},
         ),
     )

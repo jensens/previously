@@ -25,10 +25,12 @@ import io
 import os
 import pytest
 import resource
+import sys
 import threading
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from pathlib import Path
     from previously.core.blob import Stored
     from previously.storage.s3 import S3BlobStore
@@ -36,12 +38,19 @@ if TYPE_CHECKING:
 
 pytestmark = pytest.mark.s3
 
-# Rounds of the two-writer test. Which writer wins is a matter of timing:
-# measured on 2026-10-05 over 98 rounds, writer 0 won 53 and writer 1 won 45,
-# and both writers uploaded in every one of the 48 rounds that counted it.
-# At that split, sixteen rounds all going one way is a chance of about one in
-# ten thousand.
-ROUNDS = 16
+# What the `s3_connections` fixture is, spelled here as `conftest.py` asks of
+# a test that takes one of its callables.
+type ConnectionCount = Callable[[], int]
+
+# Rounds of the two-writer test. Both writers fetch in every round, so every
+# round has a writer whose own recipient is not the key of the object that
+# stayed, whichever of the two won — one round is enough to catch a reader
+# that takes the key from the caller, and measured on 2026-10-05 that
+# mutation went red in the first round. Which writer wins is timing (53
+# against 45 over 98 rounds that day), so the test asserts nothing about it.
+# Four rounds repeat the interleaving of the two uploads, which varies from
+# round to round, for about half a second.
+ROUNDS = 4
 # The bound on the growth of the peak in `test_memory_stays_bounded`: the size
 # of the blob, which is what the assurance says the path must not cost.
 BOUND_MIB = 256
@@ -143,6 +152,7 @@ def test_an_object_under_a_foreign_address_is_not_delivered(
         fetch_blob(blob_store, _keys(tmp_path, age_identity), foreign, io.BytesIO())
 
 
+@pytest.mark.skipif(sys.platform != "linux", reason="ru_maxrss is in KiB on Linux only")
 def test_memory_stays_bounded(blob_store: S3BlobStore, age_identity: str, tmp_path: Path) -> None:
     """A blob of 256 MiB stored and fetched does not raise the memory of the
     process by its size.
@@ -193,14 +203,13 @@ def test_two_writers_at_once_leave_one_whole_object_that_opens(
     the key is taken from the object, since the writer that lost wrote to a
     key the object is not sealed to.
 
-    Both writers fetch in every round, so every round has a loser that
-    fetches; the test still runs `ROUNDS` rounds, each with a content of its
-    own, and requires that each writer won at least once, so that the
-    fetch of either one is known to work after it lost.
+    Both writers fetch in every round, so every round has a losing writer
+    that fetches, whichever of the two won; which one won is not asserted,
+    since that is timing and not the assurance. `ROUNDS` says why there are
+    several rounds, each with a content of its own.
     """
     keys = _keys(tmp_path, age_identity, other_age_identity)
     recipients = [recipient_of(age_identity), recipient_of(other_age_identity)]
-    winners: list[str] = []
     for _ in range(ROUNDS):
         content = os.urandom(1024 * 1024)
         results = _race(s3_settings, blob_store.bucket, keys, recipients, content)
@@ -214,9 +223,7 @@ def test_two_writers_at_once_leave_one_whole_object_that_opens(
         found = blob_store.stat(address)
         assert found is not None
         assert found.key_id in recipients
-        winners.append(str(recipients.index(found.key_id)))
     assert len(_objects(blob_store)) == ROUNDS
-    assert set(winners) == {"0", "1"}, f"one writer won every round: {winners}"
 
 
 def test_after_a_key_change_the_stored_object_keeps_its_key(
@@ -320,3 +327,74 @@ def test_a_recipient_in_upper_case_is_written_beside_the_object_in_lower_case(
     fetched = io.BytesIO()
     fetch_blob(blob_store, _keys(tmp_path, age_identity), stored.address, fetched)
     assert fetched.getvalue() == CONSPICUOUS
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="counts connections in /proc")
+def test_a_fetch_that_fails_gives_its_connection_back(
+    blob_store: S3BlobStore,
+    age_identity: str,
+    other_age_identity: str,
+    tmp_path: Path,
+    s3_connections: ConnectionCount,
+) -> None:
+    """Every way a fetch can fail after the object was found — it names no
+    key, there is no identity for its key, `age` refuses it, it opens to
+    another content — closes the stream, so a store that lives long and
+    fetches blob after blob does not gather a connection per failure.
+
+    A stream that nobody refers to any more is freed and lets its connection
+    go even unclosed, so the test does what a caller that reports failures
+    does: it keeps each error, and with the error its traceback, which holds
+    the frame of `fetch_blob` and the stream in it. The objects are 4 MiB,
+    so that a stream left unread still holds its connection; the garbage
+    collector is off, because a collection could free what the errors keep.
+    Three fetches per way of failing, and the count after them may not
+    exceed the count before. Measured on 2026-10-05: 1 before and 1 after;
+    with the stream closed on success only, 10 after: one for each of the
+    nine streams left unread, and the one the pool keeps.
+    Without the kept errors that mutation stayed green, 1 and 1.
+    """
+    import gc
+
+    recipient = recipient_of(age_identity)
+    content = os.urandom(4 * 1024 * 1024)
+    sealed = io.BytesIO()
+    seal(io.BytesIO(content), sealed, recipient)
+    ciphertext = sealed.getvalue()
+    address = hashlib.sha256(content).hexdigest()
+    no_key = hashlib.sha256(content + b"no key").hexdigest()
+    foreign = hashlib.sha256(content + b"foreign").hexdigest()
+    garbage = hashlib.sha256(content + b"garbage").hexdigest()
+    blob_store.put(address, io.BytesIO(ciphertext), key_id=recipient)
+    blob_store.put(foreign, io.BytesIO(ciphertext), key_id=recipient)
+    blob_store.put(garbage, io.BytesIO(os.urandom(4 * 1024 * 1024)), key_id=recipient)
+    blob_store.client.put_object(Bucket=blob_store.bucket, Key=no_key, Body=ciphertext)
+    keys = _keys(tmp_path, age_identity)
+    other_directory = tmp_path / "other"
+    other_directory.mkdir()
+    (other_directory / recipient_of(other_age_identity)).write_text(
+        other_age_identity + "\n", encoding="utf-8"
+    )
+    other_keys = DirectoryKeys(str(other_directory))
+    failures = (
+        (no_key, keys, CannotOpen),
+        (address, other_keys, CannotOpen),
+        (garbage, keys, CannotOpen),
+        (foreign, keys, AddressMismatch),
+    )
+
+    gc.collect()
+    before = s3_connections()
+    kept: list[pytest.ExceptionInfo[Exception]] = []
+    gc.disable()
+    try:
+        for failing, provider, error in failures:
+            for _ in range(3):
+                with pytest.raises(error) as caught:
+                    fetch_blob(blob_store, provider, failing, io.BytesIO())
+                kept.append(caught)
+        after = s3_connections()
+    finally:
+        gc.enable()
+    assert len(kept) == 12
+    assert after <= before, f"{after} connections after the failed fetches, {before} before"

@@ -4,6 +4,7 @@
 """Identities out of a directory, one file per recipient ({ref}`blobs`)."""
 
 from previously.core.sealing import recipient_of
+from previously.storage.errors import IdentityUnreadable
 from previously.storage.keys import DirectoryKeys
 from typing import TYPE_CHECKING
 
@@ -49,19 +50,48 @@ def test_a_missing_file_is_none(tmp_path: Path, age_identity: str) -> None:
     assert DirectoryKeys(str(keys)).identity(recipient_of(age_identity)) is None
 
 
-@pytest.mark.parametrize("key_id", ["../x", "/etc/passwd", "age1../x", "", "AGE1ABC"])
+SHORT = "age1" + "q" * 57
+OVERLONG = "age1" + "q" * 300
+
+
+@pytest.mark.parametrize(
+    "key_id",
+    ["../x", "/etc/passwd", "age1../x", "", "AGE1ABC", SHORT, OVERLONG],
+    ids=["parent", "absolute", "age1-parent", "empty", "upper-case", "short", "overlong"],
+)
 def test_a_key_id_that_is_not_a_recipient_never_reaches_the_disk(
     tmp_path: Path, key_id: str
 ) -> None:
     """`key_id` comes from the metadata of an object, so whoever can write to
-    the bucket chooses it. The control beside the directory is a file that
-    `../x` would hit, holding a line that would be returned if it were read;
-    `AGE1ABC` stands in the directory itself, so that only the check — not a
-    missing file — can be what makes it `None`."""
+    the bucket chooses it. Every case has a file it would hit if it were
+    used as a path, holding a line that would be returned — so only the
+    check, not a missing file, can be what makes it `None`: `../x` and
+    `age1../x` would each reach a file `x`, `AGE1ABC` and a recipient one
+    character short stand in the directory itself. `OVERLONG` is a name no
+    file system takes, and without the check it raised `OSError: File name
+    too long` instead of being `None`."""
     keys = _directory(tmp_path)
     (tmp_path / "x").write_text("AGE-SECRET-KEY-OUTSIDE\n", encoding="utf-8")
+    (keys / "age1..").mkdir()
+    (keys / "age1.." / "x").write_text("AGE-SECRET-KEY-INSIDE\n", encoding="utf-8")
     (keys / "AGE1ABC").write_text("AGE-SECRET-KEY-UPPER\n", encoding="utf-8")
+    (keys / SHORT).write_text("AGE-SECRET-KEY-SHORT\n", encoding="utf-8")
     assert DirectoryKeys(str(keys)).identity(key_id) is None
+
+
+def test_a_file_that_cannot_be_read_is_a_storage_error_that_shows_no_content(
+    tmp_path: Path, age_identity: str
+) -> None:
+    """A directory where the identity file should be: the file is there and
+    cannot be read, which is a fault in the key directory and not a missing
+    key, so it is not `None` — and not a bare `OSError` either."""
+    keys = _directory(tmp_path)
+    recipient = recipient_of(age_identity)
+    (keys / recipient).mkdir()
+    with pytest.raises(IdentityUnreadable) as caught:
+        DirectoryKeys(str(keys)).identity(recipient)
+    assert recipient in str(caught.value)
+    assert "IsADirectoryError" in str(caught.value)
 
 
 def test_the_provider_does_not_show_what_it_holds(tmp_path: Path, age_identity: str) -> None:

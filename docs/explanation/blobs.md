@@ -67,7 +67,7 @@ The sealed form was 262,406 bytes larger than the content, the per-chunk overhea
 
 The price is disk space, not memory: the temporary file is as large as the blob while it's being stored.
 Whoever takes in attachments needs room for the largest one.
-The test suite holds the memory bound as a test, `test_memory_stays_bounded`, with both sides of its bound measured: the path stores and fetches 256 MiB and raises the peak of the test process by 120 MiB at most, while a reader that takes the object in one piece raises it by 478 to 502 MiB.
+The test suite holds the memory bound as a test, `test_memory_stays_bounded`, with both sides of its bound measured: with the test run on its own, the path stored and fetched 256 MiB and raised the peak of the test process by 120 MiB in each of three runs, while a reader that takes the object in one piece raised it by 478 to 502 MiB.
 
 ## "First wins" is a look, not a lock
 
@@ -83,13 +83,14 @@ Measured on 2026-10-05 with `measure_race.py`, twenty rounds at 64 MiB against R
 - **A reader caught mid-replacement gets an error, not wrong bytes.** Of the reader's attempts that found an object, seventeen broke off with an error from the S3 client while the second upload replaced what they were reading, and three opened to the right content.
 
 The damage, then, is a read that breaks off, and only for a reader who fetches a content at the instant it's being stored for the first time and twice at once.
-A second attempt succeeds.
+A second attempt is expected to succeed, since the object that stays is whole; that wasn't measured on its own.
 Both writers get the same address back, and each of them can fetch the content with the identities at hand, the loser included, because the reader takes the key from the object.
 The adapter translates the broken read into a storage error, so the S3 client's own exception never reaches `core`.
 
 A conditional write, `If-None-Match: *`, would close the window.
 RustFS knows it, and refused a second `PutObject` with `PreconditionFailed`.
-The upload in parts of `boto3` 1.43.108 doesn't pass it through, though: it rejects `IfNoneMatch` as an argument, and whether the store of the operation knows it isn't measured.
+The adapter uploads with `upload_fileobj` of `boto3` 1.43.108, though, at every size, and that call doesn't pass it through: it rejects `IfNoneMatch` as an argument.
+Whether the store of the operation knows the condition isn't measured.
 The design doesn't need it and doesn't build it.
 
 "First wins" has a price even without a race: the writer trusts what lies there.
@@ -129,8 +130,16 @@ A vault with key management of its own would be a second implementation behind t
 
 The key name comes from the metadata of an object, so it's input from outside: whoever can write to the bucket chooses it.
 It's therefore checked before it becomes part of a path.
-Only `age1` followed by lower-case letters and digits names a file, and anything else, `../x` or `/etc/passwd` among it, is treated as unknown without the disk being asked.
+Only the exact shape of a recipient names a file, `age1` and 58 characters of its alphabet, and anything else, `../x` or `/etc/passwd` or a name too long for the file system among it, is treated as unknown without the disk being asked.
+A file that's there and can't be read is a fault of the key directory, and it's reported as one rather than as a missing key.
 That's also why the writer stores the recipient in lower case, the canonical spelling of its encoding, even when it was given in upper case.
+
+The address is held to its shape too: the adapter refuses anything that isn't 64 lower-case hexadecimal characters before a request goes out, because a key with `/` or `..` in it would depend on how the server normalizes a path.
+
+The store's errors come in two kinds, and the split decides where an operator looks.
+A store that doesn't answer, a connection that times out or a stream that breaks off is unreachable.
+A store that answers and refuses, or settings the client won't even send, such as an empty bucket name, are refused, with a message that says the settings aren't usable.
+An error the S3 client doesn't file under a connection lands on the side of the settings, so that a typo in the environment doesn't send anybody to look for a server that's down.
 
 No message of the blob path names an identity, and no message of the store names its credentials.
 A malformed recipient is quoted, since a recipient is public; a malformed identity isn't, since what stands in its place may be a real one with a typo in it.

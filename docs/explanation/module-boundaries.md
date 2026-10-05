@@ -16,7 +16,8 @@ Since stage 1b `contract` also holds the row types and the store protocol that `
 ## The edges
 
 The diagram shows which module imports which, and since stage 1b there's nothing dashed in it.
-The arrows that leave the package each have a contract that names the one module allowed to draw them.
+The two arrows that stage 1c added, to `pyrage` and to `boto3`, each have a contract that names the one module allowed to draw them.
+The arrow to `sqlalchemy` is held the other way round: its contracts name the modules that mustn't draw it, `core` and `contract`, as the section on the contracts explains.
 
 ```{mermaid}
 :caption: The import edges after stage 1c: all six between its own modules, and not one of them exempted. Three arrows leave the package.

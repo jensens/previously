@@ -33,6 +33,14 @@ class SeekableSource(ByteSource, Protocol):
     def seek(self, offset: int, whence: int = 0, /) -> int: ...
 
 
+class ClosableSource(ByteSource, Protocol):
+    """A source that holds something until it is closed — the stream of a
+    stored object holds a connection. Whoever takes one closes it, whether
+    it was read to its end or not."""
+
+    def close(self) -> None: ...
+
+
 class ByteSink(Protocol):
     """Something to write bytes into, a piece at a time."""
 
@@ -58,7 +66,11 @@ class BlobStore(Protocol):
 
     `get` gives the metadata and the stream out of **one** answer of the
     store: two requests could see, while an object is being replaced, the key
-    of one upload and the body of the other.
+    of one upload and the body of the other. The stream it gives can be
+    closed, and its taker closes it.
+
+    Every method refuses an `address` that is not 64 lower-case hexadecimal
+    characters with a `ValueError`, before anything is sent.
 
     `close` gives back the connections the store holds. It is the fifth
     method because a measurement asked for it: a store that is built per
@@ -68,7 +80,7 @@ class BlobStore(Protocol):
 
     def stat(self, address: str) -> StoredBlob | None: ...
     def put(self, address: str, sealed: IO[bytes], *, key_id: str) -> None: ...
-    def get(self, address: str) -> tuple[StoredBlob, ByteSource] | None: ...
+    def get(self, address: str) -> tuple[StoredBlob, ClosableSource] | None: ...
     def delete(self, address: str) -> None: ...
     def close(self) -> None: ...
 

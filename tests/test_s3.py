@@ -9,29 +9,33 @@ another's objects. The store gets and gives ciphertext only, but this adapter
 does not look at what it stores: the bytes here are made up, not sealed.
 """
 
-from pathlib import Path
 from previously.contract.blobs import StoredBlob
 from previously.storage.errors import BlobStoreRefused
 from previously.storage.errors import BlobStoreUnreachable
 from previously.storage.errors import StorageError
 from previously.storage.s3 import from_settings
 from typing import TYPE_CHECKING
-from urllib.parse import urlsplit
 
 import io
 import os
 import pytest
 import secrets
+import sys
 import time
 import traceback
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from previously.contract.blobs import BlobStore
     from previously.storage.s3 import S3BlobStore
 
 
 pytestmark = pytest.mark.s3
+
+# What the `s3_connections` fixture is, spelled here as `conftest.py` asks
+# of a test that takes one of its callables.
+type ConnectionCount = Callable[[], int]
 
 ADDRESS = "ab" * 32
 KEY_ID = "age1" + "q" * 58
@@ -171,6 +175,7 @@ def test_an_endpoint_nobody_listens_on_is_unreachable_within_seconds(
         assert len(attempts) == 2
         assert time.monotonic() - started < 3
         assert "http://127.0.0.1:1" in str(caught.value)
+        assert "not reachable: EndpointConnectionError" in str(caught.value)
 
 
 def test_a_read_that_breaks_off_is_a_storage_error(blob_store: S3BlobStore) -> None:
@@ -205,31 +210,9 @@ def test_s3_blob_store_satisfies_the_protocol(blob_store: S3BlobStore) -> None:
     assert store is blob_store
 
 
-def _established(port: int) -> int:
-    """The TCP connections of this process to `port` that are established,
-    read from `/proc`: the sockets among this process's file descriptors,
-    looked up in the kernel's tables by inode."""
-    sockets: set[str] = set()
-    for fd in Path("/proc/self/fd").iterdir():
-        try:
-            target = os.readlink(fd)
-        except OSError:
-            continue
-        if target.startswith("socket:["):
-            sockets.add(target.removeprefix("socket:[").removesuffix("]"))
-    count = 0
-    for table in ("/proc/net/tcp", "/proc/net/tcp6"):
-        for line in Path(table).read_text(encoding="ascii").splitlines()[1:]:
-            fields = line.split()
-            remote_port = int(fields[2].rsplit(":", 1)[1], 16)
-            established = fields[3] == "01"
-            if remote_port == port and established and fields[9] in sockets:
-                count += 1
-    return count
-
-
+@pytest.mark.skipif(sys.platform != "linux", reason="counts connections in /proc")
 def test_close_releases_the_connections_the_store_opened(
-    blob_store: S3BlobStore, s3_settings: dict[str, str]
+    blob_store: S3BlobStore, s3_settings: dict[str, str], s3_connections: ConnectionCount
 ) -> None:
     """A store built per command and closed when the command is done leaves
     no connection behind, so a process that runs many commands holds no more
@@ -245,12 +228,10 @@ def test_close_releases_the_connections_the_store_opened(
     """
     import gc
 
-    port = urlsplit(s3_settings["endpoint"]).port
-    assert port is not None
     # Above the 8 MiB from which `upload_fileobj` uploads in parts.
     data = os.urandom(10 * 1024 * 1024)
     gc.collect()
-    before = _established(port)
+    before = s3_connections()
     gc.disable()
     try:
         for _ in range(3):
@@ -260,10 +241,60 @@ def test_close_releases_the_connections_the_store_opened(
             found = store.get(ADDRESS)
             assert found is not None
             found[1].read(8192)  # abandoned, as when `age` refuses the header
-            assert _established(port) > before
+            assert s3_connections() > before
             store.close()
             del store, found
-        after = _established(port)
+        after = s3_connections()
     finally:
         gc.enable()
     assert after <= before
+
+
+def test_settings_the_client_will_not_send_are_refused_not_unreachable(
+    s3_settings: dict[str, str],
+) -> None:
+    """An error `botocore` raises from its own checks, before anything goes
+    out, is about the settings and not about the network: an empty bucket
+    name fails parameter validation (measured on 2026-10-05), and the message
+    says the settings are not usable instead of sending an operator to look
+    for a server that is down. The other side, an endpoint where nobody
+    listens, is `test_an_endpoint_nobody_listens_on_is_unreachable_within_seconds`.
+    """
+    unusable = from_settings(**s3_settings, bucket="")
+    with pytest.raises(BlobStoreRefused) as caught:
+        unusable.stat(ADDRESS)
+    message = str(caught.value)
+    assert "are not usable: ParamValidationError" in message
+    assert s3_settings["endpoint"] in message
+    assert s3_settings["secret_key"] not in message
+    assert s3_settings["access_key"] not in message
+
+
+@pytest.mark.parametrize(
+    "address",
+    ["", "AB" * 32, "ab" * 31, "../" + "ab" * 31, "ab" * 32 + "\n"],
+    ids=["empty", "upper-case", "short", "parent", "newline"],
+)
+def test_an_address_that_is_not_one_is_a_caller_error_and_nothing_is_sent(
+    blob_store: S3BlobStore, address: str
+) -> None:
+    """Only 64 lower-case hexadecimal characters become an object key, in
+    each of the four methods — `delete` included, which an erasure calls.
+    Nothing reaches the server: the requests are counted at the event the
+    client emits before it sends one."""
+    sent: list[str] = []
+
+    def count(**_: object) -> None:
+        sent.append("sent")
+
+    blob_store.client.meta.events.register("before-send.s3", count)
+    calls = (
+        lambda: blob_store.stat(address),
+        lambda: blob_store.get(address),
+        lambda: blob_store.put(address, io.BytesIO(b"sealed"), key_id=KEY_ID),
+        lambda: blob_store.delete(address),
+    )
+    for call in calls:
+        with pytest.raises(ValueError, match="is not a blob address"):
+            call()
+    assert sent == []

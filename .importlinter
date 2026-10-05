@@ -1,10 +1,9 @@
 [importlinter]
 root_package = previously
 # Five of the six contracts forbid external packages (sqlalchemy, psycopg,
-# alembic, anthropic, openai, pyrage, boto3, botocore). import-linter
-# requires this setting for that,
-# otherwise it aborts with a configuration error — it is not a loosening of
-# the contracts themselves.
+# alembic, anthropic, openai, pyrage, boto3, botocore). import-linter requires
+# this setting for that, otherwise it aborts with a configuration error — it
+# is not a loosening of the contracts themselves.
 include_external_packages = True
 
 [importlinter:contract:layers]
