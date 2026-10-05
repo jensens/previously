@@ -471,9 +471,9 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     `core/redact.py` and `cli.py` raise as `RedactionRefused`; the three
     errors of `migrate` against the messages `storage/migrate.py` raises as
     `UnknownRevision` and `MigrationFailed`, the missing schema against the
-    one `storage/postgres.py` raises as `MigrationPending`, the three
-    failures to connect against the one it raises as `ServerUnreachable`,
-    the failed operation against `OperationFailed` and the unreadable
+    one `storage/postgres.py` raises as `MigrationPending`, the four
+    failures to connect against the two it raises as `ServerUnreachable`,
+    the failed operation against `OperationFailed` and the refused
     connection string against `InvalidDsn`; the nine errors of the blob commands and of an
     unfinished redaction against the messages `cli.py` raises as
     `PreviouslyError` or `InvalidPayload` and `core/blob.py` raises as
@@ -558,7 +558,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     # `UnknownRevision` or `MigrationFailed`, and the one every other command
     # gives against a database without the schema out of `storage/postgres.py`,
     # raised as `MigrationPending`, and the failure to connect, the failed
-    # operation and the unreadable string out of `storage/postgres.py`, raised as
+    # operation and the refused string out of `storage/postgres.py`, raised as
     # `ServerUnreachable`, `OperationFailed` and `InvalidDsn`; the command
     # line prints each behind `Error: `. What `MigrationFailed`,
     # `ServerUnreachable` and `OperationFailed` say after their last colon is
@@ -570,10 +570,10 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         ("is refused, and nothing changes", "migrate.py", "UnknownRevision", 1),
         ("the database's own reason", "migrate.py", "MigrationFailed", 2),
         ("against a database without it prints one sentence", "postgres.py", "MigrationPending", 1),
-        ("When connecting to the database fails", "postgres.py", "ServerUnreachable", 3),
+        ("When connecting to the database fails", "postgres.py", "ServerUnreachable", 4),
         ("When the database ends an operation", "postgres.py", "OperationFailed", 1),
         (
-            "can't be read as written is refused before anything connects",
+            "is refused before anything connects, with one sentence that names no part of it",
             "postgres.py",
             "InvalidDsn",
             1,

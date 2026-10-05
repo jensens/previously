@@ -36,9 +36,8 @@ class SourceKeyTaken(StorageError):
 class InvalidDsn(StorageError):
     """`PREVIOUSLY_DSN` is not a valid connection string (review finding W2).
 
-    Translates `sqlalchemy.exc.ArgumentError` out of `create_engine`, which
-    rejects the DSN while parsing it, before any connection attempt takes
-    place at all.
+    Raised by `storage.postgres.from_dsn` for a string outside the grammar it
+    accepts, before any connection attempt takes place at all.
     """
 
 

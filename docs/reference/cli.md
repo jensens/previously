@@ -11,18 +11,20 @@ A transaction the database aborts in a conflict with a concurrent one, a deadloc
 
 A message about the database names the database, the host and the port from `PREVIOUSLY_DSN`, and of the connection string nothing else, in its own words.
 The reason it quotes can say more: the line from the client library can name the user, and quote the value of a query parameter it rejects, such as an `sslmode` it doesn't know.
-The password appears in neither.
+`previously` takes the password from the user part of the connection string alone, so a message can carry a piece of it only where the string is read otherwise than its writer meant; {ref}`the accepted form <dsn-form>` names that case.
 
-When connecting to the database fails, including when the client library rejects a query parameter, every subcommand prints one sentence to standard error and returns 2, followed by the first line of the reason:
+When connecting to the database fails, every subcommand prints one sentence to standard error and returns 2, followed by the first line of the reason:
 
 ```text
 Error: connecting to database previously at localhost:5432 failed: connection to server at "127.0.0.1", port 5432 failed: FATAL:  password authentication failed for user "previously"
 Error: connecting to database nope at localhost:5432 failed: connection to server at "127.0.0.1", port 5432 failed: FATAL:  database "nope" does not exist
 Error: connecting to database previously at localhost:5432 failed: connection to server at "127.0.0.1", port 5432 failed: Connection refused
+Error: connecting to database previously at localhost:5432 failed: the client library refused a query parameter of PREVIOUSLY_DSN
 ```
 
 The first is a password the server refuses, the second a database the server doesn't have, and the third a port where nothing listens.
-The reason is the first line of the message the driver, `psycopg`, gives for the failed connection, without the `connection failed: ` the driver puts in front.
+The fourth is a value of a query parameter that the client library refuses before it connects, such as a `connect_timeout` that isn't a number, and its reason is fixed: it quotes nothing of the connection string.
+In the first three, the reason is the first line of the message the driver, `psycopg`, gives for the failed connection, without the `connection failed: ` the driver puts in front.
 Most of that line comes from `libpq`, the PostgreSQL client library: `connection to server at …` and a reason from the operating system, such as `Connection refused`, come from the client, in the client's locale, and what follows `FATAL:` comes from the server, in the server's language.
 Some reasons are the driver's own text, such as `failed to resolve host '…'` for a host name that doesn't resolve.
 
@@ -32,14 +34,11 @@ When the database ends an operation after the connection stands, such as with a 
 Error: the operation on database previously at localhost:5432 failed: canceling statement due to statement timeout
 ```
 
-A `PREVIOUSLY_DSN` that can't be read as written is refused before anything connects.
-Such a string isn't a connection string at all, has a port that isn't a number, or would be cut into its parts elsewhere than its writer meant, because a character such as `@`, `:`, `/`, `?`, `#` or `%` stands without its escape sequence inside the user name, the password, the database name or a query value:
+A `PREVIOUSLY_DSN` outside {ref}`the accepted form <dsn-form>` is refused before anything connects, with one sentence that names no part of it:
 
 ```text
-Error: PREVIOUSLY_DSN cannot be read as written — something like postgresql+psycopg://user:password@host:5432/database is expected, and a special character in the user name, the password, the database name or a query value has to be percent-encoded, such as `%40` for `@`
+Error: PREVIOUSLY_DSN is refused — write it as postgresql://user:password@host:5432/database with the password there and nowhere else, percent-encode every character of the user name, the password and the database name that is not a letter, a digit or one of -._~!$'()*+,;= (such as `%40` for `@`), and use no query parameter but application_name, channel_binding, connect_timeout, require_auth, sslcert, sslkey, sslmode or sslrootcert
 ```
-
-`previously` compares the string with how the parser writes back what it read, and refuses it where the two differ in where a part begins or ends; it also refuses a host that holds an `@` and a port above 65535.
 
 Every subcommand but `migrate` needs the schema that `migrate` creates, and against a database without it prints one sentence to standard error and returns 2:
 
@@ -104,7 +103,7 @@ Error: the database refused the migration to 0004_event_blob: permission denied 
 The first comes from a role that may not create a table in schema `public`, which since PostgreSQL 15 is every role but the owner of the database and a superuser.
 The second comes from a role that may not read the table `alembic_version`, where the revision stands.
 
-A connection string that can't be parsed, a server that doesn't answer, a password the server refuses, and a database that doesn't exist each print one sentence to standard error, the same sentence every other command prints for it, as described at the top of this page.
+A connection string outside the accepted form, a server that doesn't answer, a password the server refuses, and a database that doesn't exist each print one sentence to standard error, the same sentence every other command prints for it, as described at the top of this page.
 
 ## `append`
 

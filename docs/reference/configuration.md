@@ -13,10 +13,35 @@ Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables ar
 
 A message about the database names the database, the host and the port from `PREVIOUSLY_DSN`, and of the connection string nothing else, in its own words.
 When connecting fails, because the server refuses the password, doesn't have the database, or can't be reached, every command prints one such sentence and quotes the first line of the reason.
-That line can name the user, and quote the value of a query parameter the client library rejects; the password appears in neither, and {ref}`cli-reference` says where the line comes from.
+That line can name the user, and quote the value of a query parameter the client library rejects; {ref}`cli-reference` says where the line comes from.
 
-A character such as `@`, `:`, `/`, `?`, `#` or `%` inside the user name, the password, the database name or a query value stands in the connection string as its escape sequence, such as `%40` for `@`, and `previously` reads it as the character.
-A `PREVIOUSLY_DSN` that holds such a character without its escape sequence, so that it would be cut into its parts elsewhere than its writer meant, is refused before anything connects.
+(dsn-form)=
+
+### The accepted form
+
+`previously` reads `PREVIOUSLY_DSN` by the form below, and refuses anything else before it connects, with one sentence that names no part of the string.
+Every subcommand, `migrate` included, builds the connection from the parts the form names, and SQLAlchemy never parses the string; `alembic`, run in a checkout, parses it with SQLAlchemy and doesn't hold it to this form.
+
+| Part | Form |
+|---|---|
+| Scheme | `postgresql://` or `postgresql+psycopg://`, in lowercase. |
+| User part | Optional: a user name, then optionally `:` and the password, then `@`. |
+| Host | A host name of letters, digits, `-`, `_` and `.`, or an IPv6 address in brackets, such as `[::1]`. |
+| Port | Optional: `:` and a number from 1 to 65535, in digits alone. |
+| Database | Optional: `/` and the database name. |
+| Query | Optional: `?` and pairs `key=value`, joined by `&`, each key at most once. |
+
+- In the user name, the password and the database name, every character but a letter, a digit or one of `-._~!$'()*+,;=` stands as its escape sequence, such as `%40` for `@`, `%2F` for `/` and `%26` for `&`, and `previously` reads it as the character.
+- The password stands in the user part and nowhere else.
+- The query takes the keys `application_name`, `channel_binding`, `connect_timeout`, `require_auth`, `sslcert`, `sslkey`, `sslmode` and `sslrootcert`, and no other; `password` is refused there.
+- A query value holds letters, digits, `-._~/` and escape sequences.
+- An escape sequence of a control character, such as `%00`, and one that isn't UTF-8, are refused.
+
+The `uri` that CloudNativePG writes into the secret of an application's role has this form, and `previously` takes it unchanged.
+
+The form reads a string in one way, which isn't always the way its writer meant.
+A string without `@` has no user part, and what follows the first `:` there is the port: `user:12345/database`, with the `@host` forgotten, reads as host `user` and port `12345`, and a message prints both.
+The same holds for a password with a raw `@` in it and the `@host` after it forgotten: what follows that `@` is the host.
 
 `previously migrate` reads the connection string from `PREVIOUSLY_DSN` alone.
 

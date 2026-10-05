@@ -263,13 +263,12 @@ def test_migrate_refuses_a_revision_it_does_not_know(empty_dsn: str) -> None:
 def test_migrate_takes_a_password_with_a_percent_sign(empty_dsn: str) -> None:
     """A password with a character a URL has to escape arrives percent-encoded
     in the connection string. Alembic's configuration reads `%` as the start
-    of an interpolation, so the string has to reach it escaped.
-
-    Measured on 2026-10-05 without the escaping: `ValueError: invalid
-    interpolation syntax`, a traceback whose message quoted the connection
-    string, password included. Every character of the container's password is
-    encoded here, so the string carries `%` and still names the same
-    password."""
+    of an interpolation, and measured on 2026-10-05, a string handed to it
+    unescaped raised `ValueError: invalid interpolation syntax`, a traceback
+    whose message quoted the connection string, password included. `migrate`
+    hands Alembic a connection now and not the string. Every character of
+    the container's password is encoded here, so the string carries `%` and
+    still names the same password."""
     url = make_url(empty_dsn)
     assert url.password is not None
     encoded = "".join(f"%{byte:02X}" for byte in str(url.password).encode())
@@ -368,11 +367,11 @@ def test_cli_migrate_translates_a_failure_on_alembics_own_connection(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """`command.upgrade` opens a connection of its own through `env.py`. A
-    role allowed one connection gets the lock connection and not that one,
-    and the failure ends as one sentence with exit code 2, without the
-    password, because the upgrade runs inside the translation of the lock
-    connection."""
+    """The upgrade runs on a connection of its own, which `migrate` hands to
+    `env.py`. A role allowed one connection gets the lock connection and not
+    that one, and the failure ends as one sentence with exit code 2, without
+    the password, because the upgrade's connection comes out of the same
+    storage and its translation."""
     with engine.execution_options(isolation_level="AUTOCOMMIT").connect() as conn:
         conn.execute(text(f"ALTER ROLE {role.name} CONNECTION LIMIT 1"))
     monkeypatch.setenv("PREVIOUSLY_DSN", role.on(empty_dsn))
@@ -484,20 +483,51 @@ def test_cli_migrate_names_the_reason_of_an_error_that_is_no_programming_error(
 
 
 @pytest.mark.db
-def test_cli_migrate_with_an_unknown_query_key_does_not_advise_itself(
+def test_cli_migrate_with_a_query_value_the_client_refuses_quotes_none_of_it(
     empty_dsn: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A key of the query the client library does not know, here a typo of
-    `password`. psycopg raises `ProgrammingError` while it connects, before
-    the server is asked anything. Measured on 2026-10-05 at `fa61473`: that
-    became `MigrationPending`, and `migrate` answered "database schema
-    incomplete — `previously migrate` has not run yet", the advice to run
-    itself. Connecting failed, and the sentence says so."""
+    """A value of an allowed query key the client library cannot read. psycopg
+    raises `ProgrammingError` while it connects, before the server is asked
+    anything. Measured on 2026-10-05 at `fa61473`: that became
+    `MigrationPending`, and `migrate` answered "database schema incomplete —
+    `previously migrate` has not run yet", the advice to run itself; at
+    `2579eb5` the sentence quoted the library's text, which names the key or
+    value it refused, and with an unencoded `&` in a password that was a piece
+    of it. The reason is fixed now, and the value drawn at run time stands
+    nowhere in it."""
     url = make_url(empty_dsn)
-    monkeypatch.setenv("PREVIOUSLY_DSN", f"{empty_dsn}?passwrod=typo")
+    value = f"x{secrets.token_hex(10)}"
+    monkeypatch.setenv("PREVIOUSLY_DSN", f"{empty_dsn}?connect_timeout={value}")
     assert main(["migrate"]) == 2
     assert capsys.readouterr() == (
         "",
         f"Error: connecting to database {url.database} at {url.host}:{url.port} failed: "
-        'invalid connection option "passwrod"\n',
+        "the client library refused a query parameter of PREVIOUSLY_DSN\n",
     )
+
+
+@pytest.mark.db
+def test_cli_migrate_takes_the_uri_cloudnativepg_writes(
+    role: Role,
+    empty_dsn: str,
+    engine: Engine,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """CloudNativePG puts a `uri` into the secret of an application's role,
+    built by Go's `url.URL` with `url.UserPassword`: a password of base64
+    characters, its `/` written as `%2F`, its `+` and `=` raw. Pasted as it is
+    into `PREVIOUSLY_DSN`, with the plain `postgresql://` scheme, it is inside
+    the grammar `from_dsn` accepts, and `migrate` runs. The role owns the
+    database, since only the owner may create in `public` (PostgreSQL 15)."""
+    password = f"Ab+cd/EF={secrets.token_hex(8)}=="
+    database = make_url(empty_dsn).database
+    with engine.execution_options(isolation_level="AUTOCOMMIT").connect() as conn:
+        conn.execute(text(f"ALTER ROLE {role.name} PASSWORD '{password}'"))
+        conn.execute(text(f"ALTER DATABASE {database} OWNER TO {role.name}"))
+    url = make_url(empty_dsn)
+    written = password.replace("/", "%2F")
+    dsn = f"postgresql://{role.name}:{written}@{url.host}:{url.port}/{database}"
+    monkeypatch.setenv("PREVIOUSLY_DSN", dsn)
+    assert main(["migrate"]) == 0
+    assert capsys.readouterr() == (f"migrated: (empty) -> {HEAD}\n", "")

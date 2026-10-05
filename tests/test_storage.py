@@ -14,6 +14,7 @@ from previously.storage.errors import ServerUnreachable
 from previously.storage.errors import SourceKeyTaken
 from previously.storage.errors import StorageError
 from previously.storage.errors import TransactionAborted
+from previously.storage.postgres import DSN_QUERY_KEYS
 from previously.storage.postgres import from_dsn
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import create_engine
@@ -540,9 +541,8 @@ def test_the_check_constraint_is_not_translated(db: Engine) -> None:
 
 
 def test_an_unparsable_dsn_becomes_a_storage_error() -> None:
-    """Case 1 out of review finding W2: `create_engine` parses the DSN at once
-    and raises `ArgumentError` inside `from_dsn` already, before any
-    connection attempt."""
+    """Case 1 out of review finding W2: `from_dsn` refuses a string outside
+    its grammar before any connection attempt."""
     with pytest.raises(InvalidDsn, match="PREVIOUSLY_DSN"):
         from_dsn("not-a-dsn")
 
@@ -553,6 +553,20 @@ def test_an_unparsable_dsn_shows_no_password() -> None:
     with pytest.raises(InvalidDsn) as error:
         from_dsn("not-a-DSN-with-SECRET123")
     assert "SECRET123" not in str(error.value)
+
+
+def test_the_refusal_lists_the_query_keys_from_dsn_accepts() -> None:
+    """The refusal tells an operator which query parameters are allowed, as a
+    literal the reference page can quote, and the allow-list is a set in the
+    code: the two are held together here, both ways. A key in the list is
+    accepted on its own, without a connection, which `create_engine` does
+    not open."""
+    with pytest.raises(InvalidDsn) as error:
+        from_dsn("postgresql://app@localhost/probe?plugin=x")
+    listed = str(error.value).rpartition("no query parameter but ")[2]
+    assert set(listed.replace(" or ", ", ").split(", ")) == DSN_QUERY_KEYS
+    for key in DSN_QUERY_KEYS:
+        from_dsn(f"postgresql://app@localhost/probe?{key}=x").close()
 
 
 def test_an_unreachable_server_becomes_a_storage_error() -> None:

@@ -49,13 +49,12 @@ from sqlalchemy import delete
 from sqlalchemy import Engine
 from sqlalchemy import func
 from sqlalchemy import insert
-from sqlalchemy import make_url
 from sqlalchemy import null
 from sqlalchemy import Row
 from sqlalchemy import select
 from sqlalchemy import update
+from sqlalchemy import URL
 from sqlalchemy.dialects.postgresql import insert as pg_insert
-from sqlalchemy.exc import ArgumentError
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.exc import OperationalError
@@ -63,7 +62,6 @@ from sqlalchemy.exc import ProgrammingError
 from typing import Any
 from typing import ClassVar
 from typing import TYPE_CHECKING
-from urllib.parse import parse_qsl
 from urllib.parse import unquote
 
 import re
@@ -76,7 +74,6 @@ if TYPE_CHECKING:
     from contextlib import AbstractContextManager
     from datetime import datetime
     from sqlalchemy import Table
-    from sqlalchemy import URL
 
 # Three indexes mark the same class of conflict. Ruling T6-b had excluded
 # event_hash_idx here, on the grounds that a duplicate `hash` means "the same
@@ -230,10 +227,9 @@ class PostgresStorage:
         caller's body (out of `tip` or `read`, say) reaches this place
         nonetheless: a `@contextmanager` generator gets an exception thrown
         inside the `with` block re-raised at its `yield` (via
-        `generator.throw`) before it travels on. The third case,
-        `ArgumentError` on an unparsable DSN, does **not** belong here,
-        because it arises in `create_engine` already, before this method
-        exists at all — see `from_dsn`.
+        `generator.throw`) before it travels on. The third case, an
+        unparsable DSN, does **not** belong here, because `from_dsn` refuses
+        it before there is an engine at all.
 
         A fourth, unnamed sqlalchemy exception (`IntegrityError`, say, which
         `insert_event` translates itself) this `try` deliberately does not
@@ -283,14 +279,19 @@ class PostgresStorage:
         except ProgrammingError as error:
             if not connected:
                 # Raised while connecting, before the server was asked
-                # anything: the client library refused an option of the
-                # connection string, an unknown key or a value it cannot read.
-                # Measured on 2026-10-05 with `?passwrod=…` and
-                # `?connect_timeout=abc`: psycopg raises `ProgrammingError`
+                # anything: the client library refused a query parameter of
+                # the connection string, such as `?connect_timeout=abc`.
+                # Measured on 2026-10-05: psycopg raises `ProgrammingError`
                 # there, and the line below advised `migrate` to run itself.
+                # The reason is fixed and quotes nothing of the library's
+                # text, which names the key or the value it refused: with an
+                # unencoded `&` inside a password, measured the same day, that
+                # key was a piece of the password. `from_dsn` refuses such a
+                # string now, and this sentence does not lean on it.
                 where = _where(engine.url)
                 raise ServerUnreachable(
-                    f"connecting to {where} failed: {_first_line(error)}"
+                    f"connecting to {where} failed: "
+                    "the client library refused a query parameter of PREVIOUSLY_DSN"
                 ) from error
             # `previously migrate` and not `alembic upgrade head`: an installed
             # previously has no `alembic.ini` and no checkout to run Alembic
@@ -897,75 +898,126 @@ def _event_row(row: Row[Any]) -> EventRow:
 
 
 def _unreadable() -> InvalidDsn:
-    """The one error for a DSN that cannot be read as written.
+    """The one error for a DSN outside the grammar below.
 
-    Its sentence names no part of the DSN: whatever part was misread may be a
-    piece of the password. A function and not a constant, so that the call
-    carries the text where `tests/test_docs_references.py` reads it.
+    Its sentence names no part of the DSN: whatever part was refused may be
+    a piece of the password. A function and not a constant, so that the call
+    carries the text where `tests/test_docs_references.py` reads it. The
+    query parameters it lists are `DSN_QUERY_KEYS`, and a test holds the two
+    together.
     """
     return InvalidDsn(
-        "PREVIOUSLY_DSN cannot be read as written — something like "
-        "postgresql+psycopg://user:password@host:5432/database is expected, and a "
-        "special character in the user name, the password, the database name or a "
-        "query value has to be percent-encoded, such as `%40` for `@`"
+        "PREVIOUSLY_DSN is refused — write it as "
+        "postgresql://user:password@host:5432/database with the password there and "
+        "nowhere else, percent-encode every character of the user name, the password "
+        "and the database name that is not a letter, a digit or one of -._~!$'()*+,;= "
+        "(such as `%40` for `@`), and use no query parameter but application_name, "
+        "channel_binding, connect_timeout, require_auth, sslcert, sslkey, sslmode or "
+        "sslrootcert"
     )
 
 
-# The escapes a comparison keeps as they are, upper-cased: those of the
-# characters that separate the parts of a DSN, and of `%` itself. Every other
-# escape is decoded on both sides, because SQLAlchemy's rendering writes
-# `%7E` as `~` and `&` as `%26`, and neither changes where the parts are cut.
-_SEPARATOR_ESCAPE = re.compile(r"%(40|3[aAfF]|2[fF5]|23|5[bBdD])")
+# The query parameters a DSN may carry, each at most once; every other key is
+# refused before anything connects. Each one is here for a reason an operator
+# has: TLS to the server and a client certificate (`sslmode`, `sslrootcert`,
+# `sslcert`, `sslkey`), keeping the password from a server that should not
+# get it (`channel_binding`, `require_auth`), how long to wait for a server
+# that is starting (`connect_timeout`), and a name in `pg_stat_activity`
+# (`application_name`). Left out on purpose: `password`, because the password
+# stands in the user part and nowhere else; `sslpassword` and `passfile`, a
+# secret and a second place for one; `host`, `hostaddr`, `port`, `dbname` and
+# `user`, which would overrule the parts in front of the query; `options` and
+# `service`, which hand the server settings or read them from a file; and
+# SQLAlchemy's own `plugin`, which loads code.
+DSN_QUERY_KEYS = frozenset(
+    {
+        "application_name",
+        "channel_binding",
+        "connect_timeout",
+        "require_auth",
+        "sslcert",
+        "sslkey",
+        "sslmode",
+        "sslrootcert",
+    }
+)
+
+# A percent-escape of any byte but a control character. Measured on
+# 2026-10-05 with psycopg 3.3.6: a NUL in the user name, the password or the
+# database name cut the connection parameters short, so the port given with
+# them was lost and the client went to 5432. A newline in the database name,
+# which a message prints, splits its one sentence into two lines, measured
+# the same day by the review of fix round 3.
+_ESCAPE = r"%(?:[2-6][0-9A-Fa-f]|7[0-9A-Ea-e]|[89A-Fa-f][0-9A-Fa-f])"
+# One character of a user name, a password or a database name, after
+# RFC 3986: an unreserved character, a sub-delimiter but `&`, or an escape.
+# None of `@ : / ? # [ ] %` stands raw, so no part can hold the character
+# that ends it.
+_PART = rf"(?:[A-Za-z0-9\-._~!$'()*+,;=]|{_ESCAPE})"
+# One character of a query value: an unreserved character, `/` for the path
+# of a certificate, or an escape. No `&` or `=`, which cut the query into its
+# pairs, and no `+`, which a query reader takes for a space.
+_VALUE = rf"(?:[A-Za-z0-9\-._~/]|{_ESCAPE})"
+_DSN = re.compile(
+    r"(?P<scheme>postgresql|postgresql\+psycopg)://"
+    rf"(?:(?P<user>{_PART}+)(?::(?P<password>{_PART}*))?@)?"
+    r"(?:(?P<host>[A-Za-z0-9_.\-]+)|\[(?P<ipv6>[0-9A-Fa-f:.]+)\])"
+    r"(?::(?P<port>[0-9]{1,5}))?"
+    rf"(?:/(?P<database>{_PART}*))?"
+    rf"(?:\?(?P<query>[a-z_]+={_VALUE}+(?:&[a-z_]+={_VALUE}+)*))?"
+)
 
 
-def _unescaped(text: str) -> str:
-    """`text` with every escape decoded but those of a separator."""
-    pieces = _SEPARATOR_ESCAPE.split(text)
-    return "".join(
-        unquote(piece) if index % 2 == 0 else "%" + piece.upper()
-        for index, piece in enumerate(pieces)
-    )
+def _decoded(text: str) -> str:
+    """`text` with its escapes decoded as UTF-8, or `UnicodeDecodeError`:
+    an escape that is no UTF-8 would reach the server as a replacement
+    character, which is not what was written."""
+    return unquote(text, errors="strict")
 
 
-def _read_as_written(dsn: str) -> bool:
-    """Whether SQLAlchemy cut `dsn` into its parts where the writer did.
+def _url_of(dsn: str) -> URL | None:
+    """The parts of `dsn` by the grammar above, or `None` where it does not
+    match the whole string.
 
-    SQLAlchemy's own rendering of what it parsed escapes every separator that
-    stands inside a part. Where it gives back the text as written, nothing was
-    cut elsewhere; where it does not, a separator the writer meant as a
-    character of the user name, the password or the database name was taken
-    for a cut, and a piece of the password stood where a message prints the
-    host. Measured on 2026-10-05: a `?` in the password before an unencoded
-    `@`, and an `@` in a `?password=` value behind a port, each put a piece
-    of the password into the printed host. A count of `@` before the first
-    `?`, which stood here the round before, missed both.
+    The grammar is the only parser `dsn` meets: the URL is built from the
+    parts it names, so SQLAlchemy never cuts the string itself, and no check
+    afterwards has to guess where it would have. Every part ends at a
+    character that no part may hold raw, so the string has one reading.
+    The one thing a grammar cannot tell apart is what the writer meant: a
+    string without `@` has no user part, and what follows the first `:` there
+    is the port, so `user:12345/database`, with the `@host` forgotten, reads
+    as host `user` and port `12345`.
 
-    Compared with the escapes of everything but the separators decoded on
-    both sides, and the query as its sorted pairs, since the rendering sorts
-    the keys and writes a space as `+`. Measured on 2026-10-05 with SQLAlchemy
-    2.1.2: lower-case escapes, `%7E` for `~`, `%20` for a space, a raw `&` or
-    `!` in the password, keys out of order, an IPv6 host in brackets, and a
-    missing port, host or database all compare equal; a raw `@`, `?` or `#`
-    inside a part, or `%zz`, does not.
-
-    Two checks on the parts the comparison cannot make. The rendering writes
-    the host as it is, so `user:a@b@host` comes back unchanged with `b@host`
-    as the host: a host never holds an `@`. And a port above 65535 is no
-    port: with the `@host` forgotten, `user:12345678/database` reads as host
-    `user` and port `12345678`, the password.
+    A port is 1 to 65535. A database written as nothing, `host/`, is none.
     """
+    match = _DSN.fullmatch(dsn)
+    if match is None:
+        return None
+    port = None if match["port"] is None else int(match["port"])
+    if port is not None and not 1 <= port <= 65535:
+        return None
+    pairs = match["query"].split("&") if match["query"] else []
+    query: dict[str, str] = {}
     try:
-        url = make_url(dsn)
-    except ArgumentError, ValueError:
-        return False
-    rendered = url.render_as_string(hide_password=False)
-    written_head, _, written_query = dsn.partition("?")
-    rendered_head, _, rendered_query = rendered.partition("?")
-    return (
-        _unescaped(written_head) == _unescaped(rendered_head)
-        and sorted(parse_qsl(written_query)) == sorted(parse_qsl(rendered_query))
-        and "@" not in (url.host or "")
-        and (url.port is None or url.port <= 65535)
+        for pair in pairs:
+            key, _, value = pair.partition("=")
+            if key not in DSN_QUERY_KEYS or key in query:
+                return None
+            query[key] = _decoded(value)
+        user, password, database = (
+            None if match[name] is None else _decoded(match[name])
+            for name in ("user", "password", "database")
+        )
+    except UnicodeDecodeError:
+        return None
+    return URL.create(
+        match["scheme"],
+        username=user,
+        password=password,
+        host=match["host"] or match["ipv6"],
+        port=port,
+        database=database or None,
+        query=query,
     )
 
 
@@ -978,16 +1030,18 @@ def from_dsn(dsn: str) -> PostgresStorage:
     stage 1a plan, whose execution ledger was never shipped and is lost, so
     the label is provenance and nothing more; the reason is this sentence.
 
-    `create_engine` parses the DSN immediately, not only at the first
-    connection attempt — an unparsable DSN raises `ArgumentError` here already
-    (review finding W2, case 1), and a port that is no number `ValueError`.
-    Both become one fixed sentence. The raw `dsn` deliberately does **not**
-    go into it: it could carry a password that failed to parse only because
-    there is an error somewhere else in the string. Measured on 2026-10-05,
-    the `ValueError` was not caught, and when `@host` was missing the
-    "port" it quoted in its traceback was the password. A DSN the parser
-    reads differently from how it was written is refused the same way, see
-    `_read_as_written`.
+    A string outside the grammar of `_url_of` is refused with one fixed
+    sentence, before anything connects. The raw `dsn` deliberately does
+    **not** go into it: it could carry a password that failed to parse only
+    because there is an error somewhere else in the string.
+
+    Three rounds of checks stood here before, each after SQLAlchemy had
+    parsed the string: a count of `@`, then a comparison with SQLAlchemy's
+    rendering of what it read, a host without `@` and a port up to 65535.
+    Each was measured on 2026-10-05 to let a form through that printed a
+    piece of the password as the host, the database or the port; a check
+    afterwards can only guess how the parser cut. The grammar decides the
+    cut itself.
 
     The engine pools its connections, so the storage keeps one open between
     two transactions; the caller releases them with `PostgresStorage.close`.
@@ -995,10 +1049,7 @@ def from_dsn(dsn: str) -> PostgresStorage:
     2026-10-05 to make `previously project` over 3,000 events take about
     0.75 s instead of 0.55 s, a connection per transaction.
     """
-    if not _read_as_written(dsn):
+    url = _url_of(dsn)
+    if url is None:
         raise _unreadable()
-    try:
-        engine = create_engine(dsn)
-    except (ArgumentError, ValueError) as error:
-        raise _unreadable() from error
-    return PostgresStorage(engine)
+    return PostgresStorage(create_engine(url))

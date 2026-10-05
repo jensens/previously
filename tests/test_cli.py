@@ -37,7 +37,6 @@ import secrets
 import sys
 import threading
 import time
-import traceback
 
 
 if TYPE_CHECKING:
@@ -363,100 +362,306 @@ def test_a_refused_password_names_libpqs_reason_and_not_the_password(
 
 
 @pytest.mark.db
-def test_a_password_in_the_query_is_not_printed(
+def test_a_password_in_the_query_is_refused(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """libpq takes the password as a parameter of the query as well,
     `…/database?password=…`. Measured at `3c8e506`: the sentence printed the
-    whole connection string with the query, and the password in clear —
-    `render_as_string(hide_password=True)` hides only the one in
-    `user:password@`. The sentence names host, port and database now, so the
-    query never reaches it."""
+    whole connection string with the query, and the password in clear; at
+    `2579eb5`, a password there holding an unencoded `&` was cut into a key
+    the client library quoted. The password stands in the user part and
+    nowhere else, so `from_dsn` refuses the key before anything connects."""
     url = _session_url(db)
     secret = _wrong_password()
     dsn = url.set(password=None).render_as_string(hide_password=False) + f"?password={secret}"
     out, sentence = _log_with(dsn, capsys, monkeypatch)
     assert _no_fragment_of(secret, out + sentence)
     assert out == ""
-    assert sentence.startswith(
-        f"Error: connecting to database {url.database} at {url.host}:{url.port} failed: "
-    )
-    assert "FATAL:  password authentication failed for user " in sentence
+    assert sentence + "\n" == _UNREADABLE
 
 
-# The connection strings of the attack review of 2026-10-05, fix round 2, all
-# 38 in its order, and one more after them. `{A}`, `{B}` and `{C}` are pieces
-# of a password, 20 hexadecimal characters each, and `{D}` one of 20 digits,
-# all drawn at run time; `{H}` is the session server's host and port. The
-# reviewer's pieces were letters; any characters do, since the specials stand
-# in the forms between the pieces. The outcome is what
-# the command must do: `refused` before anything connects, with the one
-# sentence `from_dsn` has for a string it cannot read as written; `connect`,
-# which fails with the connection sentence; or `traceback`, for the one form
-# that is broken whatever the string holds, a driver that is not installed.
-# The pieces listed last are the ones that must appear nowhere; forms 9 and 10
-# put no password where libpq quotes the value it rejects, so they list none.
-_FORMS: tuple[tuple[str, str, str, str], ...] = (
-    ("01-user-pass", "{S}app:{A}@{H}/probe", "connect", "A"),
-    ("02-encoded-specials", "{S}app:{A}%40%3A%2F%3F%23{B}@{H}/probe", "connect", "AB"),
-    ("03-query-password", "{S}app@{H}/probe?password={A}", "connect", "A"),
-    ("04-query-password-with-at", "{S}app@{H}/probe?password={A}@{B}", "refused", "AB"),
-    ("05-query-key-typo", "{S}app@{H}/probe?passwrod={A}", "connect", "A"),
-    ("06-query-passfile", "{S}app@{H}/probe?passfile=/tmp/{A}", "connect", "A"),
-    ("07-query-sslpassword", "{S}app@{H}/probe?sslpassword={A}", "connect", "A"),
+# The connection strings of the attack reviews of 2026-10-05: the 38 of fix
+# round 2 in its order, one more after them, the nine of fix round 3 as
+# N01-N09, and the forms of fix round 4 as R01-R10. `{A}`, `{B}`, `{C}` and
+# `{E}` are pieces of a password, 20 hexadecimal characters each, and `{D}`
+# one of 20 digits, all drawn at run time; `{H}` is the session server's
+# host and port. The specials stand in the forms between the pieces. The
+# outcome is what the command must do: `refused` before anything connects,
+# with the one sentence `from_dsn` has for a string outside its grammar, or
+# `connect`, which fails with the connection sentence. The pieces listed are
+# the ones that must appear nowhere; a form that puts no password where a
+# message could print it lists none. The last field says why the form ends
+# as it does.
+_FORMS: tuple[tuple[str, str, str, str, str], ...] = (
+    ("01-user-pass", "{S}app:{A}@{H}/probe", "connect", "A", "the plain form"),
+    (
+        "02-encoded-specials",
+        "{S}app:{A}%40%3A%2F%3F%23{B}@{H}/probe",
+        "connect",
+        "AB",
+        "every special of the password encoded",
+    ),
+    ("03-query-password", "{S}app@{H}/probe?password={A}", "refused", "A", "key `password`"),
+    (
+        "04-query-password-with-at",
+        "{S}app@{H}/probe?password={A}@{B}",
+        "refused",
+        "AB",
+        "key `password`, and a raw `@` in a value",
+    ),
+    ("05-query-key-typo", "{S}app@{H}/probe?passwrod={A}", "refused", "A", "key not allowed"),
+    ("06-query-passfile", "{S}app@{H}/probe?passfile=/tmp/{A}", "refused", "A", "key not allowed"),
+    ("07-query-sslpassword", "{S}app@{H}/probe?sslpassword={A}", "refused", "A", "a secret key"),
     (
         "08-query-sslpassword-sslkey",
         "{S}app@{H}/probe?sslpassword={A}&sslkey=/nonexistent&sslmode=require",
+        "refused",
+        "A",
+        "a secret key",
+    ),
+    (
+        "09-query-sslmode-value",
+        "{S}app@{H}/probe?sslmode=bogus",
+        "connect",
+        "",
+        "an allowed key; libpq quotes the value, which holds no password",
+    ),
+    (
+        "10-query-connect-timeout-value",
+        "{S}app@{H}/probe?connect_timeout=abc",
+        "connect",
+        "",
+        "an allowed key; the client refuses the value, and the reason is fixed",
+    ),
+    (
+        "11-query-options",
+        "{S}app@{H}/probe?options=-c%20foo%3D{A}",
+        "refused",
+        "A",
+        "key not allowed",
+    ),
+    (
+        "12-libpq-key-value",
+        "host=localhost dbname=probe user=app password={A}",
+        "refused",
+        "A",
+        "no scheme",
+    ),
+    ("13-libpq-scheme", "postgresql://app:{A}@{H}/probe", "connect", "A", "the plain scheme"),
+    ("14-two-at", "{S}app:{A}@{B}@{H}/probe", "refused", "AB", "a raw `@` in the password"),
+    ("15-at-slash-at", "{S}app:{A}@{B}/{C}@{H}/probe", "refused", "ABC", "a raw `@` and `/`"),
+    (
+        "16-question-before-second-at",
+        "{S}app:{A}?{B}@{C}@{H}/probe",
+        "refused",
+        "ABC",
+        "a raw `?` and `@` in the password",
+    ),
+    (
+        "17-question-then-colon",
+        "{S}app:{A}?x@{B}:{C}@{H}/probe",
+        "refused",
+        "ABC",
+        "a raw `?`, `@` and `:` in the password",
+    ),
+    ("18-at-in-database", "{S}app:{A}@{H}/pro@be", "refused", "A", "a raw `@` in the database"),
+    (
+        "19-at-in-database-encoded",
+        "{S}app:{A}@{H}/pro%40be",
         "connect",
         "A",
+        "the `@` of the database encoded",
     ),
-    ("09-query-sslmode-value", "{S}app@{H}/probe?sslmode=bogus", "connect", ""),
-    ("10-query-connect-timeout-value", "{S}app@{H}/probe?connect_timeout=abc", "connect", ""),
-    ("11-query-options", "{S}app@{H}/probe?options=-c%20foo%3D{A}", "connect", "A"),
-    ("12-libpq-key-value", "host=localhost dbname=probe user=app password={A}", "refused", "A"),
-    ("13-libpq-scheme", "postgresql://app:{A}@{H}/probe", "connect", "A"),
-    ("14-two-at", "{S}app:{A}@{B}@{H}/probe", "refused", "AB"),
-    ("15-at-slash-at", "{S}app:{A}@{B}/{C}@{H}/probe", "refused", "ABC"),
-    ("16-question-before-second-at", "{S}app:{A}?{B}@{C}@{H}/probe", "refused", "ABC"),
-    ("17-question-then-colon", "{S}app:{A}?x@{B}:{C}@{H}/probe", "refused", "ABC"),
-    ("18-at-in-database", "{S}app:{A}@{H}/pro@be", "refused", "A"),
-    ("19-at-in-database-encoded", "{S}app:{A}@{H}/pro%40be", "connect", "A"),
-    ("20-at-in-user", "{S}app@corp:{A}@{H}/probe", "refused", "A"),
-    ("21-at-in-user-encoded", "{S}app%40corp:{A}@{H}/probe", "connect", "A"),
-    ("22-port-not-a-number", "{S}app:{A}@localhost:54x32/probe", "refused", "A"),
-    ("23-host-forgotten", "{S}app:{A}/probe", "refused", "A"),
-    ("24-host-and-database-forgotten", "{S}app:{A}", "refused", "A"),
-    ("25-colon-for-at", "{S}app:{A}:{H}/probe", "refused", "A"),
-    ("26-scheme-postgres", "postgres://app:{A}@{H}/probe", "refused", "A"),
-    ("27-scheme-unknown-driver", "postgresql+nope://app:{A}@{H}/probe", "refused", "A"),
-    ("28-scheme-psycopg2", "postgresql+psycopg2://app:{A}@{H}/probe", "traceback", "A"),
-    ("29-scheme-without-slashes", "postgresql+psycopg:app:{A}@{B}@{H}/probe", "refused", "AB"),
-    ("30-ipv6", "{S}app:{A}@[::1]:{port}/probe", "connect", "A"),
-    ("31-unreachable", "{S}app:{A}@localhost:1/probe", "connect", "A"),
-    ("32-unresolvable", "{S}app:{A}@no-such-host.invalid/probe", "connect", "A"),
-    ("33-percent-not-an-escape", "{S}app:{A}%zz{B}@{H}/probe", "refused", "AB"),
-    ("34-hash", "{S}app:{A}#{B}@{H}/probe", "refused", "AB"),
-    ("35-space", "{S}app:{A} {B}@{H}/probe", "connect", "AB"),
-    ("36-newline", "{S}app:{A}\n{B}@{H}/probe", "connect", "AB"),
-    ("37-ampersand-in-query-password", "{S}app@{H}/probe?password={A}&{B}", "connect", "AB"),
-    ("38-leading-space", " {S}app:{A}@{B}@{H}/probe", "refused", "AB"),
-    # Not among the review's 38, which named it as reasoned and not run: a
-    # password of digits alone with the `@host` forgotten reads as a port.
-    ("39-digits-host-forgotten", "{S}app:{D}/probe", "refused", "D"),
+    ("20-at-in-user", "{S}app@corp:{A}@{H}/probe", "refused", "A", "a raw `@` in the user"),
+    (
+        "21-at-in-user-encoded",
+        "{S}app%40corp:{A}@{H}/probe",
+        "connect",
+        "A",
+        "the `@` of the user encoded",
+    ),
+    (
+        "22-port-not-a-number",
+        "{S}app:{A}@localhost:54x32/probe",
+        "refused",
+        "A",
+        "a port of more than digits",
+    ),
+    ("23-host-forgotten", "{S}app:{A}/probe", "refused", "A", "the password read as port"),
+    ("24-host-and-database-forgotten", "{S}app:{A}", "refused", "A", "the password as port"),
+    ("25-colon-for-at", "{S}app:{A}:{H}/probe", "refused", "A", "the password read as port"),
+    ("26-scheme-postgres", "postgres://app:{A}@{H}/probe", "refused", "A", "scheme not allowed"),
+    (
+        "27-scheme-unknown-driver",
+        "postgresql+nope://app:{A}@{H}/probe",
+        "refused",
+        "A",
+        "scheme not allowed",
+    ),
+    (
+        "28-scheme-psycopg2",
+        "postgresql+psycopg2://app:{A}@{H}/probe",
+        "refused",
+        "A",
+        "scheme not allowed; a traceback before this round",
+    ),
+    (
+        "29-scheme-without-slashes",
+        "postgresql+psycopg:app:{A}@{B}@{H}/probe",
+        "refused",
+        "AB",
+        "no `//`",
+    ),
+    ("30-ipv6", "{S}app:{A}@[::1]:{port}/probe", "connect", "A", "an IPv6 host in brackets"),
+    ("31-unreachable", "{S}app:{A}@localhost:1/probe", "connect", "A", "nothing listens"),
+    (
+        "32-unresolvable",
+        "{S}app:{A}@no-such-host.invalid/probe",
+        "connect",
+        "A",
+        "a host that does not resolve",
+    ),
+    ("33-percent-not-an-escape", "{S}app:{A}%zz{B}@{H}/probe", "refused", "AB", "`%zz`"),
+    ("34-hash", "{S}app:{A}#{B}@{H}/probe", "refused", "AB", "a raw `#` in the password"),
+    ("35-space", "{S}app:{A} {B}@{H}/probe", "refused", "AB", "a raw space in the password"),
+    ("36-newline", "{S}app:{A}\n{B}@{H}/probe", "refused", "AB", "a raw newline"),
+    (
+        "37-ampersand-in-query-password",
+        "{S}app@{H}/probe?password={A}&{B}",
+        "refused",
+        "AB",
+        "key `password`",
+    ),
+    (
+        "38-leading-space",
+        " {S}app:{A}@{B}@{H}/probe",
+        "refused",
+        "AB",
+        "a space before the scheme",
+    ),
+    ("39-digits-host-forgotten", "{S}app:{D}/probe", "refused", "D", "a port above 65535"),
+    (
+        "N01-at-then-question",
+        "{S}app:{A}@{B}?{C}@{H}/probe",
+        "refused",
+        "ABC",
+        "a query pair without `=`, and a raw `@` in it",
+    ),
+    (
+        "N02-at-slash-question",
+        "{S}app:{A}@{B}/{C}?{E}@{H}/probe",
+        "refused",
+        "ABCE",
+        "a query pair without `=`",
+    ),
+    (
+        "N03-at-question-pair",
+        "{S}app:{A}@{B}?{C}={E}@{H}/probe",
+        "refused",
+        "ABCE",
+        "key not allowed, and a raw `@` in a value",
+    ),
+    (
+        "N04-at-port-question",
+        "{S}app:{A}@{B}:5432?{C}@{H}/probe",
+        "refused",
+        "ABC",
+        "a query pair without `=`",
+    ),
+    (
+        "N05-at-brackets-question",
+        "{S}app:{A}@[{B}:{C}]?{E}@{H}/probe",
+        "refused",
+        "ABCE",
+        "a query pair without `=`",
+    ),
+    (
+        "N06-query-password-ampersand-pair",
+        "{S}app@{H}/probe?password={A}&{B}={C}",
+        "refused",
+        "ABC",
+        "key `password`",
+    ),
+    (
+        "N07-query-password-then-sslmode",
+        "{S}app@{H}/probe?password={A}&sslmode={B}",
+        "refused",
+        "AB",
+        "key `password`",
+    ),
+    (
+        "N08-query-password-ampersand-space",
+        "{S}app@{H}/probe?password={A}&{B}%20{C}={E}",
+        "refused",
+        "ABCE",
+        "key `password`",
+    ),
+    ("N09-negative-port", "{S}app:-{D}/probe", "refused", "D", "a port of more than digits"),
+    (
+        "R01-allowed-query",
+        "{S}app:{A}@{H}/probe?sslmode=disable&connect_timeout=5&application_name=previously",
+        "connect",
+        "A",
+        "three allowed keys",
+    ),
+    (
+        "R02-refused-value-holds-a-piece",
+        "{S}app:{A}@{H}/probe?connect_timeout=x{B}",
+        "connect",
+        "AB",
+        "the client refuses the value, and the reason quotes none of it",
+    ),
+    (
+        "R03-cloudnativepg-uri",
+        "postgresql://app:Ab+cd%2FEF={A}==@{H}/probe",
+        "connect",
+        "A",
+        "what Go writes: `/` as `%2F`, `+` and `=` raw",
+    ),
+    ("R04-empty-port", "{S}app:{A}@localhost:/probe", "refused", "A", "a `:` without a port"),
+    ("R05-port-zero", "{S}app:{A}@localhost:0/probe", "refused", "A", "port 0"),
+    ("R06-nul-escape", "{S}app:{A}%00{B}@{H}/probe", "refused", "AB", "an escaped control"),
+    ("R07-not-utf8", "{S}app:{A}%FF{B}@{H}/probe", "refused", "AB", "an escape that is no UTF-8"),
+    (
+        "R08-repeated-key",
+        "{S}app:{A}@{H}/probe?sslmode=disable&sslmode=require",
+        "refused",
+        "A",
+        "a key twice",
+    ),
+    (
+        "R09-ampersand-in-password",
+        "{S}app:{A}&{B}@{H}/probe",
+        "refused",
+        "AB",
+        "a raw `&` in the password",
+    ),
+    (
+        "R10-known-limit",
+        "{S}nobody.invalid:54321/probe",
+        "connect",
+        "",
+        "ruling T2-j: no `@`, so the user name is the host and 54321 the port",
+    ),
 )
 
 _UNREADABLE = (
-    "Error: PREVIOUSLY_DSN cannot be read as written — something like "
-    "postgresql+psycopg://user:password@host:5432/database is expected, and a "
-    "special character in the user name, the password, the database name or a "
-    "query value has to be percent-encoded, such as `%40` for `@`\n"
+    "Error: PREVIOUSLY_DSN is refused — write it as "
+    "postgresql://user:password@host:5432/database with the password there and "
+    "nowhere else, percent-encode every character of the user name, the password "
+    "and the database name that is not a letter, a digit or one of -._~!$'()*+,;= "
+    "(such as `%40` for `@`), and use no query parameter but application_name, "
+    "channel_binding, connect_timeout, require_auth, sslcert, sslkey, sslmode or "
+    "sslrootcert\n"
 )
 
 
 @pytest.mark.db
 @pytest.mark.parametrize("command", ["log", "migrate"])
 @pytest.mark.parametrize(
-    ("template", "outcome", "secret"), [form[1:] for form in _FORMS], ids=[f[0] for f in _FORMS]
+    ("template", "outcome", "secret", "reason"),
+    [form[1:] for form in _FORMS],
+    ids=[f[0] for f in _FORMS],
 )
 def test_no_form_of_the_connection_string_prints_the_password(
     db: object,
@@ -466,44 +671,41 @@ def test_no_form_of_the_connection_string_prints_the_password(
     template: str,
     outcome: str,
     secret: str,
+    reason: str,
 ) -> None:
-    """Every connection string the attack review of fix round 2 tried, through
-    `log` and through `migrate`, which reads the string into Alembic's
-    configuration before `from_dsn` sees it.
+    """Every connection string the attack reviews tried, through `log` and
+    through `migrate`.
 
-    Measured on 2026-10-05 at `fa61473`: forms 4, 15-17 and 23-25 printed a
+    Measured on 2026-10-05: at `fa61473`, forms 4, 15-17 and 23-25 printed a
     piece of the password, through the host or the port in the sentence, or
-    in a `ValueError` traceback. A count of `@` was refusing the form the
-    round before named and passing the next; `from_dsn` now refuses every
-    string that SQLAlchemy does not give back as written.
+    in a `ValueError` traceback; at `2579eb5`, N01-N09 did, through the host,
+    the database, the port or a key the client library quoted. Three rounds
+    of checks after SQLAlchemy's parse each let the next form through;
+    `from_dsn` now reads the string by a grammar of its own and refuses what
+    is outside it.
 
     Each piece of the password is 20 characters and is drawn at run time, so
     that an eight-character run of it in the output is no coincidence. Where a
     form joins pieces with specials, the password is longer than one piece.
     """
     url = _session_url(db)
-    pieces = {name: secrets.token_hex(10) for name in "ABC"}
+    pieces = {name: secrets.token_hex(10) for name in "ABCE"}
     pieces["D"] = "".join(secrets.choice("0123456789") for _ in range(20))
     dsn = template.format(
         S="postgresql+psycopg://", H=f"{url.host}:{url.port}", port=url.port, **pieces
     )
     monkeypatch.setenv("PREVIOUSLY_DSN", dsn)
-    if outcome == "traceback":
-        with pytest.raises(ModuleNotFoundError) as caught:
-            main([command])
-        output = "".join(traceback.format_exception(caught.value))
-    else:
-        assert main([command]) == 2
-        out, err = capsys.readouterr()
-        output = out + err
-        assert out == ""
-        if outcome == "refused":
-            assert err == _UNREADABLE
-        else:
-            assert len(err.splitlines()) == 1, err
-            assert err.startswith("Error: connecting to "), err
+    assert main([command]) == 2
+    out, err = capsys.readouterr()
+    # First, so that a password in the output fails on this line and no other.
     for name in secret:
-        assert _no_fragment_of(pieces[name], output), output
+        assert _no_fragment_of(pieces[name], out + err), f"{reason}: {err}"
+    assert out == ""
+    if outcome == "refused":
+        assert err == _UNREADABLE, f"{reason}: {err}"
+    else:
+        assert len(err.splitlines()) == 1, f"{reason}: {err}"
+        assert err.startswith("Error: connecting to "), f"{reason}: {err}"
 
 
 @pytest.mark.db

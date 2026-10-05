@@ -58,6 +58,15 @@ def run_migrations_online() -> None:
     and associate a connection with the context.
 
     """
+    # `previously migrate` hands its own connection over, already inside a
+    # transaction it commits itself, so that the connection string is read
+    # once, by `storage.postgres.from_dsn`, and never parsed again here.
+    connection = config.attributes.get("connection")
+    if connection is not None:
+        context.configure(connection=connection, target_metadata=target_metadata)
+        with context.begin_transaction():
+            context.run_migrations()
+        return
     # The same resolution as in the offline branch (resolve_dsn), not merely
     # the same intention: otherwise `alembic upgrade --sql` (offline) would
     # behave differently from the normal case (online), although both are
