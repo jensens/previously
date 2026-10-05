@@ -563,7 +563,7 @@ def test_the_refusal_lists_the_query_keys_from_dsn_accepts() -> None:
     not open."""
     with pytest.raises(InvalidDsn) as error:
         from_dsn("postgresql://app@localhost/probe?plugin=x")
-    listed = str(error.value).rpartition("no query parameter but ")[2]
+    listed = str(error.value).rpartition("no key but ")[2]
     assert set(listed.replace(" or ", ", ").split(", ")) == DSN_QUERY_KEYS
     for key in DSN_QUERY_KEYS:
         from_dsn(f"postgresql://app@localhost/probe?{key}=x").close()

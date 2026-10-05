@@ -65,6 +65,7 @@ from typing import TYPE_CHECKING
 from urllib.parse import unquote
 
 import re
+import unicodedata
 
 
 if TYPE_CHECKING:
@@ -905,13 +906,19 @@ def _unreadable() -> InvalidDsn:
     carries the text where `tests/test_docs_references.py` reads it. The
     query parameters it lists are `DSN_QUERY_KEYS`, and a test holds the two
     together.
+
+    The rule it gives is the one that always works, not the whole grammar:
+    every part takes the escape of any character but a control or a line
+    separator, while raw it takes only some, the user part `!$&'()*+,;=` and
+    `/` in a value among them. A special character in a query value has to be
+    percent-encoded too, or the value is refused.
     """
     return InvalidDsn(
         "PREVIOUSLY_DSN is refused — write it as "
-        "postgresql://user:password@host:5432/database with the password there and "
-        "nowhere else, percent-encode every character of the user name, the password "
-        "and the database name that is not a letter, a digit or one of -._~!$'()*+,;= "
-        "(such as `%40` for `@`), and use no query parameter but application_name, "
+        "postgresql://user:password@host:5432/database?key=value with the password "
+        "there and nowhere else, percent-encode every character of the user name, the "
+        "password, the database name and a value that is not a letter, a digit or one "
+        "of -._~ (such as `%40` for `@`), and use no key but application_name, "
         "channel_binding, connect_timeout, require_auth, sslcert, sslkey, sslmode or "
         "sslrootcert"
     )
@@ -942,37 +949,56 @@ DSN_QUERY_KEYS = frozenset(
     }
 )
 
-# A percent-escape of any byte but a control character. Measured on
-# 2026-10-05 with psycopg 3.3.6: a NUL in the user name, the password or the
-# database name cut the connection parameters short, so the port given with
-# them was lost and the client went to 5432. A newline in the database name,
-# which a message prints, splits its one sentence into two lines, measured
-# the same day by the review of fix round 3.
-_ESCAPE = r"%(?:[2-6][0-9A-Fa-f]|7[0-9A-Ea-e]|[89A-Fa-f][0-9A-Fa-f])"
-# One character of a user name, a password or a database name, after
-# RFC 3986: an unreserved character, a sub-delimiter but `&`, or an escape.
-# None of `@ : / ? # [ ] %` stands raw, so no part can hold the character
-# that ends it.
+# A percent-escape of any byte. What the escapes decode to is checked in
+# `_decoded`, since a control character can take more than one byte.
+_ESCAPE = r"%[0-9A-Fa-f]{2}"
+# One character of a user name or a password, after RFC 3986: an unreserved
+# character, a sub-delimiter, or an escape. `&` is a sub-delimiter like the
+# others here: it separates the pairs of the query, which begins at a `?` that
+# the user part cannot hold, and Go's `url.UserPassword`, which writes the
+# `uri` of CloudNativePG, leaves it raw. None of `@ : / ? # [ ] %` stands raw,
+# so no part can hold the character that ends it.
+_USERINFO = rf"(?:[A-Za-z0-9\-._~!$&'()*+,;=]|{_ESCAPE})"
+# One character of a database name: the same, but `&`.
 _PART = rf"(?:[A-Za-z0-9\-._~!$'()*+,;=]|{_ESCAPE})"
 # One character of a query value: an unreserved character, `/` for the path
 # of a certificate, or an escape. No `&` or `=`, which cut the query into its
 # pairs, and no `+`, which a query reader takes for a space.
 _VALUE = rf"(?:[A-Za-z0-9\-._~/]|{_ESCAPE})"
+# A host name of labels of 1 to 63 characters, an optional final dot. An
+# empty label or a longer one, `a..b` or `.`, made psycopg's name lookup raise
+# `UnicodeEncodeError` out of the `idna` codec, a traceback, measured on
+# 2026-10-05 by the review of fix round 4.
+_LABEL = r"[A-Za-z0-9_\-]{1,63}"
 _DSN = re.compile(
     r"(?P<scheme>postgresql|postgresql\+psycopg)://"
-    rf"(?:(?P<user>{_PART}+)(?::(?P<password>{_PART}*))?@)?"
-    r"(?:(?P<host>[A-Za-z0-9_.\-]+)|\[(?P<ipv6>[0-9A-Fa-f:.]+)\])"
+    rf"(?:(?P<user>{_USERINFO}+)(?::(?P<password>{_USERINFO}*))?@)?"
+    rf"(?:(?P<host>{_LABEL}(?:\.{_LABEL})*\.?)|\[(?P<ipv6>[0-9A-Fa-f:.]+)\])"
     r"(?::(?P<port>[0-9]{1,5}))?"
     rf"(?:/(?P<database>{_PART}*))?"
     rf"(?:\?(?P<query>[a-z_]+={_VALUE}+(?:&[a-z_]+={_VALUE}+)*))?"
 )
+# What no decoded part may hold: a control character (category `Cc`, which
+# takes in U+0085 and the C1 range U+0080-U+009F) or a line or paragraph
+# separator (`Zl`, `Zp`). Measured on 2026-10-05 with psycopg 3.3.6: a NUL in
+# the user name, the password or the database name cut the connection
+# parameters short, so the port given with them was lost and the client went
+# to 5432. A newline, U+0085, U+2028 or U+2029 in the database name, which a
+# message prints, splits its one sentence into lines for `str.splitlines()`
+# and for a log shipper, measured the same day by the reviews of fix rounds 3
+# and 4.
+_REFUSED_CATEGORIES = frozenset({"Cc", "Zl", "Zp"})
 
 
 def _decoded(text: str) -> str:
-    """`text` with its escapes decoded as UTF-8, or `UnicodeDecodeError`:
-    an escape that is no UTF-8 would reach the server as a replacement
-    character, which is not what was written."""
-    return unquote(text, errors="strict")
+    """`text` with its escapes decoded as UTF-8, or `ValueError`: an escape
+    that is no UTF-8 would reach the server as a replacement character, which
+    is not what was written, and a character of `_REFUSED_CATEGORIES` is
+    refused. `UnicodeDecodeError` is a `ValueError`."""
+    decoded = unquote(text, errors="strict")
+    if any(unicodedata.category(character) in _REFUSED_CATEGORIES for character in decoded):
+        raise ValueError("a control character or a line separator")
+    return decoded
 
 
 def _url_of(dsn: str) -> URL | None:
@@ -983,10 +1009,28 @@ def _url_of(dsn: str) -> URL | None:
     parts it names, so SQLAlchemy never cuts the string itself, and no check
     afterwards has to guess where it would have. Every part ends at a
     character that no part may hold raw, so the string has one reading.
-    The one thing a grammar cannot tell apart is what the writer meant: a
-    string without `@` has no user part, and what follows the first `:` there
-    is the port, so `user:12345/database`, with the `@host` forgotten, reads
-    as host `user` and port `12345`.
+
+    What a grammar cannot tell is what the writer meant. A mistyped string
+    that matches it is read as written, and a piece of a password can then
+    stand where a message prints it, measured on 2026-10-05 by the reviews
+    of fix rounds 3 and 4:
+
+    - the `@host` forgotten after a password of up to five digits,
+      `user:12345/database`: the user name is printed as the host and the
+      password as the port (ruling T2-j);
+    - the `@host` and the database forgotten, `user:12345/rest`: the rest of
+      the password is printed as the database;
+    - a raw `@` in the password and the `@host` forgotten, `user:pw@rest`,
+      or `user:pw@[rest]` with a rest of hexadecimal digits: the rest is
+      printed as the host;
+    - a password written as the value of `sslmode`, `require_auth` or
+      `channel_binding`: the client library quotes the value, decoded;
+    - a password written as the user name: the client library names it when
+      the server refuses the login;
+    - a password written as the database name: the message prints it.
+
+    `alembic`, run in a checkout, parses `PREVIOUSLY_DSN` with SQLAlchemy and
+    not with this grammar.
 
     A port is 1 to 65535. A database written as nothing, `host/`, is none.
     """
@@ -1008,7 +1052,7 @@ def _url_of(dsn: str) -> URL | None:
             None if match[name] is None else _decoded(match[name])
             for name in ("user", "password", "database")
         )
-    except UnicodeDecodeError:
+    except ValueError:
         return None
     return URL.create(
         match["scheme"],

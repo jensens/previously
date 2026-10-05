@@ -382,7 +382,7 @@ def test_a_password_in_the_query_is_refused(
 
 # The connection strings of the attack reviews of 2026-10-05: the 38 of fix
 # round 2 in its order, one more after them, the nine of fix round 3 as
-# N01-N09, and the forms of fix round 4 as R01-R10. `{A}`, `{B}`, `{C}` and
+# N01-N09, and the forms of fix rounds 4 and 5 as R01-R19. `{A}`, `{B}`, `{C}` and
 # `{E}` are pieces of a password, 20 hexadecimal characters each, and `{D}`
 # one of 20 digits, all drawn at run time; `{H}` is the session server's
 # host and port. The specials stand in the forms between the pieces. The
@@ -632,9 +632,30 @@ _FORMS: tuple[tuple[str, str, str, str, str], ...] = (
     (
         "R09-ampersand-in-password",
         "{S}app:{A}&{B}@{H}/probe",
-        "refused",
+        "connect",
         "AB",
-        "a raw `&` in the password",
+        "a raw `&` in the password, as Go writes it (ruling T2-l)",
+    ),
+    ("R11-nel-in-database", "{S}app:{A}@{H}/pro%C2%85be", "refused", "A", "U+0085 decoded"),
+    ("R12-line-separator", "{S}app:{A}@{H}/pro%E2%80%A8be", "refused", "A", "U+2028 decoded"),
+    ("R13-paragraph-separator", "{S}app:{A}@{H}/pro%E2%80%A9be", "refused", "A", "U+2029"),
+    ("R14-c1-control", "{S}app:{A}@{H}/pro%C2%9Bbe", "refused", "A", "U+009B, a C1 control"),
+    ("R15-newline-in-database", "{S}app:{A}@{H}/pro%0Abe", "refused", "A", "an escaped newline"),
+    ("R16-empty-label", "{S}app:{A}@a..b/probe", "refused", "A", "a host label that is empty"),
+    ("R17-dot-host", "{S}app:{A}@./probe", "refused", "A", "a host of one dot"),
+    (
+        "R18-long-label",
+        "{S}app:{A}@" + "a" * 64 + ".invalid/probe",
+        "refused",
+        "A",
+        "a host label of 64 characters",
+    ),
+    (
+        "R19-ampersand-in-query-value",
+        "{S}app:{A}@{H}/probe?application_name=a&b",
+        "refused",
+        "A",
+        "a raw `&` in a query value stays refused",
     ),
     (
         "R10-known-limit",
@@ -647,10 +668,10 @@ _FORMS: tuple[tuple[str, str, str, str, str], ...] = (
 
 _UNREADABLE = (
     "Error: PREVIOUSLY_DSN is refused — write it as "
-    "postgresql://user:password@host:5432/database with the password there and "
-    "nowhere else, percent-encode every character of the user name, the password "
-    "and the database name that is not a letter, a digit or one of -._~!$'()*+,;= "
-    "(such as `%40` for `@`), and use no query parameter but application_name, "
+    "postgresql://user:password@host:5432/database?key=value with the password "
+    "there and nowhere else, percent-encode every character of the user name, the "
+    "password, the database name and a value that is not a letter, a digit or one "
+    "of -._~ (such as `%40` for `@`), and use no key but application_name, "
     "channel_binding, connect_timeout, require_auth, sslcert, sslkey, sslmode or "
     "sslrootcert\n"
 )
@@ -701,10 +722,12 @@ def test_no_form_of_the_connection_string_prints_the_password(
     for name in secret:
         assert _no_fragment_of(pieces[name], out + err), f"{reason}: {err}"
     assert out == ""
+    # `str.splitlines()`, which also breaks at U+0085, U+2028 and U+2029,
+    # the way a log shipper may.
+    assert len(err.splitlines()) == 1, f"{reason}: {err!r}"
     if outcome == "refused":
         assert err == _UNREADABLE, f"{reason}: {err}"
     else:
-        assert len(err.splitlines()) == 1, f"{reason}: {err}"
         assert err.startswith("Error: connecting to "), f"{reason}: {err}"
 
 

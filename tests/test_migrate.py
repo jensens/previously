@@ -515,12 +515,14 @@ def test_cli_migrate_takes_the_uri_cloudnativepg_writes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """CloudNativePG puts a `uri` into the secret of an application's role,
-    built by Go's `url.URL` with `url.UserPassword`: a password of base64
-    characters, its `/` written as `%2F`, its `+` and `=` raw. Pasted as it is
+    built by Go's `url.URL` with `url.UserPassword`, which writes `/` as
+    `%2F` and leaves `$&+,;=` raw. The passwords CloudNativePG generates are
+    letters and digits; one an operator supplies can hold these, `&` among
+    them (ruling T2-l), and this one holds all of them. Pasted as it is
     into `PREVIOUSLY_DSN`, with the plain `postgresql://` scheme, it is inside
     the grammar `from_dsn` accepts, and `migrate` runs. The role owns the
     database, since only the owner may create in `public` (PostgreSQL 15)."""
-    password = f"Ab+cd/EF={secrets.token_hex(8)}=="
+    password = f"Ab+cd/EF=gh&$,;{secrets.token_hex(8)}=="
     database = make_url(empty_dsn).database
     with engine.execution_options(isolation_level="AUTOCOMMIT").connect() as conn:
         conn.execute(text(f"ALTER ROLE {role.name} PASSWORD '{password}'"))
@@ -531,3 +533,57 @@ def test_cli_migrate_takes_the_uri_cloudnativepg_writes(
     monkeypatch.setenv("PREVIOUSLY_DSN", dsn)
     assert main(["migrate"]) == 0
     assert capsys.readouterr() == (f"migrated: (empty) -> {HEAD}\n", "")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("state", ["XX000", "P0001"])
+def test_cli_migrate_names_the_reason_of_an_error_at_commit(
+    state: str,
+    empty_dsn: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A check the database runs only at the end of the transaction: a
+    deferred constraint trigger on `alembic_version`, which an event trigger
+    adds as soon as Alembic creates the table, refuses the row Alembic
+    records. It fires at commit, after every revision ran. Both SQLSTATEs end
+    as one sentence with the database's reason: `XX000`, which psycopg files
+    under `InternalError`, and `P0001`, which it files under
+    `ProgrammingError`, which the storage would otherwise call a missing
+    schema."""
+    engine = create_engine(empty_dsn)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE FUNCTION refuse_row() RETURNS trigger LANGUAGE plpgsql AS "
+                    "$$ BEGIN RAISE EXCEPTION 'no revision may be recorded here' "
+                    f"USING ERRCODE = '{state}'; END $$"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE FUNCTION guard_versions() RETURNS event_trigger "
+                    "LANGUAGE plpgsql AS $$ BEGIN "
+                    "IF to_regclass('alembic_version') IS NOT NULL AND NOT EXISTS "
+                    "(SELECT 1 FROM pg_trigger WHERE tgname = 'refuse_row') THEN "
+                    "CREATE CONSTRAINT TRIGGER refuse_row AFTER INSERT ON alembic_version "
+                    "DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION refuse_row(); "
+                    "END IF; END $$"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE EVENT TRIGGER guard_versions ON ddl_command_end "
+                    "WHEN TAG IN ('CREATE TABLE') EXECUTE FUNCTION guard_versions()"
+                )
+            )
+    finally:
+        engine.dispose()
+    monkeypatch.setenv("PREVIOUSLY_DSN", empty_dsn)
+    assert main(["migrate"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the database refused the migration to {HEAD}: no revision may be recorded here\n",
+    )
+    assert _no_lock_left(empty_dsn)

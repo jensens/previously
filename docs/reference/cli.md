@@ -11,7 +11,7 @@ A transaction the database aborts in a conflict with a concurrent one, a deadloc
 
 A message about the database names the database, the host and the port from `PREVIOUSLY_DSN`, and of the connection string nothing else, in its own words.
 The reason it quotes can say more: the line from the client library can name the user, and quote the value of a query parameter it rejects, such as an `sslmode` it doesn't know.
-`previously` takes the password from the user part of the connection string alone, so a message can carry a piece of it only where the string is read otherwise than its writer meant; {ref}`the accepted form <dsn-form>` names that case.
+`previously` takes the password from the user part of the connection string alone, so a message can carry a piece of it only where the string is mistyped, such as with the `@host` forgotten or the password in the place of another part; {ref}`the accepted form <dsn-form>` lists each such case and what gets printed.
 
 When connecting to the database fails, every subcommand prints one sentence to standard error and returns 2, followed by the first line of the reason:
 
@@ -37,7 +37,7 @@ Error: the operation on database previously at localhost:5432 failed: canceling 
 A `PREVIOUSLY_DSN` outside {ref}`the accepted form <dsn-form>` is refused before anything connects, with one sentence that names no part of it:
 
 ```text
-Error: PREVIOUSLY_DSN is refused — write it as postgresql://user:password@host:5432/database with the password there and nowhere else, percent-encode every character of the user name, the password and the database name that is not a letter, a digit or one of -._~!$'()*+,;= (such as `%40` for `@`), and use no query parameter but application_name, channel_binding, connect_timeout, require_auth, sslcert, sslkey, sslmode or sslrootcert
+Error: PREVIOUSLY_DSN is refused — write it as postgresql://user:password@host:5432/database?key=value with the password there and nowhere else, percent-encode every character of the user name, the password, the database name and a value that is not a letter, a digit or one of -._~ (such as `%40` for `@`), and use no key but application_name, channel_binding, connect_timeout, require_auth, sslcert, sslkey, sslmode or sslrootcert
 ```
 
 Every subcommand but `migrate` needs the schema that `migrate` creates, and against a database without it prints one sentence to standard error and returns 2:

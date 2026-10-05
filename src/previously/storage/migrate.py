@@ -130,10 +130,17 @@ def migrate(dsn: str) -> Migrated:
             if before != head:
                 # `_refusals` inside the `with`, so that a refusal reaches
                 # `_transaction` as `MigrationFailed` and not as the
-                # `ProgrammingError` it turns into `MigrationPending`.
+                # `ProgrammingError` it turns into `MigrationPending`. The
+                # commit comes after `_refusals` has closed, so the deferred
+                # constraints and constraint triggers, which the database
+                # would check at commit, are checked here instead: measured on
+                # 2026-10-05 with a deferred constraint trigger on
+                # `alembic_version`, its error at commit was a traceback
+                # (`XX000`) or the advice to run `migrate` again (`P0001`).
                 with storage.begin() as upgrade, _refusals(head):
                     config.attributes["connection"] = upgrade
                     command.upgrade(config, "head")
+                    upgrade.execute(text("SET CONSTRAINTS ALL IMMEDIATE"))
             # Released here, after success, and not in a `finally`: on the way
             # out with an error, `storage.close()` below closes the session,
             # and the lock goes with it. An unlock on that way could only fail
