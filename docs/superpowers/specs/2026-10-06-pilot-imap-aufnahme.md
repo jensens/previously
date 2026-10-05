@@ -579,6 +579,16 @@ Landkarte.
 7. **Ein Objekt ohne Event**, wenn eine Mail zwischen Speichern und Anfügen
    aus dem Ordner verschwindet (wie Stufe 1c).
 8. **Textextraktion aus Anhängen** (Einheit 7).
-9. **Weiterleitung als zitierter Text** bleibt Text der äußeren Mail (§3.6);
+9. **Mails als Dateien im Nextcloud-Ordner (Einheit 7).** Eine `.eml`-Datei
+   ist eine Mail nach RFC 822, dieselben Bytes, die IMAP liefert; sie läuft
+   durch dieselbe Abbildung (`core/mail.py`) und wird ein Event mit
+   `source = email` — liegt dieselbe Mail auch im IMAP-Ordner, ist sie über
+   Message-ID und Inhaltsidentität dasselbe Event, gleich welcher Weg zuerst
+   kam; ihr Fundort ist dann der Nextcloud-Konnektor. Offen für Einheit 7:
+   Outlooks `.msg` (eigenes Binärformat) und `.mbox` (viele Mails in einer
+   Datei) müssen erst umgewandelt oder zerlegt werden — was davon gebraucht
+   wird, zeigt, was im Ordner tatsächlich landet. Vom Betreuer am 2026-10-06
+   gefragt, „dann wird es nicht vergessen".
+10. **Weiterleitung als zitierter Text** bleibt Text der äußeren Mail (§3.6);
    sie zu zerlegen wäre Deutung, und ob das eine spätere Einheit leisten
    soll, ist offen.
