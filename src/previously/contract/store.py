@@ -1,19 +1,23 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The store protocols: what `core` may ask of a store, and nothing more.
+r"""The store protocols: what `core` may ask of a store, and nothing more.
 
 `LogStore` is what the modules of `core` that write or read the log call —
 thirteen methods, counted on 2026-10-05, after the final fixes of stage 1c,
-as the lines that
-`grep -ohE '(storage|log)\\.[a-z_]*\\(' FILES | sed 's/.*\\.//' | sort -u`
-prints, with FILES
-the five modules that name `LogStore` today — `append.py`, `verify.py`,
-`redact.py`, `redaction.py` and `projection/worker.py` under
-`src/previously/core/` — and not copied from the method list of the
-implementation. Without the `sed` stage, as the command stood here until
-then, it prints 21 lines, a name once for each of the two prefixes it is
-called through, and the claim was a count of those by hand. It was eight
+by this command, run from the root of the repository in bash or fish:
+
+    grep -ohE '(storage|log)\.[a-z_]*\(' src/previously/core/append.py \
+        src/previously/core/verify.py src/previously/core/redact.py \
+        src/previously/core/redaction.py src/previously/core/projection/worker.py \
+        | sed 's/.*\.//' | sort -u | wc -l
+
+The files are the five modules that name `LogStore` today, and the count is
+not copied from the method list of the implementation. The docstring is raw
+so that the text in this file is the command, backslashes as they stand.
+Without the `sed` stage, as the command stood here until then, `sort -u`
+leaves 21 lines, a name once for each of the two prefixes it is called
+through, and the claim was a count of those by hand. It was eight
 until the chain
 check took `snapshot` instead of `begin` for its reads, and `append` still
 takes `begin`, so both stay; it was nine until stage 1c, whose redactions
