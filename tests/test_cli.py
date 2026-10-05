@@ -11,12 +11,15 @@ from previously.cli import MAX_TEXT_BYTES
 from previously.cli import media_type_of
 from previously.cli import parse_moment
 from previously.contract.rows import EventRow
+from previously.contract.rows import ProjectionState
 from previously.contract.rows import UnitRow
 from previously.contract.types import BlobRef
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
 from previously.core.errors import InvalidPayload
+from previously.core.projection import catch_up
+from previously.core.projection import CHRONICLE
 from previously.core.redact import redact_blob
 from previously.core.redact import redact_event
 from previously.core.sealing import recipient_of
@@ -31,6 +34,7 @@ import os
 import pytest
 import re
 import sys
+import threading
 import time
 
 
@@ -41,6 +45,7 @@ if TYPE_CHECKING:
     from previously.contract.blobs import ClosableSource
     from previously.contract.blobs import StoredBlob
     from previously.storage.s3 import S3BlobStore
+    from sqlalchemy import Connection
     from sqlalchemy import Engine
     from typing import IO
 
@@ -1438,6 +1443,91 @@ def test_a_catch_up_that_fails_after_the_redaction_says_what_is_outstanding(
         "projection chronicle is not caught up (expected events 2.. above id 1, "
         "read [3, 4]; the tip is 4); run the same command again\n"
     )
+
+
+class _HoldingProject(PostgresStorage):
+    """The real store, except that a catch-up through it, once it has
+    written the rows of its first batch that reads an event and the new
+    `up_to_id`, holds them uncommitted until `may_commit()` is true, and
+    says so in `holding`."""
+
+    def __init__(self, engine: Engine, may_commit: Callable[[], bool]) -> None:
+        super().__init__(engine)
+        self.holding = threading.Event()
+        self._may_commit = may_commit
+
+    def set_projection_state(self, conn: Connection, state: ProjectionState) -> None:
+        super().set_projection_state(conn, state)
+        if state.up_to_id > 0 and not self.holding.is_set():
+            self.holding.set()
+            deadline = time.monotonic() + 10
+            while not self._may_commit():
+                assert time.monotonic() < deadline, "redact never came"
+                time.sleep(0.01)
+
+
+def _waiting_on_a_lock(engine: Engine) -> bool:
+    from sqlalchemy import text
+
+    with engine.connect() as c:
+        return bool(
+            c.execute(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                )
+            ).scalar_one()
+        )
+
+
+@pytest.mark.db
+def test_redact_beside_a_project_holding_rows_ends_without_a_traceback(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `project` holds the chronicle rows of event 1 uncommitted while
+    `redact event 2` runs its own catch-up. The catch-up waits at the state
+    row of the chronicle, starts where the `project` committed, and the
+    command ends with its one line and nothing on standard error.
+
+    Measured on 2026-10-05 with the lock taken out of
+    `lock_projection_state`: the catch-up of `redact` started at `up_to_id` 0,
+    inserted event 1's rows behind the uncommitted ones of the `project`, and
+    once that committed, `main` raised `IntegrityError` on `p_chronicle_pkey`
+    — a traceback after the redaction had committed, with no word that it
+    stood."""
+    engine = _connect(db, monkeypatch)
+    storage = PostgresStorage(engine)
+    _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
+    redacted = threading.Event()
+    project = _HoldingProject(engine, lambda: redacted.is_set() or _waiting_on_a_lock(engine))
+    errors: list[BaseException] = []
+
+    def run_project() -> None:
+        try:
+            catch_up(project, project, CHRONICLE)
+        except BaseException as e:
+            errors.append(e)
+
+    thread = threading.Thread(target=run_project)
+    thread.start()
+    try:
+        assert project.holding.wait(timeout=10)
+        _append("cli", "b", "Three", "2026-10-02T09:00:00Z")
+        capsys.readouterr()
+        assert main(["redact", "event", "2", "--reason", "r"]) == 0
+    finally:
+        redacted.set()
+        thread.join(timeout=20)
+    assert not thread.is_alive(), "thread is hanging"
+
+    assert errors == []
+    assert capsys.readouterr() == (
+        "redacted by event 3\n",
+        "source-stats    built: 3 events, up_to_id 3\n",
+    )
+    with storage.begin() as conn:
+        rows = storage.read_chronicle(conn, since=None, until=None, limit=10)
+    assert [(row.event_id, row.seq) for row in rows] == [(1, 1), (1, 2)]
 
 
 @pytest.mark.db

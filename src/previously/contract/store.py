@@ -111,6 +111,16 @@ class ProjectionStore[Conn](Protocol):
     comment: nothing typed against `LogStore` can truncate, and nothing typed
     against this protocol can append to the log.
 
+    `lock_projection_state` reads the state row of one projection and locks
+    it until the transaction ends, so that two catch-ups of the same
+    projection run one after the other and each takes `up_to_id` and the
+    version from the row, never from what it read before. Without a row it
+    writes one in its place, at `up_to_id` 0 and version 0, holds that the
+    same way, and returns `None`: a second transaction asking meanwhile
+    waits until the first ends and then finds the row the first committed.
+    Version 0 is no version a projection declares, so a placeholder that
+    were ever committed as it is would only make the next catch-up rebuild.
+
     `delete_chronicle` takes the chronicle rows of one event: those of the
     named units, or with `None` every row of the event; an empty sequence is
     no statement. It is how the chronicle follows an erasure
@@ -126,7 +136,7 @@ class ProjectionStore[Conn](Protocol):
     """
 
     def begin(self) -> AbstractContextManager[Conn]: ...
-    def projection_state(self, conn: Conn, name: str) -> ProjectionState | None: ...
+    def lock_projection_state(self, conn: Conn, name: str) -> ProjectionState | None: ...
     def set_projection_state(self, conn: Conn, state: ProjectionState) -> None: ...
     def truncate_projection(self, conn: Conn, name: str) -> None: ...
     def insert_chronicle(self, conn: Conn, rows: Sequence[ChronicleRow]) -> None: ...

@@ -523,11 +523,42 @@ class PostgresStorage:
     }
 
     def projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
+        """The state row of one projection, unlocked, or `None`. Outside the
+        protocol: the worker locks the row instead, and only tests read it
+        this way."""
         row = conn.execute(
             select(projection_state).where(projection_state.c.name == name)
         ).one_or_none()
         if row is None:
             return None
+        return ProjectionState(
+            name=row.name, up_to_id=row.up_to_id, version=row.version, built_at=row.built_at
+        )
+
+    def lock_projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
+        """The state row of one projection, locked `FOR UPDATE` until the
+        caller's transaction ends, or `None` when there was none — and then a
+        placeholder at `up_to_id` 0 and version 0 stands in its place, held
+        by this transaction ({ref}`projections`).
+
+        The placeholder is what a lock needs when there is no row to lock:
+        `SELECT … FOR UPDATE` on a row that does not exist locks nothing, and
+        two first builds would both find nothing and both build. Inserted
+        with `ON CONFLICT DO NOTHING`, it makes a second transaction wait at
+        the primary key until the first ends; the second then inserts
+        nothing and locks the row the first committed.
+        """
+        inserted = conn.execute(
+            pg_insert(projection_state)
+            .values(name=name, up_to_id=0, version=0, built_at=func.now())
+            .on_conflict_do_nothing(index_elements=[projection_state.c.name])
+            .returning(projection_state.c.name)
+        ).one_or_none()
+        if inserted is not None:
+            return None
+        row = conn.execute(
+            select(projection_state).where(projection_state.c.name == name).with_for_update()
+        ).one()
         return ProjectionState(
             name=row.name, up_to_id=row.up_to_id, version=row.version, built_at=row.built_at
         )

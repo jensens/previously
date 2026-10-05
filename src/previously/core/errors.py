@@ -48,6 +48,18 @@ class ProjectionGap(PreviouslyError):
     """
 
 
+class ProjectionRebuilt(PreviouslyError):
+    """The state row of a projection changed its version, or vanished, while
+    a catch-up of it ran ({ref}`projections`).
+
+    Only another release does that: a catch-up at a different version
+    rebuilds the table between two batches of this one. Raised rather than
+    rebuilt over in turn, because two releases that each rebuilt whenever
+    they met the other's version would take turns at the lock and never
+    finish; this one stops, and the other carries its build to the end.
+    """
+
+
 class RedactionRefused(PreviouslyError):
     """An erasure that cannot be carried out as asked ({ref}`erasure`).
 

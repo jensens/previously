@@ -105,8 +105,13 @@ Index("event_hash_idx", event.c.hash, unique=True)
 # the chain position ({ref}`concurrency`): no advisory lock, no FOR UPDATE on
 # the tip, but two unique indexes decide which writer gets the position —
 # `append` and an erasure alike. The loser re-reads the tip and retries. The
-# one row lock in the system, an erasure's `FOR UPDATE`, is on the erased
-# event and orders two erasures of the same target, not the chain.
+# row locks in the system order other things, never the chain. An erasure
+# locks `FOR UPDATE` the events whose redactions it is about to read: for
+# `redact units` its target, for `redact event` its target and every event
+# that shares a blob with it, for `redact blob` every event that uses the
+# blob, each set in ascending `id`. So two erasures whose sets overlap run
+# one after the other. A catch-up locks the state row of its projection in
+# `projection_state`, so that two catch-ups of one projection take turns.
 #
 # NULLS NOT DISTINCT is not optional: without it several NULL count as
 # distinct, and every process could write its own genesis entry

@@ -26,6 +26,7 @@ from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
 from previously.core.errors import ProjectionGap
+from previously.core.errors import ProjectionRebuilt
 from previously.core.projection import PROJECTIONS
 from previously.core.projection.chronicle import CHRONICLE
 from previously.core.projection.chronicle import ChronicleProjection
@@ -42,12 +43,16 @@ from sqlalchemy import text
 from typing import TYPE_CHECKING
 
 import pytest
+import threading
+import time
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from collections.abc import Sequence
     from contextlib import AbstractContextManager
     from previously.contract.store import ProjectionStore
+    from previously.core.projection.worker import Outcome
 
 NOW = datetime(2026, 10, 4, 12, 0, 0, tzinfo=UTC)
 
@@ -191,8 +196,8 @@ class _FailingStore:
     def begin(self) -> AbstractContextManager[Connection]:
         return self._inner.begin()
 
-    def projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
-        return self._inner.projection_state(conn, name)
+    def lock_projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
+        return self._inner.lock_projection_state(conn, name)
 
     def set_projection_state(self, conn: Connection, state: ProjectionState) -> None:
         self._inner.set_projection_state(conn, state)
@@ -575,3 +580,239 @@ def test_property_any_interleaving_of_append_and_catch_up_equals_a_rebuild(
     _force_rebuild(storage)
     _project_all(storage)
     assert _snapshot(db) == incremental
+
+
+# --- Two catch-ups of one projection ({ref}`projections`) ---------------------
+#
+# A scheduled `project` and the catch-up every `redact` runs are two workers
+# on the same projection. The tests below pause one of them between real calls
+# and let the other run against what it holds; nothing stands in for the
+# database, and no sleep hopes for an order. A paused worker goes on once the
+# other has finished or is waiting on a lock, which `pg_stat_activity` says.
+
+
+def _waiting_on_a_lock(db: Engine) -> bool:
+    with db.connect() as c:
+        return bool(
+            c.execute(
+                text(
+                    "SELECT count(*) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND wait_event_type = 'Lock'"
+                )
+            ).scalar_one()
+        )
+
+
+def _wait_until(condition: Callable[[], bool]) -> None:
+    deadline = time.monotonic() + 10
+    while not condition():
+        assert time.monotonic() < deadline, "the other worker never came"
+        time.sleep(0.01)
+
+
+class _PausingStore(PostgresStorage):
+    """The real store, except that a catch-up through it stops twice in the
+    first batch that reads an event: once it has read the batch, until
+    `go_on` is set, and once it has written the rows and the new `up_to_id`,
+    until `may_commit()` is true. `holding` says it is at the second stop,
+    with its rows uncommitted."""
+
+    def __init__(self, engine: Engine, may_commit: Callable[[], bool]) -> None:
+        super().__init__(engine)
+        self.has_read = threading.Event()
+        self.go_on = threading.Event()
+        self.holding = threading.Event()
+        self._may_commit = may_commit
+
+    def source_keys(self, conn: Connection, event_ids: Sequence[int]) -> dict[int, tuple[str, str]]:
+        keys = super().source_keys(conn, event_ids)
+        if event_ids and not self.has_read.is_set():
+            self.has_read.set()
+            assert self.go_on.wait(timeout=10)
+        return keys
+
+    def set_projection_state(self, conn: Connection, state: ProjectionState) -> None:
+        super().set_projection_state(conn, state)
+        if state.up_to_id > 0 and not self.holding.is_set():
+            self.holding.set()
+            _wait_until(self._may_commit)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("appended", [True, False], ids=["appended-meanwhile", "control"])
+def test_two_catch_ups_of_one_projection_take_turns(db: Engine, appended: bool) -> None:
+    """A `project` reads event 1, a redaction of it commits, and with
+    `appended` another event arrives; then the catch-up of `redact` runs while
+    the `project` holds event 1's rows uncommitted.
+
+    Each batch locks the state row and reads `up_to_id` from it, so the
+    second catch-up waits for the first, starts at `up_to_id` 1, reads the
+    redaction, and takes the rows out. Measured on 2026-10-05 with the lock
+    taken out of `lock_projection_state`: with the append, the second
+    catch-up started at 0 from memory, inserted event 3's rows, deleted none
+    of event 1's, which it could not see yet, and committed `up_to_id` 3
+    after the first; the first then failed on event 3's rows with an
+    `IntegrityError`, and the chronicle kept the erased text. The control,
+    without the append, ends clean with and without the lock: the first
+    catch-up's own next batch reads the redaction."""
+    storage = PostgresStorage(db)
+    catch_up(storage, storage, CHRONICLE)
+    erased = "secret line one.\n\nsecret line two."
+    append(storage, [_raw(1, "email", NOW, erased)], recorded_at=NOW)
+    second_done = threading.Event()
+    first = _PausingStore(db, lambda: second_done.is_set() or _waiting_on_a_lock(db))
+    errors: list[BaseException] = []
+
+    def project() -> None:
+        try:
+            catch_up(first, first, CHRONICLE)
+        except BaseException as e:
+            errors.append(e)
+
+    def redact_catch_up() -> None:
+        try:
+            assert first.holding.wait(timeout=10)
+            catch_up(storage, storage, CHRONICLE)
+        except BaseException as e:
+            errors.append(e)
+        finally:
+            second_done.set()
+
+    threads = [threading.Thread(target=project), threading.Thread(target=redact_catch_up)]
+    for t in threads:
+        t.start()
+    assert first.has_read.wait(timeout=10)
+    redact_event(storage, storage, 1, reason="wrong list", recorded_at=NOW)
+    if appended:
+        append(storage, [_raw(2, "email", NOW)], recorded_at=NOW)
+    first.go_on.set()
+    for t in threads:
+        t.join(timeout=20)
+        assert not t.is_alive(), "thread is hanging"
+
+    assert errors == []
+    assert _chronicle_keys(db) == ([(3, 1), (3, 2)] if appended else [])
+    again = catch_up(storage, storage, CHRONICLE)
+    assert (again.events, again.up_to_id) == (0, 3 if appended else 2)
+    incremental = _snapshot(db)[0]
+    _force_rebuild(storage)
+    catch_up(storage, storage, CHRONICLE)
+    assert _snapshot(db)[0] == incremental
+
+
+class _HoldingFirstLock(PostgresStorage):
+    """The real store, except that the first `lock_projection_state` through
+    it, once it holds the lock, waits until `may_go_on()` is true, and the
+    `stop`-th one waits until `resume` is set, before it locks."""
+
+    def __init__(self, engine: Engine, may_go_on: Callable[[], bool], stop: int = 0) -> None:
+        super().__init__(engine)
+        self.holding = threading.Event()
+        self.stopped = threading.Event()
+        self.resume = threading.Event()
+        self._may_go_on = may_go_on
+        self._stop = stop
+        self._calls = 0
+
+    def lock_projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
+        self._calls += 1
+        if self._calls == self._stop:
+            self.stopped.set()
+            assert self.resume.wait(timeout=10)
+        state = super().lock_projection_state(conn, name)
+        if self._calls == 1:
+            self.holding.set()
+            _wait_until(self._may_go_on)
+        return state
+
+
+@pytest.mark.db
+def test_two_first_builds_build_once(db: Engine) -> None:
+    """No state row yet, and two catch-ups start at once: the first holds the
+    placeholder row its lock wrote, the second waits at it, and finds the row
+    the first committed. One of them builds, the other catches up from where
+    the first got to. Measured on 2026-10-05 with the lock taken out of
+    `lock_projection_state`, so that it only read: both found no row, and
+    both reported a first build."""
+    storage = PostgresStorage(db)
+    append(storage, [_raw(n, "email", NOW) for n in (1, 2)], recorded_at=NOW)
+    second_done = threading.Event()
+    first = _HoldingFirstLock(db, lambda: second_done.is_set() or _waiting_on_a_lock(db))
+    outcomes: dict[str, Outcome] = {}
+    errors: list[BaseException] = []
+
+    def build_first() -> None:
+        try:
+            outcomes["first"] = catch_up(first, first, CHRONICLE)
+        except BaseException as e:
+            errors.append(e)
+
+    def build_second() -> None:
+        try:
+            assert first.holding.wait(timeout=10)
+            outcomes["second"] = catch_up(storage, storage, CHRONICLE)
+        except BaseException as e:
+            errors.append(e)
+        finally:
+            second_done.set()
+
+    threads = [threading.Thread(target=build_first), threading.Thread(target=build_second)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=20)
+        assert not t.is_alive(), "thread is hanging"
+
+    assert errors == []
+    assert (outcomes["first"].rebuilt_from, outcomes["second"].rebuilt_from) == (0, None)
+    assert outcomes["first"].events + outcomes["second"].events == 2
+    assert _chronicle_keys(db) == [(1, 1), (1, 2), (2, 1), (2, 2)]
+
+
+def _catch_up_beside(db: Engine, other: ChronicleProjection | None) -> list[BaseException]:
+    """A catch-up of the chronicle from nothing, stopped between its first
+    transaction and its first batch; meanwhile, with `other`, a catch-up at
+    that projection's version runs to its end. Returns what the first
+    raised."""
+    with db.begin() as c:
+        c.execute(text("DELETE FROM p_chronicle"))
+        c.execute(text("DELETE FROM projection_state"))
+    storage = PostgresStorage(db)
+    first = _HoldingFirstLock(db, lambda: True, stop=2)
+    errors: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            catch_up(first, first, CHRONICLE)
+        except BaseException as e:
+            errors.append(e)
+
+    thread = threading.Thread(target=run)
+    thread.start()
+    assert first.stopped.wait(timeout=10)
+    if other is not None:
+        assert catch_up(storage, storage, other).rebuilt_from == CHRONICLE.version
+    first.resume.set()
+    thread.join(timeout=20)
+    assert not thread.is_alive(), "thread is hanging"
+    return errors
+
+
+@pytest.mark.db
+def test_a_catch_up_stops_when_another_release_rebuilds_under_it(db: Engine) -> None:
+    """Between the first transaction of one catch-up and its first batch, a
+    catch-up at another version rebuilds the table. The first stops with a
+    sentence instead of projecting at a version the table no longer has, or
+    rebuilding back, which two releases would do to each other for good.
+    The control: the same pause without the other release ends normally.
+    Measured on 2026-10-05 with the batch checking only for a missing row:
+    the first raised nothing."""
+    append(PostgresStorage(db), [_raw(1, "email", NOW)], recorded_at=NOW)
+
+    assert _catch_up_beside(db, None) == []
+    (error,) = _catch_up_beside(db, ChronicleProjection(version=3))
+    assert isinstance(error, ProjectionRebuilt)
+    assert str(error) == (
+        "projection chronicle was rebuilt while this catch-up ran: it stands at "
+        "version 3, and this code declares version 2"
+    )

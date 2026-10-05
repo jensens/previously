@@ -19,7 +19,7 @@ A missing setting is an input error that names the first variable missing, in th
 | `anchor` | The anchor line was printed, or the log is empty. | The chain has at least one finding. | Storage raised an error. |
 | `show` | The event was printed. | No event exists at the given `event_id`. | The input was invalid, or storage raised an error. |
 | `blob` | The blob was written to the file. | No event names the blob, or the blob is erased. | The input was invalid, a blob setting is missing, the blob is missing from the store, can't be opened or doesn't match its address, the file can't be written, or storage or the blob store raised an error. |
-| `project` | Every projection stands at the tip of the log. | Not used. | Storage raised an error, or the worker found a gap in the log. |
+| `project` | Every projection stands at the tip of the log. | Not used. | Storage raised an error, the worker found a gap in the log, or a catch-up at another version rebuilt a projection while this one ran. |
 | `chronicle` | The chronicle was printed, even when the window holds no row. | Not used. | The input was invalid, or storage raised an error. |
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
 
