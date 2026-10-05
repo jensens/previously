@@ -387,22 +387,29 @@ Prüfpunkt vom 2026-10-04 mit der Zeile seines Belegberichts.
   verlängert eine Vorabversion nur zur genauen Fassung (ruling T4-a; P-AL).
   Hingenommen, kup6s pinnt die genaue Version; bis `1.0.0` hat jedes Image
   genau einen Tag.
-- Vier Kommentare in `release.yml` stimmen nicht ganz: Zeile 8 zeichnet
-  `gates -> tag -> build`, `tag` läuft neben `gates`; Zeile 34 „none cancelled
-  by a newer one" gilt nur für einen laufenden Lauf; Zeile 40 „widen" statt
-  „replace"; Zeilen 83–85 nennen `0.1.0a2.dev3` als Version auf `main`, vor
-  dem ersten Tag ist es `0.1.devN` (gemessen `0.1.dev178`). Vorgesehen für die
-  Fixwelle nach der Endprüfung (P-AL, Prüfung der Aufgabe 4).
 - `scripts/smoke-image.sh`: `trap` steht nach `mktemp`; dass das Skript `uv`
   und `openssl` auf dem Wirt braucht, steht in `run-the-image.md`, nicht im
   Kopf des Skripts; ein Abbruch kann einen `--rm`-Container und das Netz
   zurücklassen; `useradd --system` mit uid 1000 warnt harmlos beim Bau (P-AL,
   Prüfung der Aufgabe 3).
-- Die Etiketten `org.opencontainers.image.title`, `description`, `url` und
-  `revision` erbt das Image vom Basis-Image `uv` und beschreibt damit `uv`,
-  nicht Previously; `source`, `licenses` und `version` setzt das `Dockerfile`
-  selbst (gemessen mit `docker image inspect` am 2026-10-05, Aufgabe 5; im
-  Handoff benannt).
+- `scripts/smoke-image.sh` unter rootless Docker oder als uid 0: rootless
+  Docker bildet `--user` auf eine subuid ab, und ein Wirt mit uid 0 lässt die
+  Container mit `--user "$(id -u):$(id -g)"` als root laufen; dann beweist der
+  Smoke-Test nicht mehr, dass das Image unter fremder uid läuft. Die Prüfung
+  auf uid 1000 läuft ohne `--user` und hält weiter (P-AL, Prüfung der
+  Aufgabe 3; Fehlbedienung, benannt nach ruling E-2 der Auslieferung).
+- Das Wheel für PyPI baut `uv build` mit dem hatchling, der an diesem Tag
+  aktuell ist: `[build-system] requires` ist nicht gelockt, `uv.lock` hält
+  hatchling 1.32.4 nur als Dev-Abhängigkeit für `tests/test_wheel.py`. Keine
+  zweite Fassungsangabe, sondern eine fehlende; abhelfen könnte `uv build
+  --build-constraint` (Endprüfung Code, Befund Minor 9; benannt nach ruling
+  E-2 der Auslieferung).
+- Image-Etikett für die Paketseite auf `ghcr.io`: für ein Image über mehrere
+  Plattformen liest GitHub die Beschreibung womöglich aus dem Index, nicht aus
+  den Images; `docker buildx imagetools create --annotation
+  "index:org.opencontainers.image.description=…"` in `manifest` wäre der Weg.
+  Ungemessen, erst beim ersten Release sichtbar (Endprüfung Code, Befund
+  Important 3).
 
 ### Betrieb (ohne Teilprojekt)
 
@@ -521,15 +528,26 @@ Prüfpunkt vom 2026-10-04 mit der Zeile seines Belegberichts.
   (Arbeitsregel des Betreuers vom 2026-10-05: Fehlbedienung wird benannt).
   `alembic` im Checkout liest die Zeichenkette mit SQLAlchemy, nicht mit der
   Grammatik (P-AL).
-- Der Docstring von `_unreadable` in `storage/postgres.py` sagt „every part
-  takes the escape"; Host, Port und Schema nehmen keine (P-AL, Nachprüfung der
-  Fixrunde 5 der Aufgabe 2).
 - `alembic` zu importieren kostet jedes Kommando rund 70 ms, nicht nur
   `migrate` (ruling T2-e; P-AL, gemessen vom Prüfer).
 - Ein Datenbankfehler beim COMMIT von `migrate`, der weder eine aufgeschobene
   Prüfung noch ein `OperationalError` ist, entginge `_refusals` und endete
   als Traceback; in PostgreSQL ist keiner bekannt (P-AL, Fixrunde 5 der
   Aufgabe 2).
+- Nur `migrate` vergleicht Revisionen. Jedes andere Kommando scheitert an
+  einem zurückliegenden Schema nur, wo es eine fehlende Tabelle oder Spalte
+  berührt, und läuft sonst: gemessen am 2026-10-05 eine Revision zurück,
+  `append`, `log` und `project` mit 0, nur `verify` verweigert; ebenso laufen
+  die Kommandos eines älteren Images gegen ein neueres Schema. Bis dahin
+  schützt allein die Reihenfolge der Jobs, und die Seiten sagen es so. Ob
+  jedes Kommando die Revision prüfen soll, etwa in `_storage()`, entscheidet
+  der Betreuer (Endprüfung der Doku, Befund Important 2; ruling E-2 der
+  Auslieferung).
+- Zwei Zeilen in `alembic_version`, von Hand oder aus einer verzweigten
+  Geschichte, lassen `migrate` mit Traceback und Code 1 enden
+  (`CommandError` aus `get_current_revision`), gemessen von der Endprüfung
+  Code; kein Passwort darin. Fehlbedienung, benannt (ruling E-2 der
+  Auslieferung).
 
 ### Tore und Werkzeuge
 
@@ -567,6 +585,12 @@ Prüfpunkt vom 2026-10-04 mit der Zeile seines Belegberichts.
   blieb eine Kante von `0004_event_blob.py` nach `cli` ungemeldet. Ein
   `__init__.py` dort ist in dieser Stufe nicht gebaut; was grimp dann mit den
   Namen tut, ist ungemessen (ruling T1-d; P-AL).
+- Der `` {ref}`delivery` `` im Kommentar des `Dockerfile` (ruling P-1 der
+  Auslieferung) liegt außerhalb dessen, was `tests/test_docs_references.py`
+  liest (`*.py`); eine umbenannte Marke ließe ihn still veralten. Ebenso nennt
+  die Sprachregel in `CLAUDE.md` `scripts/`, das `Dockerfile` und
+  `.dockerignore` nicht, obwohl alle drei englisch sind (Endprüfung Code,
+  Befund Minor 10; an den Betreuer).
 - `module-boundaries.md`: die zwei alten Blöcke mit dem früheren
   Vertragsnamen sind nur durch einen Satz weiter oben als Geschichte
   gekennzeichnet; wer direkt dorthin springt, sieht es nicht (P-AL, Prüfung
@@ -659,3 +683,17 @@ Prüfpunkt vom 2026-10-04 mit der Zeile seines Belegberichts.
   Wortlaut einer getilgten Einheit enthält — Commit `09c5d81`. Dass eine
   Nutzlast, die den Wortlaut hält, ihn nach `redact units` behält, bleibt als
   Regel stehen und steht in `cli.md` und `erasure.md`.
+- ~~Vier Kommentare in `release.yml` stimmen nicht ganz: `tag` läuft neben
+  `gates`, nicht davor; „none cancelled by a newer one" gilt nur für einen
+  laufenden Lauf; „widen" statt „replace"; vor dem ersten Tag ist die Version
+  auf `main` `0.1.devN`, nicht `0.1.0a2.dev3`~~ (P-AL, Prüfung der Aufgabe 4)
+  — Fixwelle der Endprüfung, Commit `d1813df`.
+- ~~Die Etiketten `org.opencontainers.image.title`, `description`, `url` und
+  `revision` erbt das Image vom Basis-Image `uv` und beschreibt damit `uv`~~
+  (Aufgabe 5; Endprüfung Code, Befund Important 3) — Fixwelle der
+  Endprüfung, Commit `d1813df`: das `Dockerfile` setzt jedes Etikett, das das
+  Basis-Image setzt; `revision` und `created` reicht `release.yml` aus
+  `github.sha` und dem Zeitpunkt der Veröffentlichung herein.
+- ~~Der Docstring von `_unreadable` in `storage/postgres.py` sagt „every part
+  takes the escape"; Host, Port und Schema nehmen keine~~ (P-AL, Nachprüfung
+  der Fixrunde 5 der Aufgabe 2) — Fixwelle der Endprüfung, Commit `72327ea`.
