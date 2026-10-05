@@ -1,7 +1,22 @@
 # Previously — Die Auslieferung: Paket, Image, Release
 
+> **Eingefrorener Entwurfsbericht, Stand 2026-10-05.**
+> Dieses Dokument wird nicht mehr nachgezogen.
+> Es hält fest, **wie und warum** entschieden wurde, und bleibt dafür im
+> Repository. Die lebende Begründung steht in der Dokumentation unter
+> `docs/` — soweit sie dort steht; wo sie fehlt, ist dieses Dokument die
+> einzige Quelle. Weicht es von der Doku ab, gilt die Doku.
+>
+> Ein neuer Spec für eine neue Stufe entsteht wieder auf Deutsch — das ist
+> die Sprache, in der die Absicht formuliert wird. Er friert ein, sobald
+> seine Explanation-Seiten stehen. Das Einfrieren als **Ablauf**, und die
+> Karte von jedem zitierten Paragraphen zu seiner Seite, stehen in
+> [About the frozen design records](../../explanation/design-records.md).
+
 **Datum:** 2026-10-05
-**Status:** Entwurf, zur Durchsicht durch den Betreuer
+**Status:** eingefroren am 2026-10-05; zuvor Entwurf, vom Betreuer am
+2026-10-05 durchgesehen, Grundlage des Plans
+`docs/superpowers/plans/2026-10-05-auslieferung.md`
 
 Detail-Spec für die erste Einheit des Piloten, die der Landkarte vom
 2026-10-04 noch fehlte: der Weg vom Commit auf `main` zu einem Paket auf PyPI
@@ -389,8 +404,10 @@ dabei scheitert, ist ein Befund für einen Folge-Pull-Request.
 
 ## 12. Was offen bleibt
 
-Gepflegt, solange der Spec lebt; beim Einfrieren gehen die Punkte in die
-Landkarte.
+Gepflegt, solange der Spec lebte; beim Einfrieren am 2026-10-05 gingen die
+Punkte in die Landkarte (`docs/superpowers/landkarte.md`), jeder unter die
+Einheit, zu der er gehört, und dort leben sie weiter. Die Liste hier ist der
+Stand dieses Tages.
 
 1. **Signaturen und Herkunftsnachweise** (Sigstore/cosign, SLSA-Provenance,
    SBOM) für Paket und Image. PyPI erzeugt mit Trusted Publishing schon

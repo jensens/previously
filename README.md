@@ -125,7 +125,7 @@ lives under `docs/`. Build it locally with `make -C docs html`, then open
 session typed out against a real PostgreSQL 17, from a fresh checkout to a
 passing test suite.
 
-The six specifications below are **frozen design records**, in German and
+The seven specifications below are **frozen design records**, in German and
 dated: they hold how and why a decision was taken, and the documentation under
 `docs/` carries the reasoning that is maintained with the code. Where the two
 disagree, the documentation wins. A new stage starts with a new German
@@ -140,6 +140,7 @@ the first one that went that way from the start.
 | [Stage 1b](docs/superpowers/specs/2026-10-04-stufe-1b-projektionen.md) | Frozen design record, 2026-10-04: detailed specification of the projections — the two derived tables, the worker, and the three commands; its reasoning is maintained in [About derived views](docs/explanation/projections.md) and [About the module boundaries](docs/explanation/module-boundaries.md) |
 | [External anchor](docs/superpowers/specs/2026-10-04-aeusserer-anker.md) | Frozen design record, 2026-10-04: detailed specification of the external anchor — the anchor line, `anchor`, and `verify --anchors`; its reasoning is maintained in [About the hash chain](docs/explanation/hash-chain.md), the routines in [How to check the chain in operation](docs/how-to/verify-the-chain.md) and [How to check how much of the chain a restore brought back](docs/how-to/restore-from-a-backup.md) |
 | [Stage 1c](docs/superpowers/specs/2026-10-04-stufe-1c-blobs-und-tilgung.md) | Frozen design record, 2026-10-05: detailed specification of blobs and erasure — hash format 2 with its salt, erasure as an event, blobs sealed in `age` on S3, and the commands `redact`, `blob get` and `verify --blobs`; its reasoning is maintained in [About erasure](docs/explanation/erasure.md), [About blobs](docs/explanation/blobs.md) and [About the hash chain](docs/explanation/hash-chain.md), its routines in the guides under [How-to guides](docs/how-to/index.md), and its open points in the [map](docs/superpowers/landkarte.md) |
+| [Delivery](docs/superpowers/specs/2026-10-05-auslieferung.md) | Frozen design record, 2026-10-05: detailed specification of the way out — the migrations in the package and `previously migrate`, the release workflow to PyPI and `ghcr.io`, the image and its smoke test, and the handoff to the maintainer's Kubernetes environment; its reasoning is maintained in [About delivery](docs/explanation/delivery.md), its routines in [How to cut a release](docs/how-to/cut-a-release.md) and [How to run Previously from its image](docs/how-to/run-the-image.md), and its open points in the [map](docs/superpowers/landkarte.md) |
 | [Execution records](docs/superpowers/sdd/) | Frozen working records, one directory per executed plan: the ledger of every decision taken while building it, and the target of the `ruling …` citations in the code |
 | [CLAUDE.md](CLAUDE.md) | The working agreements: language, attribution, dependencies, the six gates |
 | [DEPENDENCIES.md](DEPENDENCIES.md) | Every dependency with its purpose, the rejected alternative and the date it was last checked |
