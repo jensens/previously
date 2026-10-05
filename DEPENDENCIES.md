@@ -29,7 +29,7 @@ not appear in it at all.
 | `testcontainers` | real PostgreSQL in the test | a mock or SQLite would miss precisely the SQL semantics that 1a rests on | 2026-10-02, active |
 | `hypothesis` | Properties of the chain and of the canonicalisation | example tests do not check invariants | 2026-10-02, active |
 | `pytest-cov` | Coverage measurement in the test run | a self-built one would only thinly wrap `coverage`, which we need anyway | 2026-10-02, **last release 194 days old, judgement: active, not abandoned** — the source repository has commits up to 21.09.2026, is not archived, has a history of 54 releases; the missing new release mirrors a missing need for change, not standstill |
-| `hatchling` | Build backend; also a dev dependency since 2026-10-05, because `tests/test_wheel.py` builds the wheel in its own process with hatchling's `WheelBuilder` | reasoning in §10.6 of the architecture (choice of tooling) | 2026-10-02, active; rechecked 2026-10-05 — 1.32.4 on 2026-09-20, ships `py.typed` |
+| `hatchling` | Build backend; also a dev dependency since 2026-10-05, because `tests/test_wheel.py` builds the wheel in the test's own process, without a subprocess, with hatchling's `WheelBuilder` | reasoning in §10.6 of the architecture (choice of tooling) | 2026-10-02, active; rechecked 2026-10-05 — 1.32.4 on 2026-09-20, ships `py.typed` |
 | `ruff` | Lint and format | reasoning in §10.6 of the architecture (choice of tooling) | 2026-10-02, active |
 | `pyright` | Type checking, strict | reasoning in §10.6 of the architecture (choice of tooling) | 2026-10-02, active |
 | `import-linter` | The architectural boundaries of §2 checked as contracts | reasoning in §10.6 of the architecture (choice of tooling) | 2026-10-02, active |

@@ -908,10 +908,11 @@ def _unreadable() -> InvalidDsn:
     together.
 
     The rule it gives is the one that always works, not the whole grammar:
-    every part takes the escape of any character but a control or a line
-    separator, while raw it takes only some, the user part `!$&'()*+,;=` and
-    `/` in a value among them. A special character in a query value has to be
-    percent-encoded too, or the value is refused.
+    every part but the scheme, the host and the port takes the escape of any
+    character but a control or a line separator, while raw it takes only
+    some, the user part `!$&'()*+,;=` and `/` in a value among them. A
+    special character in a query value has to be percent-encoded too, or the
+    value is refused.
     """
     return InvalidDsn(
         "PREVIOUSLY_DSN is refused — write it as "
@@ -1017,7 +1018,7 @@ def _url_of(dsn: str) -> URL | None:
 
     - the `@host` forgotten after a password of up to five digits,
       `user:12345/database`: the user name is printed as the host and the
-      password as the port (ruling T2-j);
+      password as the port (ruling T2-j of the 2026-10-05 delivery plan);
     - the `@host` and the database forgotten, `user:12345/rest`: the rest of
       the password is printed as the database;
     - a raw `@` in the password and the `@host` forgotten, `user:pw@rest`,

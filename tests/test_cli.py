@@ -634,7 +634,7 @@ _FORMS: tuple[tuple[str, str, str, str, str], ...] = (
         "{S}app:{A}&{B}@{H}/probe",
         "connect",
         "AB",
-        "a raw `&` in the password, as Go writes it (ruling T2-l)",
+        "a raw `&` in the password, as Go writes it (ruling T2-l of the 2026-10-05 delivery plan)",
     ),
     ("R11-nel-in-database", "{S}app:{A}@{H}/pro%C2%85be", "refused", "A", "U+0085 decoded"),
     ("R12-line-separator", "{S}app:{A}@{H}/pro%E2%80%A8be", "refused", "A", "U+2028 decoded"),
@@ -662,7 +662,8 @@ _FORMS: tuple[tuple[str, str, str, str, str], ...] = (
         "{S}nobody.invalid:54321/probe",
         "connect",
         "",
-        "ruling T2-j: no `@`, so the user name is the host and 54321 the port",
+        "ruling T2-j of the 2026-10-05 delivery plan: no `@`, so the user name is "
+        "the host and 54321 the port",
     ),
 )
 

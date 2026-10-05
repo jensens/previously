@@ -93,7 +93,8 @@ def migrate(dsn: str) -> Migrated:
     Both connections come out of `from_dsn`, the way every command gets one,
     so an unparsable string, a server that does not answer or a password it
     refuses become the same one sentence as there, which names database,
-    host and port and nothing else of the string. The upgrade's connection
+    host and port and nothing else of the string, and quotes the first line
+    of libpq's reason, which can name the user. The upgrade's connection
     is handed to `env.py` in Alembic's `attributes`, and Alembic never gets
     the string: `from_dsn` reads it by a grammar of its own and builds the
     URL from the parts, and a string handed on would be parsed a second
