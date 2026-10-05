@@ -110,11 +110,22 @@ def _chain(error: BaseException) -> list[BaseException]:
     return found
 
 
-@pytest.mark.skipif(
-    sys.platform == "win32" or os.geteuid() == 0,
-    reason="a file without read permission is readable by root, and POSIX permissions only",
+@pytest.mark.parametrize(
+    "unreadable",
+    [
+        # Only this case depends on permissions: the other one is the leak
+        # this test was written for, and it runs under root as well.
+        pytest.param(
+            "no-permission",
+            marks=pytest.mark.skipif(
+                sys.platform == "win32" or os.geteuid() == 0,
+                reason="a file without read permission is readable by root, "
+                "and POSIX permissions only",
+            ),
+        ),
+        "not-utf-8",
+    ],
 )
-@pytest.mark.parametrize("unreadable", ["no-permission", "not-utf-8"])
 def test_a_file_that_cannot_be_read_is_a_storage_error_that_shows_no_content(
     tmp_path: Path, age_identity: str, unreadable: str
 ) -> None:

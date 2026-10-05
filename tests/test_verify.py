@@ -1117,6 +1117,21 @@ def test_a_reference_list_without_its_form_fires(db: Engine) -> None:
 
 
 @pytest.mark.db
+def test_a_tombstone_without_a_redaction_is_not_held_against_a_list(db: Engine) -> None:
+    """A payload erased by hand, with no redaction, has no list of blobs to
+    hold its register against: its one finding is that nobody ordered the
+    erasure. Comparing the register rows with an empty list instead would
+    add a second finding that says nothing new."""
+    storage = PostgresStorage(db)
+    append(storage, [_attached("a", _BLOB)], recorded_at=NOW)
+    with db.begin() as c:
+        # The salt goes with the payload, or `event_payload_salt_check`
+        # refuses the statement (ruling P-1 of the 2026-10-04 stage 1c plan).
+        c.execute(text("UPDATE event SET payload = NULL, payload_salt = NULL WHERE id = 1"))
+    assert verify(storage) == [Finding(1, "payload is erased without a redaction")]
+
+
+@pytest.mark.db
 def test_the_register_of_an_erased_event_is_held_against_its_redaction(db: Engine) -> None:
     """Once the payload is gone, the list in the redaction is what attests the
     blobs the event named: the register is held against that, at the end of

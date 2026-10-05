@@ -10,6 +10,7 @@ reads.
 """
 
 from previously.core.blob import fetch_blob
+from previously.core.blob import seal_into
 from previously.core.blob import store_blob
 from previously.core.errors import AddressMismatch
 from previously.core.errors import BlobError
@@ -330,6 +331,37 @@ def test_a_source_that_fails_while_it_is_sealed_is_an_error_of_its_own(
         )
     assert caught.value.reason == "Input/output error"
     assert _objects(blob_store) == []
+
+
+class _FullSink:
+    """A sink that fails the way a full disk does, at its first write: an
+    `OSError` with `ENOSPC`. A small sink of the test's own."""
+
+    def write(self, data: bytes, /) -> int:
+        raise OSError(errno.ENOSPC, "No space left on device")
+
+
+@pytest.mark.parametrize("size", [12, 70_000], ids=["12-bytes", "70000-bytes"])
+def test_a_sealed_form_that_cannot_be_written_is_an_error_of_its_own(
+    age_identity: str, size: int
+) -> None:
+    """Fix round 1 of task 6, the 2026-10-04 stage 1c plan: the writes into
+    the temporary file happen inside `pyrage`. Measured on 2026-10-05 with
+    this sink: at 70,000 bytes `pyrage` wrapped its `OSError` as `cannot
+    seal: OSError: [Errno 28] No space left on device`; at 12 bytes it
+    returned as though it had sealed. Both sizes now end in the same
+    sentence, and a failing source stays apart from it."""
+    recipient = recipient_of(age_identity)
+    with pytest.raises(BlobError) as caught:
+        seal_into(io.BytesIO(b"x" * size), _FullSink(), recipient)
+    assert str(caught.value) == "cannot write a temporary file: No space left on device"
+    assert not isinstance(caught.value, SourceUnreadable)
+    # Rewound twice, as `address_of` leaves it: its reads fail from here on.
+    failing = _FailsOnTheSecondPass(b"x")
+    failing.seek(0)
+    failing.seek(0)
+    with pytest.raises(SourceUnreadable):
+        seal_into(failing, io.BytesIO(), recipient)
 
 
 def test_a_temporary_file_that_cannot_be_made_is_an_error_of_its_own(

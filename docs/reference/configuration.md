@@ -40,4 +40,6 @@ A command that needs a variable and finds it unset or empty returns 2 and names 
 Error: PREVIOUSLY_BLOB_RECIPIENT is not set
 ```
 
+An endpoint without a scheme, such as `localhost:9000`, or a region the S3 client can't parse, such as `us east 1`, returns 2 as well, with one sentence that names the endpoint, the bucket, the region and the kind of refusal, and never a key.
+
 `append` without `--attach`, and every other command, reads none of them.

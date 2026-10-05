@@ -17,6 +17,7 @@ from previously.core.hashing import payload_hash_v2
 from previously.core.hashing import SALT_BYTES
 from previously.core.hashing import unit_digest
 from previously.core.hashing import units_hash_v2
+from typing import cast
 from typing import TYPE_CHECKING
 
 import pytest
@@ -179,6 +180,50 @@ _GOOD: dict[str, object] = {
     "media_type": "text/plain",
     "filename": None,
 }
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "problem"),
+    [
+        ("sha256", "A" * 64, "sha256 is not 64 hexadecimal characters, lower case"),
+        ("sha256", 7, "sha256 is not 64 hexadecimal characters, lower case"),
+        ("size", True, "size is not an integer"),
+        ("size", "1", "size is not an integer"),
+        ("size", -1, "size must be at least 0, is -1"),
+        ("media_type", "", "media_type is empty"),
+        ("media_type", 3, "media_type is not a string"),
+        ("filename", 3, "filename is not a string"),
+        ("filename", "", "filename is not a name without a directory"),
+        ("filename", "..", "filename is not a name without a directory"),
+        ("filename", "notes/a.txt", "filename is not a name without a directory"),
+    ],
+)
+def test_prepare_refuses_what_read_references_refuses(
+    field: str, value: object, problem: str
+) -> None:
+    """Fix round 1 of task 6, the 2026-10-04 stage 1c plan: writer and
+    reader share one set of checks, so that `prepare` writes no reference
+    that `read_references` would refuse. Each case is refused on both
+    sides; a library caller can hand `prepare` what the annotations of
+    `BlobRef` do not allow, and the casts below are that caller."""
+    fields: dict[str, object] = {**_GOOD, field: value}
+    reference = BlobRef(
+        sha256=cast("str", fields["sha256"]),
+        size=cast("int", fields["size"]),
+        media_type=cast("str", fields["media_type"]),
+        filename=cast("str | None", fields["filename"]),
+    )
+    with pytest.raises(InvalidPayload) as caught:
+        prepare(
+            kind="observation",
+            occurred_at=OCCURRED,
+            payload=PAYLOAD,
+            units=UNITS,
+            key=None,
+            blobs=(reference,),
+        )
+    assert str(caught.value) == f"blob reference 0: {problem}"
+    assert read_references({"blobs": [fields]}) is None
 
 
 @pytest.mark.parametrize(

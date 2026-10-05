@@ -23,7 +23,7 @@ from previously.core.anchor import format_anchor
 from previously.core.anchor import parse_anchors
 from previously.core.append import append
 from previously.core.blob import fetch_blob
-from previously.core.blob import is_address
+from previously.core.blob import reason_of
 from previously.core.blob import store_blob
 from previously.core.chain import read_references
 from previously.core.errors import AddressMismatch
@@ -32,6 +32,7 @@ from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
 from previously.core.errors import RedactionRefused
 from previously.core.errors import SourceUnreadable
+from previously.core.hashing import is_address
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
 from previously.core.projection import Outcome
@@ -273,7 +274,7 @@ def _read_anchors(source: str) -> tuple[Anchor, ...]:
                 raw = handle.read()
         text = raw.decode("utf-8-sig")
     except OSError as error:
-        raise InvalidPayload(f"cannot read {name}: {error.strerror}") from error
+        raise InvalidPayload(f"cannot read {name}: {reason_of(error)}") from error
     except UnicodeDecodeError as error:
         raise InvalidPayload(f"{name} is not UTF-8 text") from error
     return parse_anchors(io.StringIO(text, newline=None))
@@ -349,7 +350,7 @@ def _attach(paths: Sequence[str]) -> tuple[BlobRef, ...]:
                 handle = files.enter_context(open(path, "rb"))
             except OSError as error:
                 raise InvalidPayload(
-                    f"cannot read the attachment {path}: {error.strerror}"
+                    f"cannot read the attachment {path}: {reason_of(error)}"
                 ) from error
             if not handle.seekable():
                 raise InvalidPayload(f"cannot read the attachment {path}: it cannot be read twice")
@@ -612,7 +613,7 @@ def _fetch_to(store: BlobStore, keys: KeyProvider, address: str, target: str) ->
     try:
         descriptor, part = tempfile.mkstemp(dir=directory, prefix=".previously-", suffix=".part")
     except OSError as error:
-        raise InvalidPayload(f"cannot write {target}: {error.strerror}") from error
+        raise InvalidPayload(f"cannot write {target}: {reason_of(error)}") from error
     kept = False
     try:
         with os.fdopen(descriptor, "wb") as sink:
@@ -621,7 +622,7 @@ def _fetch_to(store: BlobStore, keys: KeyProvider, address: str, target: str) ->
             os.replace(part, target)
             kept = True
     except OSError as error:
-        raise InvalidPayload(f"cannot write {target}: {error.strerror}") from error
+        raise InvalidPayload(f"cannot write {target}: {reason_of(error)}") from error
     finally:
         if not kept:
             os.unlink(part)

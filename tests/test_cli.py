@@ -1946,9 +1946,8 @@ def test_a_missing_blob_setting_is_named(
 def test_the_commands_of_today_run_without_any_blob_setting(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Assurance 17 of the 2026-10-04 stage 1c specification: every command
-    that touches no blob reads no blob setting, so an environment without a
-    single one runs as before."""
+    """Every command that touches no blob reads no blob setting, so a
+    deployment without a blob store runs as before ({ref}`blobs`)."""
     _connect(db, monkeypatch)
     for name in _BLOB_VARIABLES:
         monkeypatch.delenv(name, raising=False)
@@ -1976,10 +1975,10 @@ def test_a_store_that_does_not_answer_appends_nothing_and_shows_no_secret(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Review focus 5 of the 2026-10-04 stage 1c plan and assurance 18 of its
-    specification: an endpoint where nobody listens is one sentence with the
-    endpoint in it, exit code 2, no event — and the secret of the store
-    stands in neither output."""
+    """Review focus 5 of the 2026-10-04 stage 1c plan: an endpoint where
+    nobody listens is one sentence with the endpoint in it, exit code 2, no
+    event — and the secret of the store stands in neither output, since a
+    message ends up on a terminal and in a log."""
     endpoint = "http://127.0.0.1:1"
     monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", endpoint)
     assert main(_attach("a", _file(tmp_path, "a.txt", b"an attachment"))) == 2
@@ -1992,14 +1991,45 @@ def test_a_store_that_does_not_answer_appends_nothing_and_shows_no_secret(
 
 @pytest.mark.db
 @pytest.mark.s3
+@pytest.mark.parametrize("command", ["append", "blob-get"])
+def test_an_endpoint_without_a_scheme_is_one_sentence(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    command: str,
+) -> None:
+    """A typo in the environment, `localhost:9000` without `http://`, at
+    both commands that build a store: one sentence that names the endpoint,
+    exit code 2, nothing appended, and no secret. Before fix round 1 of task
+    6 it left `main` as a `ValueError` traceback."""
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "localhost:9000")
+    if command == "append":
+        argv = _attach("a", _file(tmp_path, "a.txt", b"an attachment"))
+    else:
+        argv = ["blob", "get", "c" * 64, "--output", str(tmp_path / "out.bin")]
+    assert main(argv) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert _single_line(err).startswith(
+        "Error: the settings for the blob store at localhost:9000, bucket "
+    )
+    assert err.rstrip().endswith("are not usable: ValueError")
+    assert blobs.secret not in out + err
+    assert _events(blobs.engine) == 0
+
+
+@pytest.mark.db
+@pytest.mark.s3
 def test_no_identity_reaches_any_output(
     blobs: _Blobs,
     tmp_path: pathlib.Path,
     capsys: pytest.CaptureFixture[str],
     other_age_identity: str,
 ) -> None:
-    """Assurance 18 of the 2026-10-04 stage 1c specification, on the path
-    that reads identities: the file named after the object's recipient holds
+    """No identity in any output, on the path that reads identities: an
+    identity is the secret half of a key, and a message ends up on a
+    terminal and in a log. The file named after the object's recipient holds
     the identity of another key, `age` refuses it, and the sentence says the
     blob cannot be opened without quoting either identity."""
     content = b"sealed to the key the environment names"

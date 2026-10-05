@@ -193,11 +193,11 @@ class S3BlobStore:
         three refused uploads of 9 MiB, each store closed, the collector
         off, left 4 connections against 1 before; with the traceback let go,
         1 (`tests/test_s3.py`). Letting go is what does it: with the
-        traceback let go and the error still chained, it was 1 as well. It
-        is not chained all the same, so that a caller who keeps the error —
-        a long run that collects its failures — does not keep the foreign
-        one with it. The message keeps what an operator needs, endpoint,
-        bucket and code.
+        traceback let go and the error still chained, it was 1 as well; not
+        chaining follows `storage.keys` and is no part of the fix. `stat`,
+        `get` and `delete` chain, because no transfer manager keeps their
+        errors, and nothing measured holds a connection after them. The
+        message keeps what an operator needs, endpoint, bucket and code.
         """
         failure: BlobStoreRefused | BlobStoreUnreachable | None = None
         try:
@@ -306,19 +306,36 @@ def from_settings(
     A session of its own per store: `boto3`'s default session is shared by
     the whole process, and `boto3` documents sessions as not safe to share
     between threads.
+
+    `boto3` checks endpoint and region while it builds the client, and
+    refuses an endpoint without a scheme with a bare `ValueError` and a
+    region it cannot parse with `InvalidRegionError` (measured on
+    2026-10-05). Both are a typo in the settings, so both become
+    `BlobStoreRefused`, raised after the `except` so that it carries
+    neither: the message names what was given and the class of the
+    refusal, and never the credentials.
     """
-    client: S3Client = Session().client(
-        "s3",
-        endpoint_url=endpoint,
-        region_name=region,
-        aws_access_key_id=access_key,
-        aws_secret_access_key=secret_key,
-        config=Config(
-            signature_version="s3v4",
-            s3={"addressing_style": "path"},
-            connect_timeout=_CONNECT_TIMEOUT,
-            read_timeout=_READ_TIMEOUT,
-            retries={"mode": "standard", "total_max_attempts": _ATTEMPTS},
-        ),
+    refusal: str | None = None
+    try:
+        client: S3Client = Session().client(
+            "s3",
+            endpoint_url=endpoint,
+            region_name=region,
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
+            config=Config(
+                signature_version="s3v4",
+                s3={"addressing_style": "path"},
+                connect_timeout=_CONNECT_TIMEOUT,
+                read_timeout=_READ_TIMEOUT,
+                retries={"mode": "standard", "total_max_attempts": _ATTEMPTS},
+            ),
+        )
+    except (ValueError, BotoCoreError) as error:
+        refusal = type(error).__name__
+    else:
+        return S3BlobStore(client, bucket)
+    raise BlobStoreRefused(
+        f"the settings for the blob store at {endpoint}, bucket {bucket!r}, "
+        f"region {region!r}, are not usable: {refusal}"
     )
-    return S3BlobStore(client, bucket)

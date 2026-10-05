@@ -174,6 +174,7 @@ Because the reference stands in the payload, the payload digest covers it, and t
 That's the same move as for the units: the log holds a digest, and the digest pins the content wherever it lies.
 
 The key `blobs` is reserved like `evidence`: `append` refuses a payload that already carries it, rather than overwriting it.
+The reservation came with stage 1c, so a payload written through the library before it may carry a key `blobs` of its own; `verify` now reads that key as references, and reports such an event as one whose register doesn't match.
 An event without attachments carries no such key at all, so its payload is the one it would have had before blobs existed.
 
 Next to the payload stands a table, `event_blob`, with one row per event and blob.

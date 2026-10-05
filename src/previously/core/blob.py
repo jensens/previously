@@ -11,6 +11,7 @@ the content. Nothing here holds a whole content in memory: it passes through
 in pieces, from a file to a file.
 """
 
+from contextlib import ExitStack
 from dataclasses import dataclass
 from previously.core.errors import AddressMismatch
 from previously.core.errors import BlobError
@@ -22,30 +23,20 @@ from previously.core.sealing import unseal
 from typing import TYPE_CHECKING
 
 import hashlib
-import re
 import tempfile
 
 
 if TYPE_CHECKING:
     from previously.contract.blobs import BlobStore
     from previously.contract.blobs import ByteSink
+    from previously.contract.blobs import ByteSource
     from previously.contract.blobs import KeyProvider
     from previously.contract.blobs import SeekableSource
-    from typing import IO
 
 
 # The size of a piece read while hashing. A mebibyte keeps the number of
 # calls small without making the piece itself a matter of memory.
 _PIECE = 1024 * 1024
-
-_ADDRESS = re.compile(r"[0-9a-f]{64}")
-
-
-def is_address(text: str) -> bool:
-    """Whether `text` is a blob address: a SHA-256 in 64 lower-case
-    hexadecimal characters, the spelling `hashlib` gives and the only one the
-    log and the store use."""
-    return _ADDRESS.fullmatch(text) is not None
 
 
 @dataclass(frozen=True)
@@ -98,47 +89,46 @@ def store_blob(store: BlobStore, source: SeekableSource, *, recipient: str) -> S
 
     Raises `SourceUnreadable` when the source fails while it is read, in
     either pass, and `BlobError` when the temporary file cannot be made,
-    written or read; no `OSError` leaves. A store error passes through as it
-    is.
+    written or rewound. A store error passes through as it is.
     """
     try:
         address, size = address_of(source)
     except OSError as error:
-        raise SourceUnreadable(_reason(error)) from None
+        raise SourceUnreadable(reason_of(error)) from None
     if store.stat(address) is not None:
         return Stored(address=address, size=size, uploaded=False)
-    # Every `OSError` in this block is about the temporary file: making it,
-    # writing the sealed form into it, rewinding it, reading it for the
-    # upload. The source's own failures are told apart in `_seal_into`, and
-    # the store raises its own errors, so no `OSError` leaves `core`.
-    try:
-        with tempfile.TemporaryFile() as sealed:
-            _seal_into(source, sealed, recipient)
+    with ExitStack() as files:
+        # Making the temporary file and rewinding it; the writes into it are
+        # watched in `seal_into`, because `pyrage` hides them. The upload
+        # stands outside: it reads the file inside the store's client, and
+        # what fails there is the store's to name. That the client turns
+        # every failure of its own into a `botocore` error, which the store
+        # translates, is assumed and not measured; an `OSError` it let
+        # through would leave here as it is.
+        try:
+            sealed = files.enter_context(tempfile.TemporaryFile())
+            seal_into(source, sealed, recipient)
             sealed.seek(0)
-            store.put(address, sealed, key_id=recipient.lower())
-    except OSError as error:
-        raise BlobError(f"cannot write a temporary file: {_reason(error)}") from None
+        except OSError as error:
+            raise BlobError(f"cannot write a temporary file: {reason_of(error)}") from None
+        store.put(address, sealed, key_id=recipient.lower())
     return Stored(address=address, size=size, uploaded=True)
 
 
-def _reason(error: OSError) -> str:
+def reason_of(error: OSError) -> str:
     """The system's description of an `OSError`, or its class when it has
-    none."""
+    none: an `OSError` raised without an error number has `strerror` set to
+    `None`, which would print as the word.
+
+    Public because the command line uses the same rule for the errors it
+    names itself."""
     return error.strerror or type(error).__name__
 
 
-class _Watched:
-    """A source that remembers the `OSError` its `read` raised.
+class _WatchedSource:
+    """A source that remembers the `OSError` its `read` raised."""
 
-    `pyrage` wraps whatever the source raises into its own error, with the
-    original's name and message as text and no cause, so after the sealing
-    pass nothing says whether the source failed or the sink. This wrapper
-    says it. Measured on 2026-10-05 with a source that fails on its second
-    pass: without the wrapper the error was `cannot seal: OSError: [Errno 5]
-    Input/output error`, with it `SourceUnreadable`.
-    """
-
-    def __init__(self, source: SeekableSource) -> None:
+    def __init__(self, source: ByteSource) -> None:
         self._source = source
         self.failure: OSError | None = None
 
@@ -150,17 +140,49 @@ class _Watched:
             raise
 
 
-def _seal_into(source: SeekableSource, sealed: IO[bytes], recipient: str) -> None:
-    """The sealing pass, with a source that failed named as such: as
-    `SourceUnreadable` rather than as `pyrage`'s wrapping of its error
-    ({ref}`blobs`)."""
-    watched = _Watched(source)
+class _WatchedSink:
+    """A sink that remembers the `OSError` its `write` raised."""
+
+    def __init__(self, sink: ByteSink) -> None:
+        self._sink = sink
+        self.failure: OSError | None = None
+
+    def write(self, data: bytes, /) -> int:
+        try:
+            return self._sink.write(data)
+        except OSError as error:
+            self.failure = error
+            raise
+
+
+def seal_into(source: ByteSource, sink: ByteSink, recipient: str) -> None:
+    """The sealing pass, with what failed named by kind: the source as
+    `SourceUnreadable`, the sink — the temporary file — as a `BlobError`
+    that says so ({ref}`blobs`).
+
+    Both are watched, because `pyrage` hides which one it was. It wraps an
+    `OSError` of either into its own error, with the original's name and
+    message as text and no cause: measured on 2026-10-05, `cannot seal:
+    OSError: [Errno 5] Input/output error` for a source, and `[Errno 28] No
+    space left on device` the same way for a sink. And for a content of
+    12 bytes, a sink whose one write failed made `pyrage` return as though
+    it had sealed — no error at all, and a temporary file without the sealed
+    form, which would have been uploaded. So the sink is asked after a
+    return as well as after an error.
+
+    Public because a test hands it a sink of its own that fails.
+    """
+    watched_source = _WatchedSource(source)
+    watched_sink = _WatchedSink(sink)
     try:
-        seal(watched, sealed, recipient)
+        seal(watched_source, watched_sink, recipient)
     except BlobError:
-        if watched.failure is not None:
-            raise SourceUnreadable(_reason(watched.failure)) from None
-        raise
+        if watched_source.failure is not None:
+            raise SourceUnreadable(reason_of(watched_source.failure)) from None
+        if watched_sink.failure is None:
+            raise
+    if watched_sink.failure is not None:
+        raise BlobError(f"cannot write a temporary file: {reason_of(watched_sink.failure)}")
 
 
 def fetch_blob(store: BlobStore, keys: KeyProvider, address: str, sink: ByteSink) -> int | None:

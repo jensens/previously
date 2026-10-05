@@ -30,12 +30,30 @@ from typing import Protocol
 from typing import TYPE_CHECKING
 
 import hashlib
+import re
 import secrets
 
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from collections.abc import Sequence
+
+
+_ADDRESS = re.compile(r"[0-9a-f]{64}")
+
+
+def is_address(text: str) -> bool:
+    """Whether `text` is a blob address: a SHA-256 in 64 lower-case
+    hexadecimal characters, the spelling `hashlib` gives and the only one the
+    log and the blob store use ({ref}`blobs`).
+
+    Here, among the digests, and not in `core.blob`, so that the modules
+    that only read the log — `core.redaction`, `core.chain`, `core.verify` —
+    reach the rule without importing the module that seals. The store has
+    its own copy in `storage.s3`, which may not import `core`.
+    """
+    return _ADDRESS.fullmatch(text) is not None
+
 
 # Two formats stand side by side ({ref}`hash-version-2`). Version 1 is what
 # every event written before stage 1c carries, and it stays verifiable for

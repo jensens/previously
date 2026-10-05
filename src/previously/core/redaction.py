@@ -18,11 +18,10 @@ form is one thing and `verify` holds every action against it.
 
 from dataclasses import dataclass
 from itertools import pairwise
+from previously.core.hashing import is_address
 from typing import cast
 from typing import Literal
 from typing import TYPE_CHECKING
-
-import re
 
 
 if TYPE_CHECKING:
@@ -44,7 +43,6 @@ _TARGET_KEYS: Mapping[str, frozenset[str]] = {
     "blob": frozenset({"blob", "events"}),
 }
 _PAYLOAD_KEYS = frozenset({"action", "scope", "target", "reason"})
-_BLOB_ADDRESS = re.compile(r"[0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -119,7 +117,7 @@ def _ascending[T: (int, str)](values: object, item: Callable[[object], T]) -> tu
 
 
 def _blob_address(value: object) -> str:
-    if not isinstance(value, str) or _BLOB_ADDRESS.fullmatch(value) is None:
+    if not isinstance(value, str) or not is_address(value):
         raise MalformedAction("a blob address is not 64 lower-case hexadecimal characters")
     return value
 

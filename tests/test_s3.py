@@ -294,6 +294,36 @@ def test_a_refused_upload_in_parts_leaves_no_connection_behind_after_close(
     assert after <= before, f"{after} connections after the refused uploads, {before} before"
 
 
+@pytest.mark.parametrize(
+    ("setting", "value", "kind"),
+    [
+        ("endpoint", "localhost:9000", "ValueError"),
+        ("region", "us east 1", "InvalidRegionError"),
+    ],
+    ids=["endpoint-without-a-scheme", "region-with-blanks"],
+)
+def test_settings_the_client_refuses_to_be_built_with_are_refused(
+    s3_settings: dict[str, str], setting: str, value: str, kind: str
+) -> None:
+    """Fix round 1 of task 6, the 2026-10-04 stage 1c plan: `boto3` checks
+    endpoint and region while it builds the client, and raised a bare
+    `ValueError` or `botocore`'s `InvalidRegionError` out of `from_settings`
+    (measured on 2026-10-05). Now the project's error, with endpoint, bucket
+    and region as given and the class of the refusal, not the secret, and
+    with no foreign error carried along as cause or context."""
+    settings = {**s3_settings, setting: value}
+    with pytest.raises(BlobStoreRefused) as caught:
+        from_settings(**settings, bucket="blobs")
+    error = caught.value
+    assert str(error) == (
+        f"the settings for the blob store at {settings['endpoint']}, bucket 'blobs', "
+        f"region {settings['region']!r}, are not usable: {kind}"
+    )
+    assert error.__cause__ is None
+    assert error.__context__ is None
+    assert s3_settings["secret_key"] not in "".join(traceback.format_exception(error))
+
+
 def test_settings_the_client_will_not_send_are_refused_not_unreachable(
     s3_settings: dict[str, str],
 ) -> None:

@@ -488,26 +488,33 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
 
     # The errors of `blob get` and the input errors of the blob commands come
     # out of `cli.py`, raised as `PreviouslyError` or `InvalidPayload`; the
-    # one about the temporary file out of `core/blob.py`, as `BlobError`.
-    errors = [
+    # one about the temporary file out of `core/blob.py`, as `BlobError`, and
+    # it is held against that module alone. Held against both, it passed in
+    # any wording that began with `cannot write ` and had a colon in it:
+    # `cannot write <file>: <reason>` from `cli.py` took the rest as the
+    # file (measured on 2026-10-05, fix round 1 of task 6).
+    from_cli = [
         *_raised_patterns(ROOT / "src" / "previously" / "cli.py", "PreviouslyError"),
         *_raised_patterns(ROOT / "src" / "previously" / "cli.py", "InvalidPayload"),
-        *_raised_patterns(ROOT / "src" / "previously" / "core" / "blob.py", "BlobError"),
     ]
-    quoted = [
-        *_quoted_block(page, "A file that can't be opened, that can't be read twice"),
-        *_quoted_block(page, "A temporary file for the sealed form that can't be created"),
-        *_quoted_block(page, "and refuses anything else as an input error"),
-        *_quoted_block(page, "Four errors of `blob get`"),
-    ]
-    assert len(quoted) == 7, quoted
-    for line in quoted:
-        prefix, _, error = line.partition(": ")
-        assert prefix == "Error", f"cli.md quotes the error {line!r} without `Error: `"
-        assert any(_is_the_same_sentence(parts, error) for parts in errors), (
-            f"cli.md quotes the error {error!r} and cli.py raises no such message. "
-            "Either the code's wording changed, or the page's did."
-        )
+    from_blob = _raised_patterns(ROOT / "src" / "previously" / "core" / "blob.py", "BlobError")
+    blocks = (
+        ("A file that can't be opened, that can't be read twice", from_cli, "cli.py"),
+        ("A temporary file for the sealed form that can't be created", from_blob, "core/blob.py"),
+        ("and refuses anything else as an input error", from_cli, "cli.py"),
+        ("Four errors of `blob get`", from_cli, "cli.py"),
+    )
+    quoted = 0
+    for after, errors, module in blocks:
+        for line in _quoted_block(page, after):
+            quoted += 1
+            prefix, _, error = line.partition(": ")
+            assert prefix == "Error", f"cli.md quotes the error {line!r} without `Error: `"
+            assert any(_is_the_same_sentence(parts, error) for parts in errors), (
+                f"cli.md quotes the error {error!r} and {module} raises no such message. "
+                "Either the code's wording changed, or the page's did."
+            )
+    assert quoted == 7, quoted
 
     reasons = _finding_patterns(ROOT / "src" / "previously" / "core" / "verify.py")
     findings = [

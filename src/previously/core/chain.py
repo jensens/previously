@@ -24,11 +24,11 @@ from datetime import datetime
 from previously.contract.rows import EventRow
 from previously.contract.rows import UnitRow
 from previously.contract.types import BlobRef
-from previously.core.blob import is_address
 from previously.core.canonical import canonical
 from previously.core.errors import InvalidPayload
 from previously.core.hashing import event_hash_v2
 from previously.core.hashing import HASH_VERSION_2
+from previously.core.hashing import is_address
 from previously.core.hashing import new_salt
 from previously.core.hashing import payload_hash_v2
 from previously.core.hashing import unit_digest
@@ -77,19 +77,55 @@ class Prepared:
 _BLOBS = "blobs"
 
 
+def _filename_problem(filename: object) -> str | None:
+    if filename is None:
+        return None
+    if not isinstance(filename, str):
+        return "filename is not a string"
+    # The name of the file, without the directory it lay in on the machine
+    # that attached it ({ref}`blobs`); the command line passes `Path.name`.
+    if filename in ("", ".", "..") or "/" in filename:
+        return "filename is not a name without a directory"
+    return None
+
+
+def _reference_problem(
+    sha256: object, size: object, media_type: object, filename: object
+) -> str | None:
+    """What is wrong with one reference, or `None`: the one set of checks
+    the writer and the reader share, so that `prepare` writes nothing that
+    `read_references` refuses. Fix round 1 of task 6, the 2026-10-04 stage
+    1c plan, found the two apart: the writer took `size=True`, which the
+    reader then refused, and `verify` would have reported an event `core`
+    wrote itself.
+
+    Typed `object`, because the reader hands in whatever came out of the
+    store, and a library caller can hand the writer what its annotations do
+    not say.
+    """
+    if not isinstance(sha256, str) or not is_address(sha256):
+        return "sha256 is not 64 hexadecimal characters, lower case"
+    # `bool` is a subclass of `int` in Python, and `true` in JSON is no size.
+    if isinstance(size, bool) or not isinstance(size, int):
+        return "size is not an integer"
+    if size < 0:
+        return f"size must be at least 0, is {size}"
+    if not isinstance(media_type, str):
+        return "media_type is not a string"
+    if not media_type:
+        return "media_type is empty"
+    return _filename_problem(filename)
+
+
 def _references(blobs: Sequence[BlobRef]) -> list[dict[str, object]]:
     """The references as they stand in the payload, each with its four keys,
     in the order given. A reference that is not one is refused with its
     index, before anything is hashed or written."""
     references: list[dict[str, object]] = []
     for index, blob in enumerate(blobs):
-        where = f"blob reference {index}"
-        if not is_address(blob.sha256):
-            raise InvalidPayload(f"{where}: sha256 is not 64 hexadecimal characters, lower case")
-        if blob.size < 0:
-            raise InvalidPayload(f"{where}: size must be at least 0, is {blob.size}")
-        if not blob.media_type:
-            raise InvalidPayload(f"{where}: media_type is empty")
+        problem = _reference_problem(blob.sha256, blob.size, blob.media_type, blob.filename)
+        if problem is not None:
+            raise InvalidPayload(f"blob reference {index}: {problem}")
         references.append(
             {
                 "sha256": blob.sha256,
@@ -113,16 +149,16 @@ def _read_reference(value: object) -> BlobRef | None:
         return None
     sha256, size = fields["sha256"], fields["size"]
     media_type, filename = fields["media_type"], fields["filename"]
-    if not isinstance(sha256, str) or not is_address(sha256):
+    if _reference_problem(sha256, size, media_type, filename) is not None:
         return None
-    # `bool` is a subclass of `int` in Python, and `true` in JSON is no size.
-    if isinstance(size, bool) or not isinstance(size, int) or size < 0:
-        return None
-    if not isinstance(media_type, str) or not media_type:
-        return None
-    if filename is not None and not isinstance(filename, str):
-        return None
-    return BlobRef(sha256=sha256, size=size, media_type=media_type, filename=filename)
+    # The checks above established the types, which their `object`
+    # parameters cannot hand back: the casts state them.
+    return BlobRef(
+        sha256=cast("str", sha256),
+        size=cast("int", size),
+        media_type=cast("str", media_type),
+        filename=cast("str | None", filename),
+    )
 
 
 def read_references(payload: Mapping[str, object]) -> tuple[BlobRef, ...] | None:
