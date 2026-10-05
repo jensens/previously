@@ -2,7 +2,7 @@
 
 # How to check how much of the chain a restore brought back
 
-This guide shows you how to check, after a restore, how much of the chain you got back.
+This guide shows you how to check, after a restore, how much of the chain you got back, and how to bring the blobs and the erasures in line with it.
 
 :::{important}
 A restore that was never rehearsed isn't a backup.
@@ -138,4 +138,29 @@ Its exit code `0` means that the restored chain is consistent in itself, and not
 
 Don't treat a restored instance as a backup until it has passed this check.
 For what each check sees and what it can't, see {ref}`external-anchor`.
+
+## Check the blobs, and repeat the erasures
+
+The blob store doesn't go back with the database.
+Once the chain check above passes, check the blobs against the restored log:
+
+```shell
+previously verify --blobs
+```
+
+It needs the blob settings; see {ref}`configuration-reference`.
+Read its findings apart from the chain check: a `missing` blob here doesn't mean that the restore failed.
+
+A blob reported as `missing` after a restore is, as a rule, one that an erasure deleted after the point you restored to.
+The restore took that erasure's redaction away, so its event names the blob again, and with an erased event, its payload and units stand there again with their content.
+Other erasures since that point came back without any finding: an erased payload or unit is simply there again.
+
+Repeat every erasure since the point you restored to, with the same `previously redact` command as the first time; see {ref}`erase-something`.
+The log can't tell you which erasures those were: its record of them is what the restore took away.
+Take them from a record kept outside the database, such as a list of every `redact` command with its date, kept beside the anchor file.
+If you promise erasure to anybody, keep that record from the first erasure on; without it, nothing tells you what to repeat.
+
+Then run `previously verify --blobs` again.
+Once every erasure is repeated, no `missing` finding is left.
+An object uploaded after the point you restored to stays in the bucket, and no event of the restored log names it, so no check reports it.
 For why losing the passphrase means losing the backups for good, see {ref}`backup-encryption`.

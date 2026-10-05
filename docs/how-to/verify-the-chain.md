@@ -2,7 +2,7 @@
 
 # How to check the chain in operation
 
-This guide shows you how to check whether the chain is intact, how to read what it reports, and how to anchor the chain outside the database.
+This guide shows you how to check whether the chain is intact, how to read what it reports, how to anchor the chain outside the database, and how to check the blobs.
 
 Run `previously verify`.
 
@@ -79,6 +79,24 @@ Whatever starts the command inside the container has to meet two conditions, and
 - It must not allocate a terminal, such as `-T` for `docker compose exec`.
   With a terminal, standard error is mixed into standard output, and whatever `previously anchor` prints to standard error lands in the anchor file: the notice `the log is empty: nothing to anchor` on an empty log, and the `FINDING` lines on a chain with a finding.
   If that happened, remove those lines from the anchor file by hand before the next run.
+
+## Check the blobs, once a night
+
+If the log names blobs, run a second, longer check on a schedule of its own, such as once a night:
+
+```console
+$ previously verify --anchors anchors.txt --blobs
+chain intact, 1 anchor holds, 1 blob matches
+```
+
+`--blobs` reads every blob the log names out of the store, opens it, and checks it against its address, so it takes as long as reading the whole store does.
+Keep it out of the anchor routine above, which runs more often: `--blobs` adds nothing to an anchor.
+It needs the five settings of the store and the directory of identities; see {ref}`configuration-reference`.
+
+Treat exit code `1` as an alarm, as for the chain.
+The four findings it adds name the blob, and each stands under the first event that names it.
+A blob that appears as `missing` after a restore of the database is the case {ref}`restore-from-a-backup` covers.
+Exit code `2` means that the check couldn't be made, for example because the store didn't answer, and says nothing about the blobs; run it again once the cause on standard error is gone.
 
 For the format of an anchor line and the three findings an anchor can produce, see {ref}`cli-reference`.
 For what an anchor closes, and what it leaves open, see {ref}`external-anchor`.

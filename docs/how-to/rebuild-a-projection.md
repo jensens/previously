@@ -32,16 +32,18 @@ See {ref}`cli-reference` for the four outcomes and their exact wording.
 
 Raise the projection's version in the code whenever you change how its rows are derived.
 `ChronicleProjection.version` in `src/previously/core/projection/chronicle.py` carries the chronicle's version, and `SourceStatsProjection.version` in `src/previously/core/projection/source_stats.py` carries the statistics' version.
-Read the current value there.
+Read the current value there, and raise it by one.
+For a chronicle at version 2, the line becomes this one:
 
 ```python
-version: int = 2
+version: int = 3
 ```
 
 Then run `previously project`.
 It empties that projection's table and builds it again from the log.
 The line for the projection you raised begins with `rebuilt:`, names the version it moved from and to, and ends with the number of events projected and the new `up_to_id`.
 The line for the projection you left alone reports `up to date`.
+If `previously redact` runs before `previously project` does, it catches the projections up itself, and prints the same `rebuilt:` line on standard error.
 
 A raised version rebuilds the rows and leaves the table's columns and indexes as they are.
 If your change needs a column that isn't there yet, write a migration for it as well; see {ref}`add-a-migration`.
@@ -64,7 +66,7 @@ The line for the other projection again reports `up to date`.
 
 :::{warning}
 The `DELETE` drops the bookmark and leaves the rows of `p_chronicle` standing.
-Until the next `previously project`, `previously chronicle` prints those old rows and reports the whole log as its lag.
+Until the next `previously project`, or a `previously redact`, which catches up as well, `previously chronicle` prints those old rows and reports the whole log as its lag.
 `previously project` then empties the table in its first transaction and fills it batch by batch, so a `previously chronicle` run during a long rebuild sees a partial chronicle, with the lag line saying how far the rebuild has come.
 :::
 

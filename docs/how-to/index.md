@@ -7,6 +7,10 @@ Solve a specific problem with Previously.
 
 verify-the-chain
 restore-from-a-backup
+erase-something
+attach-and-fetch-a-file
+run-a-blob-store-on-your-machine
+keep-the-blob-key-safe
 add-a-migration
 rebuild-a-projection
 ```
