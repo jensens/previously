@@ -736,7 +736,9 @@ def _redact_arguments(parser: argparse.ArgumentParser) -> None:
     event = targets.add_parser("event", help="erase the payload and the content of every unit")
     event.add_argument("event_id", type=int)
     event.add_argument("--reason", required=True, help="why; it stays in the log for good")
-    units = targets.add_parser("units", help="erase the content of the named units")
+    units = targets.add_parser(
+        "units", help="erase the content of the named units; the payload of the event stays"
+    )
     units.add_argument("event_id", type=int)
     units.add_argument("seqs", type=int, nargs="+", metavar="SEQ")
     units.add_argument("--reason", required=True, help="why; it stays in the log for good")
@@ -759,6 +761,21 @@ def _kept_line(address: str, users: Sequence[int]) -> str:
     if len(users) == 1:
         return f"blob {address} stays in the store: event {ids} still uses it"
     return f"blob {address} stays in the store: events {ids} still use it"
+
+
+def _payload_line(event_id: int) -> str:
+    """The notice for a payload a redaction of units left standing.
+
+    `redact units` erases units and nothing else, and the line on standard
+    output says the redaction is done. But `previously append --text` writes
+    the whole text into the payload as well as into the units, so after the
+    units are erased the same text can still be read in the payload; this
+    says so, and names the command that erases it, rather than leave the
+    line on standard output to read as "the content is gone"."""
+    return (
+        f"the payload of event {event_id} is not erased and may hold the same text; "
+        f"`previously redact event {event_id}` erases it"
+    )
 
 
 def _unfinished(redaction_id: int, outstanding: str) -> PreviouslyError:
@@ -871,6 +888,8 @@ def _cmd_redact(args: argparse.Namespace) -> int:
         print(f"unit {seq} was already erased", file=sys.stderr)
     for address, users in result.kept_blobs.items():
         print(_kept_line(address, users), file=sys.stderr)
+    if result.payload_stands:
+        print(_payload_line(args.event_id), file=sys.stderr)
     return 0
 
 

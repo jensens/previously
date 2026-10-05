@@ -1260,6 +1260,48 @@ def test_redact_event_prints_the_redaction_and_show_names_it(
     assert main(["verify"]) == 0
 
 
+def _payload_standing(event_id: int) -> str:
+    return (
+        f"the payload of event {event_id} is not erased and may hold the same text; "
+        f"`previously redact event {event_id}` erases it\n"
+    )
+
+
+@pytest.mark.db
+def test_redact_units_says_that_the_payload_stays(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`append --text` writes the text into the payload as well as into the
+    units, so after `redact units` the text can still be read in the
+    payload. Standard output keeps its one line and the exit code stays 0;
+    the notice on standard error says so, on a rerun that finds the units
+    covered as well. The control: once `redact event` has erased the
+    payload, `redact units` on the same event prints no such notice.
+    Measured on 2026-10-05 with `payload_stands` always `False`: the first
+    comparison failed."""
+    _connect(db, monkeypatch)
+    submit = ["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"]
+    assert main(submit) == 0
+    assert main(["project"]) == 0
+    capsys.readouterr()
+
+    assert main(["redact", "units", "1", "2", "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("redacted by event 2\n", _payload_standing(1))
+    assert main(["redact", "units", "1", "2", "--reason", "r"]) == 0
+    assert capsys.readouterr() == (
+        "already redacted by event 2\n",
+        f"unit 2 was already erased\n{_payload_standing(1)}",
+    )
+
+    assert main(["show", "1"]) == 0
+    assert '"text": "One\\n\\nTwo"' in capsys.readouterr().out
+
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    capsys.readouterr()
+    assert main(["redact", "units", "1", "1", "--reason", "r"]) == 0
+    assert capsys.readouterr() == ("already redacted by event 3\n", "unit 1 was already erased\n")
+
+
 @pytest.mark.db
 def test_redact_units_names_each_tombstone(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -1274,11 +1316,15 @@ def test_redact_units_names_each_tombstone(
     out, err = capsys.readouterr()
     assert out == "1\nredacted by event 2\nredacted by event 3\n"
     # The first `redact` builds the projections, which nobody had built; the
-    # second only catches up and says nothing about it.
+    # second only catches up and says nothing about it. Both say that the
+    # payload, which `append --text` wrote the same text into, still stands.
+    standing = _payload_standing(1)
     assert err == (
         "chronicle       built: 2 events, up_to_id 2\n"
         "source-stats    built: 2 events, up_to_id 2\n"
+        f"{standing}"
         "unit 3 was already erased\n"
+        f"{standing}"
     )
 
     assert main(["show", "1"]) == 0

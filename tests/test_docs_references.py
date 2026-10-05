@@ -442,8 +442,8 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     five restrictions below" with a row missing. Deriving the payloads from
     the code is the fix and it is not built yet.
 
-    The second half holds the nine standard-error sentences and the two
-    lines of `redact` on standard output that `cli.md` quotes, in eight
+    The second half holds the ten standard-error sentences and the two
+    lines of `redact` on standard output that `cli.md` quotes, in nine
     blocks, against the literals in `cli.py` — not the line `blob get`
     prints on success, which `_message_patterns` does not collect, since it
     reads standard-error sentences and returned lines only; the seven
@@ -497,6 +497,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         ("On an empty log, one notice goes to standard error", 1),
         ("For each unit it skips, one notice goes to standard error", 1),
         ("one notice goes to standard error, naming the blob and those events", 2),
+        ("When the payload of the target still stands after `redact units`", 1),
         ("`redact` prints one of two lines to standard output", 2),
         ("When no event names the blob, `blob get` returns 1", 1),
         ("When every reference to the blob is erased, `blob get` returns 1", 1),

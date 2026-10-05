@@ -92,6 +92,12 @@ class Redacted:
     # a second call finish a deletion the first did not get to.
     obsolete_blobs: tuple[str, ...] = ()
     kept_blobs: Mapping[str, tuple[int, ...]] = field(default_factory=dict[str, tuple[int, ...]])
+    # Whether the payload of the target still stands after an erasure of
+    # units, read from the row the erasure locked. A redaction of units
+    # leaves the payload as it is, and the payload can hold the same text:
+    # `previously append --text` writes it into both. That is a fact about
+    # the target, and the command line says what follows from it.
+    payload_stands: bool = False
 
 
 def _check_input(reason: str, recorded_at: datetime) -> None:
@@ -314,7 +320,12 @@ def redact_units[Conn](
         else:
             redaction_id = max(by.id for by in covering.values() if by is not None)
         eraser.erase_units(conn, event_id, wanted)
-        return Redacted(redaction_id=redaction_id, written=bool(fresh), skipped_units=skipped)
+        return Redacted(
+            redaction_id=redaction_id,
+            written=bool(fresh),
+            skipped_units=skipped,
+            payload_stands=target.payload is not None,
+        )
 
     return _retrying(log, once)
 

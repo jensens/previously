@@ -94,7 +94,7 @@ previously redact blob HASH --reason TEXT
 | `--reason` | Yes | — | Why the erasure happens, not empty and not blanks alone. It stays in the log for good and must not contain what's erased. |
 
 `redact event` erases the event's payload, and the content, speaker, timestamps and salt of every unit.
-`redact units` erases the content, speaker, timestamps and salt of the named units.
+`redact units` erases the content, speaker, timestamps and salt of the named units, and leaves the event's payload as it is.
 The order of the `SEQ` arguments doesn't matter, and a `SEQ` given twice counts once.
 `redact blob` erases the blob for every event whose reference to it isn't erased yet; their payloads and units stay as they are.
 Every hash, the source key, the rows of the units and the rows of the blob register stay.
@@ -161,6 +161,14 @@ For each blob of the target that stays in the store because another event still 
 blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 stays in the store: event 7 still uses it
 blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 stays in the store: events 7, 9 still use it
 ```
+
+When the payload of the target still stands after `redact units`, one notice goes to standard error, last, whether the redaction was written or the units were already covered:
+
+```text
+the payload of event 7 is not erased and may hold the same text; `previously redact event 7` erases it
+```
+
+`append --text` writes the whole text into the payload as well as into the units, so after `redact units` the same text can still stand in the payload.
 
 Seven refusals print one sentence to standard error, print nothing to standard output, write nothing, delete nothing, and return 2:
 

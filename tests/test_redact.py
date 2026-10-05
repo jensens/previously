@@ -158,7 +158,7 @@ def test_redacting_units_leaves_the_others_attested(db: Engine) -> None:
 
     result = redact_units(storage, storage, 1, [2], reason="a price", recorded_at=LATER)
 
-    assert result == Redacted(redaction_id=2, written=True)
+    assert result == Redacted(redaction_id=2, written=True, payload_stands=True)
     assert _unit_state(db, 1) == [
         (1, False, False, False),
         (2, True, True, False),
@@ -226,15 +226,34 @@ def test_redacting_units_again_skips_what_is_covered(db: Engine) -> None:
 
     result = redact_units(storage, storage, 1, [3, 2], reason="more", recorded_at=LATER)
 
-    assert result == Redacted(redaction_id=3, written=True, skipped_units=(2,))
+    assert result == Redacted(redaction_id=3, written=True, skipped_units=(2,), payload_stands=True)
     newest = _rows(storage)[-1]
     assert newest.payload is not None
     assert parse(newest.id, newest.payload).units == (3,)
     assert verify(storage) == []
 
     again = redact_units(storage, storage, 1, [2, 3], reason="all of it", recorded_at=LATER)
-    assert again == Redacted(redaction_id=3, written=False, skipped_units=(2, 3))
+    assert again == Redacted(
+        redaction_id=3, written=False, skipped_units=(2, 3), payload_stands=True
+    )
     assert len(_rows(storage)) == 3
+
+
+@pytest.mark.db
+def test_redacting_units_says_whether_the_payload_still_stands(db: Engine) -> None:
+    """A redaction of units leaves the payload, and says so; once a
+    redaction of the whole event has erased the payload, a redaction of its
+    units says it does not stand, on the path that writes nothing as well.
+    Measured on 2026-10-05 with `payload_stands` always `False`: the first
+    assertion failed."""
+    storage = PostgresStorage(db)
+    append(storage, [_message("m"), _message("n")], recorded_at=NOW)
+
+    assert redact_units(storage, storage, 1, [1], reason="r", recorded_at=LATER).payload_stands
+
+    redact_event(storage, storage, 2, reason="r", recorded_at=LATER)
+    covered = redact_units(storage, storage, 2, [1], reason="r", recorded_at=LATER)
+    assert (covered.written, covered.payload_stands) == (False, False)
 
 
 @pytest.mark.db
