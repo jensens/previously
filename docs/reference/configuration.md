@@ -11,6 +11,8 @@ Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables ar
 |---|---|---|
 | `PREVIOUSLY_DSN` | `postgresql+psycopg://user:pass@host:5432/database` | The `previously` command line, `previously migrate` included, and `alembic` in a checkout. |
 
+When connecting fails, because the server refuses the password, doesn't have the database, or can't be reached, every command prints one sentence that quotes the reason the PostgreSQL client library gives, without the password; see {ref}`cli-reference`.
+
 `previously migrate` reads the connection string from `PREVIOUSLY_DSN` alone.
 A character of the password that the connection string has to escape, such as `@`, stands in it as its escape sequence, such as `%40`, and `migrate` reads it as the character.
 

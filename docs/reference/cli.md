@@ -8,6 +8,16 @@ Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see
 `append --attach`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
 A missing setting is an input error that names the first variable missing, in the form `Error: PREVIOUSLY_BLOB_BUCKET is not set`.
 A transaction the database aborts in a conflict with a concurrent one, a deadlock or a lock not granted in time, is a storage error with exit code 2, in the form `Error: the database aborted the operation in a conflict with a concurrent one; run the command again`.
+When connecting to the database fails, every subcommand prints one sentence to standard error and returns 2, with the connection string's password replaced by `***`, followed by the first line of the reason the PostgreSQL client library gives, in the server's language:
+
+```text
+Error: connecting to the database at postgresql+psycopg://previously:***@localhost:5432/previously failed: connection to server at "127.0.0.1", port 5432 failed: FATAL:  password authentication failed for user "previously"
+Error: connecting to the database at postgresql+psycopg://previously:***@localhost:5432/nope failed: connection to server at "127.0.0.1", port 5432 failed: FATAL:  database "nope" does not exist
+Error: connecting to the database at postgresql+psycopg://previously:***@localhost:5432/previously failed: connection to server at "127.0.0.1", port 5432 failed: Connection refused
+```
+
+The first is a password the server refuses, the second a database the server doesn't have, and the third a port where nothing listens.
+
 Every subcommand but `migrate` needs the schema that `migrate` creates, and against a database without it prints one sentence to standard error and returns 2:
 
 ```text
@@ -71,7 +81,7 @@ Error: the database refused the migration to 0004_event_blob: permission denied 
 The first comes from a role that may not create a table in schema `public`, which since PostgreSQL 15 is every role but the owner of the database and a superuser.
 The second comes from a role that may not read the table `alembic_version`, where the revision stands.
 
-A connection string that can't be parsed, a server that doesn't answer, and a password the server refuses each print one sentence to standard error, the same sentence every other command prints for it, without the password.
+A connection string that can't be parsed, a server that doesn't answer, a password the server refuses, and a database that doesn't exist each print one sentence to standard error, the same sentence every other command prints for it, without the password.
 
 ## `append`
 

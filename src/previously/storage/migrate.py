@@ -23,7 +23,8 @@ from previously.storage.errors import UnknownRevision
 from previously.storage.postgres import diagnosis
 from previously.storage.postgres import from_dsn
 from sqlalchemy import text
-from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import OperationalError
 
 
 # The key of the session-level advisory lock `migrate` holds while it runs.
@@ -97,9 +98,14 @@ def migrate(dsn: str) -> Migrated:
                         ) from error
                 if before != head:
                     command.upgrade(config, "head")
-            except ProgrammingError as error:
-                # The database answered and refused: a role that may not read
-                # `alembic_version` or create a table. That is not the missing
+            except DBAPIError as error:
+                # A failure to connect, on this connection or on Alembic's, is
+                # `_transaction`'s to translate, and goes on to it unchanged.
+                if isinstance(error, OperationalError):
+                    raise
+                # Any other error is the database answering and refusing: a
+                # role that may not read `alembic_version` or create a table,
+                # an event trigger that refuses DDL. That is not the missing
                 # schema `MigrationPending` reports, whose advice would be to
                 # run this very command again; the server's own reason is what
                 # helps, and it carries no connection string.

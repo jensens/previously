@@ -33,6 +33,7 @@ import io
 import os
 import pytest
 import re
+import secrets
 import sys
 import threading
 import time
@@ -291,8 +292,69 @@ def test_an_unreachable_server_shows_one_sentence(
     sentence = _single_line(capsys.readouterr().err)
     assert "Traceback" not in sentence
     assert "SECRET123" not in sentence
+    # Nothing listens on port 1: the reason is the operating system's, and
+    # it comes after the address, as for a server that answers and refuses.
+    assert sentence.startswith(
+        "Error: connecting to the database at postgresql+psycopg://user:***@localhost:1/db "
+        "failed: connection to server at "
+    )
+    assert "Connection refused" in sentence
     assert main(["verify"]) == 2
     assert _single_line(capsys.readouterr().err) == sentence
+
+
+def _refused(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    password: str | None = None,
+    database: str | None = None,
+) -> tuple[str, str, str]:
+    """`log` against the session's server with the password or the database
+    of the connection string changed: what it prints on standard output, the
+    one sentence on standard error, and the connection string with its
+    password hidden."""
+    from sqlalchemy import Engine
+
+    assert isinstance(db, Engine)
+    url = db.url.set(password=password) if password else db.url
+    url = url.set(database=database) if database else url
+    monkeypatch.setenv("PREVIOUSLY_DSN", url.render_as_string(hide_password=False))
+    assert main(["log"]) == 2
+    out, err = capsys.readouterr()
+    return out, _single_line(err), url.render_as_string(hide_password=True)
+
+
+@pytest.mark.db
+def test_a_refused_password_names_libpqs_reason_and_not_the_password(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The server answers and refuses the login. The sentence says that
+    connecting failed and quotes the first line of libpq's message, which
+    names the reason in the server's language: a guess of ours in its place
+    said "does not answer — is PostgreSQL running there", and sent whoever
+    had typed a wrong password to look at the network. The password is drawn
+    at run time, so that no output can hold it by coincidence."""
+    secret = f"wrong-{secrets.token_hex(8)}"
+    out, sentence, hidden = _refused(db, capsys, monkeypatch, password=secret)
+    # First, so that a password in the output fails on this line and no other.
+    assert secret not in out + sentence
+    assert out == ""
+    assert sentence.startswith(f"Error: connecting to the database at {hidden} failed: ")
+    assert "FATAL:  password authentication failed for user " in sentence
+
+
+@pytest.mark.db
+def test_a_missing_database_names_libpqs_reason(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A database name the server does not know: the same sentence, with
+    the server's reason."""
+    out, sentence, hidden = _refused(db, capsys, monkeypatch, database="no_such_database")
+    assert out == ""
+    assert sentence.startswith(f"Error: connecting to the database at {hidden} failed: ")
+    assert 'FATAL:  database "no_such_database" does not exist' in sentence
 
 
 @pytest.mark.db

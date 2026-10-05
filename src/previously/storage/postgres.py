@@ -231,10 +231,20 @@ class PostgresStorage:
                     "the database aborted the operation in a conflict with a concurrent one; "
                     "run the command again"
                 ) from error
+            # That connecting failed, and libpq's own first line on why: a
+            # refused password, a database that does not exist, nothing
+            # listening. psycopg gives no SQLSTATE for a failure at connect
+            # time — it builds the error out of libpq's text alone, measured
+            # with psycopg 3.3.6 — and the text is in the server's language,
+            # so it is quoted and never matched. Before, one guess stood here
+            # for all three: "does not answer — is PostgreSQL running there",
+            # which sent whoever had a wrong password to look at the network.
+            # The first line only: libpq lists every address it tried below
+            # it. The prefix `connection failed: ` is psycopg's, not libpq's.
+            reason = str(error.orig).partition("\n")[0].removeprefix("connection failed: ")
             address = engine.url.render_as_string(hide_password=True)
             raise ServerUnreachable(
-                f"database server at {address} does not answer — is PostgreSQL "
-                "running there, and is it reachable from here?"
+                f"connecting to the database at {address} failed: {reason}"
             ) from error
         except ProgrammingError as error:
             # `previously migrate` and not `alembic upgrade head`: an installed

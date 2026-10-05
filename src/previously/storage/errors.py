@@ -43,11 +43,13 @@ class InvalidDsn(StorageError):
 
 
 class ServerUnreachable(StorageError):
-    """The database server does not answer (review finding W2).
+    """Connecting to the database failed (review finding W2).
 
     Translates `sqlalchemy.exc.OperationalError`, which arises while the
-    connection is actually being established — the DSN was valid, but nobody
-    answers at that address.
+    connection is actually being established — the DSN was valid, and nobody
+    answers at that address, or the server answers and refuses: a wrong
+    password, a database that does not exist. The message quotes libpq's
+    first line, which says which, and never the password.
     """
 
 
@@ -76,9 +78,10 @@ class MigrationFailed(StorageError):
     """The database refused a step of `previously migrate`: reading the
     revision it is at, or applying a revision.
 
-    Translates the `sqlalchemy.exc.ProgrammingError` that arises there, such
-    as a role without the right to create a table or to read
-    `alembic_version`. It is not `MigrationPending`: the schema may well be
+    Translates every `sqlalchemy.exc.DBAPIError` that arises there but an
+    `OperationalError`, which stays a failure to connect: a role without the
+    right to create a table or to read `alembic_version`, an event trigger
+    that refuses DDL. It is not `MigrationPending`: the schema may well be
     missing, but the cause is the database's answer, and the message names
     that answer, never the connection string.
     """

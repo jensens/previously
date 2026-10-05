@@ -380,5 +380,45 @@ def test_cli_migrate_translates_a_failure_on_alembics_own_connection(
     out, err = capsys.readouterr()
     assert out == ""
     assert len(err.splitlines()) == 1, err
-    assert err.startswith("Error: database server at ")
+    assert err.startswith("Error: connecting to the database at ")
+    assert "too many connections for role" in err
     assert role.password not in err
+
+
+@pytest.mark.db
+def test_cli_migrate_names_the_reason_of_an_error_that_is_no_programming_error(
+    empty_dsn: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A database whose event trigger refuses every DDL statement, the way
+    some managed databases guard their schema. The trigger raises with
+    SQLSTATE `XX000`, which psycopg files under `InternalError`, not
+    `ProgrammingError`: the refusal still ends as one sentence with the
+    database's reason, not as a traceback. Not the default `P0001`: psycopg
+    files that one under `ProgrammingError`, measured on 2026-10-05, and the
+    test passed with only `ProgrammingError` caught."""
+    engine = create_engine(empty_dsn)
+    try:
+        with engine.begin() as conn:
+            conn.execute(
+                text(
+                    "CREATE FUNCTION refuse_ddl() RETURNS event_trigger LANGUAGE plpgsql AS "
+                    "$$ BEGIN RAISE EXCEPTION 'no schema changes in this database' "
+                    "USING ERRCODE = 'XX000'; END $$"
+                )
+            )
+            conn.execute(
+                text(
+                    "CREATE EVENT TRIGGER refuse_ddl ON ddl_command_start "
+                    "EXECUTE FUNCTION refuse_ddl()"
+                )
+            )
+    finally:
+        engine.dispose()
+    monkeypatch.setenv("PREVIOUSLY_DSN", empty_dsn)
+    assert main(["migrate"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the database refused the migration to {HEAD}: "
+        "no schema changes in this database\n",
+    )
+    assert _no_lock_left(empty_dsn)

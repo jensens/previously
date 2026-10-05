@@ -470,8 +470,10 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     only; the seven refusals of `redact` against the messages
     `core/redact.py` and `cli.py` raise as `RedactionRefused`; the three
     errors of `migrate` against the messages `storage/migrate.py` raises as
-    `UnknownRevision` and `MigrationFailed`, and the missing schema against
-    the one `storage/postgres.py` raises as `MigrationPending`; the nine
+    `UnknownRevision` and `MigrationFailed`, the missing schema against the
+    one `storage/postgres.py` raises as `MigrationPending`, and the three
+    failures to connect against the one it raises as `ServerUnreachable`;
+    the nine
     errors of the blob commands and of
     an unfinished redaction against the messages `cli.py` raises as
     `PreviouslyError` or `InvalidPayload` and `core/blob.py` raises as
@@ -555,14 +557,18 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     # The errors of `migrate` come out of `storage/migrate.py`, raised as
     # `UnknownRevision` or `MigrationFailed`, and the one every other command
     # gives against a database without the schema out of `storage/postgres.py`,
-    # raised as `MigrationPending`; the command line prints each behind
-    # `Error: `. What `MigrationFailed` says after its colon is the server's
-    # own reason, which `tests/test_migrate.py` holds against a real database.
+    # raised as `MigrationPending`, and the failure to connect out of
+    # `storage/postgres.py`, raised as `ServerUnreachable`; the command line
+    # prints each behind `Error: `. What `MigrationFailed` and
+    # `ServerUnreachable` say after their last colon is the server's or
+    # libpq's own reason, which `tests/test_migrate.py` and `tests/test_cli.py`
+    # hold against a real database.
     storage = ROOT / "src" / "previously" / "storage"
     for after, module, error_class, expected in (
         ("is refused, and nothing changes", "migrate.py", "UnknownRevision", 1),
         ("the database's own reason", "migrate.py", "MigrationFailed", 2),
         ("against a database without it prints one sentence", "postgres.py", "MigrationPending", 1),
+        ("When connecting to the database fails", "postgres.py", "ServerUnreachable", 3),
     ):
         quoted = _quoted_block(page, after)
         assert len(quoted) == expected, quoted
