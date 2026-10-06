@@ -19,6 +19,20 @@ ENV PATH="/app/.venv/bin:$PATH"
 # --help` took 1.70 s without it and 0.83 s with it, for an image of 332 MB
 # instead of 313 MB.
 ENV UV_COMPILE_BYTECODE=1
+# glibc's threshold for serving an allocation by `mmap`, fixed at its default
+# of 128 KiB. Left alone, glibc raises it to the size of the largest block
+# freed so far, up to 32 MiB, so from the second large mail of an
+# `ingest imap` run on, the blocks of a mail come from the heap, which glibc
+# gives back to the system only in part, and the peak grows with the large
+# mails of the run instead of staying at what one costs. Measured on
+# 2026-10-06 with mails of 27 MiB, each with an attachment of 20 MiB: on the
+# host, with glibc 2.39, 1, 3 and 6 of them raised the peak of a run by 241,
+# 346 and 383 MiB without the setting and by 240, 241 and 241 MiB with it; in
+# this image, with glibc 2.41, the resident peak of `ingest imap` stood at
+# 336, 360 and 361 MiB without it and between 335 and 336 MiB with it, in
+# two runs each. A mail of 49.5 MiB peaked between 529 and 533 MiB either
+# way, because its blocks lie above the cap of 32 MiB.
+ENV MALLOC_MMAP_THRESHOLD_=131072
 
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --no-install-project
