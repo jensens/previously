@@ -193,17 +193,35 @@ Der Vergleich kostet eine Abfrage je Wiedersichtung: `lookup` liefert die
 Erst der **Betreff** als Einheit 1, dann die Absätze des Textkörpers über
 `split_plaintext`, Zitate und Signatur eingeschlossen.
 
-- **Welcher Körper:** der Teil `text/plain`, wenn es einen gibt; sonst
-  `text/html`, mechanisch in Text umgewandelt (§7.3). Welcher Teil und
-  welcher Umwandler in welcher Fassung, steht in der Nutzlast.
+- **Welcher Körper:** jeder Textteil des eigentlichen Inhalts, in
+  Reihenfolge — ein Teil `text/*` ohne Dateinamen und ohne
+  `Content-Disposition: attachment`. In `multipart/alternative` die
+  bevorzugte Form, `text/plain` vor `text/html`; ein leerer `text/plain`
+  tritt hinter `text/html` zurück. HTML wird mechanisch in Text umgewandelt
+  (§7.3). Ein Teil mit Dateinamen ist ein Anhang, auch als `text/plain`.
+  Welche Teile und welcher Umwandler in welcher Fassung, steht in der
+  Nutzlast. (Geändert am 2026-10-06 nach der Prüfung von Aufgabe 2: nur der
+  erste Textteil verlor den zweiten Absatz einer Mail aus Apple Mail mit
+  einem PDF dazwischen, und ein leerer `text/plain` verbarg den HTML-Text.)
 - **Zitate und Signaturen bleiben.** Sie zu erkennen ist Deutung.
 - **Keine Mail ohne Einheit.** Hat eine Mail weder Betreff noch lesbaren
   Körper (verschlüsselt, nur Anhänge), bekommt sie eine einzige Einheit mit
   einem festen englischen Satz, der sagt, warum (`no readable body:
   encrypted` und Entsprechendes).
+- **Zeichensätze.** Ein erklärtes `iso-8859-1` wird als Windows-1252
+  gelesen, wie jeder Browser es tut. Ohne erklärten Zeichensatz, bei
+  `us-ascii` mit Bytes über 127 und bei einer unbekannten Bezeichnung wird
+  zuerst streng UTF-8 versucht, sonst Windows-1252; die Nutzlast vermerkt,
+  dass geraten wurde (`guessed`).
 - **Zeichen, die das Log nicht hält.** Ein Nullbyte und ein Zeichen, das sich
-  mit dem erklärten Zeichensatz nicht lesen lässt, werden durch U+FFFD
-  ersetzt; die Nutzlast vermerkt es. Die Rohmail liegt als Blob daneben.
+  nicht lesen lässt, werden durch U+FFFD ersetzt; die Nutzlast vermerkt es
+  (`replaced`, für den Betreff `headers_replaced`). Die Rohmail liegt als
+  Blob daneben.
+- **Eine Mail, die sich nicht abbilden lässt**, hält den Lauf nicht an: sie
+  wird ein Event aus dem, was sicher ist — `external_id`
+  `sha256:<SHA-256 der Rohbytes>`, `occurred_at` aus `INTERNALDATE`, eine
+  Einheit `unreadable mail: <Klasse des Fehlers>`, die Rohmail als Blob. Je
+  Mail: eine innere, die scheitert, versenkt die äußere nicht.
 
 ### 3.3 Die Inhaltsidentität einer Mail
 
@@ -211,12 +229,15 @@ SHA-256 über die kanonische Form des Projekts von:
 
 ```
 {"subject": <Betreff, dekodiert, oder null>,
- "body": <SHA-256 der dekodierten Bytes des gewählten Körperteils, hex, oder null>,
+ "body": [<SHA-256 der dekodierten Bytes je gewähltem Körperteil, hex, in Reihenfolge>],
  "attachments": [<SHA-256 je Anhang, hex, sortiert>]}
 ```
 
 Dekodiert heißt: nach dem Auflösen der Transportkodierung, vor jeder
-Umwandlung in Text. Damit ist die Identität unabhängig vom Umwandler, von der
+Umwandlung in Text; Zeilenenden vereinheitlicht, auch bei Anhängen, die als
+Textzeilen reisen, damit eine Kopie mit LF (eine `.eml`-Datei) dieselbe Mail
+ist wie die mit CRLF vom Server; der Betreff mit vereinheitlichtem Leerraum
+der Faltung. Damit ist die Identität unabhängig vom Umwandler, von der
 Zerlegung und vom Transport — und sie ändert sich, wenn sich Betreff, Körper
 oder ein Anhang ändert. **Diese Regel gehört dem Projekt, nicht einer
 Bibliothek**: ändert eine Bibliothek, wie sie einen Teil dekodiert, ändert
@@ -228,12 +249,14 @@ selbst (§7.3), und Tests halten die Regel fest.
 
 | Schlüssel | Inhalt |
 |---|---|
-| `headers` | **alle** Kopfzeilen als Liste von Paaren `[Name, Wert]`, in der Reihenfolge der Mail, Namen wie geschrieben. Sie stehen auch in der Rohmail; hier, damit man sie ohne Schlüssel lesen kann |
+| `headers` | **alle** Kopfzeilen als Liste von Paaren `[Name, Wert]`, in der Reihenfolge der Mail, Namen wie geschrieben, Werte entfaltet (Leerraum der Faltung als ein Leerzeichen). Sie stehen auch in der Rohmail; hier, damit man sie ohne Schlüssel lesen kann |
+| `headers_replaced` | nur wenn im Betreff ein Zeichen ersetzt wurde |
 | `raw` | die Adresse der Rohmail unter den `blobs` |
 | `date_source` | `header` oder `internaldate` |
 | `internaldate` | die Eingangszeit des Servers, ISO 8601 |
 | `found_in` | der Name des Konnektor-Laufs und `uidvalidity`/`uid`, wo die Mail bei dieser Sichtung lag |
-| `body` | `{"part": …, "charset": …, "converter": … oder null, "replaced": true/false}` |
+| `body` | eine Liste, ein Eintrag je gewähltem Körperteil: Teil, erklärter (`declared`) und verwendeter Zeichensatz, ob geraten (`guessed`), Umwandler samt Fassung oder `null`, `replaced` |
+| `not_unpacked` | nur auf der Mail in Tiefe fünf (§3.6): was sie nicht mehr entpackt hat |
 | `variant_of` | nur bei einer Variante (§3.5): die Message-ID, unter der schon ein anderer Inhalt liegt |
 | `forwarded_in` | nur bei einer Mail aus einem Anhang (§3.6): der Schlüssel der äußeren Mail |
 
@@ -263,7 +286,8 @@ wird daraus eine Zuordnung.
 | **Nur HTML** | umgewandelt, §7.3 |
 | **Verschlüsselt oder signiert** | signiert: der lesbare Teil; verschlüsselt: die eine Einheit aus §3.2. Entschlüsselt wird nichts |
 | **Eine Mail als Anhang** (`message/rfc822`), etwa eine weitergeleitete | ein Anhang-Blob der äußeren Mail **und zusätzlich ein eigenes Event**, abgebildet wie jede Mail (§3.6); ihr Text geht nicht in den Körper der äußeren Mail, ihre Anhänge nicht in deren `blobs` |
-| **Unbekannter Zeichensatz** | als Latin-1 gelesen, `replaced` vermerkt es |
+| **Unbekannter oder fehlender Zeichensatz** | zuerst streng UTF-8, sonst Windows-1252; `guessed` vermerkt es (§3.2) |
+| **Eine Mail, die sich nicht abbilden lässt** | ein Event mit Rohmail und der Einheit `unreadable mail: <Klasse>` (§3.2) |
 
 Im Spike vom 2026-10-05 (Notiz) waren das genau die Fälle, an denen eine
 fertige Zerlegung still Inhalt verlor: ein unlesbares `Date` wurde
