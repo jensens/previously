@@ -1,0 +1,8 @@
+From: build@example.org
+To: team@example.org
+Subject: Nightly build green
+Date: Mon, 05 Oct 2026 23:00:00 -0000
+Message-ID: <build-1234@example.org>
+Content-Type: text/plain; charset=us-ascii
+
+All 412 checks passed.

@@ -191,3 +191,20 @@ def test_pyrage_outside_core_sealing_breaks_its_contract() -> None:
     assert result.returncode != 0, output
     assert "Only core.sealing imports pyrage BROKEN" in output, output
     assert "previously.storage._violation -> pyrage" in output, output
+
+
+def test_html2text_outside_core_mail_breaks_its_contract() -> None:
+    """`html2text` in another module of `core` breaks the contract that
+    keeps it in `core.mail`: the probe sits beside the one allowed importer,
+    in the same package, so the exemption is shown to be that module and
+    not its layer. A second module that turned HTML into text would write
+    units the payload's `body.converter` does not account for
+    ({ref}`artifact-identity`).
+    """
+    with _probe_module("import html2text\n"):
+        result = _gate()
+    output = result.stdout + result.stderr
+
+    assert result.returncode != 0, output
+    assert "Only core.mail imports html2text BROKEN" in output, output
+    assert "previously.core._violation -> html2text" in output, output

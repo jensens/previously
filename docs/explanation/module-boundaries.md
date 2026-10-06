@@ -20,11 +20,11 @@ It reads the table metadata from `storage.schema` and nothing from `core`, and `
 ## The edges
 
 The diagram shows which module imports which, and since stage 1b there's nothing dashed in it.
-The two arrows that stage 1c added, to `pyrage` and to `boto3`, each have a contract that names the one module allowed to draw them.
+The two arrows that stage 1c added, to `pyrage` and to `boto3`, each have a contract that names the one module allowed to draw them, and so does the arrow to `html2text` that the mapping of a mail added on 2026-10-06.
 The arrows to `sqlalchemy` and `alembic` are held the other way round: their contracts name the modules that mustn't draw them, `core` for both and `contract` for `sqlalchemy`, as the section on the contracts explains.
 
 ```{mermaid}
-:caption: The import edges on 2026-10-05: seven between its own modules, and not one of them exempted. Six arrows leave the package.
+:caption: The import edges on 2026-10-06: seven between its own modules, and not one of them exempted. Seven arrows leave the package.
 
 graph TD
     cli[cli] --> core[core]
@@ -40,6 +40,7 @@ graph TD
     migrations --> alembic
     core --> pyrage[pyrage]
     storage --> boto3[boto3]
+    core --> html2text[html2text]
 ```
 
 Two things in that picture answer questions the contract names don't.
@@ -86,7 +87,7 @@ Until stage 1b this page carried two dashed edges from `core` into `storage.post
 The exemptions weren't about the edge `core → storage` being forbidden—the layer order allows it—but about what travels along it: `storage.postgres` imports SQLAlchemy, so every module that imports `storage.postgres` reaches SQLAlchemy transitively, and two contracts forbid exactly that for `core`.
 `cli` is no source module of those contracts, so the same edge needs no mention there.
 
-## Six contracts, and the names are the output
+## Seven contracts, and the names are the output
 
 What `.importlinter` holds, in the words the gate prints:
 
@@ -97,11 +98,13 @@ core and contract import no sqlalchemy KEPT
 No vendor SDK in the package KEPT
 Only core.sealing imports pyrage KEPT (1 ignored import)
 Only storage.s3 imports boto3 KEPT (2 ignored imports)
+Only core.mail imports html2text KEPT (1 ignored import)
 
-Contracts: 6 kept, 0 broken.
+Contracts: 7 kept, 0 broken.
 ```
 
-The output was measured on 2026-10-05.
+The output was measured on 2026-10-06.
+The seventh contract arrived that day with the mapping of a mail, which turns HTML into text and names the converter's version in the payload; a second module converting HTML would write units the payload doesn't account for.
 The first line read `Layers: core above storage, contract below both` until that day, when `migrations` joined `core` in the second layer and the name followed it, because the name is what the gate prints.
 The third line read `Only storage imports sqlalchemy` until the same day, and the move made that name false: the migrations import SQLAlchemy, and they're inside the package now.
 The contract itself didn't change, because its sources were always `core` and `contract`, so the name now says what it checks; the older blocks further down keep the name of their day.
@@ -114,7 +117,7 @@ Measured on 2026-10-05, an import of `previously.cli` written into a revision we
 
 The second and third lines read `KEPT (2 ignored imports)` until 2026-10-04.
 That number was the price of typing `core` against a concrete store, and it stood in the gate log so the price stayed countable until somebody paid it.
-Stage 1b paid it, and the parentheses on the last two contracts are a different thing: no debt, but the one module each contract exists to allow, named.
+Stage 1b paid it, and the parentheses on the last three contracts are a different thing: no debt, but the one module each contract exists to allow, named.
 
 Two of the first four contracts differ from the architecture's table on purpose, and both differences are about what a contract can actually check.
 
@@ -159,6 +162,13 @@ The adapter keeps that promise for a stream read long after `get` returned, too:
 
 The exceptions are edges named one by one, never a pattern, for the reason the next section measures.
 One more property comes for free, measured on 2026-10-05: an exemption for an import that doesn't exist makes `lint-imports` fail with `No matches for ignored import`, so neither exemption can outlive the edge it names.
+
+## A contract for the mail
+
+`html2text` may be imported by `core.mail` and nowhere else.
+Turning HTML into text is part of mapping a mail onto an event, and the payload of that event names the converter and its version, because a unit converted by another version may read differently.
+A second module that converted HTML would write units the payload doesn't account for.
+The probe that proves the contract goes into `core`, beside `core.mail`, so it shows that the exception is that one module and not its layer.
 
 ## Why the two exemptions were enumerated and not matched
 

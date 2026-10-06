@@ -1,0 +1,31 @@
+From: Eva Huber <eva.huber@example.org>
+To: max@example.net
+Subject: Fwd: Rechnung Oktober
+Date: Thu, 08 Oct 2026 11:00:00 +0200
+Message-ID: <fwd-20261008@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="outer"
+
+--outer
+Content-Type: text/plain; charset=utf-8
+
+
+--outer
+Content-Type: message/rfc822
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="Rechnung Oktober.eml"
+
+RnJvbTogQnVjaGhhbHR1bmcgTcO8bGxlciBHbWJIIDxidWNoaGFsdHVuZ0BleGFtcGxlLmNvbT4N
+ClRvOiBldmEuaHViZXJAZXhhbXBsZS5vcmcNClN1YmplY3Q6IFJlY2hudW5nIE9rdG9iZXINCkRh
+dGU6IFdlZCwgMzAgU2VwIDIwMjYgMTQ6MjA6MDAgKzAyMDANCk1lc3NhZ2UtSUQ6IDxpbnZvaWNl
+LTIwMjYtMTBAZXhhbXBsZS5jb20+DQpNSU1FLVZlcnNpb246IDEuMA0KQ29udGVudC1UeXBlOiBt
+dWx0aXBhcnQvbWl4ZWQ7IGJvdW5kYXJ5PSJpbm5lciINCg0KLS1pbm5lcg0KQ29udGVudC1UeXBl
+OiB0ZXh0L3BsYWluOyBjaGFyc2V0PXV0Zi04DQpDb250ZW50LVRyYW5zZmVyLUVuY29kaW5nOiA4
+Yml0DQoNClNlaHIgZ2VlaHJ0ZSBGcmF1IEh1YmVyLA0KDQphbmJlaSBkaWUgUmVjaG51bmcgZsO8
+ciBPa3RvYmVyLg0KDQpNaXQgZnJldW5kbGljaGVuIEdyw7zDn2VuDQpCdWNoaGFsdHVuZw0KLS1p
+bm5lcg0KQ29udGVudC1UeXBlOiBhcHBsaWNhdGlvbi9wZGY7IG5hbWU9IlJlY2hudW5nLTIwMjYt
+MTAucGRmIg0KQ29udGVudC1UcmFuc2Zlci1FbmNvZGluZzogYmFzZTY0DQpDb250ZW50LURpc3Bv
+c2l0aW9uOiBhdHRhY2htZW50OyBmaWxlbmFtZT0iUmVjaG51bmctMjAyNi0xMC5wZGYiDQoNCkpW
+QkVSaTB4TGpjS0pTQnBiblpsYm5SbFpDQnBiblp2YVdObExDQlBZM1J2WW1WeUNpVWxSVTlHQ2c9
+PQ0KLS1pbm5lci0t
+--outer--

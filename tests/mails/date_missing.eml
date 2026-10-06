@@ -1,0 +1,7 @@
+From: printer@example.org
+To: office@example.org
+Subject: Toner low
+Message-ID: <printer-toner@example.org>
+Content-Type: text/plain; charset=us-ascii
+
+Cartridge K is at 5 percent.

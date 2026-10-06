@@ -1,9 +1,9 @@
 [importlinter]
 root_package = previously
-# Five of the six contracts forbid external packages (sqlalchemy, psycopg,
-# alembic, anthropic, openai, pyrage, boto3, botocore). import-linter requires
-# this setting for that, otherwise it aborts with a configuration error — it
-# is not a loosening of the contracts themselves.
+# Six of the seven contracts forbid external packages (sqlalchemy, psycopg,
+# alembic, anthropic, openai, pyrage, boto3, botocore, html2text).
+# import-linter requires this setting for that, otherwise it aborts with a
+# configuration error — it is not a loosening of the contracts themselves.
 include_external_packages = True
 
 [importlinter:contract:layers]
@@ -114,3 +114,17 @@ ignore_imports =
 # `botocore` is forbidden beside `boto3` because the exceptions and the
 # client configuration come from there, and an import of either would carry
 # the foreign system upwards. Two named edges, out of one module.
+
+[importlinter:contract:only-mail-knows-html2text]
+name = Only core.mail imports html2text
+type = forbidden
+source_modules =
+    previously
+forbidden_modules =
+    html2text
+ignore_imports =
+    previously.core.mail -> html2text
+# Turning HTML into text is part of mapping a mail, and its version goes into
+# the payload: a second module that converted HTML would write units the
+# payload does not account for. The whole package is the source and the one
+# edge is named, never a pattern, as with `pyrage` above.

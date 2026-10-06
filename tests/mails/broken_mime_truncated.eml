@@ -1,0 +1,18 @@
+From: bauleitung@example.at
+To: office@example.org
+Subject: Plan Erdgeschoss
+Date: Fri, 02 Oct 2026 17:05:00 +0200
+Message-ID: <plan-eg@example.at>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="cut"
+
+--cut
+Content-Type: text/plain; charset=utf-8
+
+Anbei der Plan fürs Erdgeschoss.
+--cut
+Content-Type: application/pdf; name="EG.pdf"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="EG.pdf"
+
+JVBERi0xLjcKJSBpbnZlbnRlZCwgbm

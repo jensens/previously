@@ -1,0 +1,42 @@
+From: Eva Huber <eva.huber@example.org>
+To: max@example.net
+Subject: Fwd: Rechnung Oktober
+Date: Thu, 08 Oct 2026 11:00:00 +0200
+Message-ID: <fwd-20261008@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="outer"
+
+--outer
+Content-Type: text/plain; charset=utf-8
+
+
+--outer
+Content-Type: message/rfc822
+Content-Disposition: attachment; filename="Rechnung Oktober.eml"
+
+From: Buchhaltung Müller GmbH <buchhaltung@example.com>
+To: eva.huber@example.org
+Subject: Rechnung Oktober
+Date: Wed, 30 Sep 2026 14:20:00 +0200
+Message-ID: <invoice-2026-10@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="inner"
+
+--inner
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Sehr geehrte Frau Huber,
+
+anbei die Rechnung für Oktober.
+
+Mit freundlichen Grüßen
+Buchhaltung
+--inner
+Content-Type: application/pdf; name="Rechnung-2026-10.pdf"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="Rechnung-2026-10.pdf"
+
+JVBERi0xLjcKJSBpbnZlbnRlZCBpbnZvaWNlLCBPY3RvYmVyCiUlRU9GCg==
+--inner--
+--outer--

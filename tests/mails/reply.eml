@@ -1,0 +1,31 @@
+From: Eva Huber <eva.huber@example.org>
+To: =?utf-8?q?J=C3=BCrgen_M=C3=BCller?= <juergen.mueller@example.net>
+Subject: =?utf-8?q?Re=3A_Angebot_f=C3=BCr_den_Relaunch?=
+Date: Mon, 05 Oct 2026 11:02:00 +0200
+Message-ID: <reply-relaunch@example.org>
+In-Reply-To: <20261005101500.4711@example.net>
+References: <20261001080000.1@example.org>
+ <20261005101500.4711@example.net>
+MIME-Version: 1.0
+Content-Type: multipart/alternative; boundary="alt"
+
+--alt
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+Hallo Jürgen,
+
+passt, wir nehmen den neuen Zeitplan.
+
+Eva
+
+Am 05.10.2026 um 10:15 schrieb Jürgen Müller:
+> Liebe Eva,
+>
+> anbei die Eckpunkte für den Relaunch.
+--alt
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 8bit
+
+<p>Hallo Jürgen,</p><p>passt, wir nehmen den neuen Zeitplan.</p><p>Eva</p>
+--alt--

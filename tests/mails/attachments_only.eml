@@ -1,0 +1,20 @@
+From: scanner@example.org
+To: office@example.org
+Date: Fri, 02 Oct 2026 07:35:00 +0200
+Message-ID: <scan-2@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="att"
+
+--att
+Content-Type: application/pdf; name="Angebot.pdf"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="Angebot.pdf"
+
+JVBERi0xLjcKJSBpbnZlbnRlZCwgbm90IGEgcmVhbCBkb2N1bWVudAolJUVPRgo=
+--att
+Content-Type: image/png; name="plan.png"
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename="plan.png"
+
+iVBORw0KGgogaW52ZW50ZWQsIG5vdCBhIHJlYWwgaW1hZ2U=
+--att--
