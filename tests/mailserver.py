@@ -32,8 +32,12 @@ if TYPE_CHECKING:
 
 
 def quoted(text: str) -> str:
-    """A folder name as an IMAP quoted string, spelled the IMAP way."""
-    return '"' + encode_folder(text) + '"'
+    """A folder name as an IMAP quoted string, spelled the IMAP way, with
+    `\\` and `"` escaped. Written out here rather than borrowed from the
+    connector, so that a test of the connector's quoting has something
+    independent to set the folder up with."""
+    spelled = encode_folder(text).replace("\\", "\\\\").replace('"', '\\"')
+    return f'"{spelled}"'
 
 
 class MailServer:
@@ -100,6 +104,12 @@ class MailServer:
         with self.session() as imap:
             for mail in mails:
                 _expect(imap.append(quoted(folder), None, None, mail))
+
+    def append_dated(self, folder: str, mail: bytes, internaldate: str) -> None:
+        """Appends `mail` with the INTERNALDATE `internaldate`, written the
+        way RFC 3501 writes a `date-time`, quotes excluded."""
+        with self.session() as imap:
+            _expect(imap.append(quoted(folder), None, f'"{internaldate}"', mail))
 
     def seen(self, folder: str) -> list[int]:
         """The UIDs in `folder` that carry `\\Seen`, read without setting it."""

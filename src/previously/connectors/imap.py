@@ -135,8 +135,10 @@ class ImapConnector:
 
     def _login(self, imap: imaplib.IMAP4_SSL) -> None:
         # `from None` on both refusals: what is chained to them is the
-        # server's answer to the login and the encoder's view of the command
-        # line, which holds the password.
+        # server's answer to the login, and the encoder's error, whose
+        # `object` is the one argument that would not encode — `imaplib`
+        # encodes each on its own — and that is the quoted password when
+        # the password is the one with a character beyond ASCII.
         with self._speaking():
             try:
                 imap.login(_quoted(self._user), self._password)
@@ -171,9 +173,10 @@ class ImapConnector:
     def _uids(self, imap: imaplib.IMAP4_SSL, after: int) -> list[int]:
         """The UIDs above `after`, in ascending order.
 
-        The search is `UID n:*`, without parentheses, which GreenMail refuses
-        (measured on 2026-10-05). `n:*` names the highest UID even when it is
-        below `n`, by RFC 3501, so what the server returns is filtered.
+        The search is `UID n:*` as it stands; GreenMail refuses it inside
+        parentheses (measured on 2026-10-05). `n:*` names the highest UID
+        even when it is below `n`, by RFC 3501, so what the server returns
+        is filtered.
         """
         with self._speaking():
             typ, data = imap.uid("SEARCH", "UID", f"{after + 1}:*")
@@ -191,7 +194,7 @@ class ImapConnector:
         if found is None:
             return None
         written, raw = found
-        internaldate = _internaldate(written)
+        internaldate = parse_internaldate(written)
         if internaldate is None:
             raise ImapError(
                 f"the IMAP server {self._server} gave uid {uid} the INTERNALDATE "
@@ -279,9 +282,10 @@ def _message(data: Sequence[object], uid: int) -> tuple[str, bytes] | None:
 
 # `dd-Mon-yyyy hh:mm:ss +zzzz`, RFC 3501, the day possibly padded with a
 # blank. The month names are English whatever the locale, so they are a
-# table here and not `strptime`'s `%b`.
+# table here and not `strptime`'s `%b`; RFC 3501 writes them in ABNF, whose
+# quoted strings match without regard to case.
 _DATE = re.compile(
-    r" ?([0-9]{1,2})-([A-Z][a-z]{2})-([0-9]{4}) "
+    r" ?([0-9]{1,2})-([A-Za-z]{3})-([0-9]{4}) "
     r"([0-9]{2}):([0-9]{2}):([0-9]{2}) ([-+])([0-9]{2})([0-9]{2})"
 )
 _MONTHS = {
@@ -293,17 +297,31 @@ _MONTHS = {
 }
 
 
-def _internaldate(text: str) -> datetime | None:
-    """The moment an INTERNALDATE names, with its zone, or `None`."""
+def parse_internaldate(text: str) -> datetime | None:
+    """The moment an INTERNALDATE names, with its zone, or `None` for a text
+    that names none: another form, a month that is not one of the twelve
+    English abbreviations, or a date or zone that does not exist.
+
+    `None` rather than an exception, because only the caller knows which
+    mail the text belongs to: the connector turns it into an `ImapError`
+    that names the UID and the text as the server wrote it.
+
+    Public because a test pins it: the moment goes into the payload of every
+    mail event, and into `occurred_at` when the `Date` header cannot be
+    read, so a slip here would be written into the chain for good.
+    """
     matched = _DATE.fullmatch(text)
-    if matched is None or matched[2] not in _MONTHS:
+    if matched is None:
         return None
-    day, _, year, hour, minute, second, sign, zone_hours, zone_minutes = matched.groups()
+    day, month, year, hour, minute, second, sign, zone_hours, zone_minutes = matched.groups()
+    number = _MONTHS.get(month.capitalize())
+    if number is None:
+        return None
     offset = timedelta(hours=int(zone_hours), minutes=int(zone_minutes))
     try:
         return datetime(
             int(year),
-            _MONTHS[matched[2]],
+            number,
             int(day),
             int(hour),
             int(minute),

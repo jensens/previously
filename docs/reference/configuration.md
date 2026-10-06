@@ -109,7 +109,7 @@ The folder `ingest imap` takes mail in from; see {ref}`cli-reference`.
 | `PREVIOUSLY_IMAP_PORT` | The port of IMAP over TLS, a number from 1 to 65535. Unset or empty, it's 993. | Never; a value that isn't a port number is refused. |
 | `PREVIOUSLY_IMAP_USER` | The user that logs in. | `ingest imap` |
 | `PREVIOUSLY_IMAP_PASSWORD` | The user's password, in ASCII; no message prints it. | `ingest imap` |
-| `PREVIOUSLY_IMAP_FOLDER` | The folder, by the name a mail client shows, such as `Kunde Müller`. | `ingest imap` |
+| `PREVIOUSLY_IMAP_FOLDER` | The full name of the folder on the server, in plain characters, such as `Kunde Müller`; see below. | `ingest imap` |
 
 `ingest imap` reads all five before it connects to anything, and names the first one missing, as the blob settings do:
 
@@ -119,6 +119,11 @@ Error: PREVIOUSLY_IMAP_FOLDER is not set
 
 The host, the user and the folder make the name of the watermark, `imap:<user>@<host>/<folder>`, and the port doesn't.
 A change to any of the three starts another watermark, and the folder is read from the start; every mail in the log counts as known.
+
+`PREVIOUSLY_IMAP_FOLDER` is the name the server gives the folder, which for a folder at the top level is the name a mail client shows.
+For a folder inside another, the name holds the names of the folders above it, each followed by the server's hierarchy delimiter, such as `Kunden.Müller` on a server whose delimiter is `.`, or `Kunden/Müller` on one whose delimiter is `/`.
+The server names its delimiter in its answer to the `LIST` command, and a mail client shows only the last part of the name.
+`ingest imap` writes the name in the modified UTF-7 of RFC 3501 itself, so the setting holds it as it reads, umlauts included, and never as `Kunde M&APw-ller`.
 
 There is no setting for a certificate.
 `ingest imap` verifies the server's certificate and host name against the trust store of the system, and OpenSSL reads a certificate file named in `SSL_CERT_FILE` in place of the system's file.

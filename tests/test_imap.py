@@ -11,6 +11,8 @@ run, and the host name has to match it.
 """
 
 from datetime import datetime
+from datetime import timedelta
+from datetime import timezone
 from datetime import UTC
 from hypothesis import given
 from hypothesis import strategies as st
@@ -21,6 +23,7 @@ from previously.connectors.imap import decode_folder
 from previously.connectors.imap import encode_folder
 from previously.connectors.imap import ImapConnector
 from previously.connectors.imap import ImapError
+from previously.connectors.imap import parse_internaldate
 from previously.contract.types import Watermark
 from previously.core.ingest import ingest
 from previously.core.sealing import recipient_of
@@ -85,6 +88,53 @@ def test_every_folder_name_is_printable_ascii_and_comes_back(name: str) -> None:
     assert decode_folder(spelled) == name
 
 
+# --- INTERNALDATE ----------------------------------------------------------------
+
+
+def _zone(hours: int, minutes: int = 0) -> timezone:
+    return timezone(timedelta(hours=hours, minutes=minutes))
+
+
+@pytest.mark.parametrize(
+    ("written", "moment"),
+    [
+        # A day below ten is padded with a blank, RFC 3501 `date-day-fixed`.
+        (" 6-Oct-2026 10:15:00 +0200", datetime(2026, 10, 6, 10, 15, 0, tzinfo=_zone(2))),
+        # Both ends of the month table, and a zone on either side of UTC.
+        ("05-Jan-2026 23:30:00 -0230", datetime(2026, 1, 5, 23, 30, 0, tzinfo=_zone(-2, -30))),
+        ("31-Dec-2026 00:00:59 +0545", datetime(2026, 12, 31, 0, 0, 59, tzinfo=_zone(5, 45))),
+        ("29-Feb-2028 12:00:00 +0000", datetime(2028, 2, 29, 12, 0, 0, tzinfo=UTC)),
+        # ABNF strings match without regard to case.
+        ("06-OCT-2026 10:15:00 +0200", datetime(2026, 10, 6, 10, 15, 0, tzinfo=_zone(2))),
+    ],
+)
+def test_an_internaldate_is_read_as_the_moment_it_names(written: str, moment: datetime) -> None:
+    """Compared with `utcoffset` as well as with `==`: two aware datetimes
+    are equal when they name the same instant, whatever their zones, and a
+    swapped sign would name another instant here, but a zone is what the
+    payload writes."""
+    parsed = parse_internaldate(written)
+    assert parsed == moment
+    assert parsed is not None and parsed.utcoffset() == moment.utcoffset()
+
+
+@pytest.mark.parametrize(
+    "written",
+    [
+        "06-Okt-2026 10:15:00 +0200",  # a German month
+        "06-Mai-2026 10:15:00 +0200",
+        "30-Feb-2026 10:15:00 +0200",  # a day the month does not have
+        "06-Oct-2026 25:15:00 +0200",  # an hour the day does not have
+        "06-Oct-2026 10:15:00 +2400",  # a zone that does not exist
+        "06-Oct-2026 10:15:00",  # no zone
+        "2026-10-06T10:15:00+02:00",  # another form
+        "",
+    ],
+)
+def test_a_text_that_names_no_moment_is_no_internaldate(written: str) -> None:
+    assert parse_internaldate(written) is None
+
+
 # --- The connector ---------------------------------------------------------------
 
 
@@ -110,6 +160,36 @@ def test_the_connector_fetches_every_mail_then_only_the_new_ones(
     new = list(connector.fetch(mark))
     assert [f.position["uid"] for f in new] == ["5"]
     assert new[0].raw == (MAILS / "signed.eml").read_bytes()
+
+
+@pytest.mark.imap
+def test_the_connector_hands_over_the_moment_the_server_received_a_mail(
+    mail_server: MailServer, imap_folder: str
+) -> None:
+    """A mail appended with an INTERNALDATE of its own comes back at that
+    instant. GreenMail keeps the instant and writes it in UTC (measured on
+    2026-10-06), so this catches the month and the moment, and the unit
+    cases above catch the sign of a zone."""
+    mail_server.append_dated(
+        imap_folder, (MAILS / "signed.eml").read_bytes(), "05-Jan-2026 23:30:00 -0230"
+    )
+    fetched = list(mail_server.connector(imap_folder).fetch(None))
+    assert fetched[-1].position["uid"] == "5"
+    assert fetched[-1].internaldate == datetime(2026, 1, 6, 2, 0, 0, tzinfo=UTC)
+
+
+@pytest.mark.imap
+@pytest.mark.parametrize("folder", ['Kunde "Müller"', "Back\\slash Ä"])
+def test_a_folder_name_with_a_quote_or_a_backslash_is_read(
+    mail_server: MailServer, folder: str
+) -> None:
+    """The connector sends the folder as a quoted string, and a `"` or a
+    `\\` in the name has to be escaped there, or the server reads another
+    name, or none."""
+    mail_server.recreate(folder)
+    mail_server.append(folder, FOLDER_MAILS[0])
+    fetched = list(mail_server.connector(folder).fetch(None))
+    assert [f.raw for f in fetched] == FOLDER_MAILS[:1]
 
 
 @pytest.mark.imap
@@ -170,8 +250,9 @@ def test_a_server_that_stops_answering_ends_the_fetch(
     """A relay that stops passing the server's bytes on and keeps the
     connection open: the fetch ends with one sentence once the timeout has
     passed, rather than waiting for good. The limit falls inside the second
-    mail; measured on 2026-10-06, the whole fetch of the folder is 7303 bytes
-    from the server, and the first mail is through at 3577.
+    mail; measured on 2026-10-06 over three runs, the whole fetch of the
+    folder is 7301 to 7303 bytes from the server, and the first mail is
+    through at 3575 to 3577 — the count moves by a byte or two per run.
 
     Run in a thread with a deadline, so that a fetch without a timeout fails
     this test instead of hanging the suite; leaving the relay closes the
