@@ -1,0 +1,9 @@
+From: legacy@example.org
+To: office@example.org
+Subject: unknown-utf8
+Date: Wed, 07 Oct 2026 11:00:00 +0200
+Message-ID: <unknown-utf8@example.org>
+Content-Type: text/plain; charset=unknown-8bit
+Content-Transfer-Encoding: 8bit
+
+Grüße aus Linz

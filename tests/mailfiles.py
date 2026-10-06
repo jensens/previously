@@ -14,9 +14,10 @@ cannot drift apart. To write the files again::
 
     uv run python tests/mailfiles.py
 
-Every mail ends in exactly one CRLF and no line carries trailing blanks, so
-the `trailing-whitespace` and `end-of-file-fixer` hooks of the pre-commit
-configuration leave the files as they are.
+Every mail ends in exactly one line ending — CRLF, except the one LF copy —
+and no line carries trailing blanks, so the `trailing-whitespace` and
+`end-of-file-fixer` hooks of the pre-commit configuration leave the files as
+they are.
 """
 
 import base64
@@ -36,7 +37,7 @@ def _lines(*lines: str | bytes) -> bytes:
     return CRLF.join(encoded) + CRLF
 
 
-def _base64_lines(data: bytes) -> list[bytes]:
+def base64_lines(data: bytes) -> list[bytes]:
     """`data` in base64, in lines of 76 characters as MIME has them."""
     text = base64.b64encode(data)
     return [text[i : i + 76] for i in range(0, len(text), 76)]
@@ -159,7 +160,7 @@ HTML_BLOCKQUOTE = _lines(
     'Content-Type: text/html; charset="UTF-8"',
     "Content-Transfer-Encoding: base64",
     "",
-    *_base64_lines(_BLOCKQUOTE_HTML.encode()),
+    *base64_lines(_BLOCKQUOTE_HTML.encode()),
 )
 
 NO_MESSAGE_ID = _lines(
@@ -311,7 +312,7 @@ ENCRYPTED_SMIME = _lines(
     "Content-Transfer-Encoding: base64",
     'Content-Disposition: attachment; filename="smime.p7m"',
     "",
-    *_base64_lines(SMIME_CONTENT),
+    *base64_lines(SMIME_CONTENT),
 )
 
 # A subject, and nothing else: no body, no attachment. RFC 5322 needs the
@@ -340,13 +341,13 @@ ATTACHMENTS_ONLY = _lines(
     "Content-Transfer-Encoding: base64",
     'Content-Disposition: attachment; filename="Angebot.pdf"',
     "",
-    *_base64_lines(PDF_CONTENT),
+    *base64_lines(PDF_CONTENT),
     "--att",
     'Content-Type: image/png; name="plan.png"',
     "Content-Transfer-Encoding: base64",
     'Content-Disposition: attachment; filename="plan.png"',
     "",
-    *_base64_lines(PNG_CONTENT),
+    *base64_lines(PNG_CONTENT),
     "--att--",
 )
 
@@ -449,7 +450,7 @@ FORWARDED_INNER = _without_final_crlf(
         b"Content-Transfer-Encoding: base64",
         b'Content-Disposition: attachment; filename="Rechnung-2026-10.pdf"',
         b"",
-        *_base64_lines(INVOICE_PDF),
+        *base64_lines(INVOICE_PDF),
         b"--inner--",
     )
 )
@@ -489,7 +490,7 @@ FORWARDED_BASE64 = _lines(
     "Content-Transfer-Encoding: base64",
     'Content-Disposition: attachment; filename="Rechnung Oktober.eml"',
     "",
-    *_base64_lines(FORWARDED_INNER),
+    *base64_lines(FORWARDED_INNER),
     "--outer--",
 )
 
@@ -608,15 +609,254 @@ DUPLICATE_ATTACHMENTS = _lines(
     "Content-Transfer-Encoding: base64",
     'Content-Disposition: attachment; filename="Angebot.pdf"',
     "",
-    *_base64_lines(PDF_CONTENT),
+    *base64_lines(PDF_CONTENT),
     "--dup",
     "Content-Type: application/pdf",
     "Content-Transfer-Encoding: base64",
     "Content-Disposition: attachment;",
     " filename*=utf-8''Angebot%20f%C3%BCr%20M%C3%BCller.pdf",
     "",
-    *_base64_lines(PDF_CONTENT),
+    *base64_lines(PDF_CONTENT),
     "--dup--",
+)
+
+# The simple mail as a Unix machine saves it: LF only. Its identity has to be
+# the one of the CRLF original.
+PLAIN_LF = PLAIN.replace(CRLF, b"\n")
+
+# Apple Mail and iOS Mail in plain-text format: a PDF placed between two
+# paragraphs splits the text into two parts around it.
+APPLE_SPLIT = _lines(
+    "From: lea@example.com",
+    "To: office@example.org",
+    "Subject: Termin",
+    "Date: Wed, 07 Oct 2026 08:00:00 +0200",
+    "Message-ID: <apple-split@example.com>",
+    "MIME-Version: 1.0",
+    'Content-Type: multipart/mixed; boundary="apple"',
+    "",
+    "--apple",
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: 7bit",
+    "",
+    "Erster Teil vor dem Anhang.",
+    "--apple",
+    'Content-Type: application/pdf; name="Termin.pdf"',
+    "Content-Transfer-Encoding: base64",
+    'Content-Disposition: inline; filename="Termin.pdf"',
+    "",
+    *base64_lines(PDF_CONTENT),
+    "--apple",
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: 7bit",
+    "",
+    "Zweiter Teil nach dem Anhang: der Termin ist am Freitag.",
+    "--apple--",
+)
+
+# An HTML-only mail with two text files: one inline with a file name, as
+# Apple Mail attaches, one with only `name=` and no disposition.
+HTML_WITH_TEXT_ATTACHMENTS = _lines(
+    "From: lea@example.com",
+    "To: office@example.org",
+    "Subject: Notizen",
+    "Date: Wed, 07 Oct 2026 08:30:00 +0200",
+    "Message-ID: <html-notiz@example.com>",
+    "MIME-Version: 1.0",
+    'Content-Type: multipart/mixed; boundary="notes"',
+    "",
+    "--notes",
+    "Content-Type: text/html; charset=utf-8",
+    "",
+    "<p>Hier der eigentliche Text der Mail.</p>",
+    "--notes",
+    'Content-Type: text/plain; charset=utf-8; name="notiz.txt"',
+    'Content-Disposition: inline; filename="notiz.txt"',
+    "",
+    "Inhalt der Notiz.",
+    "--notes",
+    'Content-Type: text/plain; charset=utf-8; name="liste.txt"',
+    "",
+    "Inhalt der Liste.",
+    "--notes--",
+)
+
+# A generator that writes a text part with nothing in it but a
+# non-breaking space, and the whole text in the HTML beside it.
+ALTERNATIVE_EMPTY_PLAIN = _lines(
+    "From: crm@example.com",
+    "To: office@example.org",
+    "Subject: Ihre Anfrage",
+    "Date: Wed, 07 Oct 2026 09:00:00 +0200",
+    "Message-ID: <crm-anfrage@example.com>",
+    "MIME-Version: 1.0",
+    'Content-Type: multipart/alternative; boundary="crm"',
+    "",
+    "--crm",
+    "Content-Type: text/plain; charset=utf-8",
+    "Content-Transfer-Encoding: quoted-printable",
+    "",
+    "=C2=A0",
+    "--crm",
+    "Content-Type: text/html; charset=utf-8",
+    "",
+    "<p>Der ganze Text steht nur hier.</p>",
+    "--crm--",
+)
+
+# Windows-1252 under the label ISO-8859-1, as Windows clients and PHP mailers
+# write it: the quotes, the dash and the euro sign are bytes ISO-8859-1 has
+# only control characters for.
+CP1252_TEXT = "„Angebot“ – 100 € für Müller"
+
+CHARSET_LATIN1_LABEL = _lines(
+    "From: shop@example.de",
+    "To: office@example.org",
+    "Subject: Angebot",
+    "Date: Wed, 07 Oct 2026 10:00:00 +0200",
+    "Message-ID: <angebot-cp1252@example.de>",
+    'Content-Type: text/plain; charset="iso-8859-1"',
+    "Content-Transfer-Encoding: 8bit",
+    "",
+    CP1252_TEXT.encode("cp1252"),
+)
+
+
+def _charset_guess(name: str, content_type: str, body: bytes) -> bytes:
+    return _lines(
+        "From: legacy@example.org",
+        "To: office@example.org",
+        f"Subject: {name}",
+        "Date: Wed, 07 Oct 2026 11:00:00 +0200",
+        f"Message-ID: <{name}@example.org>",
+        content_type,
+        "Content-Transfer-Encoding: 8bit",
+        "",
+        body,
+    )
+
+
+# UTF-8 bytes with no charset declared, declared as US-ASCII, and under a
+# label Python does not know — `unknown-8bit` is what Python's own `email`
+# and mutt write.
+CHARSET_UNDECLARED = _charset_guess(
+    "undeclared", "Content-Type: text/plain", "Grüße aus Wien".encode()
+)
+CHARSET_ASCII_8BIT = _charset_guess(
+    "ascii-8bit", "Content-Type: text/plain; charset=us-ascii", "für Müller".encode()
+)
+CHARSET_UNKNOWN_UTF8 = _charset_guess(
+    "unknown-utf8", "Content-Type: text/plain; charset=unknown-8bit", "Grüße aus Linz".encode()
+)
+# Bytes that are no UTF-8, undeclared: the euro sign of Windows-1252, and
+# 0x81, one of the five bytes Windows-1252 leaves undefined.
+CHARSET_UNDEFINED_BYTE = _charset_guess(
+    "undefined-byte", "Content-Type: text/plain", b"Preis \x80 5, Zeichen \x81."
+)
+
+# An encoded word that is UTF-8 by its label and Latin-1 by its bytes: the
+# decoder replaces what it cannot read, and records no defect.
+SUBJECT_REPLACED = _lines(
+    "From: legacy@example.org",
+    "To: office@example.org",
+    "Subject: =?utf-8?b?" + base64.b64encode(b"Gr\xfc\xdfe").decode() + "?=",
+    "Date: Wed, 07 Oct 2026 12:00:00 +0200",
+    "Message-ID: <subject-replaced@example.org>",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "Text.",
+)
+
+# UTF-7 spells half a surrogate pair in an encoded word, and the standard
+# library's header classes raise on it. No encoder writes this.
+UNREADABLE_HEADER = _lines(
+    "From: legacy@example.org",
+    "To: office@example.org",
+    "Subject: =?utf-7?q?+2D0-?=",
+    "Date: Wed, 07 Oct 2026 13:00:00 +0200",
+    "Message-ID: <unreadable@example.org>",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "Text that is never read.",
+)
+
+# The same unreadable mail, forwarded as an attachment of a readable one.
+FORWARDED_UNREADABLE = _lines(
+    "From: Eva Huber <eva.huber@example.org>",
+    "To: max@example.net",
+    "Subject: Fwd: kaputt",
+    "Date: Wed, 07 Oct 2026 14:00:00 +0200",
+    "Message-ID: <fwd-unreadable@example.org>",
+    "MIME-Version: 1.0",
+    'Content-Type: multipart/mixed; boundary="outer"',
+    "",
+    "--outer",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "Siehe unten, die Mail lässt sich nicht öffnen.",
+    "--outer",
+    "Content-Type: message/rfc822",
+    "",
+    _without_final_crlf(UNREADABLE_HEADER),
+    "--outer--",
+)
+
+# Outlook's shape for HTML with an inline logo, inside an alternative whose
+# text part is empty: the related part's `start` names its HTML, which
+# stands second, after the image.
+ALTERNATIVE_RELATED = _lines(
+    "From: Eva Huber <eva.huber@example.org>",
+    "To: max@example.net",
+    "Subject: Mit Logo",
+    "Date: Wed, 07 Oct 2026 15:00:00 +0200",
+    "Message-ID: <logo-related@example.org>",
+    "MIME-Version: 1.0",
+    'Content-Type: multipart/alternative; boundary="alt"',
+    "",
+    "--alt",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "",
+    "--alt",
+    'Content-Type: multipart/related; boundary="rel"; start="<body@example.org>"',
+    "",
+    "--rel",
+    'Content-Type: image/png; name="logo.png"',
+    "Content-Transfer-Encoding: base64",
+    "Content-ID: <logo@example.org>",
+    'Content-Disposition: inline; filename="logo.png"',
+    "",
+    *base64_lines(PNG_CONTENT),
+    "--rel",
+    "Content-Type: text/html; charset=utf-8",
+    "Content-ID: <body@example.org>",
+    "",
+    '<p>Text neben dem Logo.</p><img src="cid:logo@example.org">',
+    "--rel--",
+    "--alt--",
+)
+
+# The same without `start`: the first part of the related part is its HTML.
+RELATED_WITHOUT_START = _lines(
+    "From: Eva Huber <eva.huber@example.org>",
+    "To: max@example.net",
+    "Subject: Logo ohne start",
+    "Date: Wed, 07 Oct 2026 15:30:00 +0200",
+    "Message-ID: <logo-no-start@example.org>",
+    "MIME-Version: 1.0",
+    'Content-Type: multipart/related; boundary="rel"',
+    "",
+    "--rel",
+    "Content-Type: text/html; charset=utf-8",
+    "",
+    "<p>Nur HTML, das Logo danach.</p>",
+    "--rel",
+    "Content-Type: image/png",
+    "Content-Transfer-Encoding: base64",
+    "Content-ID: <logo@example.org>",
+    "",
+    *base64_lines(PNG_CONTENT),
+    "--rel--",
 )
 
 MAILS: dict[str, bytes] = {
@@ -647,6 +887,20 @@ MAILS: dict[str, bytes] = {
     "broken_mime_no_boundary": BROKEN_MIME_NO_BOUNDARY,
     "broken_mime_truncated": BROKEN_MIME_TRUNCATED,
     "duplicate_attachments": DUPLICATE_ATTACHMENTS,
+    "plain_lf": PLAIN_LF,
+    "apple_split": APPLE_SPLIT,
+    "html_with_text_attachments": HTML_WITH_TEXT_ATTACHMENTS,
+    "alternative_empty_plain": ALTERNATIVE_EMPTY_PLAIN,
+    "charset_latin1_label": CHARSET_LATIN1_LABEL,
+    "charset_undeclared": CHARSET_UNDECLARED,
+    "charset_ascii_8bit": CHARSET_ASCII_8BIT,
+    "charset_unknown_utf8": CHARSET_UNKNOWN_UTF8,
+    "charset_undefined_byte": CHARSET_UNDEFINED_BYTE,
+    "subject_replaced": SUBJECT_REPLACED,
+    "unreadable_header": UNREADABLE_HEADER,
+    "forwarded_unreadable": FORWARDED_UNREADABLE,
+    "alternative_related": ALTERNATIVE_RELATED,
+    "related_without_start": RELATED_WITHOUT_START,
 }
 
 

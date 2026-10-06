@@ -9,13 +9,15 @@ pure: no network, no database, no clock — where the mail names no usable
 time, the fallback is the server's arrival time handed in, not "now".
 
 The identity of a mail is a rule of this project and not of a library: the
-SHA-256 of the canonical form of the decoded subject, the SHA-256 of the
-chosen body part's bytes after the transfer encoding and before any
-conversion into text, and the sorted SHA-256 of every attachment. Nothing of
-the transport goes in, so two copies from two mailboxes are one artifact;
-nothing of the conversion goes in, so a better converter does not turn every
-sighting into a variant. That is why this module takes the mail apart with
-the standard library's `email` and decides itself what is decoded.
+SHA-256 of the canonical form of the decoded subject, the SHA-256 of each
+body part's bytes after the transfer encoding and before any conversion into
+text, and the sorted SHA-256 of every attachment. Line endings enter as LF
+wherever the bytes are text a transport may rewrite. Nothing else of the
+transport goes in, so two copies from two mailboxes, or an `.eml` file saved
+on a Unix machine, are one artifact; nothing of the conversion goes in, so a
+better converter or a better guess at a charset does not turn every sighting
+into a variant. That is why this module takes the mail apart with the
+standard library's `email` and decides itself what is decoded.
 
 What it does not do is interpret. Quotes and signatures stay in the text,
 addresses stay as written, nothing is decrypted.
@@ -39,6 +41,7 @@ from typing import TYPE_CHECKING
 
 import base64
 import binascii
+import codecs
 import email
 import email.policy
 import hashlib
@@ -49,16 +52,18 @@ import re
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from collections.abc import Iterator
     from collections.abc import Mapping
     from datetime import datetime
 
 
 MAX_FORWARD_DEPTH = 5
-"""How deep mails inside mails are unpacked. The outer mail is depth 0; a
-mail attached at depth 5 stays an attachment, and the payload of the mail at
-depth 5 lists it under `not_unpacked`. The limit guards against a broken or
-hostile mail, not against real mail."""
+"""How deep mails inside mails are unpacked. The outer mail is depth 0, and
+the mails attached to it down to depth 5 are unpacked. A mail attached to the
+mail at depth 5 stays an attachment, and the payload of the mail at depth 5
+lists it under `not_unpacked`. The limit guards against a broken or hostile
+mail, not against real mail."""
 
 SOURCE = "email"
 
@@ -68,6 +73,10 @@ SOURCE = "email"
 NO_BODY_ENCRYPTED = "no readable body: encrypted"
 NO_BODY_ATTACHMENTS_ONLY = "no readable body: attachments only"
 NO_BODY_EMPTY = "no readable body: empty"
+
+# The one unit of a mail that does not map, followed by the class of the
+# error — never its message, which can quote a header.
+UNREADABLE_MAIL = "unreadable mail: "
 
 CONVERTER = "html2text " + ".".join(str(part) for part in html2text.__version__)
 """The converter from HTML into text and its version, as the payload names
@@ -91,18 +100,30 @@ _ROLES = {
     "bcc": "bcc",
 }
 
-_LINE_BREAK = re.compile(r"\r\n|\r|\n")
+# A line break and the blanks that follow it: the folding of a header. It
+# unfolds into one space, so that a header folded with a tab and the same
+# header folded with a space are one value.
+_FOLD = re.compile(r"(?:\r\n|\r|\n)[ \t]*")
 _SURROGATE = re.compile("[\ud800-\udfff]")
+# What the parser makes out of a byte it could not read: a surrogate from
+# U+DC80 to U+DCFF, which `surrogateescape` turns back into the byte.
+_ESCAPED_BYTE = re.compile("[\udc80-\udcff]")
 
 # The end of the header block: an empty line, or one right at the start.
 _HEADER_END = re.compile(rb"(?:\A|\n)(?:\r\n|\n)")
+
+# Transfer encodings that carry text in lines, whose line endings a
+# transport or a file on disk may rewrite.
+_LINE_ENCODINGS = ("", "7bit", "8bit", "quoted-printable")
 
 
 @dataclass(frozen=True)
 class Attachment:
     """One attachment of a mail: its decoded bytes, its name if it carries
     one, and its media type. A mail attached to a mail is an attachment too,
-    with its bytes as they stand and the type `message/rfc822`."""
+    with the type `message/rfc822` and its bytes as they stand in the
+    attachment — after a transfer encoding is undone, where a client wrote
+    one."""
 
     content: bytes
     filename: str | None
@@ -128,11 +149,15 @@ class Mapped:
 
 
 @dataclass(frozen=True)
-class _Body:
+class _Text:
+    """One body part, read."""
+
     part: EmailMessage
     data: bytes
     text: str
     charset: str
+    declared: str | None
+    guessed: bool
     converter: str | None
     replaced: bool
 
@@ -150,12 +175,78 @@ def map_mail(raw: bytes, *, internaldate: datetime, found_in: Mapping[str, str])
 
     `internaldate` is the server's arrival time and has to carry a zone;
     `found_in` says where this sighting lay. Both go into the payload, and
-    every mail attached to this one is given the same two. Raises
-    `InvalidPayload` for a naive `internaldate`. A mail that cannot be taken
-    apart is mapped as far as it reads; the one mail known not to map is
-    named at `_headers`.
+    every mail attached to this one is given the same two.
+
+    Raises `InvalidPayload` for a naive `internaldate`, which is the
+    caller's error, and nothing for what a mail contains: a mail that does
+    not map becomes an event of what is safe to say about it (`_unreadable`),
+    and so does each attached mail on its own.
     """
-    return _map(raw, internaldate=internaldate, found_in=found_in, depth=0, forwarded_in=None)
+    return _map_or_keep(
+        raw, internaldate=internaldate, found_in=found_in, depth=0, forwarded_in=None
+    )
+
+
+def _map_or_keep(
+    raw: bytes,
+    *,
+    internaldate: datetime,
+    found_in: Mapping[str, str],
+    depth: int,
+    forwarded_in: str | None,
+) -> Mapped:
+    # Before the `try`: a naive `internaldate` is no content of the mail,
+    # and the event of a mail that does not map needs a zoned one too.
+    iso_utc(internaldate)
+    try:
+        return _map(
+            raw,
+            internaldate=internaldate,
+            found_in=found_in,
+            depth=depth,
+            forwarded_in=forwarded_in,
+        )
+    # Every exception, deliberately: a mail is input from anybody, and the
+    # standard library raises on some of it — `UnicodeEncodeError` for a
+    # UTF-7 encoded word that decodes to a lone surrogate, measured on
+    # 2026-10-06 with Python 3.14.3. A run that stopped at one mail would
+    # stop there at every run after it, and take in nothing more.
+    except Exception as error:
+        return _unreadable(
+            raw, error, internaldate=internaldate, found_in=found_in, forwarded_in=forwarded_in
+        )
+
+
+def _unreadable(
+    raw: bytes,
+    error: Exception,
+    *,
+    internaldate: datetime,
+    found_in: Mapping[str, str],
+    forwarded_in: str | None,
+) -> Mapped:
+    """The event of a mail that does not map, from what is safe: the raw
+    bytes as its identity and its key, the arrival time, and one unit naming
+    the class of the error. The raw mail stays a blob, so a better parser can
+    read it later; the event can be erased and the mail taken in again."""
+    digest = hashlib.sha256(raw).digest()
+    payload: dict[str, object] = {
+        "date_source": "internaldate",
+        "internaldate": iso_utc(internaldate),
+        "found_in": dict(found_in),
+    }
+    if forwarded_in is not None:
+        payload["forwarded_in"] = forwarded_in
+    event = RawEvent(
+        source=SOURCE,
+        external_id="sha256:" + digest.hex(),
+        occurred_at=internaldate,
+        evidence=Evidence.VERBATIM,
+        units=(RawUnit(seq=1, content=UNREADABLE_MAIL + type(error).__name__),),
+        payload=payload,
+        artifact_hash=digest,
+    )
+    return Mapped(event=event, raw=raw, attachments=(), inner=())
 
 
 def _map(
@@ -167,21 +258,26 @@ def _map(
     forwarded_in: str | None,
 ) -> Mapped:
     message = email.message_from_bytes(raw, policy=_POLICY)
-    headers = _headers(message)
+    headers, headers_replaced = _headers(message)
     subject = _first(headers, "subject")
-    body = _body(message)
-    leaves = _attachment_parts(message, body.part if body else None)
+    read = _reader()
+    body_parts, alternatives = _body_parts(message, read)
+    texts = [read(part) for part in body_parts]
+    leaves = _attachment_parts(message, [*body_parts, *alternatives])
     sliced = _sliced(message, raw)
     attachments = tuple(_attachment(part, sliced, raw) for part in leaves)
 
-    # The subject as the headers have it, decoded and with a null byte
-    # already replaced: the canonical form refuses one. A subject that is
-    # absent is `null`, one that is empty is `""`.
+    # The subject as the headers have it, decoded, unfolded and with a null
+    # byte already replaced: the canonical form refuses one. A subject that
+    # is absent is `null`, one that is empty is `""`.
     artifact_hash = artifact_hash_of(
         {
             "subject": subject,
-            "body": _sha256(body.data) if body else None,
-            "attachments": sorted(_sha256(attachment.content) for attachment in attachments),
+            "body": [_sha256(_lf(text.data)) for text in texts],
+            "attachments": sorted(
+                _identity_digest(part, attachment)
+                for part, attachment in zip(leaves, attachments, strict=True)
+            ),
         }
     )
     external_id = _message_id(headers) or "sha256:" + artifact_hash.hex()
@@ -192,15 +288,20 @@ def _map(
         "date_source": date_source,
         "internaldate": iso_utc(internaldate),
         "found_in": dict(found_in),
-        "body": None
-        if body is None
-        else {
-            "part": body.part.get_content_type(),
-            "charset": body.charset,
-            "converter": body.converter,
-            "replaced": body.replaced,
-        },
+        "body": [
+            {
+                "part": text.part.get_content_type(),
+                "charset": text.charset,
+                "declared": text.declared,
+                "guessed": text.guessed,
+                "converter": text.converter,
+                "replaced": text.replaced,
+            }
+            for text in texts
+        ],
     }
+    if headers_replaced:
+        payload["headers_replaced"] = headers_replaced
     if forwarded_in is not None:
         payload["forwarded_in"] = forwarded_in
 
@@ -211,7 +312,7 @@ def _map(
             continue
         if depth < MAX_FORWARD_DEPTH:
             inner.append(
-                _map(
+                _map_or_keep(
                     attachment.content,
                     internaldate=internaldate,
                     found_in=found_in,
@@ -229,7 +330,7 @@ def _map(
         external_id=external_id,
         occurred_at=occurred_at,
         evidence=Evidence.VERBATIM,
-        units=_units(subject, body, _no_body_reason(message, attachments)),
+        units=_units(subject, texts, _no_body_reason(message, attachments)),
         payload=payload,
         artifact_hash=artifact_hash,
         channel_identities=_channel_identities(message),
@@ -241,46 +342,68 @@ def _map(
 
 
 def _readable(text: str) -> tuple[str, bool]:
-    """`text` with what the log cannot hold replaced, and whether anything
-    was.
-
-    A header byte outside ASCII arrives from the parser as a lone surrogate,
-    in a display name or a file name. It is read as UTF-8 first, which RFC
-    6532 allows in a header; whatever is no UTF-8 becomes U+FFFD. A
-    surrogate no byte was escaped into \u2014 a UTF-7 body can decode to one \u2014
-    and a null byte become U+FFFD too: PostgreSQL stores neither, in `text`
-    or in `jsonb`.
-    """
+    """`text` with what the log cannot hold replaced by U+FFFD, and whether
+    anything was: a lone surrogate — what is left of a byte nothing could
+    read, or what a UTF-7 body decodes to — and a null byte. PostgreSQL
+    stores neither, in `text` or in `jsonb`."""
     replaced = False
     if _SURROGATE.search(text):
-        try:
-            data = text.encode("utf-8", "surrogateescape")
-        except UnicodeEncodeError:
-            text, replaced = _SURROGATE.sub("\ufffd", text), True
-        else:
-            try:
-                text = data.decode("utf-8")
-            except UnicodeDecodeError:
-                text, replaced = data.decode("utf-8", "replace"), True
+        text, replaced = _SURROGATE.sub("\ufffd", text), True
     if "\x00" in text:
         text, replaced = text.replace("\x00", "\ufffd"), True
     return text, replaced
 
 
-def _decode(data: bytes, charset: str) -> tuple[str, str, bool]:
-    """`data` as text in `charset`: the text, the charset it was read with,
-    and whether anything was replaced. A charset Python does not know is
-    read as Latin-1, which reads every byte as some character, so the
-    content stays and the payload says that it may be wrong."""
+def _windows_1252(data: bytes) -> str:
+    """`data` as Windows-1252, and the five bytes it leaves undefined (0x81,
+    0x8D, 0x8F, 0x90, 0x9D) as Latin-1, so that every byte reads as some
+    character."""
+    text = data.decode("cp1252", "surrogateescape")
+    return _ESCAPED_BYTE.sub(lambda match: chr(ord(match.group()) - 0xDC00), text)
+
+
+def _guess(data: bytes) -> tuple[str, str]:
+    """Bytes whose charset nobody said or nobody knows: strict UTF-8 if they
+    are UTF-8 — no other charset in use produces valid UTF-8 by accident
+    beyond a few letters —, otherwise Windows-1252."""
     try:
-        text, replaced = data.decode(charset), False
-    except LookupError:
-        charset = "iso-8859-1"
-        text, replaced = data.decode(charset), True
+        return data.decode("utf-8"), "utf-8"
     except UnicodeDecodeError:
-        text, replaced = data.decode(charset, "replace"), True
+        return _windows_1252(data), "windows-1252"
+
+
+def _decode(data: bytes, declared: str | None) -> tuple[str, str, bool, bool]:
+    """`data` as text: the text, the charset it was read with, whether that
+    charset is a guess, and whether a character was replaced.
+
+    - A label of ISO-8859-1 is read as Windows-1252, as the WHATWG Encoding
+      Standard, every browser and Thunderbird do: Windows clients and PHP
+      mailers write Windows-1252 under that label, and ISO-8859-1 has only
+      invisible control characters where Windows-1252 has „“, – and €.
+    - Without a label, under a label of US-ASCII when a byte is above 127,
+      and under a label Python does not know (`unknown-8bit`, which
+      Python's own `email` and mutt write), the charset is guessed.
+    - Under any other label the text is read as declared, and what does not
+      read becomes U+FFFD.
+    """
+    try:
+        codec = None if declared is None else codecs.lookup(declared).name
+    except LookupError:
+        codec = None
+    if codec in ("iso8859-1", "cp1252"):
+        text, charset, guessed, replaced = _windows_1252(data), "windows-1252", False, False
+    elif codec not in (None, "ascii"):
+        charset, guessed = cast("str", declared), False
+        try:
+            text, replaced = data.decode(charset), False
+        except UnicodeDecodeError:
+            text, replaced = data.decode(charset, "replace"), True
+    elif data.isascii() and (declared is None or codec == "ascii"):
+        text, charset, guessed, replaced = data.decode("ascii"), "us-ascii", False, False
+    else:
+        (text, charset), guessed, replaced = _guess(data), True, False
     text, nul = _readable(text)
-    return text, charset, replaced or nul
+    return text, charset, guessed, replaced or nul
 
 
 def _html_to_text(html: str) -> str:
@@ -299,30 +422,52 @@ def _html_to_text(html: str) -> str:
     return converter.handle(html)
 
 
+def _lf(data: bytes) -> bytes:
+    """Every line ending as LF, for the identity of bytes that are text."""
+    return data.replace(b"\r\n", b"\n").replace(b"\r", b"\n")
+
+
 # --- headers -----------------------------------------------------------------
 
 
 def _unfolded(value: object) -> str:
-    return _LINE_BREAK.sub("", str(value))
+    return _FOLD.sub(" ", str(value))
 
 
-def _headers(message: EmailMessage) -> list[tuple[str, str]]:
+def _recovered(text: str) -> str:
+    """A header byte outside ASCII arrives from the parser as an escaped
+    byte — raw in the header, or out of an encoded word labelled
+    `unknown-8bit`, which is how the standard library writes such a header
+    back out. It is read as UTF-8 if the bytes are UTF-8, which RFC 6532
+    allows in a header, and as Windows-1252 otherwise — what an old mailer
+    writes."""
+    if not _ESCAPED_BYTE.search(text):
+        return text
+    # A lone surrogate beside the escaped bytes, which no byte made, does
+    # not encode: the mail then does not map, and becomes the event of an
+    # unreadable mail.
+    return _guess(text.encode("utf-8", "surrogateescape"))[0]
+
+
+def _headers(message: EmailMessage) -> tuple[list[tuple[str, str]], list[str]]:
     """Every header in the order of the mail, duplicates included, the name
-    as written, the value unfolded and with encoded words decoded.
+    as written, the value unfolded and with encoded words decoded; and the
+    names of the headers in which a character was replaced.
 
-    Not caught, and named rather than handled: an encoded word that decodes
-    to a lone surrogate — UTF-7 can spell one, as in `=?utf-7?q?+2D0-?=` —
-    makes the standard library's header classes raise `UnicodeEncodeError`,
-    in any header, and every header passes through here first (measured on
-    2026-10-06 with Python 3.14.3, in an `X-` header, in `From` and in
-    `Date`). No encoder writes such a word; a mail that carries one does
-    not map.
+    A replacement shows as U+FFFD in the decoded value that was not in the
+    source: the decoder replaces what an encoded word's charset cannot read,
+    and records no defect for it (measured on 2026-10-06 with an encoded
+    word labelled UTF-8 that holds Latin-1).
     """
     headers: list[tuple[str, str]] = []
+    replaced_in: list[str] = []
     for name, value in message.raw_items():
-        header = _UNSTRUCTURED(name, _unfolded(value))
-        headers.append((name, _readable(str(header))[0]))
-    return headers
+        source = _recovered(_unfolded(value))
+        text, replaced = _readable(str(_UNSTRUCTURED(name, source)))
+        if replaced or ("\ufffd" in text and "\ufffd" not in source):
+            replaced_in.append(name)
+        headers.append((name, text))
+    return headers, replaced_in
 
 
 def _first(headers: list[tuple[str, str]], name: str) -> str | None:
@@ -363,14 +508,14 @@ def _channel_identities(message: EmailMessage) -> tuple[ChannelIdentity, ...]:
         role = _ROLES.get(name.lower())
         if role is None:
             continue
-        header = _POLICY.header_fetch_parse(name, _unfolded(value))
+        header = _POLICY.header_fetch_parse(name, _recovered(_unfolded(value)))
         if isinstance(header, AddressHeader):
             identities.extend(
                 ChannelIdentity(
                     SOURCE,
                     role,
-                    _readable(address.addr_spec)[0],
-                    _readable(address.display_name)[0] or None,
+                    _readable(_recovered(address.addr_spec))[0],
+                    _readable(_recovered(address.display_name))[0] or None,
                 )
                 for address in header.addresses
             )
@@ -390,45 +535,121 @@ def _children(part: EmailMessage) -> list[EmailMessage]:
     return cast("list[EmailMessage]", payload)
 
 
-def _walk(
-    part: EmailMessage, ancestors: tuple[EmailMessage, ...] = ()
-) -> Iterator[tuple[EmailMessage, tuple[EmailMessage, ...]]]:
-    yield part, ancestors
+def _walk(part: EmailMessage) -> Iterator[EmailMessage]:
+    yield part
     for child in _children(part):
-        yield from _walk(child, (*ancestors, part))
+        yield from _walk(child)
 
 
 def _is_leaf(part: EmailMessage) -> bool:
     return part.get_content_maintype() != "multipart" or not _children(part)
 
 
-def _body_part(message: EmailMessage) -> EmailMessage | None:
-    """The part `text/plain` when there is one, otherwise `text/html`, the
-    first of either that is not an attachment. When neither exists and a
-    multipart could not be split — its boundary missing, or never found —
-    that multipart's payload is the text: the MIME lines stand in it, and so
-    does every word of the mail."""
-    candidates = [part for part, _ in _walk(message) if _is_leaf(part)]
-    for subtype in ("plain", "html"):
-        for part in candidates:
-            if part.get_content_type() == f"text/{subtype}" and not part.is_attachment():
-                return part
-    for part in candidates:
-        if part.get_content_maintype() == "multipart":
-            return part
-    return None
+def _unsplit(part: EmailMessage) -> bool:
+    """A multipart whose parts the parser could not find — its boundary
+    missing, or never found. Its payload is the text: the MIME lines stand
+    in it, and so does every word of the mail."""
+    return part.get_content_maintype() == "multipart" and isinstance(part.get_payload(), str)
 
 
-def _body(message: EmailMessage) -> _Body | None:
-    part = _body_part(message)
-    if part is None:
-        return None
-    data = _decoded(part)
-    text, charset, replaced = _decode(data, part.get_content_charset() or "us-ascii")
-    converter = None
-    if part.get_content_type() == "text/html":
-        text, converter = _html_to_text(text), CONVERTER
-    return _Body(part, data, text, charset, converter, replaced)
+def _reader() -> Callable[[EmailMessage], _Text]:
+    """Reads a body part once, however often the choice of the body asks."""
+    seen: dict[int, _Text] = {}
+
+    def read(part: EmailMessage) -> _Text:
+        if id(part) not in seen:
+            data = _decoded(part)
+            declared = part.get_content_charset()
+            text, charset, guessed, replaced = _decode(data, declared)
+            converter = None
+            if part.get_content_type() == "text/html":
+                text, converter = _html_to_text(text), CONVERTER
+            seen[id(part)] = _Text(
+                part, data, text, charset, declared, guessed, converter, replaced
+            )
+        return seen[id(part)]
+
+    return read
+
+
+def _body_parts(
+    message: EmailMessage, read: Callable[[EmailMessage], _Text]
+) -> tuple[list[EmailMessage], list[EmailMessage]]:
+    """The body of a mail is every text part of its content, in order — a
+    `text/*` part without a file name and not marked as an attachment —,
+    and the second list the text parts that are another form of it.
+
+    Apple Mail splits a text around a PDF placed between two paragraphs, a
+    mailing list appends its footer as a part of its own: each is text of
+    the mail. A text part with a file name (`filename=` or `name=`) is a
+    file someone attached, even as `text/plain`.
+    """
+    alternatives: list[EmailMessage] = []
+    return _content(message, read, alternatives), alternatives
+
+
+def _content(
+    part: EmailMessage, read: Callable[[EmailMessage], _Text], alternatives: list[EmailMessage]
+) -> list[EmailMessage]:
+    if part.is_attachment() or part.get_filename() is not None:
+        return []
+    if part.get_content_maintype() == "text" or _unsplit(part):
+        return [part]
+    children = _children(part)
+    if not children:
+        return []
+    subtype = part.get_content_subtype()
+    if subtype == "alternative":
+        return _alternative(children, read, alternatives)
+    if subtype == "related":
+        return _content(_root(part, children), read, alternatives)
+    return [found for child in children for found in _content(child, read, alternatives)]
+
+
+def _alternative(
+    children: list[EmailMessage],
+    read: Callable[[EmailMessage], _Text],
+    alternatives: list[EmailMessage],
+) -> list[EmailMessage]:
+    """One form out of a `multipart/alternative`: plain text before HTML
+    before anything else, and a form whose text is empty or blank gives way
+    to the next — a generator that writes an empty `text/plain` beside the
+    whole text in HTML is common enough. The plain and HTML text of the
+    forms not chosen is the same text again; any other part of them is
+    kept as an attachment."""
+    options = [_content(child, read, alternatives) for child in children]
+    ranked = sorted(
+        (index for index, parts in enumerate(options) if parts),
+        key=lambda index: _rank(options[index]),
+    )
+    chosen = next(
+        (index for index in ranked if any(read(part).text.strip() for part in options[index])),
+        ranked[0] if ranked else None,
+    )
+    for index, parts in enumerate(options):
+        if index != chosen:
+            alternatives.extend(
+                part for part in parts if part.get_content_type() in ("text/plain", "text/html")
+            )
+    return [] if chosen is None else options[chosen]
+
+
+def _rank(parts: list[EmailMessage]) -> int:
+    types = {part.get_content_type() for part in parts}
+    if types == {"text/plain"}:
+        return 0
+    return 1 if "text/html" in types else 2
+
+
+def _root(part: EmailMessage, children: list[EmailMessage]) -> EmailMessage:
+    """The part of a `multipart/related` that the others belong to: the one
+    its `start` names, otherwise the first (RFC 2387)."""
+    start = part.get_param("start")
+    if isinstance(start, str):
+        for child in children:
+            if child.get("content-id") == start:
+                return child
+    return children[0]
 
 
 def _decoded(part: EmailMessage) -> bytes:
@@ -437,39 +658,20 @@ def _decoded(part: EmailMessage) -> bytes:
     return data if isinstance(data, bytes) else b""
 
 
-def _attachment_parts(message: EmailMessage, body: EmailMessage | None) -> list[EmailMessage]:
-    """Every leaf part except the body and the alternatives to it.
+def _transfer_encoding(part: EmailMessage) -> str:
+    return str(part.get("content-transfer-encoding") or "").strip().lower()
 
-    An alternative is a `text/plain` or `text/html` part, not marked as an
-    attachment, under the same `multipart/alternative` as the body: the
-    same text once more. Everything else is kept — an inline image, a
-    calendar invitation beside the text, a signature, the parts of an
-    encrypted mail —, because what is not an attachment here is only in the
-    raw mail.
-    """
-    alternative = None
-    leaves: list[tuple[EmailMessage, tuple[EmailMessage, ...]]] = []
-    for part, ancestors in _walk(message):
-        if part is body:
-            alternative = next(
-                (a for a in reversed(ancestors) if a.get_content_type() == "multipart/alternative"),
-                None,
-            )
-        if _is_leaf(part):
-            leaves.append((part, ancestors))
-    kept: list[EmailMessage] = []
-    for part, ancestors in leaves:
-        if part is body:
-            continue
-        if (
-            alternative is not None
-            and any(a is alternative for a in ancestors)
-            and part.get_content_type() in ("text/plain", "text/html")
-            and not part.is_attachment()
-        ):
-            continue
-        kept.append(part)
-    return kept
+
+def _attachment_parts(message: EmailMessage, text: list[EmailMessage]) -> list[EmailMessage]:
+    """Every leaf part that is not text of the mail — neither the body nor
+    another form of it. An inline image, a calendar invitation beside the
+    text, a signature, the parts of an encrypted mail are kept: what is not
+    an attachment here is only in the raw mail."""
+    return [
+        part
+        for part in _walk(message)
+        if _is_leaf(part) and not any(part is other for other in text)
+    ]
 
 
 def _attachment(part: EmailMessage, sliced: dict[int, bytes], raw: bytes) -> Attachment:
@@ -478,15 +680,27 @@ def _attachment(part: EmailMessage, sliced: dict[int, bytes], raw: bytes) -> Att
         content=_message_bytes(part, sliced, raw)
         if isinstance(part.get_payload(), list)
         else _decoded(part),
-        filename=None if filename is None else _readable(filename)[0],
+        filename=None if filename is None else _readable(_recovered(filename))[0],
         media_type=part.get_content_type(),
     )
+
+
+def _identity_digest(part: EmailMessage, attachment: Attachment) -> str:
+    """The digest of an attachment as the identity takes it. Bytes that
+    travelled as lines of text — no transfer encoding, 7bit, 8bit,
+    quoted-printable, which is also how an attached mail travels — enter
+    with every line ending as LF, so that an LF copy of the mail is no other
+    artifact. Bytes in base64 or binary enter as they are, and their digest
+    is the address of their blob."""
+    if _transfer_encoding(part) in _LINE_ENCODINGS:
+        return _sha256(_lf(attachment.content))
+    return _sha256(attachment.content)
 
 
 def _no_body_reason(message: EmailMessage, attachments: tuple[Attachment, ...]) -> str:
     """Why a mail has no readable body. Encrypted wins, so that a reader
     does not take the encrypted parts for the mail's attachments."""
-    for part, _ in _walk(message):
+    for part in _walk(message):
         media_type = part.get_content_type()
         if media_type == "multipart/encrypted":
             return NO_BODY_ENCRYPTED
@@ -497,15 +711,17 @@ def _no_body_reason(message: EmailMessage, attachments: tuple[Attachment, ...]) 
     return NO_BODY_ATTACHMENTS_ONLY if attachments else NO_BODY_EMPTY
 
 
-def _units(subject: str | None, body: _Body | None, no_body: str) -> tuple[RawUnit, ...]:
-    """The subject as unit 1, then the paragraphs of the body. Without a
-    readable body the fixed sentence stands in its place, so that no mail is
-    without a unit and every mail says why it has no text."""
+def _units(subject: str | None, texts: list[_Text], no_body: str) -> tuple[RawUnit, ...]:
+    """The subject as unit 1, then the paragraphs of every body part in
+    order. Without a readable body the fixed sentence stands in its place,
+    so that no mail is without a unit and every mail says why it has no
+    text."""
     contents: list[str] = []
     if subject is not None and subject.strip():
         contents.append(subject.strip())
-    if body is not None and body.text.strip():
-        contents.extend(unit.content for unit in split_plaintext(body.text))
+    body = "\n\n".join(text.text for text in texts)
+    if body.strip():
+        contents.extend(unit.content for unit in split_plaintext(body))
     else:
         contents.append(no_body)
     return tuple(RawUnit(seq=seq, content=content) for seq, content in enumerate(contents, 1))
@@ -527,15 +743,15 @@ def _sha256(data: bytes) -> str:
 #
 # So the attached mail is cut out of the raw bytes: along the boundaries the
 # parser found, part by part, to the body of the `message/*` part. The cut
-# is held against the parser before it is used: the part it belongs to,
-# parsed on its own and written back out, has to come out as the parser's
-# own part does — this module reads delimiters and header ends with a few
-# lines of its own, and the parser is the one the rest of the mapping
-# follows. Where no cut is found, or the cut disagrees, the part as the
-# parser has it is written back out instead. That is no copy, as said, but
-# it is all of the content. Measured on 2026-10-06 with a lone CR as the
-# line ending: the parser splits lines there, this module's delimiters do
-# not match, and the fallback carries the mail.
+# is held against the parser before it is used: parsed on its own and
+# written back out, it has to come out as the parser's attached mail does —
+# this module reads delimiters and header ends with a few lines of its own,
+# and the parser is the one the rest of the mapping follows. Where no cut is
+# found, or the cut disagrees, the part as the parser has it is written back
+# out instead. That is no copy, as said, but it is all of the content.
+# Measured on 2026-10-06 with a lone CR as the line ending: the parser
+# splits lines there, this module's delimiters do not match, and the
+# fallback carries the mail.
 
 
 def _body_of(data: bytes) -> bytes:
@@ -587,13 +803,14 @@ def _collect(part: EmailMessage, data: bytes, found: dict[int, bytes]) -> None:
         # right below the part's headers, starts the parser's body there,
         # while `_body_of` looks for the next empty line.
         #
-        # Compared without the final line ending. A mail whose own boundary
+        # Compared without trailing line endings. A mail whose own boundary
         # cannot be found keeps, as the parser reads it inside the multipart,
         # the line ending that belongs to the delimiter after it, and loses
         # it when the cut is parsed on its own — measured on 2026-10-06 with
         # the quoted-printable forward, whose `boundary=3D` the parser cannot
-        # read. The cut ends where the delimiter begins, which is where RFC
-        # 2046 puts the end of the part.
+        # read. `_agree` strips every CR and LF at the end, not only one line
+        # ending; the cut itself ends where the delimiter begins, which is
+        # where RFC 2046 puts the end of the part.
         body = _body_of(data)
         attached = cast("list[EmailMessage]", payload)
         if len(attached) == 1 and _agree(_parsed(body), attached[0]):
@@ -622,7 +839,7 @@ def _message_bytes(part: EmailMessage, sliced: dict[int, bytes], raw: bytes) -> 
     if content is None:
         linesep = "\r\n" if b"\r\n" in raw else "\n"
         content = _body_of(_serialised(part, linesep))
-    encoding = str(part.get("content-transfer-encoding") or "").strip().lower()
+    encoding = _transfer_encoding(part)
     if encoding == "base64":
         try:
             return base64.b64decode(content)
