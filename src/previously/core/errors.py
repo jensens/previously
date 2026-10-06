@@ -30,6 +30,33 @@ class BatchTooLarge(PreviouslyError, ValueError):
     """
 
 
+class ArtifactChanged(PreviouslyError):
+    """A key that exists already arrived with another artifact
+    ({ref}`artifact-identity`).
+
+    The event under `(source, external_id)` carries the artifact hash
+    `known`, and the sighting brought `arrived`. Raised by `append` before
+    anything of the batch is written. What happens then is the caller's
+    decision, never `append`'s: the command line reports it and returns 2,
+    and a connector whose artifacts should not change takes the deviating
+    one in under a key of its own.
+
+    The message shows the first 16 hexadecimal characters of each hash:
+    enough to tell two apart on a terminal, and the full values are on the
+    exception.
+    """
+
+    def __init__(self, source: str, external_id: str, *, known: bytes, arrived: bytes) -> None:
+        super().__init__(
+            f"{source}/{external_id} is known with another content "
+            f"(artifact {known.hex()[:16]} ≠ {arrived.hex()[:16]})"
+        )
+        self.source = source
+        self.external_id = external_id
+        self.known = known
+        self.arrived = arrived
+
+
 class ProjectionGap(PreviouslyError):
     """The log has a gap above `up_to_id` — which {ref}`projections` says it
     cannot have: `id = predecessor.id + 1` and the unique index on `prev_hash`

@@ -18,6 +18,7 @@ from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
 from previously.core.errors import InvalidPayload
+from previously.core.identity import artifact_hash_of
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
 from previously.core.redact import redact_blob
@@ -119,6 +120,35 @@ def test_appending_twice_gives_the_same_id(
 
 
 @pytest.mark.db
+def test_another_text_under_a_known_key_is_refused(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same text twice is known; another text under the same key is
+    refused with one sentence and 2, and nothing is written. The hashes are
+    those of the text and the sorted attachment addresses, here none."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
+    submit = ["append", "--source", "cli", "--external-id", "a", "--text"]
+    assert main([*submit, "A"]) == 0
+    assert main([*submit, "A"]) == 0
+    assert capsys.readouterr().out == "1\n1\n"
+
+    assert main([*submit, "B"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    known = artifact_hash_of({"text": "A", "attachments": []}).hex()[:16]
+    arrived = artifact_hash_of({"text": "B", "attachments": []}).hex()[:16]
+    assert _single_line(err) == (
+        f"Error: cli/a is known with another content (artifact {known} ≠ {arrived})"
+    )
+    with db.connect() as c:
+        assert c.execute(text("SELECT count(*) FROM event")).scalar_one() == 1
+
+
+@pytest.mark.db
 def test_show_displays_the_event_with_its_units(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -179,9 +209,12 @@ def test_show_displays_the_evidence_and_the_payload(
     # The payload as canonical-ish JSON with sorted keys, so the line is
     # stable: jsonb does not give the keys back in the order written. The
     # text is in the units alone: `append --text` adds nothing to the payload
-    # but the kind of evidence. Measured on 2026-10-05 with the text copied
-    # into the payload again: this comparison failed.
-    assert 'payload={"evidence": "verbatim"}\n  ¶1 Hello\n' in output
+    # but the hash of the artifact and the kind of evidence. Measured on
+    # 2026-10-05 with the text copied into the payload again: this comparison
+    # failed.
+    artifact = artifact_hash_of({"text": "Hello", "attachments": []}).hex()
+    payload = f'{{"artifact_hash": "{artifact}", "evidence": "verbatim"}}'
+    assert f"payload={payload}\n  ¶1 Hello\n" in output
 
 
 @pytest.mark.db
@@ -1761,7 +1794,11 @@ def test_redact_units_on_an_event_of_append_leaves_no_text_and_says_nothing(
 
     assert main(["show", "1"]) == 0
     output = capsys.readouterr().out
-    assert 'payload={"evidence": "recollection"}\n  ¶1 One\n  ¶2 <erased by event 2>\n' in output
+    # The payload keeps the artifact hash, which is no wording: a digest of
+    # the text, not the text ({ref}`artifact-identity`).
+    artifact = artifact_hash_of({"text": "One\n\nTwo", "attachments": []}).hex()
+    payload = f'{{"artifact_hash": "{artifact}", "evidence": "recollection"}}'
+    assert f"payload={payload}\n  ¶1 One\n  ¶2 <erased by event 2>\n" in output
     assert "Two" not in output
 
 
@@ -2352,6 +2389,32 @@ def _events(engine: Engine) -> int:
 
     with engine.connect() as c:
         return c.execute(text("SELECT count(*) FROM event")).scalar_one()
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_the_artifact_of_append_is_the_text_and_the_sorted_attachment_addresses(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same files in the other order are the same artifact; another file
+    is another one, and refused under the same key."""
+    from sqlalchemy import text
+
+    first = _file(tmp_path, "first.txt", b"The first attachment, invented for this test.\n")
+    second = _file(tmp_path, "second.txt", b"The second attachment, invented for this test.\n")
+    third = _file(tmp_path, "third.txt", b"A third one, not attached before.\n")
+    addresses = sorted(hashlib.sha256(path.read_bytes()).hexdigest() for path in (first, second))
+
+    assert main(_attach("a", second, first)) == 0
+    assert main(_attach("a", first, second)) == 0
+    assert capsys.readouterr().out == "1\n1\n"
+    with blobs.engine.connect() as c:
+        stored = c.execute(text("SELECT payload ->> 'artifact_hash' FROM event")).scalar_one()
+    assert stored == artifact_hash_of({"text": "See attached.", "attachments": addresses}).hex()
+
+    assert main(_attach("a", first, third)) == 2
+    assert "Error: cli/a is known with another content" in capsys.readouterr().err
+    assert _events(blobs.engine) == 1
 
 
 @pytest.mark.db

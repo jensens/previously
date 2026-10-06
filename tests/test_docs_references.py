@@ -681,3 +681,46 @@ def test_the_reference_quotes_the_refusal_by_type_name() -> None:
         f"hash-format.md does not quote {quoted!r}. The code's message changed; "
         "the Payload range section has to change in the same commit."
     )
+
+
+def test_the_reference_quotes_the_refusal_of_another_artifact() -> None:
+    """Both pages quote the sentence of `ArtifactChanged`, and both quotes
+    are produced by raising it with the values each page names: the two
+    hashes of `append --text A` and `--text B` in `cli.md`, and two made-up
+    hashes in `hash-format.md`. Calling the code holds the hashes and their
+    16-character cut as well, which a match against the static parts of the
+    message would let pass in any form."""
+    from previously.core.errors import ArtifactChanged
+    from previously.core.identity import artifact_hash_of
+
+    page = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
+    quoted = _quoted_block(page, "and another text or other attachments is refused")
+    produced = ArtifactChanged(
+        "cli",
+        "a",
+        known=artifact_hash_of({"text": "A", "attachments": []}),
+        arrived=artifact_hash_of({"text": "B", "attachments": []}),
+    )
+    assert quoted == [f"Error: {produced}"], quoted
+
+    page = (DOCS / "reference" / "hash-format.md").read_text(encoding="utf-8")
+    quoted = _quoted_block(page, "its message shows the first 16 hexadecimal characters")
+    produced = ArtifactChanged(
+        "email", "m1", known=bytes.fromhex("11" * 32), arrived=bytes.fromhex("22" * 32)
+    )
+    assert quoted == [str(produced)], quoted
+
+
+def test_the_reference_quotes_the_refusal_of_a_reserved_identity_key() -> None:
+    """`hash-format.md` quotes the refusal of `artifact_hash` and
+    `channel_identities` with `<key>` where the name goes; held against the
+    static parts of what `core/append.py` raises as `InvalidPayload`."""
+    page = (DOCS / "reference" / "hash-format.md").read_text(encoding="utf-8")
+    lead = "carries `artifact_hash` or `channel_identities` with `"
+    assert lead in page, f"hash-format.md no longer carries {lead!r}"
+    quoted = page.split(lead, 1)[1].split("`", 1)[0]
+    raised = _raised_patterns(ROOT / "src" / "previously" / "core" / "append.py", "InvalidPayload")
+    assert any(_is_the_same_sentence(parts, quoted) for parts in raised), (
+        f"hash-format.md quotes {quoted!r} and core/append.py raises no such message. "
+        "Either the code's wording changed, or the page's did."
+    )

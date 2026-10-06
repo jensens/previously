@@ -28,10 +28,49 @@ Each message is prefixed with the path to the offending value: `$` for the paylo
 Any other type is refused by name, for example `type set not allowed`.
 
 `append` reserves the payload key `evidence` for the kind of evidence and refuses a payload that already carries it.
+It reserves `artifact_hash` and `channel_identities` the same way; see {ref}`artifact-identity`.
 `append` applies the null-byte and surrogate restrictions to `source` and `external_id` as well, before either value reaches the driver.
 It applies them to the content of every unit too, and names the unit instead of a path: `unit 1 contains a null byte`, and `unit 1: not representable as UTF-8 (surrogates not allowed) — a lone UTF-16 surrogate, for instance`.
 
 For why the range is drawn here and not wider, see {ref}`canonicalization`.
+
+(artifact-identity)=
+
+## Artifact identity
+
+A `RawEvent` may name the artifact it was taken from and the identities its channel names.
+`append` mixes both into the payload, so `payload_hash` covers them, and an erasure of the event takes them along.
+
+| Payload key | Value | Present |
+|---|---|---|
+| `artifact_hash` | The SHA-256 of the artifact, in 64 lowercase hexadecimal characters. | When `RawEvent.artifact_hash` isn't `None`. |
+| `channel_identities` | A list of objects with the keys `channel`, `role`, `address` and `name`, in the order given; `name` is `null` where the source carries none. | When `RawEvent.channel_identities` isn't empty. |
+
+`address` stands as the source wrote it.
+`append` refuses a payload that already carries `artifact_hash` or `channel_identities` with `payload already carries the key '<key>' — it is reserved for the identity of the artifact and the channel identities, so that it is not silently overwritten`.
+
+`previously.core.identity.artifact_hash_of` computes an artifact hash: the SHA-256 of the canonical bytes of a document, without a salt.
+The caller decides which document describes the artifact.
+For `previously append` it's `{"text": <the text>, "attachments": <the attachment addresses, sorted>}`.
+
+`append` compares the artifact hash when an event with the same `source` and `external_id` exists already:
+
+| The existing event | Result |
+|---|---|
+| carries the same `artifact_hash` | Known: `append` returns its `id` and writes nothing. |
+| carries another `artifact_hash` | Refused with `previously.core.errors.ArtifactChanged`, and nothing of the batch is written. |
+| is erased, with its payload `NULL` | Known: a new sighting doesn't undo an erasure. |
+| carries no `artifact_hash` | Known. |
+
+A sighting whose `artifact_hash` is `None` compares nothing and is known.
+A value under `artifact_hash` that isn't 64 lowercase hexadecimal characters counts as no `artifact_hash`; only an event written before the key was reserved can carry one.
+`ArtifactChanged` carries `source`, `external_id`, `known` and `arrived`, and its message shows the first 16 hexadecimal characters of each hash:
+
+```text
+email/m1 is known with another content (artifact 1111111111111111 ≠ 2222222222222222)
+```
+
+`redact units` leaves the payload unchanged, and the artifact hash with it.
 
 ## Hash versions
 

@@ -43,6 +43,23 @@ class BlobRef:
 
 
 @dataclass(frozen=True)
+class ChannelIdentity:
+    """An identity as one channel names it: an address in a role, such as
+    the sender of a mail ({ref}`artifact-identity`).
+
+    `address` stands as the source wrote it. Lower-casing it, merging two
+    spellings, or seeing one person behind two addresses is interpretation,
+    and a connector takes in rather than interprets. `name` is the display
+    name, when the source carries one.
+    """
+
+    channel: str
+    role: str
+    address: str
+    name: str | None = None
+
+
+@dataclass(frozen=True)
 class RawEvent:
     source: str
     external_id: str
@@ -58,6 +75,14 @@ class RawEvent:
     # them into the payload under `blobs`, and an event without any carries
     # no such key.
     blobs: tuple[BlobRef, ...] = ()
+    # The SHA-256 over what has to be equal for two sightings of the source
+    # event to be the same artifact; the caller decides what that is. `None`
+    # means "not given", not "empty", and compares with nothing. `append`
+    # mixes it into the payload as hexadecimal under `artifact_hash`, and the
+    # identities as a list of objects under `channel_identities`, each only
+    # when given ({ref}`artifact-identity`).
+    artifact_hash: bytes | None = None
+    channel_identities: tuple[ChannelIdentity, ...] = ()
 
 
 @dataclass(frozen=True)

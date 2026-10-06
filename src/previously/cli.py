@@ -22,6 +22,7 @@ from previously.contract.types import RawEvent
 from previously.core.anchor import format_anchor
 from previously.core.anchor import parse_anchors
 from previously.core.append import append
+from previously.core.append import check_units
 from previously.core.blob import fetch_blob
 from previously.core.blob import store_blob
 from previously.core.chain import read_references
@@ -34,6 +35,7 @@ from previously.core.errors import RedactionRefused
 from previously.core.errors import SinkUnwritable
 from previously.core.errors import SourceUnreadable
 from previously.core.hashing import is_address
+from previously.core.identity import artifact_hash_of
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
 from previously.core.projection import Outcome
@@ -434,6 +436,10 @@ def _cmd_append(args: argparse.Namespace) -> int:
     occurred = parse_moment(args.occurred_at) if args.occurred_at else datetime.now(UTC)
     evidence = _parse_evidence(args.evidence)
     units = split_plaintext(args.text)
+    # Before the text is hashed into the artifact identity below: the
+    # canonical form would refuse a null byte or a lone surrogate there too,
+    # but as `$.text` of a document nothing stores, where this names the unit.
+    check_units(units)
     # The database setting before anything is stored: `_storage` refuses an
     # unset `PREVIOUSLY_DSN` without connecting, and a blob stored before that
     # refusal would lie in the bucket with no event to name it. Then the
@@ -441,6 +447,11 @@ def _cmd_append(args: argparse.Namespace) -> int:
     # there is something to attach.
     with _storage() as storage:
         blobs = _attach(args.attach) if args.attach else ()
+        # The artifact is what was submitted: the text as given, and the
+        # attachments by their addresses, sorted, so that their order on the
+        # command line and their file names do not make another artifact
+        # ({ref}`artifact-identity`). Not the units, which are derived.
+        artifact = {"text": args.text, "attachments": sorted(blob.sha256 for blob in blobs)}
         event = RawEvent(
             source=args.source,
             external_id=args.external_id,
@@ -448,6 +459,7 @@ def _cmd_append(args: argparse.Namespace) -> int:
             evidence=evidence,
             units=units,
             blobs=blobs,
+            artifact_hash=artifact_hash_of(artifact),
         )
         ids = append(storage, [event], recorded_at=datetime.now(UTC))
     print(ids[0])
@@ -847,12 +859,13 @@ def _payload_line(event_id: int) -> str:
     units are erased; this says so, and names the command that erases it,
     rather than leave the line on standard output to read as "the content is
     gone". `append --text` writes none of the text into the payload, only
-    what `append` adds — the kind of evidence, and with attachments their
-    names, media types and addresses —, so for an event it wrote the notice
-    comes only where the wording of an erased unit equals or lies inside one
-    of those values, such as a unit that reads `minutes.txt` beside an
-    attachment of that name. The notice is then true: the payload holds that
-    wording."""
+    what `append` adds — the kind of evidence, the artifact hash, and with
+    attachments their names, media types and addresses —, so for an event it
+    wrote the notice comes only where the wording of an erased unit equals or
+    lies inside one of those values, such as a unit that reads `minutes.txt`
+    beside an attachment of that name, or a unit of a few hexadecimal
+    characters that the artifact hash happens to contain. The notice is then
+    true: the payload holds that wording."""
     return (
         f"the payload of event {event_id} is not erased and holds the wording of an "
         f"erased unit; `previously redact event {event_id}` erases it"

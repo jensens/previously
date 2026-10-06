@@ -51,7 +51,7 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | Command | 0 | 1 | 2 |
 |---|---|---|---|
 | `migrate` | The schema stands at the newest revision, whether `migrate` ran a migration or found it up to date. | Not used. | The database is at a revision this version doesn't know, the database refused to let the role read the revision or apply a migration, or storage raised an error. |
-| `append` | The event was recorded, or an event with the same `--source` and `--external-id` already existed. | Not used. | The input was invalid, an attachment couldn't be read, a blob setting is missing or invalid, or storage or the blob store raised an error. |
+| `append` | The event was recorded, or an event with the same `--source` and `--external-id` and the same content already existed. | Not used. | The input was invalid, an event with the same `--source` and `--external-id` holds another content, an attachment couldn't be read, a blob setting is missing or invalid, or storage or the blob store raised an error. |
 | `redact` | The redaction was recorded and carried out, or the target was already covered by one, every blob it made obsolete is gone from the blob store, and every projection stands at the tip of the log. | Not used. | The input was invalid, the redaction was refused, storage raised an error, or after the redaction was recorded a blob couldn't be deleted or the projections couldn't be caught up. |
 | `log` | The log was printed. | Not used. | The input was invalid, or storage raised an error. |
 | `verify` | The chain has no finding, every anchor holds, and with `--blobs` no blob has a finding. | The chain, an anchor or, with `--blobs`, a blob has at least one finding. | The input was invalid, a blob setting is missing or invalid, an identity file can't be read, or storage or the blob store raised an error. |
@@ -124,17 +124,28 @@ Submits one event and prints its `id`.
 | `--attach FILE` | No | — | A file to store as a blob and name at the event; may repeat. |
 
 `append` splits `--text` into units, one per paragraph, and the text stands in those units alone.
-The payload of the event is a JSON object that holds the kind of evidence under `evidence`, and nothing of the text:
+The payload of the event is a JSON object that holds the artifact hash under `artifact_hash` and the kind of evidence under `evidence`, and nothing of the text:
 
 ```json
-{"evidence": "recollection"}
+{"artifact_hash": "f20cefad341c110ed191bef30ee347645f114e81202c754d4298bf5794d83a5d", "evidence": "recollection"}
 ```
 
-With `--attach`, the payload carries a second key, `blobs`; see *Attachments* below.
+The artifact hash is the SHA-256 of the canonical form of `{"text": <--text>, "attachments": <the attachment addresses, sorted>}`, here for `--text Hello` without attachments; see {ref}`artifact-identity`.
+With `--attach`, the payload carries a third key, `blobs`; see *Attachments* below.
 
 `append` prints exactly one line to standard output: the new event's `id`.
-Calling `append` again with the same `--source` and `--external-id` doesn't create a second event.
+Calling `append` again with the same `--source`, `--external-id` and `--text`, and the same attachments in any order, doesn't create a second event.
 It prints the existing event's `id` and returns 0.
+An event that was erased, or that was written before events carried an artifact hash, counts as the same whatever the text.
+
+Calling `append` with the same `--source` and `--external-id` and another text or other attachments is refused with one sentence on standard error, and nothing is written:
+
+```text
+Error: cli/a is known with another content (artifact 7b1a628ef0d8a64e ≠ 0a422dac18a45b5e)
+```
+
+The example is `--text A` followed by `--text B` under the same key.
+The sentence names the source and the external identifier, then the first 16 hexadecimal characters of the artifact hash the event carries and of the one that arrived.
 
 ### Attachments
 
@@ -191,7 +202,8 @@ previously redact blob HASH --reason TEXT
 `redact event` erases the event's payload, and the content, speaker, timestamps and salt of every unit.
 `redact units` erases the content, speaker, timestamps and salt of the named units, and leaves the event's payload as it is.
 A payload that holds the wording of a unit keeps it after `redact units`, readable where `show` prints the payload; `redact event` erases it.
-The payload of an event `append` writes holds none of the text, only the kind of evidence and, with `--attach`, the references to the blobs, so for such an event `redact units` takes the wording with the units.
+The payload of an event `append` writes holds none of the text, only the artifact hash, the kind of evidence and, with `--attach`, the references to the blobs, so for such an event `redact units` takes the wording with the units.
+The artifact hash stays in the payload after `redact units`; it's an unsalted digest of the whole text, and `redact event` erases it.
 The order of the `SEQ` arguments doesn't matter, and a `SEQ` given twice counts once.
 `redact blob` erases the blob for every event whose reference to it isn't erased yet; their payloads and units stay as they are.
 Every hash, the source key, the rows of the units and the rows of the blob register stay, and after `redact units` the payload as well.
