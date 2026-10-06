@@ -349,6 +349,14 @@ Spec der Pilot-Einheit 1 mit Abschnitt, **P-PI** ihr Ausführungsprotokoll
   (Prüfung der Aufgabe 4, P-PI; `erasure.md`). Ob die Aufnahme einen getilgten
   Inhalt wiedererkennen soll, ist eine Frage an den Spec der nächsten Einheit,
   die Tilgung berührt.
+- Eine Mail steht in mehr Events als ihrem eigenen: ihre Varianten unter
+  `<Message-ID>#<16 Hex>` mit eigener Rohmail, die Mails in ihr auf jeder
+  Tiefe, und jede Mail, die sie als Anhang trug, deren Rohmail sie ganz
+  enthält. Kein Kommando findet sie; `ingest-a-mail-folder.md` gibt eine
+  rekursive SQL-Abfrage, gegen die Testcontainer geprüft. Eine Mail, die sie
+  nach der Tilgung erneut weiterleitet, findet auch die Abfrage nicht mehr,
+  nur die notierte Adresse der Rohmail über `event_blob` (Endprüfung Doku,
+  Befund I1, P-PI).
 - Zitate in Antworten überleben eine Tilgung: wer den Inhalt einer Mail
   tilgen muss, tilgt auch die Antworten, die sie zitieren. Kein Kommando
   findet sie; `ingest-a-mail-folder.md` gibt eine SQL-Abfrage über
@@ -416,7 +424,9 @@ Spec der Pilot-Einheit 1 mit Abschnitt, **P-PI** ihr Ausführungsprotokoll
   (`a<b and c>d` wird `a**d`); benannt (ruling T2-g der Aufnahme, P-PI).
 - Eine kaputte Adressliste bildet ab, so weit der Parser kommt; die übrigen
   Adressen fehlen in `channel_identities` und stehen nur in `headers` und der
-  Rohmail; benannt (ruling T2-g der Aufnahme, P-PI).
+  Rohmail; benannt (ruling T2-g der Aufnahme, P-PI). Eine Kopfzeile, an der
+  der Parser wirft (`To: a@example.org, "`), trägt seit der Fixwelle keine
+  Adresse bei, statt die ganze Mail unlesbar zu machen.
 - Undurchsichtig signiertes S/MIME (`smime-type=signed-data`) liest sich als
   `no readable body: attachments only`, der signierte Inhalt ist ein Anhang;
   benannt (ruling T2-g der Aufnahme, P-PI).
@@ -451,6 +461,25 @@ Spec der Pilot-Einheit 1 mit Abschnitt, **P-PI** ihr Ausführungsprotokoll
 - Die Meldungen der Varianten eines schon angefügten Stapels gehen verloren,
   wenn ein späterer Stapel desselben Laufs abbricht; die Varianten selbst
   stehen im Log (P-PI, Aufgabe 5).
+- Der erste Lauf über einen großen Ordner kommt über seine Suche nicht
+  hinaus: `UID SEARCH UID 1:*` kommt als eine Zeile zurück, und `imaplib`
+  weist eine Zeile über 1.000.000 Bytes ab (`_MAXLINE`, Python 3.14.3); bei
+  etwa 7 Bytes je UID sind das rund 140.000 Mails, und jeder erste Lauf endet
+  mit `refused a command: got more than 1000000 bytes`. Der Pilotordner ist
+  kuratiert; eine Suche in UID-Bereichen, etwa zu 50.000, höbe die Grenze auf
+  (Endprüfung Code, Befund M-3, P-PI).
+- Eine Antwort auf `FETCH`, die `OK` ist und in der der Parser kein Literal
+  `BODY[] {n}` findet, gilt als gelöschte Mail: sie wird übergangen, und die
+  Position der nächsten trägt das Wasserzeichen still an ihr vorbei. RFC 3501
+  erlaubt `BODY[]` auch als Zeichenkette in Anführungszeichen; Dovecot,
+  Gmail, Exchange und GreenMail senden ein Literal. Laut machen hieße: bei
+  `OK` ohne Körper mit `UID SEARCH UID <n>` nachsehen und sonst `ImapError`
+  werfen (Endprüfung Code, Befund M-4, P-PI).
+- 18 Adressen unter `example.at` und 4 unter `example.de` in den Testmails
+  sind keine reservierten Namen (RFC 2606 reserviert `example.com`, `.net`,
+  `.org` und die Endung `.example`), und `example.de` ist vergeben. Es wird
+  nichts gesendet; sie zu ändern änderte die Bytes der Testmails und jeden
+  Hash, der an ihnen hängt (Endprüfung Code, Befund M-5, P-PI).
 
 ### Nextcloud-Ordner (Pilot, Einheit 7)
 
@@ -490,14 +519,6 @@ Spec der Pilot-Einheit 1 mit Abschnitt, **P-PI** ihr Ausführungsprotokoll
   Wheel des Laufs wäre die Alternative, mit dem Preis, dass es nicht beweist,
   dass das Paket auf PyPI installierbar ist (AL §5, §12 Punkt 2;
   `delivery.md`).
-- Der Name `previously` auf PyPI ist erst belegt, wenn das erste Release
-  veröffentlicht ist (AL §12 Punkt 6). Mit ihm steht Bedingung 8 der Abnahme
-  aus, nach dem Merge vom Betreuer: der erste Lauf auf `main` legt eine
-  Entwicklungsversion auf Test-PyPI, das Release `v0.1.0a1` Paket und Image
-  für beide Plattformen, und das Paket auf `ghcr.io` wird einmal öffentlich
-  gestellt. Den Probelauf vor dem Merge, den AL §10 Punkt 7 vorsah, gibt es
-  nicht: GitHub startet einen Workflow von Hand nur aus einer Datei auf dem
-  Standardzweig; `cut-a-release.md` sagt es (Plan, Entscheidung 1).
 - Nichts prüft, dass die gebaute Version dem Tag gleicht. Ein Tag mit
   führender Null (`v1.02.3`) besteht die Tag-Prüfung und endet mit einer
   Version auf PyPI ohne Image; zwei Tags auf einem Commit (rc und final)
@@ -774,6 +795,16 @@ Spec der Pilot-Einheit 1 mit Abschnitt, **P-PI** ihr Ausführungsprotokoll
 
 ## Erledigt, seit es auf einer Liste stand
 
+- ~~Der Name `previously` auf PyPI ist erst belegt, wenn das erste Release
+  veröffentlicht ist~~ (AL §12 Punkt 6), und mit ihm ~~Bedingung 8 der
+  Abnahme~~ — Release `v0.1.0a1` vom 2026-10-05, Tag auf Commit `fd3e17f`:
+  `previously 0.1.0a1` auf PyPI, die Entwicklungsversion `0.1.dev193` auf
+  Test-PyPI, `ghcr.io/jensens/previously:0.1.0a1` für `linux/amd64` und
+  `linux/arm64`, ohne Anmeldung abrufbar; nachgesehen am 2026-10-06 über die
+  JSON-Schnittstellen von PyPI und Test-PyPI und das Manifest auf `ghcr.io`.
+  Den Probelauf vor dem Merge, den AL §10 Punkt 7 vorsah, gab es nicht:
+  GitHub startet einen Workflow von Hand nur aus einer Datei auf dem
+  Standardzweig; `cut-a-release.md` sagt es (Plan, Entscheidung 1).
 - Der äußere Anker (1a §12; 1b §10 Punkt 1) — PR #2.
 - `LogStore[Conn]` als Protokoll in `contract`, beide import-linter-Ausnahmen
   entfallen (1a §12) — Stufe 1b.
