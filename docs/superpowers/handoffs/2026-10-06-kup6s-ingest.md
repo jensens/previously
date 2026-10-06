@@ -36,7 +36,7 @@ Whoever administers that Mailu creates the user; if that's you, the maintainer w
 **Why:** the password that kup6s holds opens that one mailbox and nothing else.
 A leaked secret then exposes the mail somebody chose to put into the log, not everybody's mail.
 
-The password has to be ASCII: the IMAP login can't carry any other character, and `previously` refuses one with a sentence rather than sending it.
+The password has to be ASCII: `previously` sends the login in ASCII only, through Python's `imaplib`, and refuses any other character with a sentence rather than sending it.
 
 ## The secret of the folder
 
@@ -82,7 +82,9 @@ previously project
 ```
 
 `project` after `ingest`, so that the chronicle shows the new mail at once; the `project` CronJob of the first handoff stays as it is, and the two may run side by side.
-The image has `/bin/sh` for running the two in one container, or run them as two containers of the job, `ingest` first.
+Run `ingest` as an init container of the job and `project` as its container: the regular containers of a pod start together, and only an init container runs first.
+With the image's entrypoint, `previously`, each runs as process 1 of its container and ends on `SIGTERM` with `143`.
+Running both in one container takes the entrypoint set to `/bin/sh` and `sh -c 'previously ingest imap && exec previously project'`; a `SIGTERM` during the ingest then reaches the shell and not `previously`, and the pod ends when its grace period does, which loses nothing either.
 
 `ingest imap` prints one line to standard output and returns `0` when the run went through:
 
@@ -91,9 +93,18 @@ imap: 5 appended, 0 known, 0 variants, up to uid 4
 ```
 
 `appended` counts the events this run wrote, `known` the ones the log already held, and `variants` the mails that came under a known Message-ID with another content; each variant also prints one line to standard error, `variant of <message-id>: event <id>`.
-It returns `2` on any error, with one sentence on standard error: a missing setting, a server that can't be reached or refuses the login or the folder, a connection that broke off, or an error of the database or the bucket.
-**Alarm on `2`**, and pass every line of standard error on to whoever reads the alarm; a variant is no error and returns `0`.
-`docs/reference/cli.md` lists every sentence.
+**Alarm on any exit code but `0`**, a failed Job, and pass every line of standard error on to whoever reads the alarm; a variant is no error and returns `0`.
+The codes mean:
+
+| Code | Meaning |
+|---|---|
+| `2` | `previously` refused, with one sentence on standard error: a missing setting, a server that can't be reached or refuses the login or the folder, a connection that broke off, an error of the database or the bucket, or a batch the log refuses. |
+| `1` | An unexpected failure: an exception `previously` doesn't know, with a stack trace on standard error. |
+| `137` | Killed, such as by the kernel at the memory limit below. |
+| `143` | Stopped with `SIGTERM`, such as at the deadline of the Job. |
+
+Two refusals with `2` come back at every run until the mail that causes them leaves the folder: a mail that makes more than 500 events with the mails attached to it, and a variant key the log already holds with another content, which takes two artifact hashes that share their first 64 bits.
+`docs/reference/cli.md` lists every sentence of `2`.
 
 **Why `Forbid` and why a failure costs nothing:** a run moves its position in the folder only after the events it covers are in the log, so a run that fails, is stopped, or runs out of time leaves the position where the last finished batch left it.
 The next run fetches the rest again, finds the blobs already in the bucket and the events in the log, and writes nothing twice.
@@ -108,7 +119,7 @@ A socket operation that waits longer than 60 seconds ends the run with `2`, so a
 A mail is taken in one at a time, and its raw bytes, its mapping and its blobs are what the run holds, so the peak follows the largest mail and not the number of mails.
 Mailu accepts mails up to 50 MB by default.
 
-Measured on 2026-10-06 in an image built from this branch, with `previously ingest imap` against a test server, invented mails of 49.5 MiB with an attachment of 36.2 MiB and of 27.4 MiB with one of 20 MiB, and `--memory 768m`, two runs each:
+Measured on 2026-10-06 in an image built from this branch, with `previously ingest imap` against a test server, invented mails of 49.5 MiB with an attachment of 36.2 MiB and of 27.4 MiB with one of 20 MiB, two runs each, with `--memory 768m` except for one of the two runs of a single 49.5 MiB mail, which ran with `--memory 512m`:
 
 | Mails in the run | Resident peak of the process | `memory.peak` of the container |
 |---|---|---|
@@ -117,7 +128,7 @@ Measured on 2026-10-06 in an image built from this branch, with `previously inge
 | 1 of 27.4 MiB | 335 to 336 MiB | 316 to 317 MiB |
 | 6 of 27.4 MiB | 335 to 336 MiB | 317 to 318 MiB |
 
-The container ran with `/tmp` as a `tmpfs`, which counts against the limit, so the numbers include the temporary file below.
+The container ran with `/tmp` as a `tmpfs`, which counts against the limit, so `memory.peak` includes the temporary file below; the resident peak of the process doesn't.
 A limit of 512 MiB still passed the mail of 49.5 MiB, with `memory.peak` at 511 MiB, which is too close to call a margin.
 
 The image sets `MALLOC_MMAP_THRESHOLD_=131072`, glibc's default, fixed; without it, the peak grows with the number of large mails in one run, by about 25 MiB for three or six mails of 27.4 MiB in this image, and by more on other versions of glibc.
@@ -140,7 +151,7 @@ Nothing inbound.
 ## The first run takes in the real folder
 
 The maintainer runs the first ingest of a real customer folder **here**, not on his own machine.
-His local runs are rehearsals: he discards that database and that bucket afterwards, and the lasting log begins in kup6s, by reading the folder from the start.
+His local runs are rehearsals: he discards that database and that bucket afterward, and the lasting log begins in kup6s, by reading the folder from the start.
 Reading a folder is idempotent, so nothing about the rehearsal carries over or gets in the way.
 
 Before the first run, the restore probe and the backup of the identity of the first handoff should stand: from this run on, the database holds real mail, which has no other copy in the log's form.
@@ -158,7 +169,7 @@ Whatever retention you set for the mail server's backups, tell the maintainer.
 
 1. The migration job of the release reports `0005_watermark`.
 2. The secret of the folder exists and only the ingest job mounts it; the job has no identity.
-3. The first run exits `0`, with an `appended` count equal to the events the folder's mails make: the mails, plus one for each mail attached as a mail.
+3. The first run exits `0`, with an `appended` count of at most the events the folder's mails make: the mails, plus one for each mail attached as a mail, down to five levels; a copy of a mail already counted is `known` instead.
 4. The second run exits `0` and reports `0 appended`.
 5. In the tools pod, `previously chronicle` shows the mails with their subjects, and `previously blob get` fetches the raw mail of one of them, whose address `previously show <id>` prints as its first `blob` line.
 6. The flags of the mails in the folder are as they were: nothing in it was marked as read.

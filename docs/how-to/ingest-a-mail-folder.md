@@ -11,7 +11,7 @@ You need a database that `previously migrate` has brought up to date, and a blob
 ## Create a mailbox of its own
 
 In the Mailu admin interface, add a user to your mail domain for Previously alone, such as `previously@example.org`.
-Give it a password of its own, in ASCII characters: the IMAP login can't carry any other.
+Give it a password of its own, in ASCII characters: `previously` sends the login in ASCII only, and refuses any other character.
 
 A mailbox of its own means that the password Previously holds opens that one mailbox and nothing else.
 It also keeps the folder apart from anything a person reads and files every day.
@@ -90,13 +90,14 @@ The line on standard output counts events, not mails:
 The command returns 0 when the run went through and 2 when it couldn't, with one sentence on standard error.
 If the sentence names the login, check the user and the password; if it names the folder, check its name.
 {ref}`cli-reference` lists every error.
+Any other code means the run didn't end on its own terms: 137 when the memory limit killed the run, 143 when something stopped it, and 1 with a stack trace for an error `previously` doesn't know.
 After an error, run the command again once the cause is gone: the run moves its watermark only past what it appended, and nothing gets taken in twice.
 
 ## Run it on a schedule
 
 Run `ingest imap` and then `project` every 5 to 15 minutes, and never two runs of `ingest imap` at once.
 
-On a host with Docker, put the settings into a file that only root can read, such as `/etc/previously/ingest.env`, one `NAME=value` per line, and add a line like this one with `crontab -e`, as root:
+On a host with Docker, put the settings into a file that only root can read, such as `/etc/previously/ingest.env`, one `NAME=value` per line and without quotes, since `--env-file` takes a value as it stands, and add a line like this one with `crontab -e`, as root:
 
 ```text
 */10 * * * * flock -n /run/previously-ingest.lock sh -c 'docker run --rm --memory 768m --network previously-blobs --env-file /etc/previously/ingest.env ghcr.io/jensens/previously:VERSION ingest imap && docker run --rm --network previously-blobs --env-file /etc/previously/ingest.env ghcr.io/jensens/previously:VERSION project'
@@ -113,25 +114,68 @@ In Kubernetes, the platform's operators build the same as a CronJob with `concur
 
 Erase a mail with `previously redact event`, never with `redact units`.
 The subject stands in `headers` in the payload, the raw mail is a blob, and the artifact hash in the payload is unsalted, so it confirms a short text that somebody guesses; only an erasure of the event takes all three.
-Follow {ref}`erase-something` for the reason, the record, and the check afterward, and erase these as well:
+Follow {ref}`erase-something` for the reason, the record, and the check afterward.
 
-- **Every mail inside it.**
-  A mail forwarded as an attachment is an event of its own, and its raw bytes are the attachment of the outer mail.
-  Find the events whose payload names the outer mail's `external_id` under `forwarded_in`, such as with `psql`:
+A mail stands in more events than its own, and each of them holds its words:
 
-  ```sql
-  SELECT id FROM event WHERE payload ->> 'forwarded_in' = 'fwd-20261008@example.org';
-  ```
+- **Its variants.**
+  A mail that arrived again under its Message-ID with another content, such as a copy from a mailing list with a footer, is an event of its own under `<Message-ID>#<16 hexadecimal characters>`, with a raw mail of its own.
+- **Every mail inside it, at every depth.**
+  A mail forwarded as an attachment is an event of its own, and so is a mail attached to that one.
+- **Every mail it lies inside.**
+  A mail that carried it as an attachment holds it whole, in its own raw mail and as the attachment, and so does a mail that carried that one.
+  That mail is somebody's forward, with words of its own; if you keep it, the erased mail stays in the store inside it.
 
-  `redact` names the blob that another event still uses, and the event:
+This query lists every one of them for a Message-ID, with the variants and the mails inside a mail it found, and the mails that carry any of them, at every depth.
+Put the Message-ID into its second line, without angle brackets, and run it with `psql` against the database:
 
-  ```console
-  $ previously redact event 4 --reason "the customer withdrew the forwarded invoice"
-  redacted by event 6
-  blob 90f565d149463d629a8565bab0b4b595ce8bfae14e4415059ee60ca22da4e1d4 stays in the store: event 5 still uses it
-  $ previously redact event 5 --reason "the customer withdrew the forwarded invoice"
-  redacted by event 7
-  ```
+```sql
+WITH RECURSIVE
+  given(message_id) AS (VALUES ('invoice-2026-10@example.com')),
+  inside(id) AS (
+    SELECT key.event_id FROM source_key AS key, given
+    WHERE key.source = 'email' AND key.external_id = given.message_id
+    UNION
+    SELECT other.event_id
+    FROM inside
+    JOIN source_key AS key ON key.event_id = inside.id
+    JOIN source_key AS other ON other.source = 'email'
+    JOIN event ON event.id = other.event_id
+    WHERE event.payload ->> 'forwarded_in' = key.external_id
+       OR left(other.external_id, length(key.external_id) + 1) = key.external_id || '#'
+  ),
+  around(id) AS (
+    SELECT id FROM inside
+    UNION
+    SELECT carrier.event_id
+    FROM around
+    JOIN event ON event.id = around.id
+    JOIN event_blob AS carrier ON carrier.sha256 = decode(event.payload ->> 'raw', 'hex')
+    WHERE carrier.event_id <> event.id
+  )
+SELECT around.id, key.external_id,
+       CASE WHEN around.id IN (SELECT id FROM inside) THEN 'the mail, a variant, or inside'
+            ELSE 'carries one of them' END AS why,
+       event.payload ->> 'raw' AS raw
+FROM around
+JOIN event ON event.id = around.id
+JOIN source_key AS key ON key.event_id = around.id
+ORDER BY around.id;
+```
+
+For the forwarded invoice of the example above, it lists event 5, the invoice, and event 4, the mail that forwarded it.
+Note the `raw` addresses in your record, then erase every event the query lists.
+`redact` names a blob that another event still uses, and the event:
+
+```console
+$ previously redact event 5 --reason "the customer withdrew the forwarded invoice"
+redacted by event 6
+blob 90f565d149463d629a8565bab0b4b595ce8bfae14e4415059ee60ca22da4e1d4 stays in the store: event 4 still uses it
+$ previously redact event 4 --reason "the customer withdrew the forwarded invoice"
+redacted by event 7
+```
+
+Then erase these as well:
 
 - **The replies that quote it.**
   A reply usually quotes the mail it answers, and the quote stays in the reply after the mail is erased.
@@ -157,3 +201,8 @@ A restore of the database to a point before the mail was taken in forgets the ke
 
 An erasure holds for the event, not for the content.
 When somebody forwards an erased mail again as an attachment, its key is known and nothing of it becomes an event again, but its bytes come back into the store as the attachment of the new mail, and the new mail may quote it: erase the new mail as well.
+The query above no longer finds it, since the erasure took the payload that names the raw mail; the new mail's attachment has the address you noted, and this finds the events that name it:
+
+```sql
+SELECT event_id FROM event_blob WHERE sha256 = decode('RAW-ADDRESS-YOU-NOTED', 'hex');
+```

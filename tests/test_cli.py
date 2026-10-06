@@ -3799,8 +3799,9 @@ def test_ingest_imap_refuses_a_wrong_password_without_printing_it(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """One sentence, exit code 2, and the password in neither stream: a
-    password the server refuses, and one with a character the IMAP login
-    cannot carry, which `imaplib` would otherwise end in a stack trace."""
+    password the server refuses, and one with a character beyond ASCII,
+    which `imaplib` writes the login in and would otherwise end in a stack
+    trace."""
     password = f"wrong-{secrets.token_hex(8)}{tail}"
     monkeypatch.setenv("PREVIOUSLY_IMAP_PASSWORD", password)
     assert main(["ingest", "imap"]) == 2
@@ -3810,7 +3811,7 @@ def test_ingest_imap_refuses_a_wrong_password_without_printing_it(
     if tail:
         assert err == (
             f"Error: the login of pilot at the IMAP server {server} holds a character other "
-            "than ASCII, which the IMAP login cannot carry\n"
+            "than ASCII, and previously sends the login in ASCII only\n"
         )
     else:
         assert err == f"Error: the IMAP server {server} refused the login of pilot\n"

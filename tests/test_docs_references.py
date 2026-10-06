@@ -23,6 +23,7 @@ nothing but a check can tell which. `.importlinter` had carried one since
 stage 1b with no gate in sight.
 """
 
+from previously.core.errors import ArtifactChanged
 from typing import cast
 from typing import TYPE_CHECKING
 
@@ -480,7 +481,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     unfinished redaction against the messages `cli.py` raises as
     `PreviouslyError` or `InvalidPayload` and `core/blob.py` raises as
     `BlobError`;
-    the refused port of `ingest imap` against `cli.py`, its seven errors
+    the refused port of `ingest imap` against `cli.py`, its twelve errors
     against the messages `connectors/imap.py` raises as `ImapError`, and
     its line on standard output against the f-string `cli.py` prints it
     with;
@@ -632,12 +633,8 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         "PreviouslyError",
     )
     quoted_imap = _quoted_block(page, "Errors of the IMAP server and of the connection")
-    assert len(quoted_imap) == 7, quoted_imap
-    _assert_raised(
-        quoted_imap,
-        _raised_patterns(ROOT / "src" / "previously" / "connectors" / "imap.py", "ImapError"),
-        "ImapError",
-    )
+    assert len(quoted_imap) == 12, quoted_imap
+    _assert_raised(quoted_imap, _imap_errors(), "ImapError")
     counts = _quoted_block(page, "`ingest imap` prints one line to standard output")
     assert len(counts) == 1, counts
     said = [
@@ -704,6 +701,48 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
             f"cli.md quotes the blob finding {matched[1]!r} and `_blob_reason` returns "
             "no such reason. Either the code's wording changed, or the page's did."
         )
+
+
+def _imap_errors() -> list[list[str]]:
+    return _raised_patterns(ROOT / "src" / "previously" / "connectors" / "imap.py", "ImapError")
+
+
+def test_the_reference_quotes_every_error_of_ingest_imap() -> None:
+    """Two pages promise that `cli.md` lists every error of `ingest imap`,
+    so every sentence the connector raises as `ImapError` is quoted there —
+    the direction from the code to the page, which the test above does not
+    take. Five were missing until the fix wave of 2026-10-06.
+
+    The two refusals of the log that come back at every run are held as
+    well: the batch that is too large against what `core/append.py` raises
+    as `BatchTooLarge`, and the variant key held with another content by
+    raising `ArtifactChanged` with the hashes the page shows, two that share
+    their first 64 bits."""
+    page = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
+    quoted = [
+        line.partition(": ")[2]
+        for line in _quoted_block(page, "Errors of the IMAP server and of the connection")
+    ]
+    for parts in _imap_errors():
+        assert any(_is_the_same_sentence(parts, line) for line in quoted), (
+            f"connectors/imap.py raises {parts!r} as `ImapError` and cli.md quotes no "
+            "such error. Quote it among the errors of the IMAP server."
+        )
+
+    variant, batch = _quoted_block(page, "Two refusals of the log come back at every run")
+    _assert_raised(
+        [batch],
+        _raised_patterns(ROOT / "src" / "previously" / "core" / "append.py", "BatchTooLarge"),
+        "BatchTooLarge",
+    )
+    shared = bytes.fromhex("afe0b335e95e6b9e")
+    refused = ArtifactChanged(
+        "email",
+        "20261005101500.4711@example.net#afe0b335e95e6b9e",
+        known=shared + bytes(24),
+        arrived=shared + bytes([0xFF] * 24),
+    )
+    assert variant == f"Error: {refused}", variant
 
 
 def test_the_reference_quotes_the_refusal_by_type_name() -> None:

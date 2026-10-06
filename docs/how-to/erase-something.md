@@ -16,7 +16,7 @@ Pick the smallest target that holds everything that has to go:
   Units can be erased only at events in hash format 2; for an older event, `previously redact units` refuses and names `previously redact event` instead.
 - If it's an attached file that has to go wherever it's attached, erase the **blob**.
 - If it's a mail that `previously ingest imap` took in, erase the **event**, never its units: the subject stands in the payload too, the raw mail is a blob, and the payload's artifact hash confirms a short text that somebody guesses.
-  {ref}`ingest-a-mail-folder` says what else to erase with it: the mails inside it, the replies that quote it, and the mail in its folder.
+  {ref}`ingest-a-mail-folder` says what else to erase with it, and gives the query that finds most of it: its variants under the same Message-ID, the mails inside it at every depth, the mails that carried it as an attachment, the replies that quote it, and the mail in its folder.
 
 Find the event's `id`, the `seq` of each unit, and the address of each blob with `previously show`.
 

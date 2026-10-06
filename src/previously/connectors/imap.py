@@ -153,7 +153,7 @@ class ImapConnector:
                 # in the password would otherwise end in a stack trace.
                 raise ImapError(
                     f"the login of {self._user} at the IMAP server {self._server} holds a "
-                    "character other than ASCII, which the IMAP login cannot carry"
+                    "character other than ASCII, and previously sends the login in ASCII only"
                 ) from None
 
     def _open(self, imap: imaplib.IMAP4_SSL) -> str:

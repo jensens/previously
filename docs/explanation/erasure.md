@@ -116,7 +116,7 @@ Only an erasure of the event takes it.
 
 For a mail, the contract of the connectors has settled what stands where, and the answer makes erasing units the wrong tool.
 The text of the body stands in the units alone, but the subject stands in the payload as well, among the headers, the raw mail is a blob that holds every word, and the artifact hash is unsalted.
-Erasing a mail therefore means erasing its event; {ref}`connectors` explains why each of the three is where it is.
+Erasing a mail therefore means erasing its event; {ref}`mail-mapping` says where each of the three stands, and {ref}`connectors` explains why the raw mail is a blob and the artifact hash has no salt.
 
 Erasing all of them has a cost of its own, and version 1 carries it beside its unsalted digests.
 Once every text is gone, nothing is left to recompute the units digest from, so the check computes nothing for the units of that event.
@@ -207,6 +207,8 @@ Whoever has to erase the content of a mail erases those replies as well.
 They name the mail they answer in their `In-Reply-To` and `References` headers, which is how they can be found, and a reply that quotes without naming can't be found that way.
 
 **An erasure holds for the event, not for the content.**
+The same content stands in every event whose raw mail or attachment holds it: a variant of the mail under its Message-ID, with a raw mail of its own, and every mail that carried it as an attachment, whose raw mail holds it whole.
+Erasing the one event leaves the others, and their blobs with them; no command finds them, and {ref}`ingest-a-mail-folder` gives a query that does.
 A mail forwarded as an attachment is an event of its own, keyed by its Message-ID, and its key stays known after an erasure, so it isn't written again.
 But the forwarding mail is a new event, and the forwarded bytes are its attachment: they go into the store again, by the rule of *When a blob has to lie in the store* above, for a content that arrives again at a new event.
 

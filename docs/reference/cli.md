@@ -54,7 +54,7 @@ Error: database schema incomplete — `previously migrate` has not run yet
 |---|---|---|---|
 | `migrate` | The schema stands at the newest revision, whether `migrate` ran a migration or found it up to date. | Not used. | The database is at a revision this version doesn't know, the database refused to let the role read the revision or apply a migration, or storage raised an error. |
 | `append` | The event was recorded, or an event with the same `--source` and `--external-id` and the same content already existed. | Not used. | The input was invalid, an event with the same `--source` and `--external-id` holds another content, an attachment couldn't be read, a blob setting is missing or invalid, or storage or the blob store raised an error. |
-| `ingest` | The run went through, with or without variants. | Not used. | A setting is missing or invalid, the IMAP server couldn't be reached, refused a step or broke the connection off, or storage or the blob store raised an error. |
+| `ingest` | The run went through, with or without variants. | Not used. | A setting is missing or invalid, the IMAP server couldn't be reached, refused a step or broke the connection off, the log refused a batch, for a mail with more than 500 events or a variant key held with another content (see {ref}`mail-mapping`), or storage or the blob store raised an error. |
 | `redact` | The redaction was recorded and carried out, or the target was already covered by one, every blob it made obsolete is gone from the blob store, and every projection stands at the tip of the log. | Not used. | The input was invalid, the redaction was refused, storage raised an error, or after the redaction was recorded a blob couldn't be deleted or the projections couldn't be caught up. |
 | `log` | The log was printed. | Not used. | The input was invalid, or storage raised an error. |
 | `verify` | The chain has no finding, every anchor holds, and with `--blobs` no blob has a finding. | The chain, an anchor or, with `--blobs`, a blob has at least one finding. | The input was invalid, a blob setting is missing or invalid, an identity file can't be read, or storage or the blob store raised an error. |
@@ -185,7 +185,8 @@ An event without `--attach` carries no key `blobs`, and a payload must not carry
 
 ## `ingest`
 
-Takes in the mail an IMAP folder holds above the watermark of the last run; see {ref}`artifact-identity`.
+Takes in the mail an IMAP folder holds above the watermark of the last run.
+{ref}`mail-mapping` says what a mail turns into, {ref}`artifact-identity` how a sighting is told from a changed mail, and {ref}`connectors` why.
 It has one form, and takes no arguments:
 
 ```text
@@ -238,16 +239,32 @@ Errors of the IMAP server and of the connection print one sentence to standard e
 Error: cannot connect to the IMAP server mail.example.org:993: Connection refused
 Error: the certificate of the IMAP server mail.example.org:993 does not verify: self-signed certificate
 Error: the IMAP server mail.example.org:993 refused the login of pilot
-Error: the login of pilot at the IMAP server mail.example.org:993 holds a character other than ASCII, which the IMAP login cannot carry
+Error: the login of pilot at the IMAP server mail.example.org:993 holds a character other than ASCII, and previously sends the login in ASCII only
 Error: the IMAP server mail.example.org:993 refused to open the folder 'Kunde Müller' of pilot: EXAMINE failed. No such mailbox
+Error: the IMAP server mail.example.org:993 names no UIDVALIDITY for the folder 'Kunde Müller'
+Error: the IMAP server mail.example.org:993 refused the search in the folder 'Kunde Müller': SEARCH failed
+Error: the IMAP server mail.example.org:993 refused to fetch uid 7 from the folder 'Kunde Müller': FETCH failed
+Error: the IMAP server mail.example.org:993 gave uid 7 the INTERNALDATE '31-Okt-2026 10:00:00 +0000', which is not a date
+Error: the IMAP server mail.example.org:993 refused a command: got more than 1000000 bytes
 Error: the connection to the IMAP server mail.example.org:993 broke off
 Error: the connection to the IMAP server mail.example.org:993 broke off: The read operation timed out
 ```
 
 No message names the password.
 A refused login quotes nothing of the server's answer, and a connection that broke off quotes the reason of the system, never what the server sent, which can be mail.
-A refusal to open the folder quotes the server's reason.
+A refusal to open the folder, to search it or to fetch a mail quotes the server's reason, and so does a command the server answers in a way Python's `imaplib` refuses, such as a line longer than 1,000,000 bytes.
+An `INTERNALDATE` that isn't a date in the form of RFC 3501 is quoted as the server wrote it.
 On every error, the watermark stands where the last appended batch left it, and the next run fetches the rest again; a blob stored for a batch that wasn't appended stays in the store, and that run finds it there.
+
+Two refusals of the log come back at every run until the mail that causes them leaves the folder; {ref}`mail-mapping` describes both:
+
+```text
+Error: email/20261005101500.4711@example.net#afe0b335e95e6b9e is known with another content (artifact afe0b335e95e6b9e ≠ afe0b335e95e6b9e)
+Error: 501 events in one transaction, 500 are allowed — larger batches starve against small submissions
+```
+
+The first is a variant key the log already holds with another content, which takes two artifact hashes that share their first 64 bits, so the message shows the same 16 characters twice.
+The second is a mail that makes more than 500 events together with the mails attached to it.
 
 ## `redact`
 

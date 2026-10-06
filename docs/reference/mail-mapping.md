@@ -108,7 +108,7 @@ The artifact hash is the SHA-256 of the canonical form of this document, compute
 |---|---|
 | `subject` | The value of the first `Subject` header as `headers` holds it, decoded and unfolded; `null` when there's none, `""` when it's empty. |
 | `body` | For each body part, in order, the SHA-256 in hexadecimal of its bytes after the transfer encoding is undone and before they're read as text, with every line ending as LF. |
-| `attachments` | For each attachment, the SHA-256 in hexadecimal of its bytes after the transfer encoding is undone, sorted. Bytes that travelled as lines, without a transfer encoding or with `7bit`, `8bit` or `quoted-printable`, enter with every line ending as LF; bytes in `base64` or `binary` enter as they are. |
+| `attachments` | For each attachment, the SHA-256 in hexadecimal of its bytes after the transfer encoding is undone, sorted. Bytes that traveled as lines, without a transfer encoding or with `7bit`, `8bit` or `quoted-printable`, enter with every line ending as LF; bytes in `base64` or `binary` enter as they are. |
 
 Two mails with the same subject, the same body parts and the same attachments have the same artifact hash, whatever their other headers.
 A copy whose line endings are LF where the server's are CRLF, such as a mail saved as an `.eml` file, has the same artifact hash too.

@@ -74,8 +74,8 @@ The payload carries the transport.
 The same mail fetched from two mailboxes has other `Received` headers, and the same mail saved on a Unix machine has other line endings; by the rule that made a source key, both are one mail.
 An identity over the payload would make them two.
 
-So the connector decides what counts, and writes it on its reference page.
-For a mail it's the decoded subject, the bytes of each body part after the transfer encoding and before any conversion into text, and the bytes of every attachment, with line endings made equal where the bytes travelled as lines.
+So whoever maps a source decides what counts, and writes it on the reference page of that mapping; for mail, that's `core.mail` and {ref}`mail-mapping`.
+For a mail it's the decoded subject, the bytes of each body part after the transfer encoding and before any conversion into text, and the bytes of every attachment, with line endings made equal where the bytes traveled as lines.
 That rule belongs to the project and not to a library.
 If a new version of a library decoded a part differently, the identity of every mail would change with it, and every sighting would become a variant; so `core.mail` takes the mail apart itself, with the standard library's `email` package, and the tests hold the rule.
 
