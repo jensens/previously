@@ -6,6 +6,7 @@ from datetime import datetime
 from datetime import UTC
 from mailserver import Relay
 from previously.cli import COMMANDS
+from previously.cli import escape_controls
 from previously.cli import escape_field
 from previously.cli import main
 from previously.cli import MAX_TEXT_BYTES
@@ -32,6 +33,7 @@ from typing import TYPE_CHECKING
 
 import hashlib
 import io
+import json
 import mailfiles
 import os
 import pytest
@@ -1100,6 +1102,79 @@ def test_escape_field_folds_tab_newline_return_and_backslash_into_two_characters
     """
     assert escape_field("a\tb\nc\rd\\e") == "a\\tb\\nc\\rd\\\\e"
     assert escape_field("plain") == "plain"
+
+
+# Terminal commands a stranger can write into a mail: an OSC sequence that
+# sets the window title, ended by BEL; a CSI sequence that turns text red,
+# once with ESC and `[`, once as the one C1 character U+009B; DEL.
+HOSTILE = "\x1b]0;Titel gesetzt\x07Rot: \x1b[31mja\x9b0m\x7f"
+HOSTILE_ESCAPED = "\\x1b]0;Titel gesetzt\\x07Rot: \\x1b[31mja\\x9b0m\\x7f"
+
+
+def _raw_controls(text: str) -> list[str]:
+    """Every control character in `text` but tab and line feed."""
+    return [c for c in text if (ord(c) < 0x20 and c not in "\t\n") or 0x7F <= ord(c) <= 0x9F]
+
+
+def test_escape_controls_writes_every_control_but_tab_and_line_feed_as_hex() -> None:
+    assert escape_controls(HOSTILE) == HOSTILE_ESCAPED
+    assert escape_controls("\x00\r\x1f\x80\x9f") == "\\x00\\x0d\\x1f\\x80\\x9f"
+
+
+def test_escape_controls_keeps_tab_line_feed_and_every_other_character() -> None:
+    """The control of the test above: text, tabs and line breaks pass."""
+    text = "Grüße\tan alle\nÄ € \xa0 \u2028 \\x1b"
+    assert escape_controls(text) == text
+
+
+def test_escape_field_writes_a_control_as_hex_and_stays_reversible() -> None:
+    """A control and the four characters it already escaped; a literal
+    backslash and `x1b` stay apart from an ESC."""
+    assert escape_field(HOSTILE) == HOSTILE_ESCAPED
+    assert escape_field("\\x1b\x1b\t") == "\\\\x1b\\x1b\\t"
+
+
+@pytest.mark.db
+def test_show_and_chronicle_print_no_control_of_a_unit_or_a_payload_raw(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mail puts what its sender wrote into the units and the payload:
+    `show` writes each control as `\\xNN` in a unit and as `\\u00NN` in the
+    JSON of the payload, and keeps a unit's line break; `chronicle` writes
+    each as `\\xNN`. The log holds the text unchanged."""
+    from sqlalchemy import Engine
+
+    assert isinstance(db, Engine)
+    _setup(db, monkeypatch)
+    storage = PostgresStorage(db)
+    moment = datetime(2026, 10, 6, 9, 0, tzinfo=UTC)
+    event = RawEvent(
+        source="email",
+        external_id="hostile@example.org",
+        occurred_at=moment,
+        evidence=Evidence.VERBATIM,
+        units=split_plaintext(f"{HOSTILE}\nzweite Zeile"),
+        payload={"headers": [["Subject", HOSTILE]]},
+    )
+    append(storage, [event], recorded_at=moment)
+
+    assert main(["show", "1"]) == 0
+    out = capsys.readouterr().out
+    assert _raw_controls(out) == []
+    assert f"  ¶1 {HOSTILE_ESCAPED}\nzweite Zeile\n" in out
+    (line,) = [line for line in out.splitlines() if line.startswith("payload=")]
+    assert json.loads(line.removeprefix("payload="))["headers"] == [["Subject", HOSTILE]]
+    assert "\\u001b]0;Titel gesetzt\\u0007" in line
+    assert "\\u009b0m\\u007f" in line
+
+    assert main(["project"]) == 0
+    capsys.readouterr()
+    assert main(["chronicle"]) == 0
+    out = capsys.readouterr().out
+    assert _raw_controls(out) == []
+    assert out.endswith(f"\temail\thostile@example.org\t{HOSTILE_ESCAPED}\\nzweite Zeile\n")
+    with storage.begin() as conn:
+        assert [unit.content for unit in storage.units(conn, 1)] == [f"{HOSTILE}\nzweite Zeile"]
 
 
 def _setup(db: object, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -3674,6 +3749,42 @@ def test_ingest_imap_names_each_variant_on_standard_error(
         "imap: 1 appended, 0 known, 1 variants, up to uid 5\n",
         "variant of 20261005101500.4711@example.net: event 6\n",
     )
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_escapes_a_control_in_the_message_id_of_a_variant(
+    imap: _Blobs, mail_server: MailServer, imap_folder: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The Message-ID is the sender's, raw ESC and BEL included; the line
+    that names the variant writes them as `\\xNN`."""
+    plain_id = b"<20261005101500.4711@example.net>"
+    hostile_id = b"<ein\x1b]0;Titel\x07@example.net>"
+    assert main(["ingest", "imap"]) == 0
+    capsys.readouterr()
+    mail_server.append(imap_folder, mailfiles.PLAIN.replace(plain_id, hostile_id))
+    mail_server.append(imap_folder, mailfiles.PLAIN_OTHER_BODY.replace(plain_id, hostile_id))
+    assert main(["ingest", "imap"]) == 0
+    assert capsys.readouterr() == (
+        "imap: 2 appended, 0 known, 1 variants, up to uid 6\n",
+        "variant of ein\\x1b]0;Titel\\x07@example.net: event 7\n",
+    )
+
+
+@pytest.mark.db
+def test_an_error_writes_a_control_in_the_key_it_quotes_as_hex(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ArtifactChanged` quotes the key, and the key of a mail is its
+    Message-ID; the `Error:` line writes a control in it as `\\xNN`."""
+    _setup(db, monkeypatch)
+    submit = ["append", "--source", "cli", "--external-id", "a\x1b[2Jb", "--text"]
+    assert main([*submit, "A"]) == 0
+    assert main([*submit, "B"]) == 2
+    err = capsys.readouterr().err
+    assert _raw_controls(err) == []
+    assert err.startswith("Error: cli/a\\x1b[2Jb is known with another content")
 
 
 @pytest.mark.db

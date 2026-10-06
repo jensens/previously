@@ -8,6 +8,7 @@ Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see
 `append --attach`, `ingest imap`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
 `ingest imap` alone reads the five `PREVIOUSLY_IMAP_*` settings.
 A missing setting is an input error that names the first variable missing, in the form `Error: PREVIOUSLY_BLOB_BUCKET is not set`.
+An error sentence prints every control character but a tab and a line feed as `\xNN`, such as `\x1b` for the escape character, because a key it quotes can be the Message-ID of a mail.
 A transaction the database aborts in a conflict with a concurrent one, a deadlock or a lock not granted in time, is a storage error with exit code 2, in the form `Error: the database aborted the operation in a conflict with a concurrent one; run the command again`.
 
 A message about the database names the database, the host and the port from `PREVIOUSLY_DSN`, and of the connection string nothing else, in its own words.
@@ -226,6 +227,8 @@ For each variant, one notice goes to standard error, with the Message-ID the var
 ```text
 variant of 20261005101500.4711@example.net: event 6
 ```
+
+The Message-ID is escaped the way `chronicle` escapes its fields.
 
 `ingest` doesn't catch the projections up; `previously project` does, and may run beside it.
 
@@ -564,6 +567,8 @@ For an erased payload it then prints `payload=<erased by event <id>>`, naming th
 Otherwise it prints `evidence=<verbatim|recollection>` when the payload carries the key `evidence`, and then `payload=<JSON object, with sorted keys>`.
 A redaction carries no `evidence`, so `show` prints no `evidence=` line for it.
 It then prints one line per unit, in `seq` order: `  ¶<seq> <content>`, or for a unit without content `  ¶<seq> <erased by event <id>>`, or `  ¶<seq> <erased>` when no redaction covers it.
+`content` keeps its tabs and line breaks, and prints every other control character as `\xNN`: the C0 controls, a carriage return among them, DEL, and the C1 controls from U+0080 to U+009F.
+In the payload, JSON writes the C0 controls as escape sequences itself, and `show` writes DEL and the C1 controls as `\u007f` to `\u009f`, so the line stays JSON with the same value.
 Last, it prints one line per reference in the payload's `blobs`, in their order: `  blob <sha256> <size> <media_type> <filename>`, with `-` for a reference without a file name.
 A reference that a redaction erased ends in ` <erased by event <id>>`, naming the earliest redaction that erased it.
 For an erased payload, the lines come from the redaction of the event instead, one per hash it names, as `  blob <sha256> <erased by event <id>>`; without a redaction, `show` prints no blob line.
@@ -675,6 +680,7 @@ Lines come out ordered by `occurred_at`, then `event_id`, then `seq`.
 
 Four characters print as two characters each, in every field and not in `content` alone: a tab as `\t`, a newline as `\n`, a carriage return as `\r`, and a backslash as `\\`.
 `source` and `external_id` carry whatever `append` was given, and a tab there would otherwise add a field and a newline would break the record in two.
+Every other control character prints as `\xNN`: the C0 controls, DEL, and the C1 controls from U+0080 to U+009F, such as `\x1b` for the escape character.
 The backslash is escaped first, so the escaping is reversible.
 The stored values are unchanged; the escaping is part of the output format.
 

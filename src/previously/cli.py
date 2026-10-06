@@ -69,6 +69,7 @@ import io
 import json
 import mimetypes
 import os
+import re
 import signal
 import ssl
 import sys
@@ -76,6 +77,7 @@ import tempfile
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from collections.abc import Sequence
     from previously.contract.blobs import BlobStore
     from previously.contract.blobs import KeyProvider
@@ -143,11 +145,53 @@ def escape_field(text: str) -> str:
     and two fields instead of one line with six, and `stats` printed six
     fields instead of five.
 
+    Every other control character comes out as `\\xNN` (`escape_controls`),
+    after the backslash, so the mapping stays reversible.
+
     Public rather than `_escape` because a test calls it directly, and a
     direct test earns a public name instead of a suppressed private-usage
     warning.
     """
-    return text.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
+    escaped = (
+        text.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
+    )
+    return escape_controls(escaped)
+
+
+# Every C0 control character but tab and line feed, DEL, and every C1
+# control character (U+0080 to U+009F).
+_CONTROLS = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+# What `json.dumps` leaves raw with `ensure_ascii=False`: it escapes every
+# character below U+0020 itself, DEL and C1 not.
+_JSON_CONTROLS = re.compile("[\x7f-\x9f]")
+
+
+def escape_controls(text: str) -> str:
+    """`text` with every control character but tab and line feed as `\\xNN`,
+    for output a person reads on a terminal.
+
+    Since `ingest`, what the reading commands print is written by strangers:
+    a subject, a mail's text, a Message-ID. A terminal takes ESC and its
+    sequences as commands: an OSC sequence such as `ESC]0;title BEL` sets
+    the window title, OSC 52 the clipboard, and `ESC[2J` clears the screen.
+    Measured on 2026-10-06, `show` printed both from a unit raw before this
+    function existed. C1 characters are the same commands in one character,
+    U+009B for `ESC[`, and DEL is no character to read. The log holds the
+    text unchanged.
+
+    Public because a test calls it directly, as for `escape_field`.
+    """
+    return _CONTROLS.sub(lambda match: f"\\x{ord(match.group()):02x}", text)
+
+
+def _json_line(payload: Mapping[str, object]) -> str:
+    """The payload as one line of JSON, with sorted keys, and DEL and the
+    C1 controls as `\\u00NN`, which is JSON for the same character: the line
+    stays valid JSON and says the same, and no control reaches a terminal
+    raw."""
+    line = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return _JSON_CONTROLS.sub(lambda match: f"\\u{ord(match.group()):04x}", line)
 
 
 def _plural(n: int, noun: str) -> str:
@@ -536,8 +580,10 @@ def _cmd_ingest(_args: argparse.Namespace) -> int:
         result = ingest(
             storage, storage, store, connector, recipient=recipient, recorded_at=datetime.now(UTC)
         )
+    # The Message-ID is the mail's, so it is escaped like a field of
+    # `chronicle`: one line per variant, and no control reaches the terminal.
     for message_id, event_id in result.variants:
-        print(f"variant of {message_id}: event {event_id}", file=sys.stderr)
+        print(f"variant of {escape_field(message_id)}: event {event_id}", file=sys.stderr)
     uid = "0" if result.position is None else result.position["uid"]
     print(
         f"imap: {result.appended} appended, {result.known} known, "
@@ -742,14 +788,16 @@ def _cmd_show(args: argparse.Namespace) -> int:
                 # `sort_keys` so the output is stable across runs: `payload`
                 # comes back out of jsonb, and the order of keys in jsonb is
                 # not the order they were written in.
-                print(f"payload={json.dumps(row.payload, ensure_ascii=False, sort_keys=True)}")
+                print(f"payload={_json_line(row.payload)}")
             for unit in storage.units(conn, row.id):
                 # An erased unit says so, like the payload above, rather than
                 # printing `None` where its text stood.
                 content = unit.content
+                # A unit keeps its line breaks here, unlike in `chronicle`,
+                # and loses every other control character (`escape_controls`).
                 if content is None:
                     content = _erased(index.of_unit(row.id, unit.seq))
-                print(f"  ¶{unit.seq} {content}")
+                print(f"  ¶{unit.seq} {escape_controls(content)}")
             for line in _blob_lines(row, index):
                 print(line)
             return 0
@@ -1292,7 +1340,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         # exceptions that `storage` does not know this branch deliberately does
         # not catch — they are to come through as a stack trace, not dressed up
         # as a one-liner.
-        print(f"Error: {error}", file=sys.stderr)
+        # The sentence can quote a key, and the key of a mail is the
+        # mail's Message-ID (`escape_controls`).
+        print(f"Error: {escape_controls(str(error))}", file=sys.stderr)
         return 2
     finally:
         signal.signal(signal.SIGTERM, previous)
