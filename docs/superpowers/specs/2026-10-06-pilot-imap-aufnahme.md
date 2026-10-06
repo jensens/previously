@@ -1,7 +1,23 @@
 # Previously — Pilot, Einheit 1: die Aufnahme aus einem IMAP-Ordner
 
+> **Eingefrorener Entwurfsbericht, Stand 2026-10-06.**
+> Dieses Dokument wird nicht mehr nachgezogen.
+> Es hält fest, **wie und warum** entschieden wurde, und bleibt dafür im
+> Repository. Die lebende Begründung steht in der Dokumentation unter
+> `docs/` — soweit sie dort steht; wo sie fehlt, ist dieses Dokument die
+> einzige Quelle. Weicht es von der Doku ab, gilt die Doku.
+>
+> Ein neuer Spec für eine neue Stufe entsteht wieder auf Deutsch — das ist
+> die Sprache, in der die Absicht formuliert wird. Er friert ein, sobald
+> seine Explanation-Seiten stehen. Das Einfrieren als **Ablauf**, und die
+> Karte von jedem zitierten Paragraphen zu seiner Seite, stehen in
+> [About the frozen design records](../../explanation/design-records.md).
+
 **Datum:** 2026-10-06
-**Status:** Entwurf, zur Durchsicht durch den Betreuer
+**Status:** eingefroren am 2026-10-06; zuvor Entwurf, vom Betreuer am
+2026-10-06 durchgesehen („passt so"), Grundlage des Plans
+`docs/superpowers/plans/2026-10-06-pilot-imap-aufnahme.md`; §3.2–§3.5 am
+selben Tag nach der Prüfung von Aufgabe 2 nachgezogen (Commit `5735843`)
 
 Detail-Spec für die erste Einheit des Piloten an einem echten Kunden. Setzt
 die Stufen 1a, 1b, den äußeren Anker, Stufe 1c und die Auslieferung voraus
@@ -597,8 +613,15 @@ Abgenommen ist die Arbeit mit dem Merge nach `main`.
 
 ## 11. Was offen bleibt
 
-Gepflegt, solange der Spec lebt; beim Einfrieren gehen die Punkte in die
-Landkarte.
+Gepflegt, solange der Spec lebte; beim Einfrieren am 2026-10-06 gingen die
+Punkte in die Landkarte (`docs/superpowers/landkarte.md`), jeder unter die
+Einheit, zu der er gehört, und dort leben sie weiter: Gmail und OAuth unter
+*Einwurf-Vertrag*, die Fundorte und die Fäden unter *Feststellungen und
+Entitäten*, `occurred_at` und die Variante unter *Projektionen*, das Objekt
+ohne Event unter *Blobs und Speicher*, die Textextraktion bei der
+Textextraktion aus Blobs, die Mails als Dateien unter *Nextcloud-Ordner
+(Pilot, Einheit 7)*, der Rest unter *Aufnahme aus IMAP (Pilot, Einheit 1)*.
+Die Liste hier ist der Stand dieses Tages.
 
 1. **Gmail und OAuth.** Ein Postfach bei Google Workspace braucht in der
    Regel `XOAUTH2`; der Konnektor nimmt dann ein Token statt eines Passworts.
