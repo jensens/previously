@@ -729,7 +729,8 @@ Spec der Pilot-Einheit 1 mit Abschnitt, **P-PI** ihr Ausführungsprotokoll
 - Der Testlauf ist mit Stufe 1c von rund 31 s auf 87 s gewachsen (`632 passed in 86.80s`, gemessen am 2026-10-05 nach der Endkorrektur): ein
   zweiter Container, und Tests, die wirklich hochladen (P-1c). Mit der
   Aufnahme kam ein dritter, GreenMail, und der Lauf steht bei fast drei
-  Minuten (`1045 passed in 161.14s`, im Tutorial getippt am 2026-10-06; P-PI).
+  Minuten (`1071 passed in 170.26s`, im Tutorial getippt am 2026-10-06 nach
+  der Fixwelle; P-PI).
 - `ubuntu-latest` ist ab 2026-10-19 Ubuntu 26; die ersten Läufe der CI danach
   beobachten, vor allem die drei Container der Tests (Betreuer, 2026-10-06).
 - `CLAUDE.md` nennt „the six contract names in `.importlinter`"; es sind acht.
