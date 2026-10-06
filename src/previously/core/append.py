@@ -331,6 +331,22 @@ def _check_artifact[Conn](
         )
 
 
+def known_id[Conn](storage: LogStore[Conn], conn: Conn, event: RawEvent) -> int | None:
+    """The `id` of the event under the key of `event`, or `None` when the key
+    is new; raises `ArtifactChanged` when the event there carries another
+    artifact ({ref}`artifact-identity`).
+
+    The one place the rule lives. `append` asks it for every event of a
+    batch inside its transaction; `core.ingest` asks it before it stores the
+    blobs of a mail, so that a mail the log already holds — or holds erased
+    — does not put its raw bytes into the store again.
+    """
+    existing = storage.lookup(conn, event.source, event.external_id)
+    if existing is not None:
+        _check_artifact(storage, conn, existing, event)
+    return existing
+
+
 def _prepare(
     events: Sequence[RawEvent],
 ) -> list[tuple[RawEvent, Prepared]]:
@@ -465,12 +481,11 @@ def append[Conn](
                 prev = None if tip is None else tip.hash
 
                 for event, ready in prepared:
-                    existing = storage.lookup(conn, event.source, event.external_id)
+                    # `ArtifactChanged` is raised inside the transaction, so
+                    # nothing of the batch is written, the events before this
+                    # one included ({ref}`artifact-identity`).
+                    existing = known_id(storage, conn, event)
                     if existing is not None:
-                        # Raised inside the transaction, so nothing of the
-                        # batch is written, the events before this one
-                        # included ({ref}`artifact-identity`).
-                        _check_artifact(storage, conn, existing, event)
                         ids.append(existing)
                         continue
 
