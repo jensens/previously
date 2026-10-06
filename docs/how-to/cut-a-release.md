@@ -84,7 +84,7 @@ gh release create v0.1.0a1 --prerelease --generate-notes --target main
 Leave out `--prerelease` for a stable release, and add the notes for operators with `--notes`:
 
 ```shell
-gh release create v1.0.0 --generate-notes --target main --notes 'Run `previously migrate` before anything else of this release: it adds the revision 0005_example.'
+gh release create v1.0.0 --generate-notes --target main --notes 'Run `previously migrate` before anything else of this release: it adds the revision 0006_example.'
 ```
 
 The version decides `<major>.<minor>`, and the mark decides `latest`.

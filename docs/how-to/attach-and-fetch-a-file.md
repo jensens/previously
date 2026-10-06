@@ -44,10 +44,10 @@ If `append` fails after a file was stored, run the same command again: the store
 ```console
 $ previously show 1
 id=1 kind=observation
-occurred_at=2026-10-05T08:53:17.476912+00:00
-hash=c61e165239d35bc0bb59d9a4ade637320af3bed50433d5d53df512bce8bf72e6
+occurred_at=2026-10-06T13:33:48.421930+00:00
+hash=32a7dba45866f0764113f20281948296f79f5db5c0f36d4935870296e2acae8d
 evidence=recollection
-payload={"blobs": [{"filename": "minutes.txt", "media_type": "text/plain", "sha256": "72f4f2c5a92ade61b696c0fe800b8af775fd2f3982b123693379e6ee7cd264f2", "size": 62}], "evidence": "recollection"}
+payload={"artifact_hash": "8afe5fdfc76a548c541434cfa4a48c83d768c3f57655ed7547aa21e56aa1d891", "blobs": [{"filename": "minutes.txt", "media_type": "text/plain", "sha256": "72f4f2c5a92ade61b696c0fe800b8af775fd2f3982b123693379e6ee7cd264f2", "size": 62}], "evidence": "recollection"}
   ¶1 The minutes of the kickoff are attached.
   blob 72f4f2c5a92ade61b696c0fe800b8af775fd2f3982b123693379e6ee7cd264f2 62 text/plain minutes.txt
 ```

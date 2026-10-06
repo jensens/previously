@@ -3,15 +3,16 @@
 # About the module boundaries
 
 Previously is one code base with one dependency set and one database, divided into modules whose dependencies run one way.
-There are five of them, and the order is `cli` above `core` and `migrations`, which share a layer, above `storage` above `contract`.
-`migrations` joined the other four on 2026-10-05, when the Alembic migrations moved from the repository root into the package so that an installed wheel carries them.
+There are six of them, and the order is `cli` above `connectors` above `core` and `migrations`, which share a layer, above `storage` above `contract`.
+`migrations` joined the others on 2026-10-05, when the Alembic migrations moved from the repository root into the package so that an installed wheel carries them, and `connectors` on 2026-10-06, with the first connector.
 The order isn't a convention somebody is asked to respect.
-It's `import-linter` contracts, six of them since stage 1c, checked by a gate, and the gate prints the contract names, so the names themselves are part of the design rather than labels on it.
+It's `import-linter` contracts, eight of them since 2026-10-06, checked by a gate, and the gate prints the contract names, so the names themselves are part of the design rather than labels on it.
 
 The point of the boundaries is narrow and worth stating before the mechanics.
 `core` is where the hash chain and the idempotency live, and it must stay able to run against a store it didn't import.
 `storage` carries rows and knows nothing about the domain.
 `contract` is pure types and knows nothing at all, which is the only reason it can sit underneath both without closing a cycle: `core` has to be able to accept a `RawEvent`, and if the connector contract lived in `connectors` the core wouldn't know it and every connector would reinvent it.
+`connectors` holds the connectors themselves, each speaking the protocol of a foreign source, and sits above `core`, because a connector hands bytes to `core` and `core` must not know where they came from; {ref}`connectors` says what a connector does and what it leaves to `core`.
 Since stage 1b `contract` also holds the row types and the store protocol that `core` is typed against, and both are types in the same sense—no logic, no dependency outside the standard library.
 `migrations` is the Alembic environment and the revisions that build the schema.
 It reads the table metadata from `storage.schema` and nothing from `core`, and `core` reads nothing from it, so it sits beside `core` rather than above or below it.
@@ -20,16 +21,19 @@ It reads the table metadata from `storage.schema` and nothing from `core`, and `
 ## The edges
 
 The diagram shows which module imports which, and since stage 1b there's nothing dashed in it.
-The two arrows that stage 1c added, to `pyrage` and to `boto3`, each have a contract that names the one module allowed to draw them, and so does the arrow to `html2text` that the mapping of a mail added on 2026-10-06.
+The two arrows that stage 1c added, to `pyrage` and to `boto3`, each have a contract that names the one module allowed to draw them, and so do the arrow to `html2text` that the mapping of a mail added on 2026-10-06 and the arrow to `imaplib` that the first connector added the same day.
 The arrows to `sqlalchemy` and `alembic` are held the other way round: their contracts name the modules that mustn't draw them, `core` for both and `contract` for `sqlalchemy`, as the section on the contracts explains.
 
 ```{mermaid}
-:caption: The import edges on 2026-10-06: seven between its own modules, and not one of them exempted. Seven arrows leave the package.
+:caption: The import edges on 2026-10-06: ten between its own modules, and not one of them exempted. Eight arrows leave the package.
 
 graph TD
-    cli[cli] --> core[core]
+    cli[cli] --> connectors[connectors]
+    cli --> core[core]
     cli --> storage[storage]
     cli --> contract[contract]
+    connectors --> core
+    connectors --> contract
     core --> storage
     core --> contract
     migrations[migrations] --> storage
@@ -41,26 +45,33 @@ graph TD
     core --> pyrage[pyrage]
     storage --> boto3[boto3]
     core --> html2text[html2text]
+    connectors --> imaplib[imaplib]
 ```
 
 Two things in that picture answer questions the contract names don't.
 
 `contract` has no outgoing edge, and that's the property the layer order rests on.
 A layers contract settles the *order* in which modules may depend on each other; whether an edge exists is a separate question.
-Counted out, the order permits nine edges between distinct modules: four from `cli`, two each from `core` and `migrations`, one from `storage`.
+Counted out, the order permits fourteen edges between distinct modules: five from `cli`, four from `connectors`, two each from `core` and `migrations`, one from `storage`.
 None runs between `core` and `migrations`, because modules that share a layer may not import each other.
-Seven of the nine exist, and the two that don't are `cli → migrations` and `migrations → contract`.
+Ten of the fourteen exist, and the four that don't are `cli → migrations`, `connectors → migrations`, `connectors → storage` and `migrations → contract`.
 
-That count was five until stage 1b.
+That count was five until stage 1b, and seven until 2026-10-06.
 `storage` had no edge to `contract` at all, not even though the layer order would have permitted one, and the sixth edge arrived when the row types moved out of `storage/rows.py` into `contract/rows.py`—the store protocol in `contract.store` names those types, and `contract` may import nothing above itself.
 The seventh, `migrations → storage`, is older than the module it starts from: the migrations imported `storage.schema` while they still sat outside the package, where no contract looked, and the edge became countable on 2026-10-05 when they moved in.
-Counted per module, over import statements only, because two modules under `storage` mention `previously.core` in prose rather than in an import, and a count over all text would include them, measured on 2026-10-05:
+The other three arrived with `connectors` on 2026-10-06: `cli → connectors`, because the command line builds the connector, and `connectors → core` and `connectors → contract`, because the connector hands its bytes over as a `Fetched` from `contract` and raises a `PreviouslyError` from `core`.
+Counted per module, over import statements only, because two modules under `storage` mention `previously.core` in prose rather than in an import, and a count over all text would include them, measured on 2026-10-06:
 
 ```text
 $ grep -rhoE 'from previously\.[a-z]+' src/previously/cli.py | sort -u
+from previously.connectors
 from previously.contract
 from previously.core
 from previously.storage
+
+$ grep -rhoE 'from previously\.[a-z]+' src/previously/connectors | sort -u
+from previously.contract
+from previously.core
 
 $ grep -rhoE 'from previously\.[a-z]+' src/previously/core | sort -u
 from previously.contract
@@ -79,36 +90,38 @@ $ grep -rhoE 'from previously\.[a-z]+' src/previously/contract | sort -u
 from previously.contract
 ```
 
-Three target packages for `cli`, three for `core` of which one is itself, two for `migrations` of which one is itself, two for `storage` of which one is itself, and for `contract` nothing but itself.
-That's seven edges between distinct modules, and the last line is the layer order's foundation stated as a measurement.
+Four target packages for `cli`, two for `connectors`, three for `core` of which one is itself, two for `migrations` of which one is itself, two for `storage` of which one is itself, and for `contract` nothing but itself.
+That's ten edges between distinct modules, and the last line is the layer order's foundation stated as a measurement.
 
 And `cli` reaches `storage.postgres` directly, for `from_dsn` and the storage type, and it never needed an exemption for that.
 Until stage 1b this page carried two dashed edges from `core` into `storage.postgres`, and `cli` was no inconsistency beside them.
 The exemptions weren't about the edge `core → storage` being forbidden—the layer order allows it—but about what travels along it: `storage.postgres` imports SQLAlchemy, so every module that imports `storage.postgres` reaches SQLAlchemy transitively, and two contracts forbid exactly that for `core`.
 `cli` is no source module of those contracts, so the same edge needs no mention there.
 
-## Seven contracts, and the names are the output
+## Eight contracts, and the names are the output
 
 What `.importlinter` holds, in the words the gate prints:
 
 ```text
-Layers: core beside migrations, both above storage, contract below all KEPT
+Layers: cli, connectors, core beside migrations, storage, contract KEPT
 core knows no foreign system and no model KEPT
 core and contract import no sqlalchemy KEPT
 No vendor SDK in the package KEPT
 Only core.sealing imports pyrage KEPT (1 ignored import)
 Only storage.s3 imports boto3 KEPT (2 ignored imports)
 Only core.mail imports html2text KEPT (1 ignored import)
+Only connectors.imap imports imaplib KEPT (1 ignored import)
 
-Contracts: 7 kept, 0 broken.
+Contracts: 8 kept, 0 broken.
 ```
 
 The output was measured on 2026-10-06.
 The seventh contract arrived that day with the mapping of a mail, which turns HTML into text and names the converter's version in the payload; a second module converting HTML would write units the payload doesn't account for.
-The first line read `Layers: core above storage, contract below both` until that day, when `migrations` joined `core` in the second layer and the name followed it, because the name is what the gate prints.
-The third line read `Only storage imports sqlalchemy` until the same day, and the move made that name false: the migrations import SQLAlchemy, and they're inside the package now.
+The eighth arrived the same day with the first connector, and the first line took its present name with it, when `connectors` came in between `cli` and `core`.
+The first line read `Layers: core beside migrations, both above storage, contract below all` from 2026-10-05 until then, and `Layers: core above storage, contract below both` before, until `migrations` joined `core` in the second layer; each time the name followed the layers, because the name is what the gate prints.
+The third line read `Only storage imports sqlalchemy` until 2026-10-05, and the move of the migrations made that name false: the migrations import SQLAlchemy, and they're inside the package now.
 The contract itself didn't change, because its sources were always `core` and `contract`, so the name now says what it checks; the older blocks further down keep the name of their day.
-Sharing a layer keeps the two apart in both directions: measured the same day, an import of `migrations.dsn` written into `core/units.py` broke the first contract with `previously.core is not allowed to import previously.migrations`, and the second contract as well, because `migrations.dsn` imports `alembic`.
+Sharing a layer keeps the two apart in both directions: measured on 2026-10-05, an import of `migrations.dsn` written into `core/units.py` broke the first contract with `previously.core is not allowed to import previously.migrations`, and the second contract as well, because `migrations.dsn` imports `alembic`.
 The other way round, an import of `core.units` written into `migrations/dsn.py` broke the first contract with `previously.migrations is not allowed to import previously.core`.
 
 The first contract holds `migrations.env` and `migrations.dsn`, and it doesn't hold the revisions.
@@ -117,13 +130,14 @@ Measured on 2026-10-05, an import of `previously.cli` written into a revision we
 
 The second and third lines read `KEPT (2 ignored imports)` until 2026-10-04.
 That number was the price of typing `core` against a concrete store, and it stood in the gate log so the price stayed countable until somebody paid it.
-Stage 1b paid it, and the parentheses on the last three contracts are a different thing: no debt, but the one module each contract exists to allow, named.
+Stage 1b paid it, and the parentheses on the last four contracts are a different thing: no debt, but the one module each contract exists to allow, named.
 
 Two of the first four contracts differ from the architecture's table on purpose, and both differences are about what a contract can actually check.
 
 The second contract forbids `sqlalchemy`, `psycopg` and `alembic` rather than the four modules the architecture names.
 `connectors`, `gate`, `ai_layer` and `mcp_server` don't exist in stage 1a, and a `forbidden` contract on modules that don't exist checks nothing.
 It would stand in the configuration looking like a guarantee and guaranteeing nothing, while the packages `core` could in fact reach today—the database ones—went unnamed.
+`connectors` exists since 2026-10-06, and it still needn't be named there: it sits above `core` in the first contract, which already refuses every import of it from `core`.
 
 The third names `core` and `contract` as its sources instead of writing "everything except storage."
 The enumeration has to be extended by hand with every stage, and the negation would include every future module without anybody deciding that it should.
@@ -169,6 +183,12 @@ One more property comes for free, measured on 2026-10-05: an exemption for an im
 Turning HTML into text is part of mapping a mail onto an event, and the payload of that event names the converter and its version, because a unit converted by another version may read differently.
 A second module that converted HTML would write units the payload doesn't account for.
 The probe that proves the contract goes into `core`, beside `core.mail`, so it shows that the exception is that one module and not its layer.
+
+## A contract for the connectors
+
+`imaplib` may be imported by `connectors.imap` and nowhere else, although it's part of the standard library, which `import-linter` counts among the external packages once `include_external_packages` is on.
+Speaking IMAP is the connector's, and what the connector hands on is bytes, a position, and its own error: a second module with `imaplib` would be a second place where a folder could be changed, or where a password could end up in a message.
+The layers contract keeps `core` from importing `connectors`, so the mapping of a mail can't reach the server either, and stays the pure function {ref}`connectors` asks for.
 
 ## Why the two exemptions were enumerated and not matched
 
@@ -300,7 +320,8 @@ storage.units_by_event(
 Reading it off that way is what keeps the protocol a statement about what `core` needs instead of a copy of what the store happens to offer.
 `PostgresStorage.units` is the test of that: it fetches the units of a single event, `cli` calls it for `show`, and `core` never does—so it's a method of the store and not a member of the protocol.
 A protocol copied from the implementation would have carried ten methods and said something false about `core`.
-Stage 1c took it to thirteen, read off the same way from the five modules of `core` that name it today; the command that counts them stands at the top of `contract/store.py`.
+Stage 1c took it to thirteen, read off the same way from the five modules of `core` that named it then; the command that counts them stands at the top of `contract/store.py`.
+On 2026-10-06 the run of a connector, `core/ingest.py`, became the sixth, and it calls nothing the other five don't, so the count stayed at thirteen, measured that day with the same command and `core/ingest.py` added to its files.
 
 The store still has to satisfy the protocol, and that's now a typed claim rather than a guarded one.
 Renaming `count_events` to `count_rows` in `storage/postgres.py`, measured on 2026-10-04, turns `pyright` red at every place a `PostgresStorage` is handed to `append` or `verify`:
@@ -342,6 +363,11 @@ Stage 1c added a third, `RedactionStore[Conn]`, with three methods: `lock_event`
 An erasure changes rows of the log, which is the one thing `LogStore` promises never to do, and the protocol of its own keeps that promise a statement about a type.
 Nothing typed against `LogStore` can erase, and what can erase is listed in one place, three methods long; {ref}`erasure` says what those three may change and why.
 Adding them to `LogStore` would have made every caller of the log a possible eraser, `append` and `verify` among them.
+
+The first connector added a fourth, `WatermarkStore[Conn]`, with two methods: `watermark` reads how far a connector has read, and `set_watermark` writes it.
+A watermark isn't part of the log, which can't rebuild it, and it isn't a projection either, so it belongs to neither of the protocols above, and nothing typed against `LogStore` can move one.
+`set_watermark` runs in the caller's transaction, so that the run can write the watermark after the batch it covers and never before; {ref}`connectors` says why that order is the whole point.
+The connector itself is a protocol in `contract` as well, `Connector`, with a name and one method, `fetch`; it isn't a store, and `core` asks it for bytes and nothing else.
 
 The honest version of the old arrangement deserves saying plainly.
 The exemptions weren't a compromise anybody was proud of.

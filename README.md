@@ -13,7 +13,8 @@ line with its source attribution.
 
 **Stages 1a, 1b and 1c are built and run: the append-only log with its hash
 chain, the projections derived from it, and blobs and erasure. A release
-publishes a package on PyPI and an image on ghcr.io.** Not a product surface — a command line
+publishes a package on PyPI and an image on ghcr.io. The first connector takes
+the mail of an IMAP folder in.** Not a product surface — a command line
 thin enough to get at the log by hand, so that each stage is *runnable* and not
 merely described.
 
@@ -59,18 +60,28 @@ merely described.
 - **checking the blobs** (`verify --blobs`): every blob that has to lie in
   the store is read, opened and held against its address, and every erased one
   has to be gone
-- the eleven commands `migrate`, `append`, `redact`, `log`, `verify`,
-  `anchor`, `show`, `blob`, `project`, `chronicle` and `stats`
+- **taking in mail** (`ingest imap`): the mail of one IMAP folder, read over
+  TLS without changing the folder, each mail an event with its subject and
+  paragraphs as units, its raw bytes and every attachment as blobs, and a mail
+  forwarded as an attachment an event of its own. A mail is recognized by an
+  identity of its content, so a second copy or a folder read again writes
+  nothing, and a changed mail under a known Message-ID becomes a variant
+  instead of being lost; see
+  [About connectors](docs/explanation/connectors.md) and
+  [How to take in the mail of a folder](docs/how-to/ingest-a-mail-folder.md)
+- the twelve commands `migrate`, `append`, `ingest`, `redact`, `log`,
+  `verify`, `anchor`, `show`, `blob`, `project`, `chronicle` and `stats`
 - the schema as Alembic migrations inside the package, applied by
   `previously migrate`
 
 **What it does not do:** no header — a header rests on assertions, and those
 come out of the gate; no assignment of events to projects, so the chronicle is
 the chronicle of the whole log and not of one project; no job queue — the
-projection worker is a command, run when somebody runs it; no connectors for
-e-mail or issue trackers (stage 2), no MCP interface, no language model and
-therefore no assertions, and no action but the redaction; no search, no
-user administration and no network interface.
+projection worker is a command, run when somebody runs it; one connector,
+for an IMAP folder, and none for anything else yet, such as a shared folder
+or an issue tracker; no MCP interface, no language model and therefore no
+assertions, and no action but the redaction; no search, no user
+administration and no network interface.
 
 And one limit that is not a gap but the nature of the thing: a hash chain by
 itself bears witness that what stands in the log is unchanged — not that it is
@@ -88,7 +99,9 @@ An erasure has a limit of the same kind: it takes content out of the log and
 out of the bucket, not out of the backups taken before it, and a restore to an
 earlier point brings it back. The address of a blob and the source key stay as
 well, and an erasure of units leaves their wording in a payload that holds
-it too, and says so when a string of the payload contains a unit's wording;
+it too, and says so when a string of the payload contains a unit's wording.
+For a mail, it reaches neither the folder the mail came from, nor the backups
+of the mailbox, nor the replies that quote it;
 [About erasure](docs/explanation/erasure.md) says what an erasure does not
 achieve and why.
 
@@ -125,7 +138,7 @@ lives under `docs/`. Build it locally with `make -C docs html`, then open
 session typed out against a real PostgreSQL 17, from a fresh checkout to a
 passing test suite.
 
-The seven specifications below are **frozen design records**, in German and
+The eight specifications below are **frozen design records**, in German and
 dated: they hold how and why a decision was taken, and the documentation under
 `docs/` carries the reasoning that is maintained with the code. Where the two
 disagree, the documentation wins. A new stage starts with a new German
@@ -141,6 +154,7 @@ the first one that went that way from the start.
 | [External anchor](docs/superpowers/specs/2026-10-04-aeusserer-anker.md) | Frozen design record, 2026-10-04: detailed specification of the external anchor — the anchor line, `anchor`, and `verify --anchors`; its reasoning is maintained in [About the hash chain](docs/explanation/hash-chain.md), the routines in [How to check the chain in operation](docs/how-to/verify-the-chain.md) and [How to check how much of the chain a restore brought back](docs/how-to/restore-from-a-backup.md) |
 | [Stage 1c](docs/superpowers/specs/2026-10-04-stufe-1c-blobs-und-tilgung.md) | Frozen design record, 2026-10-05: detailed specification of blobs and erasure — hash format 2 with its salt, erasure as an event, blobs sealed in `age` on S3, and the commands `redact`, `blob get` and `verify --blobs`; its reasoning is maintained in [About erasure](docs/explanation/erasure.md), [About blobs](docs/explanation/blobs.md) and [About the hash chain](docs/explanation/hash-chain.md), its routines in the guides under [How-to guides](docs/how-to/index.md), and its open points in the [map](docs/superpowers/landkarte.md) |
 | [Delivery](docs/superpowers/specs/2026-10-05-auslieferung.md) | Frozen design record, 2026-10-05: detailed specification of the way out — the migrations in the package and `previously migrate`, the release workflow to PyPI and `ghcr.io`, the image and its smoke test, and the handoff to the maintainer's Kubernetes environment; its reasoning is maintained in [About delivery](docs/explanation/delivery.md), its routines in [How to cut a release](docs/how-to/cut-a-release.md) and [How to run Previously from its image](docs/how-to/run-the-image.md), and its open points in the [map](docs/superpowers/landkarte.md) |
+| [Pilot, unit 1](docs/superpowers/specs/2026-10-06-pilot-imap-aufnahme.md) | Frozen design record, 2026-10-06: detailed specification of taking mail in from an IMAP folder — the identity of an artifact and the channel identities in the contract, a mail as an event, the connector contract with its watermark, the run, and `previously ingest imap`; its reasoning is maintained in [About connectors](docs/explanation/connectors.md) and [About erasure](docs/explanation/erasure.md), the mapping in [Mail mapping](docs/reference/mail-mapping.md), its routine in [How to take in the mail of a folder](docs/how-to/ingest-a-mail-folder.md), and its open points in the [map](docs/superpowers/landkarte.md) |
 | [Execution records](docs/superpowers/sdd/) | Frozen working records, one directory per executed plan: the ledger of every decision taken while building it, and the target of the `ruling …` citations in the code |
 | [CLAUDE.md](CLAUDE.md) | The working agreements: language, attribution, dependencies, the six gates |
 | [DEPENDENCIES.md](DEPENDENCIES.md) | Every dependency with its purpose, the rejected alternative and the date it was last checked |

@@ -23,6 +23,7 @@ nothing but a check can tell which. `.importlinter` had carried one since
 stage 1b with no gate in sight.
 """
 
+from typing import cast
 from typing import TYPE_CHECKING
 
 import ast
@@ -32,6 +33,7 @@ import re
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from previously.contract.types import RawEvent
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SOURCE_DIRS = ["src", "tests"]
@@ -759,4 +761,134 @@ def test_the_reference_quotes_the_refusal_of_a_reserved_identity_key() -> None:
     assert any(_is_the_same_sentence(parts, quoted) for parts in raised), (
         f"hash-format.md quotes {quoted!r} and core/append.py raises no such message. "
         "Either the code's wording changed, or the page's did."
+    )
+
+
+# The page on the mapping of a mail quotes the fixed sentences of its units
+# and names the keys of its payload, and both are held here against what the
+# code produces for the test mails, which are invented. No server and no
+# database: the mapping is called directly, and the keys the run adds are
+# read out of `core/ingest.py`.
+MAIL_PAGE = DOCS / "reference" / "mail-mapping.md"
+MAILS = ROOT / "tests" / "mails"
+
+
+def _mapped_events(name: str) -> list[RawEvent]:
+    """The event of the test mail `name` and of every mail inside it."""
+    from datetime import datetime
+    from datetime import UTC
+    from previously.core.mail import map_mail
+
+    found: list[RawEvent] = []
+    pending = [
+        map_mail(
+            (MAILS / name).read_bytes(),
+            internaldate=datetime(2026, 10, 6, 9, 0, tzinfo=UTC),
+            found_in={"connector": "imap:pilot@mail.example.org/Kunde Müller", "uid": "1"},
+        )
+    ]
+    while pending:
+        mapped = pending.pop()
+        found.append(mapped.event)
+        pending.extend(mapped.inner)
+    return found
+
+
+def _first_cells(page: str, heading: str, after: str) -> set[str]:
+    """The code spans in the first column of the first table after the
+    sentence `after`, in the section under `heading`."""
+    assert heading in page, f"mail-mapping.md no longer has the section {heading!r}"
+    section = page.split(heading, 1)[1].split("\n## ", 1)[0]
+    assert after in section, f"mail-mapping.md no longer carries the sentence {after!r}"
+    rows: list[str] = []
+    for line in section.split(after, 1)[1].splitlines():
+        if line.startswith("|"):
+            rows.append(line)
+        elif rows:
+            break
+    cells: set[str] = set()
+    for row in rows[2:]:  # the header and the delimiter row are not data
+        first = row.strip("|").split("|", 1)[0].strip()
+        assert first.startswith("`") and first.endswith("`"), (
+            f"the first cell has to be a code span: {row!r}"
+        )
+        cells.add(first[1:-1])
+    return cells
+
+
+def _keys_the_run_adds() -> set[str]:
+    """The keys `core/ingest.py` writes into a payload: the string keys of
+    every dict display in it that spreads another mapping into itself."""
+    tree = ast.parse((ROOT / "src" / "previously" / "core" / "ingest.py").read_text("utf-8"))
+    keys: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Dict) and None in node.keys:
+            keys.update(
+                key.value
+                for key in node.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            )
+    return keys
+
+
+def test_the_mail_mapping_quotes_the_units_of_a_mail_without_text() -> None:
+    """The three sentences of a mail without a readable body, and the unit
+    of a mail that does not map, each produced by mapping a test mail of
+    that case: what the page quotes is the unit the code writes."""
+    page = MAIL_PAGE.read_text(encoding="utf-8")
+    produced = [
+        _mapped_events(name)[0].units[-1].content
+        for name in ("encrypted.eml", "attachments_only.eml", "empty.eml")
+    ]
+    quoted = _quoted_block(page, "has one unit in place of the body, with one of three sentences")
+    assert quoted == produced, quoted
+    unreadable = _mapped_events("unreadable_header.eml")[0].units
+    quoted = _quoted_block(page, "which can quote a header, as in this one")
+    assert quoted == [unit.content for unit in unreadable], quoted
+
+
+def test_the_mail_mapping_names_every_key_the_mapping_writes() -> None:
+    """The payload table names exactly the keys that the mapping writes for
+    the test mails, every mail inside them included, and that the run adds;
+    the table of a body entry names exactly the keys of one.
+
+    Equality, for the reason the Payload range check above gives: a key the
+    code stopped writing and a key the page never named both fail. A key
+    that no test mail produces cannot be held this way; the test mails carry
+    a case for each optional key of the mapping, and the two keys only the
+    run writes, `raw` and `variant_of`, come out of `core/ingest.py`.
+    """
+    page = MAIL_PAGE.read_text(encoding="utf-8")
+    events = [
+        event
+        for name in sorted(path.name for path in MAILS.glob("*.eml"))
+        for event in _mapped_events(name)
+    ]
+    written = {key for event in events for key in event.payload}
+    named = _first_cells(page, "## Payload", "The mapping and the run write these keys")
+    assert named == written | _keys_the_run_adds(), (
+        f"only on the page: {named - written - _keys_the_run_adds()}\n"
+        f"only in the code: {(written | _keys_the_run_adds()) - named}"
+    )
+    entries = {
+        key
+        for event in events
+        for entry in cast("list[dict[str, object]]", event.payload.get("body", []))
+        for key in entry
+    }
+    assert _first_cells(page, "## Payload", "Each entry of `body`") == entries
+
+
+def test_the_mail_mapping_names_the_converter_and_quotes_the_batch_refusal() -> None:
+    """The converter's name and version as the payload writes them, and the
+    refusal of a mail that makes too many events, held against what
+    `core/append.py` raises as `BatchTooLarge`."""
+    from previously.core.mail import CONVERTER
+
+    page = MAIL_PAGE.read_text(encoding="utf-8")
+    assert f"as `{CONVERTER}`" in page, f"mail-mapping.md does not name {CONVERTER!r}"
+    _assert_raised(
+        _quoted_block(page, "makes more than 500 events is refused at every run"),
+        _raised_patterns(ROOT / "src" / "previously" / "core" / "append.py", "BatchTooLarge"),
+        "BatchTooLarge",
     )

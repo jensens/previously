@@ -204,7 +204,7 @@ The table isn't a projection, because the log can't rebuild it, and it has no fo
 |---|---|---|---|
 | `connector` | `text` | No | The connector's name. |
 | `position` | `jsonb` | No | The position the connector reported last, a JSON object of text to text; its keys are the connector's own. |
-| `set_at` | `timestamp with time zone` | No | When the row was last written. |
+| `set_at` | `timestamp with time zone` | No | The moment the caller gives with the position; `ingest` gives the moment its run started, which every event of the run carries as `recorded_at`. |
 
 A write replaces the row of its connector as a whole: the new `position` takes the place of the old one, and no key of the old one survives.
 The store refuses a `set_at` without a time zone with a `ValueError`, before it sends anything.
