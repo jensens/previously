@@ -25,6 +25,7 @@ addresses stay as written, nothing is decrypted.
 
 from dataclasses import dataclass
 from email.generator import BytesGenerator
+from email.headerregistry import Address
 from email.headerregistry import AddressHeader
 from email.headerregistry import DateHeader
 from email.headerregistry import HeaderRegistry
@@ -64,6 +65,24 @@ the mails attached to it down to depth 5 are unpacked. A mail attached to the
 mail at depth 5 stays an attachment, and the payload of the mail at depth 5
 lists it under `not_unpacked`. The limit guards against a broken or hostile
 mail, not against real mail."""
+
+MAX_MESSAGE_ID_BYTES = 998
+"""The longest Message-ID that becomes a key, in UTF-8 bytes; a longer one
+counts as none, and the key is the artifact hash, as for a mail without one.
+
+The key goes into the primary key of `source_key`, a btree index, and
+PostgreSQL refuses an index entry over 2704 bytes. Measured on 2026-10-06
+with PostgreSQL 17 and a Message-ID of 3,212 ASCII characters that do not
+compress: `index row size 3232 exceeds btree version 4 maximum 2704 for
+index "source_key_pkey"`, and the whole batch failed with it, at every run.
+The entry is the key and 20 bytes beside it, the source `email` among them
+(a key of 2,700 bytes made one of 2,720). The longest key a run builds out
+of a Message-ID is its variant key, 17 bytes longer (`#` and sixteen
+hexadecimal characters), so at this bound the largest entry is 1,035 bytes,
+well under the limit. Bytes, not characters: a Message-ID may carry UTF-8
+(RFC 6532), and a character takes up to four bytes. 998 is RFC 5322's limit
+on the length of a line, which a Message-ID has to fit into together with
+the header's name, so no mail that keeps to the standard comes near it."""
 
 SOURCE = "email"
 
@@ -476,25 +495,44 @@ def _first(headers: list[tuple[str, str]], name: str) -> str | None:
 
 def _message_id(headers: list[tuple[str, str]]) -> str | None:
     """The Message-ID without its angle brackets and the blanks around
-    them, or `None` when there is none to speak of."""
+    them, or `None` when there is none to speak of — or when it is longer
+    than `MAX_MESSAGE_ID_BYTES` in UTF-8, which the key index would refuse."""
     value = _first(headers, "message-id")
     if value is None:
         return None
     value = value.strip().removeprefix("<").removesuffix(">").strip()
+    if len(value.encode("utf-8")) > MAX_MESSAGE_ID_BYTES:
+        return None
     return value or None
 
 
 def _occurred_at(message: EmailMessage, internaldate: datetime) -> tuple[datetime, str]:
-    """The `Date` header when it reads as a moment with a zone, otherwise
-    the server's arrival time. `-0000` is a time without a zone (RFC 5322),
-    and Python reads it as a naive datetime: that falls back too, because
-    the log cannot order a moment it does not know the zone of."""
+    """The `Date` header when it reads as a moment with a zone that has a
+    time in UTC, otherwise the server's arrival time.
+
+    `-0000` is a time without a zone (RFC 5322), and Python reads it as a
+    naive datetime: that falls back too, because the log cannot order a
+    moment it does not know the zone of. A moment in the last hours of the
+    year 9999 with a zone west of UTC has no time in UTC — `Fri, 31 Dec 9999
+    23:30:00 -0100` is in the year 10000 there, which `datetime` does not
+    reach, and `iso_utc` raises `OverflowError` on it (measured on
+    2026-10-06 with Python 3.14.3). `append` hashes `occurred_at` with
+    `iso_utc`, so the header would map and the batch fail at every run.
+    """
     header: object = message.get("date")
     if isinstance(header, DateHeader):
         moment = header.datetime
-        if moment is not None and moment.utcoffset() is not None:
+        if moment is not None and moment.utcoffset() is not None and _has_utc(moment):
             return moment, "header"
     return internaldate, "internaldate"
+
+
+def _has_utc(moment: datetime) -> bool:
+    try:
+        iso_utc(moment)
+    except OverflowError:
+        return False
+    return True
 
 
 def _channel_identities(message: EmailMessage) -> tuple[ChannelIdentity, ...]:
@@ -502,24 +540,41 @@ def _channel_identities(message: EmailMessage) -> tuple[ChannelIdentity, ...]:
     in the order the headers stand in. A group contributes its members, an
     empty group nothing. The address is what the parser reads out of the
     header, not lower-cased and not merged with another spelling — even
-    `<>` stays `<>`."""
+    `<>` stays `<>`. A header the parser raises on contributes nothing
+    (`_addresses`)."""
     identities: list[ChannelIdentity] = []
     for name, value in message.raw_items():
         role = _ROLES.get(name.lower())
         if role is None:
             continue
-        header = _POLICY.header_fetch_parse(name, _recovered(_unfolded(value)))
-        if isinstance(header, AddressHeader):
-            identities.extend(
-                ChannelIdentity(
-                    SOURCE,
-                    role,
-                    _readable(_recovered(address.addr_spec))[0],
-                    _readable(_recovered(address.display_name))[0] or None,
-                )
-                for address in header.addresses
+        identities.extend(
+            ChannelIdentity(
+                SOURCE,
+                role,
+                _readable(_recovered(address.addr_spec))[0],
+                _readable(_recovered(address.display_name))[0] or None,
             )
+            for address in _addresses(name, _recovered(_unfolded(value)))
+        )
     return tuple(identities)
+
+
+def _addresses(name: str, value: str) -> tuple[Address, ...]:
+    """The addresses the parser reads out of one header, or none when it
+    raises on the header: the mail then maps as it would without it, and the
+    header stays under `headers` as written.
+
+    The parser of address lists raises on some broken ones — `IndexError`
+    for a list that ends in a lone `"`, measured on 2026-10-06 with Python
+    3.14.3 — and one broken `To` would otherwise make the whole mail
+    unreadable, its subject and text with it. Every exception, not that one:
+    which class the parser raises is the library's choice, not a rule of
+    this module."""
+    try:
+        header = _POLICY.header_fetch_parse(name, value)
+    except Exception:
+        return ()
+    return header.addresses if isinstance(header, AddressHeader) else ()
 
 
 # --- parts -------------------------------------------------------------------

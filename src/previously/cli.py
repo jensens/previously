@@ -50,6 +50,7 @@ from previously.core.redact import redact_units
 from previously.core.redaction import blob_erasure
 from previously.core.redaction import read_index
 from previously.core.sealing import check_recipient
+from previously.core.units import normalize_line_endings
 from previously.core.units import split_plaintext
 from previously.core.verify import BlobCheck
 from previously.core.verify import examine
@@ -451,11 +452,18 @@ def _cmd_append(args: argparse.Namespace) -> int:
     # there is something to attach.
     with _storage() as storage:
         blobs = _attach(args.attach) if args.attach else ()
-        # The artifact is what was submitted: the text as given, and the
-        # attachments by their addresses, sorted, so that their order on the
-        # command line and their file names do not make another artifact
-        # ({ref}`artifact-identity`). Not the units, which are derived.
-        artifact = {"text": args.text, "attachments": sorted(blob.sha256 for blob in blobs)}
+        # The artifact is what was submitted: the text with its line endings
+        # as LF, and the attachments by their addresses, sorted, so that their
+        # order on the command line and their file names do not make another
+        # artifact ({ref}`artifact-identity`). Not the units, which are
+        # derived. The line endings the way `split_plaintext` reads them: the
+        # same text pasted from a Windows clipboard, with CRLF, gives the same
+        # units, and would otherwise be refused under its own key as another
+        # content.
+        artifact = {
+            "text": normalize_line_endings(args.text),
+            "attachments": sorted(blob.sha256 for blob in blobs),
+        }
         event = RawEvent(
             source=args.source,
             external_id=args.external_id,

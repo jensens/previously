@@ -151,6 +151,42 @@ def test_another_text_under_a_known_key_is_refused(
         assert c.execute(text("SELECT count(*) FROM event")).scalar_one() == 1
 
 
+@pytest.mark.parametrize("ending", ["\r\n", "\r"], ids=["crlf", "cr"])
+@pytest.mark.db
+def test_the_same_text_with_other_line_endings_is_known(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, ending: str
+) -> None:
+    """Text pasted from a Windows clipboard ends its lines in CRLF, and
+    `split_plaintext` reads it as the same units; the artifact reads it the
+    same way, so the text is known and not refused as another content. The
+    hash is that of the text with LF."""
+    _setup(db, monkeypatch)
+    submit = ["append", "--source", "cli", "--external-id", "a", "--text"]
+    assert main([*submit, "Erster Absatz.\n\nZweiter Absatz."]) == 0
+    assert main([*submit, f"Erster Absatz.{ending}{ending}Zweiter Absatz."]) == 0
+    out, err = capsys.readouterr()
+    assert (out, err) == ("1\n1\n", "")
+
+    assert main(["show", "1"]) == 0
+    expected = artifact_hash_of(
+        {"text": "Erster Absatz.\n\nZweiter Absatz.", "attachments": []}
+    ).hex()
+    assert f'"artifact_hash": "{expected}"' in capsys.readouterr().out
+
+
+@pytest.mark.db
+def test_a_text_that_differs_in_more_than_its_line_endings_is_refused(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control of the test above: the line endings are all that is
+    made alike."""
+    _setup(db, monkeypatch)
+    submit = ["append", "--source", "cli", "--external-id", "a", "--text"]
+    assert main([*submit, "Erster Absatz.\n\nZweiter Absatz."]) == 0
+    assert main([*submit, "Erster Absatz.\r\n\r\nZweiter Absatz!"]) == 2
+    assert "is known with another content" in capsys.readouterr().err
+
+
 @pytest.mark.db
 def test_show_displays_the_event_with_its_units(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch

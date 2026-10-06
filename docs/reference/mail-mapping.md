@@ -15,8 +15,8 @@ It uses no network and no database.
 | Field | Value |
 |---|---|
 | `source` | `email`, whatever the mailbox or the folder. |
-| `external_id` | The `Message-ID` header without its angle brackets and without the blanks around them. A mail without a `Message-ID`, or with an empty one, has `sha256:` and the artifact hash in hexadecimal. |
-| `occurred_at` | The `Date` header, when it reads as a moment with a time zone. Otherwise the server's arrival time, `INTERNALDATE`. A `Date` with the zone `-0000` names no zone and falls back too. |
+| `external_id` | The `Message-ID` header without its angle brackets and without the blanks around them. A mail without a `Message-ID`, with an empty one, or with one longer than 998 bytes in UTF-8, has `sha256:` and the artifact hash in hexadecimal. |
+| `occurred_at` | The `Date` header, when it reads as a moment with a time zone that has a time in UTC. Otherwise the server's arrival time, `INTERNALDATE`. A `Date` with the zone `-0000` names no zone and falls back too, and so does a moment that lies beyond the year 9999 in UTC, such as `Fri, 31 Dec 9999 23:30:00 -0100`. |
 | `evidence` | `verbatim`. |
 | `units` | See *Units*. |
 | `artifact_hash` | See *Artifact identity*. |
@@ -128,6 +128,7 @@ Every address of the headers `From`, `Sender`, `Reply-To`, `To`, `Cc` and `Bcc`,
 
 A group contributes its members, an empty group nothing.
 An address list the parser can't read in full contributes the addresses it reads.
+A header on which the parser raises an exception, such as `To: eva.huber@example.org, "` with its lone quote, contributes no address, and the mail maps as usual; the header stays under `headers` as written.
 
 ## Blobs
 
@@ -229,8 +230,9 @@ A part that declares a character set Python knows as an encoding of bytes and no
 | The variant key held with yet another artifact hash, which takes two artifact hashes that share their first 64 bits | The run stops with `ArtifactChanged`, and the batch it was gathering isn't written. |
 | An event under the key that has been erased | Known: no event, no blob stored. |
 | No Message-ID | The key `sha256:<artifact hash>`. Two mails without a Message-ID and with the same subject, body and attachments, such as a daily `Backup OK`, are one event. |
-| No `Date`, or one that doesn't read as a moment with a zone | `occurred_at` is `INTERNALDATE`, and `date_source` is `internaldate`. |
-| HTML only | Converted; see *HTML*. |
+| No `Date`, or one that doesn't read as a moment with a zone that has a time in UTC | `occurred_at` is `INTERNALDATE`, and `date_source` is `internaldate`. |
+| A Message-ID longer than 998 bytes in UTF-8, which the key index of the log would refuse | The key `sha256:<artifact hash>`, as without a Message-ID; the Message-ID stays under `headers`. |
+| HTML only | Converted; see *Text from markup*. |
 | Signed, as `multipart/signed` | The signed text is the body; the signature is an attachment. |
 | Signed opaquely, as `application/pkcs7-mime` with `smime-type=signed-data` | No body: `no readable body: attachments only`, with the signed content as an attachment. |
 | Encrypted | `no readable body: encrypted`; nothing is decrypted, and the encrypted parts are attachments. |

@@ -21,6 +21,7 @@ they are.
 """
 
 import base64
+import hashlib
 import pathlib
 import quopri
 
@@ -859,6 +860,60 @@ RELATED_WITHOUT_START = _lines(
     "--rel--",
 )
 
+# Hexadecimal digits that do not repeat in any pattern, so that PostgreSQL
+# cannot compress them into an index entry smaller than they are: SHA-256
+# digests of the numbers from 0, one after the other.
+_DIGEST_CHAIN = "".join(hashlib.sha256(str(i).encode()).hexdigest() for i in range(64))
+
+
+def digest_text(length: int) -> str:
+    """`length` hexadecimal digits out of the chain of digests."""
+    assert length <= len(_DIGEST_CHAIN)
+    return _DIGEST_CHAIN[:length]
+
+
+# A Message-ID of 3,200 hexadecimal digits and a domain: longer than the key
+# index of the log takes, and longer than a line may be.
+LONG_MESSAGE_ID = digest_text(3200) + "@example.org"
+
+MESSAGE_ID_LONG = _lines(
+    "From: newsletter@example.com",
+    "To: office@example.org",
+    "Subject: Eine sehr lange Kennung",
+    "Date: Thu, 08 Oct 2026 07:00:00 +0200",
+    f"Message-ID: <{LONG_MESSAGE_ID}>",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "Der Text ist kurz, die Kennung nicht.",
+)
+
+# A date that parses, with a zone, and has no time in UTC: west of UTC, the
+# last half hour of the year 9999 is already the year 10000.
+DATE_OUT_OF_RANGE = _lines(
+    "From: spam@example.com",
+    "To: office@example.org",
+    "Subject: Ganz dringend",
+    "Date: Fri, 31 Dec 9999 23:30:00 -0100",
+    "Message-ID: <far-future@example.com>",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "Diese Mail kommt aus der Zukunft.",
+)
+
+# An address list that ends in a lone quote, which the standard library's
+# parser raises on; the `From` and `Cc` beside it are whole.
+ADDRESS_LONE_QUOTE = _lines(
+    "From: Max Gruber <max@example.net>",
+    'To: eva.huber@example.org, "',
+    "Cc: office@example.org",
+    "Subject: Unterlagen",
+    "Date: Thu, 08 Oct 2026 09:30:00 +0200",
+    "Message-ID: <lone-quote@example.net>",
+    "Content-Type: text/plain; charset=utf-8",
+    "",
+    "Die Unterlagen kommen morgen.",
+)
+
 MAILS: dict[str, bytes] = {
     "plain": PLAIN,
     "plain_other_transport": PLAIN_OTHER_TRANSPORT,
@@ -901,6 +956,9 @@ MAILS: dict[str, bytes] = {
     "forwarded_unreadable": FORWARDED_UNREADABLE,
     "alternative_related": ALTERNATIVE_RELATED,
     "related_without_start": RELATED_WITHOUT_START,
+    "message_id_long": MESSAGE_ID_LONG,
+    "date_out_of_range": DATE_OUT_OF_RANGE,
+    "address_lone_quote": ADDRESS_LONE_QUOTE,
 }
 
 

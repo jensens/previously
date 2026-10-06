@@ -133,10 +133,11 @@ The payload of the event is a JSON object that holds the artifact hash under `ar
 ```
 
 The artifact hash is the SHA-256 of the canonical form of `{"text": <--text>, "attachments": <the attachment addresses, sorted>}`, here for `--text Hello` without attachments; see {ref}`artifact-identity`.
+The text enters with every line ending as LF, CRLF and a lone CR included, the way `append` splits it into units.
 With `--attach`, the payload carries a third key, `blobs`; see *Attachments* below.
 
 `append` prints exactly one line to standard output: the new event's `id`.
-Calling `append` again with the same `--source`, `--external-id` and `--text`, and the same attachments in any order, doesn't create a second event.
+Calling `append` again with the same `--source`, `--external-id` and `--text`, the text with other line endings included, and the same attachments in any order, doesn't create a second event.
 It prints the existing event's `id` and returns 0.
 An event that was erased, or that was written before events carried an artifact hash, counts as the same whatever the text.
 

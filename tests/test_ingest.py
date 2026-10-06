@@ -24,6 +24,7 @@ from previously.core.ingest import ingest
 from previously.core.ingest import Ingested
 from previously.core.mail import map_mail
 from previously.core.mail import Mapped
+from previously.core.mail import MAX_MESSAGE_ID_BYTES
 from previously.core.mail import variant_key
 from previously.core.redact import redact_event
 from previously.core.sealing import recipient_of
@@ -290,6 +291,29 @@ def test_another_content_under_a_known_message_id_is_a_variant(
     assert _payload(log[key])["variant_of"] == PLAIN_ID
     assert "variant_of" not in _payload(log[PLAIN_ID])
     assert _payload(log[key])["raw"] == _sha256(mailfiles.PLAIN_OTHER_BODY)
+
+
+def test_the_longest_key_a_message_id_gives_fits_the_key_index(
+    db: Engine, blob_store: S3BlobStore, age_identity: str
+) -> None:
+    """A Message-ID of `MAX_MESSAGE_ID_BYTES` and another content under it:
+    the variant key is the longest key a run builds out of a Message-ID, and
+    the key index of the log takes it. The Message-ID is made of digits that
+    do not repeat, so that PostgreSQL cannot compress the index entry below
+    its length."""
+    storage = PostgresStorage(db)
+    local = mailfiles.digest_text(MAX_MESSAGE_ID_BYTES - len("@example.org"))
+    message_id = f"{local}@example.org"
+    first = _mail(local)
+    second = _mail(local, attachment=("Angebot.pdf", OFFER_PDF))
+
+    result = _run(storage, blob_store, ListConnector("INBOX", [first, second]), age_identity)
+
+    key = variant_key(message_id, _artifact(second))
+    assert len(key.encode("utf-8")) == MAX_MESSAGE_ID_BYTES + 17
+    log = _events(storage)
+    assert set(log) == {message_id, key}
+    assert result.variants == ((message_id, log[key].id),)
 
 
 def test_an_attachment_in_two_mails_is_one_object(

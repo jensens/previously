@@ -847,3 +847,90 @@ def test_the_identity_does_not_depend_on_the_transfer_encoding() -> None:
         mapped = map_mail(raw, internaldate=INTERNALDATE, found_in=FOUND_IN)
         assert _contents(mapped) == _contents(plain)
         assert mapped.event.artifact_hash == plain.event.artifact_hash
+
+
+# --- what the log would refuse -----------------------------------------------
+#
+# `map_mail` never raises for what a mail contains, but a value it returns
+# can still be one `append` refuses, and then the batch fails at every run.
+
+
+def test_a_message_id_too_long_for_the_key_index_falls_back_to_the_artifact_hash() -> None:
+    """3,200 hexadecimal digits and a domain: the key index of the log would
+    refuse it. The Message-ID stays under `headers` as written."""
+    mapped = _map("message_id_long")
+    event = mapped.event
+    assert event.artifact_hash is not None
+    assert event.external_id == "sha256:" + event.artifact_hash.hex()
+    assert ["Message-ID", f"<{mailfiles.LONG_MESSAGE_ID}>"] in _headers(mapped)
+    assert _contents(mapped) == ["Eine sehr lange Kennung", "Der Text ist kurz, die Kennung nicht."]
+
+
+@pytest.mark.parametrize(
+    ("message_id", "kept"),
+    [
+        ("a" * 986 + "@example.org", True),
+        ("a" * 987 + "@example.org", False),
+        ("ü" * 493 + "@example.org", True),
+        ("ü" * 493 + "a@example.org", False),
+    ],
+    ids=["ascii-998-bytes", "ascii-999-bytes", "utf8-998-bytes", "utf8-999-bytes"],
+)
+def test_the_bound_on_a_message_id_counts_utf_8_bytes(message_id: str, kept: bool) -> None:
+    """998 bytes are a key, 999 are not, and a byte is not a character:
+    `ü` takes two, so 506 characters are 999 bytes."""
+    original = b"Message-ID: <20261005101500.4711@example.net>"
+    raw = mailfiles.PLAIN.replace(original, f"Message-ID: <{message_id}>".encode())
+    event = map_mail(raw, internaldate=INTERNALDATE, found_in=FOUND_IN).event
+    assert event.artifact_hash is not None
+    expected = message_id if kept else "sha256:" + event.artifact_hash.hex()
+    assert event.external_id == expected
+
+
+@pytest.mark.parametrize(
+    ("zone", "occurred_at", "date_source"),
+    [
+        ("-0100", INTERNALDATE, "internaldate"),
+        ("+0100", datetime(9999, 12, 31, 23, 30, tzinfo=CET), "header"),
+    ],
+    ids=["west-of-utc", "east-of-utc"],
+)
+def test_a_date_with_no_time_in_utc_falls_back_to_internaldate(
+    zone: str, occurred_at: datetime, date_source: str
+) -> None:
+    """West of UTC, the last half hour of the year 9999 lies in the year
+    10000, which no `datetime` reaches; east of it, the same date is an
+    ordinary moment and stays the header's. The header stays under
+    `headers` as written either way."""
+    date = f"Fri, 31 Dec 9999 23:30:00 {zone}"
+    raw = mailfiles.DATE_OUT_OF_RANGE.replace(
+        b"Fri, 31 Dec 9999 23:30:00 -0100", date.encode("ascii")
+    )
+    mapped = map_mail(raw, internaldate=INTERNALDATE, found_in=FOUND_IN)
+    assert mapped.event.occurred_at == occurred_at
+    assert mapped.event.payload["date_source"] == date_source
+    assert ["Date", date] in _headers(mapped)
+
+
+def test_an_address_list_the_parser_raises_on_contributes_no_identity() -> None:
+    """`To` ends in a lone quote: that header contributes nothing, and the
+    mail maps as it would without it — subject, text, and the addresses of
+    the headers beside it."""
+    mapped = _map("address_lone_quote")
+    assert _contents(mapped) == ["Unterlagen", "Die Unterlagen kommen morgen."]
+    assert mapped.event.channel_identities == (
+        ChannelIdentity("email", "from", "max@example.net", "Max Gruber"),
+        ChannelIdentity("email", "cc", "office@example.org", None),
+    )
+    assert ["To", 'eva.huber@example.org, "'] in _headers(mapped)
+
+
+def test_the_same_address_list_without_the_quote_contributes_its_address() -> None:
+    """The control of the test above: the list it breaks is read."""
+    whole = mailfiles.ADDRESS_LONE_QUOTE.replace(b'org, "', b"org")
+    event = map_mail(whole, internaldate=INTERNALDATE, found_in=FOUND_IN).event
+    assert event.channel_identities == (
+        ChannelIdentity("email", "from", "max@example.net", "Max Gruber"),
+        ChannelIdentity("email", "to", "eva.huber@example.org", None),
+        ChannelIdentity("email", "cc", "office@example.org", None),
+    )

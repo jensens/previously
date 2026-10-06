@@ -51,7 +51,7 @@ A `RawEvent` may name the artifact it was taken from and the identities its chan
 
 `previously.core.identity.artifact_hash_of` computes an artifact hash: the SHA-256 of the canonical bytes of a document, without a salt.
 The caller decides which document describes the artifact.
-For `previously append` it's `{"text": <the text>, "attachments": <the attachment addresses, sorted>}`.
+For `previously append` it's `{"text": <the text, every line ending as LF>, "attachments": <the attachment addresses, sorted>}`.
 
 `append` compares the artifact hash when an event with the same `source` and `external_id` exists already:
 
