@@ -60,6 +60,7 @@ if TYPE_CHECKING:
     from previously.contract.rows import SourceStatsRow
     from previously.contract.rows import Tip
     from previously.contract.rows import UnitRow
+    from previously.contract.types import Watermark
 
 
 class LogStore[Conn](Protocol):
@@ -153,3 +154,20 @@ class ProjectionStore[Conn](Protocol):
     def delete_chronicle(self, conn: Conn, event_id: int, seqs: Sequence[int] | None) -> None: ...
     def source_stats(self, conn: Conn, sources: Sequence[str]) -> dict[str, SourceStatsRow]: ...
     def upsert_source_stats(self, conn: Conn, rows: Sequence[SourceStatsRow]) -> None: ...
+
+
+class WatermarkStore[Conn](Protocol):
+    """How far each connector has read, one row per connector.
+
+    A protocol of its own, so that what a connector remembers stays apart
+    from the log: nothing typed against `LogStore` can write a watermark, and
+    nothing typed against this one can append. `watermark` reads the row of
+    one connector, or `None` when it has read nothing yet. `set_watermark`
+    writes the row and replaces whatever stood there, the position as a
+    whole; it runs in the caller's transaction, so that a watermark can stand
+    or fall with the events it covers. It refuses a `set_at` without a time
+    zone with a `ValueError`.
+    """
+
+    def watermark(self, conn: Conn, connector: str) -> Watermark | None: ...
+    def set_watermark(self, conn: Conn, mark: Watermark) -> None: ...

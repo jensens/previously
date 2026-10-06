@@ -533,3 +533,26 @@ def test_the_projection_tables_exist(db: Engine) -> None:
         )
     assert {"projection_state", "p_chronicle", "p_source_stats"} <= names
     assert {"projection_state", "p_chronicle", "p_source_stats"} <= set(metadata.tables)
+
+
+@pytest.mark.db
+def test_the_watermark_table_is_declared_and_migrated(db: Engine) -> None:
+    """The watermark table stands in `metadata` and in the migrated database,
+    with the primary key the store's upsert depends on: `ON CONFLICT` names
+    `connector`, and without that key a second write would add a row instead
+    of replacing one. The columns and their `NOT NULL` are held by
+    `test_the_declared_columns_match_the_migrated_database` above."""
+    assert "watermark" in metadata.tables
+    with db.connect() as c:
+        key = set(
+            c.execute(
+                text(
+                    "SELECT a.attname FROM pg_index i "
+                    "JOIN pg_attribute a ON a.attrelid = i.indrelid AND a.attnum = ANY(i.indkey) "
+                    "WHERE i.indrelid = 'watermark'::regclass AND i.indisprimary"
+                )
+            )
+            .scalars()
+            .all()
+        )
+    assert key == {"connector"}
