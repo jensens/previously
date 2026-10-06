@@ -35,11 +35,13 @@ class ArtifactChanged(PreviouslyError):
     ({ref}`artifact-identity`).
 
     The event under `(source, external_id)` carries the artifact hash
-    `known`, and the sighting brought `arrived`. Raised by `append` before
-    anything of the batch is written. What happens then is the caller's
-    decision, never `append`'s: the command line reports it and returns 2,
-    and a connector whose artifacts should not change takes the deviating
-    one in under a key of its own.
+    `known`, and the sighting brought `arrived`. `append` raises it inside
+    its transaction, which rolls back, so nothing of the batch is kept — the
+    events it had written before the refused one included. `core.ingest`
+    raises it from its own lookup too, before it stores a mail's blobs. What
+    happens then is the caller's decision, never `append`'s: the command
+    line reports it and returns 2, and a connector whose artifacts should
+    not change takes the deviating one in under a key of its own.
 
     The message shows the first 16 hexadecimal characters of each hash:
     enough to tell two apart on a terminal, and the full values are on the

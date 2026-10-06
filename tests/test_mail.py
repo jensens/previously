@@ -2,7 +2,7 @@
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """A mail as an event: the raw bytes of a mail mapped onto an event, its
-attachments and the mails forwarded inside it ({ref}`artifact-identity`).
+attachments and the mails forwarded inside it ({ref}`mail-mapping`).
 
 The mails are files under `tests/mails/`, written by `tests/mailfiles.py`;
 every expected value here is stated from the bytes there, not read back from
@@ -646,7 +646,16 @@ def test_nesting_is_unpacked_down_to_five_and_the_sixth_stays_an_attachment() ->
     assert level.event.payload["not_unpacked"] == [_sha(sixth)]
 
 
-# --- every text part of the content (ruling T2-d) ----------------------------
+# --- every text part of the content ------------------------------------------
+#
+# Ruling T2-d of the 2026-10-06 pilot ingest plan, whose ledger is
+# `docs/superpowers/sdd/2026-10-06-pilot-imap-aufnahme/progress.md`: the body
+# is every text part of the content, in order, and a text part with a file
+# name is an attachment. Taking the first text part alone lost text of
+# ordinary mail without a trace — the second half of a text Apple Mail splits
+# around a PDF, or the HTML beside an empty plain part —, and the identity
+# runs over the chosen parts with LF line endings, so that an LF copy of a
+# mail is no variant of it.
 
 
 def test_text_on_both_sides_of_an_attachment_is_all_body() -> None:
@@ -728,7 +737,15 @@ def test_the_body_hash_covers_every_chosen_part_in_order() -> None:
     assert _map("apple_split").event.artifact_hash == expected
 
 
-# --- charsets (ruling T2-e) --------------------------------------------------
+# --- charsets ----------------------------------------------------------------
+#
+# Ruling T2-e of the 2026-10-06 pilot ingest plan: a declared ISO-8859-1 is
+# read as Windows-1252, and a charset nobody declared, US-ASCII with a byte
+# above 127, or a name Python does not know is guessed, strict UTF-8 first,
+# and the guess is noted. Windows clients write Windows-1252 under the label
+# ISO-8859-1, where ISO-8859-1 has invisible control characters for „“, – and
+# €; and U+FFFD in place of every umlaut would be a silent loss in the one
+# part of the mail a person reads.
 
 
 def test_iso_8859_1_is_read_as_windows_1252() -> None:
@@ -777,7 +794,18 @@ def test_a_charset_that_cannot_be_trusted_is_guessed_and_says_so(
     ]
 
 
-# --- a mail that does not map (rulings T2-b and T2-f) ------------------------
+# --- a mail that does not map ------------------------------------------------
+#
+# Ruling T2-b of the 2026-10-06 pilot ingest plan: `map_mail` never raises for
+# what a mail contains, and a mail that does not map becomes an event of what
+# is safe to say about it. Broken mail exists, and a run that stopped at one
+# mail would stop there at every run after it and take in nothing more; the
+# raw mail is kept, so a better parser can read it later.
+#
+# Ruling T2-f of the 2026-10-06 pilot ingest plan: that holds per mail, so an
+# inner mail that does not map leaves the outer one as it is, and the unit
+# names the class of the error and never its message, which can quote a
+# header.
 
 
 def test_a_mail_that_does_not_map_becomes_an_event_from_what_is_safe() -> None:
@@ -808,7 +836,13 @@ def test_an_inner_mail_that_does_not_map_does_not_sink_the_outer_one() -> None:
     assert _contents(inner) == ["unreadable mail: UnicodeEncodeError"]
 
 
-# --- headers (ruling T2-g) ---------------------------------------------------
+# --- headers -----------------------------------------------------------------
+#
+# Ruling T2-g of the 2026-10-06 pilot ingest plan: of the review's small
+# findings on the mapping, the ones that ordinary mail meets were fixed —
+# a replaced character in the subject is noted, a subject folded with a tab
+# is the subject folded with a blank, and the identity does not depend on
+# the transfer encoding an MTA or a client chose.
 
 
 def test_a_replaced_character_in_the_subject_is_noted() -> None:

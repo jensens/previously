@@ -428,9 +428,12 @@ def test_a_batch_the_log_refuses_leaves_the_watermark(
     db: Engine, blob_store: S3BlobStore, age_identity: str
 ) -> None:
     """Another writer appends the Message-ID of the first mail with another
-    artifact, and its variant key with yet another, after the run looked
-    both up. `append` refuses the batch, the variant's key too, and the run
-    stops with the refusal — before the watermark, which stays unset."""
+    artifact, and under the variant key the run will turn the first mail
+    into, the same other artifact, after the run looked the Message-ID up
+    and before it appends. `append` refuses the Message-ID, the run turns
+    the mail into its variant, `append` refuses the variant key too, and
+    the run stops with the refusal — before the watermark, which stays
+    unset."""
     storage = PostgresStorage(db)
     other = map_mail(mailfiles.PLAIN_OTHER_BODY, internaldate=INTERNALDATE, found_in={}).event
     taken = variant_key(PLAIN_ID, _artifact(mailfiles.PLAIN))
@@ -620,12 +623,16 @@ def test_a_run_holds_one_mail_at_a_time(
 
     The interpreter runs with glibc's `MALLOC_MMAP_THRESHOLD_` fixed at its
     default of 128 KiB. Left alone, glibc raises the threshold to the size of
-    the largest block freed so far, so from the second mail on the blocks of
-    a mail come from the heap, which it gives back to the system only in
-    part. Measured that day, 1, 3 and 6 such mails raised the peak by 241,
-    346 and 383 MiB without the setting, and by 240, 241 and 241 MiB with
-    it. What the test holds is that the run lets go of a mail, which the
-    fixed threshold shows and the moving one hides.
+    the largest block freed so far, up to 32 MiB on a 64-bit system, so from
+    the second mail on the blocks of a mail come from the heap, which it
+    gives back to the system only in part. Measured that day, one run each,
+    1, 3 and 6 such mails raised the peak by 241, 346 and 383 MiB without
+    the setting, and by 240, 241 and 241 MiB with it. With the setting the
+    figures came back the same in every run measured, three for three
+    mails; without it they move from run to run, 322, 322 and 349 MiB for
+    three mails in the task review the same day. What the test holds is
+    that the run lets go of a mail, which the fixed threshold shows and the
+    moving one hides.
 
     The bound lies between two measurements of that day, three mails with
     the threshold fixed, three runs each: the run as it is raised the peak

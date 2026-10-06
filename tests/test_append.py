@@ -483,9 +483,9 @@ def test_a_seq_below_one_is_refused(db: Engine) -> None:
         units=(RawUnit(seq=0, content="x"),),
         payload={},
     )
-    # The whole clause, not just "seq" (finding N5): four of the six messages
-    # in `_check_units` carry the word "seq", so "seq" would stay green on any
-    # of the other three complaints about this unit.
+    # The whole clause, not just "seq" (finding N5): two of the seven
+    # messages of `check_units` carry the word "seq", so "seq" would stay
+    # green on the other one, the complaint about a duplicate.
     with pytest.raises(InvalidPayload, match=r"seq must be >= 1"):
         append(storage, [event], recorded_at=NOW)
 
@@ -527,8 +527,8 @@ def test_a_null_byte_in_a_unit_is_refused(db: Engine) -> None:
 @pytest.mark.db
 def test_a_lone_surrogate_in_a_unit_is_refused_by_name(db: Engine) -> None:
     """The message names the unit, as for a null byte, before anything is
-    written. Measured on 2026-10-05 with the check in `_check_units`
-    removed: the unit digest refused it as `$.content: string not
+    written. Measured on 2026-10-05 with the check in `check_units`, then
+    named `_check_units`, removed: the unit digest refused it as `$.content: string not
     representable as UTF-8 ...`, which names no unit."""
     storage = PostgresStorage(db)
     event = RawEvent(

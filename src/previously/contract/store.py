@@ -5,15 +5,19 @@ r"""The store protocols: what `core` may ask of a store, and nothing more.
 
 `LogStore` is what the modules of `core` that write or read the log call —
 thirteen methods, counted on 2026-10-05, after the final fixes of stage 1c,
-by this command, run from the root of the repository in bash or fish:
+and counted again on 2026-10-06 once `core/ingest.py` had joined, which
+calls none the others do not, by this command, run from the root of the
+repository in bash or fish:
 
     grep -ohE '(storage|log)\.[a-z_]*\(' src/previously/core/append.py \
         src/previously/core/verify.py src/previously/core/redact.py \
         src/previously/core/redaction.py src/previously/core/projection/worker.py \
+        src/previously/core/ingest.py \
         | sed 's/.*\.//' | sort -u | wc -l
 
-The files are the five modules that name `LogStore` today, and the count is
-not copied from the method list of the implementation. The docstring is raw
+The files are the six modules that name `LogStore` today, found with
+`grep -rl LogStore src/previously/core`, and the count is not copied from
+the method list of the implementation. The docstring is raw
 so that the text in this file is the command, backslashes as they stand.
 Without the `sed` stage, as the command stood here until then, `sort -u`
 leaves 21 lines, a name once for each of the two prefixes it is called

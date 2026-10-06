@@ -188,11 +188,11 @@ event_blob = Table(
 # other direction.
 Index("event_blob_sha256_idx", event_blob.c.sha256)
 
-# How far each connector has read: one row per connector,
-# replaced as a whole on every write. The position is the connector's own and
-# opaque here, a JSON object of text to text. Not a projection: it cannot be
-# derived from the log, and losing it costs a re-read of the whole source
-# rather than a rebuild.
+# How far each connector has read: one row per connector, replaced as a
+# whole on every write. The position is the connector's own and opaque here,
+# a JSON object of text to text. Not a projection: it cannot be derived from
+# the log, and losing it costs a re-read of the whole source rather than a
+# rebuild.
 watermark = Table(
     "watermark",
     metadata,

@@ -58,12 +58,12 @@ For `previously append` it's `{"text": <the text, every line ending as LF>, "att
 | The existing event | Result |
 |---|---|
 | carries the same `artifact_hash` | Known: `append` returns its `id` and writes nothing. |
-| carries another `artifact_hash` | Refused with `previously.core.errors.ArtifactChanged`, and nothing of the batch is written. |
+| carries another `artifact_hash` | Refused with `previously.core.errors.ArtifactChanged`, inside the transaction, which rolls back: nothing of the batch is kept, the events before the refused one included. |
 | is erased, with its payload `NULL` | Known: a new sighting doesn't undo an erasure. |
 | carries no `artifact_hash` | Known. |
 
 A sighting whose `artifact_hash` is `None` compares nothing and is known.
-A value under `artifact_hash` that isn't 64 lowercase hexadecimal characters counts as no `artifact_hash`; only an event written before the key was reserved can carry one.
+A value under `artifact_hash` that isn't 64 lowercase hexadecimal characters counts as no `artifact_hash`; `append` refuses a payload that carries the key, so such a value comes from an event written before the key was reserved, or written into the store without `append`.
 `ArtifactChanged` carries `source`, `external_id`, `known` and `arrived`, and its message shows the first 16 hexadecimal characters of each hash:
 
 ```text

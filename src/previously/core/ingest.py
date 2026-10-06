@@ -1,7 +1,7 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""Taking in what a connector fetches: the run ({ref}`artifact-identity`).
+"""Taking in what a connector fetches: the run ({ref}`connectors`).
 
 One function, `ingest`. It reads the connector's watermark, asks the
 connector for what is new since, and for every mail it is handed:
@@ -32,9 +32,10 @@ another writer appended in between: a key that has turned up with another
 artifact since the lookup turns the event into a variant there too, and the
 batch is appended again. Its blobs stay the same; only the key changes.
 
-Memory: one mail at a time. Its attachments and the mails inside it are
-held while it is mapped and stored, and let go once its events are in the
-batch; a batch holds events with their references, not their content.
+Memory: one mail at a time. Its raw mail, its attachments and the mails
+inside it are held while it is mapped and stored, and let go once its events
+are in the batch; a batch holds events with their units and the references
+to their blobs, not the raw mails or the attachments.
 """
 
 from collections.abc import Mapping
@@ -217,8 +218,9 @@ class _Run[Conn]:
         artifact; raises `ArtifactChanged` when either holds another."""
         key = (event.source, event.external_id)
         if key in self.in_batch:
-            # The rule of `append`: a hash that is not given compares with
-            # nothing.
+            # The rule of `append` (`append.known_id`), for a key the log
+            # does not hold yet: a hash that is not given compares with
+            # nothing. A change to the rule there has to come here too.
             known = self.in_batch[key]
             arrived = event.artifact_hash
             if known is not None and arrived is not None and known != arrived:

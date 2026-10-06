@@ -1,7 +1,7 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""A mail as an event ({ref}`artifact-identity`).
+"""A mail as an event ({ref}`connectors`).
 
 `map_mail` takes the raw bytes of one mail and gives back the event, the
 attachments, and the mails attached to it, each mapped the same way. It is
@@ -454,12 +454,17 @@ def _unfolded(value: object) -> str:
 
 
 def _recovered(text: str) -> str:
-    """A header byte outside ASCII arrives from the parser as an escaped
-    byte — raw in the header, or out of an encoded word labelled
-    `unknown-8bit`, which is how the standard library writes such a header
-    back out. It is read as UTF-8 if the bytes are UTF-8, which RFC 6532
-    allows in a header, and as Windows-1252 otherwise — what an old mailer
-    writes."""
+    """A byte outside ASCII that stands raw in a header arrives from the
+    parser as an escaped byte. It is read as UTF-8 if the bytes are UTF-8,
+    which RFC 6532 allows in a header, and as Windows-1252 otherwise — what
+    an old mailer writes.
+
+    An encoded word is still encoded here: `_headers` has it decoded after
+    this, by the header registry. So the bytes of an encoded word labelled
+    `unknown-8bit`, which is how the standard library writes raw bytes back
+    out, are not recovered; they become U+FFFD, and `headers_replaced` names
+    the header — measured on 2026-10-06, `=?unknown-8bit?q?Gr=FC=DFe?=`
+    became `Gr\ufffd\ufffde`."""
     if not _ESCAPED_BYTE.search(text):
         return text
     # A lone surrogate beside the escaped bytes, which no byte made, does
