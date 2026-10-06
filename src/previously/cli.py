@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from datetime import datetime
 from datetime import UTC
 from pathlib import Path
+from previously.connectors.imap import ImapConnector
+from previously.connectors.imap import PORT as IMAP_PORT
 from previously.contract.types import BlobRef
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
@@ -36,6 +38,7 @@ from previously.core.errors import SinkUnwritable
 from previously.core.errors import SourceUnreadable
 from previously.core.hashing import is_address
 from previously.core.identity import artifact_hash_of
+from previously.core.ingest import ingest
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
 from previously.core.projection import Outcome
@@ -66,6 +69,7 @@ import json
 import mimetypes
 import os
 import signal
+import ssl
 import sys
 import tempfile
 
@@ -463,6 +467,74 @@ def _cmd_append(args: argparse.Namespace) -> int:
         )
         ids = append(storage, [event], recorded_at=datetime.now(UTC))
     print(ids[0])
+    return 0
+
+
+# --- Taking in mail ({ref}`cli-reference`) -------------------------------------
+
+
+def _ingest_arguments(parser: argparse.ArgumentParser) -> None:
+    # A second level, like `blob`: the source is a word of its own, and the
+    # next connector is the next word beside it.
+    sources = parser.add_subparsers(dest="source", required=True)
+    sentence = "take in the mail an IMAP folder holds above the watermark of the last run"
+    sources.add_parser("imap", help=sentence, description=sentence)
+
+
+def _imap_port() -> int:
+    """`PREVIOUSLY_IMAP_PORT`, or the port of IMAP over TLS when it is unset
+    or empty, like every other setting that is empty."""
+    text = os.environ.get("PREVIOUSLY_IMAP_PORT") or str(IMAP_PORT)
+    if not (text.isascii() and text.isdigit() and 0 < int(text) < 65536):
+        raise PreviouslyError(f"PREVIOUSLY_IMAP_PORT is not a port number: {text!r}")
+    return int(text)
+
+
+def _imap_connector() -> ImapConnector:
+    """The folder out of its five settings, read before anything connects.
+
+    The certificate is verified against the system's trust store, and so is
+    the host name: `ssl.create_default_context()`, with no setting that turns
+    it off. A server with a certificate of its own is trusted the way
+    OpenSSL trusts anything, through `SSL_CERT_FILE` or the trust store, not
+    through a switch of this command.
+    """
+    return ImapConnector(
+        host=_setting("PREVIOUSLY_IMAP_HOST"),
+        port=_imap_port(),
+        user=_setting("PREVIOUSLY_IMAP_USER"),
+        password=_setting("PREVIOUSLY_IMAP_PASSWORD"),
+        folder=_setting("PREVIOUSLY_IMAP_FOLDER"),
+        ssl_context=ssl.create_default_context(),
+    )
+
+
+def _cmd_ingest(_args: argparse.Namespace) -> int:
+    """Takes in what the folder holds above its watermark ({ref}`cli-reference`).
+
+    Every setting is read, and the recipient checked, before anything
+    connects: the folder's five, the recipient, `PREVIOUSLY_DSN` and the
+    store's five, in that order. The directory of identities is not among
+    them: taking in seals and opens nothing.
+
+    Standard output is one line, the counts and the UID the watermark stands
+    at; `up to uid 0` is a folder that has given nothing yet, since a UID is
+    never 0. Each variant is one line on standard error. The projections are
+    not caught up: `project` does that, and the two may run side by side.
+    """
+    connector = _imap_connector()
+    recipient = _recipient()
+    with _storage() as storage, _blob_store() as store:
+        result = ingest(
+            storage, storage, store, connector, recipient=recipient, recorded_at=datetime.now(UTC)
+        )
+    for message_id, event_id in result.variants:
+        print(f"variant of {message_id}: event {event_id}", file=sys.stderr)
+    uid = "0" if result.position is None else result.position["uid"]
+    print(
+        f"imap: {result.appended} appended, {result.known} known, "
+        f"{len(result.variants)} variants, up to uid {uid}"
+    )
     return 0
 
 
@@ -1134,6 +1206,7 @@ COMMANDS: tuple[Command, ...] = (
     # runs before the schema stands.
     Command("migrate", "bring the database schema up to the newest revision", _cmd_migrate),
     Command("append", "submit text", _cmd_append, _append_arguments),
+    Command("ingest", "take in new mail from an IMAP folder", _cmd_ingest, _ingest_arguments),
     Command("redact", "erase an event, units of it, or a blob", _cmd_redact, _redact_arguments),
     # "print the chronicle" until stage 1b, which is now the other command:
     # `log` is the chain order and `chronicle` the chronology ({ref}`projections`).

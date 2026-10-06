@@ -462,9 +462,9 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     five restrictions below" with a row missing. Deriving the payloads from
     the code is the fix and it is not built yet.
 
-    The second half holds the ten standard-error sentences, the two
+    The second half holds the eleven standard-error sentences, the two
     lines of `redact` and the three of `migrate` on standard output that
-    `cli.md` quotes, in ten blocks, against the literals in `cli.py` — not
+    `cli.md` quotes, in eleven blocks, against the literals in `cli.py` — not
     the line `blob get` prints on success, which `_message_patterns` does
     not collect, since it reads standard-error sentences and returned lines
     only; the seven refusals of `redact` against the messages
@@ -478,6 +478,10 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     unfinished redaction against the messages `cli.py` raises as
     `PreviouslyError` or `InvalidPayload` and `core/blob.py` raises as
     `BlobError`;
+    the refused port of `ingest imap` against `cli.py`, its seven errors
+    against the messages `connectors/imap.py` raises as `ImapError`, and
+    its line on standard output against the f-string `cli.py` prints it
+    with;
     the thirteen findings it quotes, three from the anchors, nine from
     the hash formats and erasure and one from the blob register, against the
     reasons `core/verify.py` hands to `Finding`; and the four findings about
@@ -528,6 +532,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         ("`migrate` prints one line to standard output, in one of two forms", 3),
         ("When no event names the blob, `blob get` returns 1", 1),
         ("When every reference to the blob is erased, `blob get` returns 1", 1),
+        ("For each variant, one notice goes to standard error", 1),
     ):
         notices = _quoted_block(page, after)
         assert len(notices) == expected, f"{after!r}: {notices}"
@@ -613,6 +618,37 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
                 "Either the code's wording changed, or the page's did."
             )
     assert quoted == 9, quoted
+
+    # `ingest imap`: the refused port out of `cli.py`, the errors of the
+    # server and the connection out of `connectors/imap.py`, raised as
+    # `ImapError` and held against that module alone, and the line on
+    # standard output against the one f-string in `cli.py` that says
+    # `appended`, since `_message_patterns` reads standard error only.
+    _assert_raised(
+        _quoted_block(page, "A port that isn't a number from 1 to 65535 is refused the same way"),
+        from_cli,
+        "PreviouslyError",
+    )
+    quoted_imap = _quoted_block(page, "Errors of the IMAP server and of the connection")
+    assert len(quoted_imap) == 7, quoted_imap
+    _assert_raised(
+        quoted_imap,
+        _raised_patterns(ROOT / "src" / "previously" / "connectors" / "imap.py", "ImapError"),
+        "ImapError",
+    )
+    counts = _quoted_block(page, "`ingest imap` prints one line to standard output")
+    assert len(counts) == 1, counts
+    said = [
+        parts
+        for node in ast.walk(ast.parse((ROOT / "src" / "previously" / "cli.py").read_text("utf-8")))
+        if isinstance(node, ast.JoinedStr)
+        and " appended, " in "".join(parts := _static_parts(node))
+    ]
+    assert len(said) == 1, said
+    assert _is_the_same_sentence(said[0], counts[0]), (
+        f"cli.md quotes {counts[0]!r} as the line of `ingest imap` and cli.py prints "
+        f"{said[0]!r}. Either the code's wording changed, or the page's did."
+    )
 
     # An unfinished redaction says what is outstanding inside an interpolation
     # of `_unfinished`, so the sentence above holds only its frame; what

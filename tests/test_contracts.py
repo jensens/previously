@@ -14,6 +14,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import previously.connectors
 import previously.core
 import previously.storage
 import pytest
@@ -45,7 +46,10 @@ _PROBE = _CORE_DIRECTORY / "_violation.py"
 # `pyrage` in `core.sealing`. A probe in `core` cannot show that one breaks,
 # since `core` is where the one allowed importer lives.
 _STORAGE_PROBE = Path(previously.storage.__file__).parent / "_violation.py"
-_PROBES = (_PROBE, _STORAGE_PROBE)
+# The third: `connectors`, beside `connectors.imap`, the one module allowed to
+# import `imaplib`.
+_CONNECTORS_PROBE = Path(previously.connectors.__file__).parent / "_violation.py"
+_PROBES = (_PROBE, _STORAGE_PROBE, _CONNECTORS_PROBE)
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -208,3 +212,21 @@ def test_html2text_outside_core_mail_breaks_its_contract() -> None:
     assert result.returncode != 0, output
     assert "Only core.mail imports html2text BROKEN" in output, output
     assert "previously.core._violation -> html2text" in output, output
+
+
+@pytest.mark.parametrize("probe", [_PROBE, _CONNECTORS_PROBE], ids=["core", "connectors"])
+def test_imaplib_outside_connectors_imap_breaks_its_contract(probe: Path) -> None:
+    """`imaplib` anywhere but `connectors.imap` breaks the contract that
+    keeps it there, by name: in `core`, which must not speak a foreign
+    protocol, and beside the one allowed importer in `connectors`, so the
+    exemption is shown to be that module and not its layer. `imaplib` is
+    part of the standard library, and `import-linter` counts it among the
+    external packages all the same."""
+    with _probe_module("import imaplib\n", probe):
+        result = _gate()
+    output = result.stdout + result.stderr
+
+    assert result.returncode != 0, output
+    assert "Only connectors.imap imports imaplib BROKEN" in output, output
+    package = probe.parent.name
+    assert f"previously.{package}._violation -> imaplib" in output, output

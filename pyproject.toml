@@ -100,8 +100,8 @@ ban-relative-imports = "all"
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "T201"]
 # Printing to stdout is what this module is for — a `# noqa: T201` on each of
-# the thirty-four `print` calls would be the same justification repeated
-# thirty-four times (ruling T9-c of the stage 1a execution, whose ledger is
+# the thirty-six `print` calls would be the same justification repeated
+# thirty-six times (ruling T9-c of the stage 1a execution, whose ledger is
 # lost, so the label resolves nowhere). The count is measured against this
 # configuration with every per-file ignore emptied out, `ruff check --select
 # T201 --config 'lint.per-file-ignores = {}' src/previously/cli.py` — that
@@ -118,6 +118,8 @@ ban-relative-imports = "all"
 # the store took it to thirty-two on 2026-10-05, measured the same way.
 # `redact units` saying that the payload stays took it to thirty-three the
 # same day, measured the same way, and `migrate` took it to thirty-four.
+# `ingest imap` took it to thirty-six on 2026-10-06, measured the same way:
+# its line on standard output and one notice per variant.
 "src/previously/cli.py" = ["T201"]
 
 [tool.ruff.lint.flake8-type-checking]
@@ -154,6 +156,7 @@ testpaths = ["tests"]
 markers = [
     "db: needs PostgreSQL (testcontainer)",
     "s3: needs an S3 server (testcontainer)",
+    "imap: needs an IMAP server (testcontainer)",
 ]
 
 [tool.coverage.run]

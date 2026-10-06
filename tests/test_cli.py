@@ -4,6 +4,7 @@
 from contextlib import contextmanager
 from datetime import datetime
 from datetime import UTC
+from mailserver import Relay
 from previously.cli import COMMANDS
 from previously.cli import escape_field
 from previously.cli import main
@@ -31,6 +32,7 @@ from typing import TYPE_CHECKING
 
 import hashlib
 import io
+import mailfiles
 import os
 import pytest
 import re
@@ -44,6 +46,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from collections.abc import Generator
     from collections.abc import Sequence
+    from mailserver import MailServer
     from previously.contract.blobs import ClosableSource
     from previously.contract.blobs import StoredBlob
     from previously.storage.s3 import S3BlobStore
@@ -3540,3 +3543,304 @@ def test_blob_get_answers_from_the_log_without_any_blob_setting(
     assert capsys.readouterr() == ("", f"blob {erased} is erased (event 3)\n")
     assert main(["blob", "get", kept, "--output", target]) == 2
     assert capsys.readouterr() == ("", "Error: PREVIOUSLY_BLOB_IDENTITIES is not set\n")
+
+
+# --- ingest imap ({ref}`cli-reference`) ---------------------------------------
+
+_IMAP_VARIABLES = (
+    "PREVIOUSLY_IMAP_HOST",
+    "PREVIOUSLY_IMAP_PORT",
+    "PREVIOUSLY_IMAP_USER",
+    "PREVIOUSLY_IMAP_PASSWORD",
+    "PREVIOUSLY_IMAP_FOLDER",
+)
+# The folder every test of `ingest imap` reads, at `127.0.0.1`: an address
+# the certificate of the test server names, and the one the relay listens on,
+# so that a run through the relay keeps the watermark of a run without it —
+# the host is part of the connector's name, the port is not.
+_IMAP_HOST = "127.0.0.1"
+_IMAP_CONNECTOR = "imap:pilot@127.0.0.1/Kunde Müller"
+
+
+@pytest.fixture
+def imap(
+    blobs: _Blobs,
+    mail_server: MailServer,
+    imap_folder: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> _Blobs:
+    """What the blob commands work with, a folder of four mails at UIDs 1 to
+    4, and the five settings that reach it.
+
+    The command line keeps no switch for a certificate it cannot verify, so
+    the test trusts the server the way OpenSSL trusts anything:
+    `SSL_CERT_FILE` names the certificate the container made, and the
+    default context reads it. The directory of identities is unset, because
+    taking in reads none."""
+    values = (_IMAP_HOST, str(mail_server.port), mail_server.user, mail_server.password)
+    for name, value in zip(_IMAP_VARIABLES, (*values, imap_folder), strict=True):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("SSL_CERT_FILE", str(mail_server.certificate))
+    monkeypatch.delenv("PREVIOUSLY_BLOB_IDENTITIES")
+    return blobs
+
+
+def _imap_watermark(engine: Engine) -> dict[str, str] | None:
+    storage = PostgresStorage(engine)
+    with storage.snapshot() as conn:
+        mark = storage.watermark(conn, _IMAP_CONNECTOR)
+    return None if mark is None else dict(mark.position)
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_takes_in_the_folder_and_a_second_run_appends_nothing(
+    imap: _Blobs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Four mails, five events — the fourth has a mail attached — and then
+    nothing new. The chronicle shows each subject once the projections are
+    caught up."""
+    assert main(["ingest", "imap"]) == 0
+    assert capsys.readouterr() == ("imap: 5 appended, 0 known, 0 variants, up to uid 4\n", "")
+    assert main(["ingest", "imap"]) == 0
+    assert capsys.readouterr() == ("imap: 0 appended, 0 known, 0 variants, up to uid 4\n", "")
+    assert _events(imap.engine) == 5
+
+    assert main(["project"]) == 0
+    capsys.readouterr()
+    assert main(["chronicle"]) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    contents = {line.split("\t")[5] for line in out.splitlines()}
+    assert {
+        "Angebot für den Relaunch",
+        "Re: Angebot für den Relaunch",
+        "AW: Angebot für den Relaunch",
+        "Fwd: Rechnung Oktober",
+        "Rechnung Oktober",
+    } <= contents
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_names_each_variant_on_standard_error(
+    imap: _Blobs, mail_server: MailServer, imap_folder: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A mail under a Message-ID the log holds with another body is taken in
+    as a variant, counted on standard output and named on standard error."""
+    assert main(["ingest", "imap"]) == 0
+    capsys.readouterr()
+    mail_server.append(imap_folder, mailfiles.PLAIN_OTHER_BODY)
+    assert main(["ingest", "imap"]) == 0
+    assert capsys.readouterr() == (
+        "imap: 1 appended, 0 known, 1 variants, up to uid 5\n",
+        "variant of 20261005101500.4711@example.net: event 6\n",
+    )
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+@pytest.mark.parametrize("tail", ["", "-Grüße"])
+def test_ingest_imap_refuses_a_wrong_password_without_printing_it(
+    imap: _Blobs,
+    mail_server: MailServer,
+    tail: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One sentence, exit code 2, and the password in neither stream: a
+    password the server refuses, and one with a character the IMAP login
+    cannot carry, which `imaplib` would otherwise end in a stack trace."""
+    password = f"wrong-{secrets.token_hex(8)}{tail}"
+    monkeypatch.setenv("PREVIOUSLY_IMAP_PASSWORD", password)
+    assert main(["ingest", "imap"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    server = f"{_IMAP_HOST}:{mail_server.port}"
+    if tail:
+        assert err == (
+            f"Error: the login of pilot at the IMAP server {server} holds a character other "
+            "than ASCII, which the IMAP login cannot carry\n"
+        )
+    else:
+        assert err == f"Error: the IMAP server {server} refused the login of pilot\n"
+    for secret in (password, password.removeprefix("wrong-"), mail_server.password):
+        assert secret not in out + err
+    assert _events(imap.engine) == 0
+    assert _imap_watermark(imap.engine) is None
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_verifies_the_certificate_and_the_host_name(
+    imap: _Blobs,
+    mail_server: MailServer,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without `SSL_CERT_FILE`, the system trusts nothing the container made;
+    with it, a name the certificate does not carry is refused all the same.
+    `127.0.0.2` reaches the same server on Linux, where all of `127.0.0.0/8`
+    is the loopback."""
+    monkeypatch.delenv("SSL_CERT_FILE")
+    assert main(["ingest", "imap"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the certificate of the IMAP server {_IMAP_HOST}:{mail_server.port} "
+        "does not verify: self-signed certificate\n",
+    )
+
+    monkeypatch.setenv("SSL_CERT_FILE", str(mail_server.certificate))
+    monkeypatch.setenv("PREVIOUSLY_IMAP_HOST", "127.0.0.2")
+    assert main(["ingest", "imap"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the certificate of the IMAP server 127.0.0.2:{mail_server.port} "
+        "does not verify: IP address mismatch, certificate is not valid for '127.0.0.2'.\n",
+    )
+    assert _events(imap.engine) == 0
+
+
+def _large_mail(number: int) -> bytes:
+    """An invented mail of a little over 1 MiB, most of it an attachment of
+    one byte value repeated: its size is what a test of the relay needs, not
+    its content."""
+    head = (
+        "From: Archiv <archiv@example.org>",
+        "To: pilot@example.org",
+        f"Subject: Scan {number}",
+        "Date: Tue, 06 Oct 2026 08:00:00 +0200",
+        f"Message-ID: <scan-large-{number}@example.org>",
+        "MIME-Version: 1.0",
+        'Content-Type: multipart/mixed; boundary="part"',
+        "",
+        "--part",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        f"Scan {number}, invented for this test.",
+        "--part",
+        "Content-Type: application/octet-stream",
+        f'Content-Disposition: attachment; filename="scan-{number}.bin"',
+        "Content-Transfer-Encoding: base64",
+        "",
+    )
+    attachment = mailfiles.base64_lines(bytes([number]) * (768 * 1024))
+    return b"\r\n".join([*(line.encode() for line in head), *attachment, b"--part--"]) + b"\r\n"
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_stops_at_a_dropped_connection_with_the_watermark_at_the_last_batch(
+    imap: _Blobs,
+    mail_server: MailServer,
+    imap_folder: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The connection breaks off in the middle of a run: one sentence, exit
+    code 2, nothing of the broken batch in the log, and the watermark where
+    the last appended batch left it. The next run takes in the rest.
+
+    The break is a relay that ends the connection once the server has sent
+    the size of the first large mail and half a mebibyte more (`Relay`): the
+    login, the search and the first mail take a few kibibytes beyond that
+    size, so the break falls about half a mebibyte into the second. Stopping
+    the container from a thread while the run fetches was the other way, and
+    it is not one a test can rely on: the session's server would be gone for
+    every later test, and where the stop lands — before the login, between
+    two mails, after the run — depends on how two threads are scheduled. A
+    byte count puts the break inside the second mail every time."""
+    assert main(["ingest", "imap"]) == 0
+    capsys.readouterr()
+    mail_server.append(imap_folder, _large_mail(1), _large_mail(2))
+
+    with Relay(mail_server, limit=len(_large_mail(1)) + 512 * 1024) as relay:
+        monkeypatch.setenv("PREVIOUSLY_IMAP_PORT", str(relay.port))
+        assert main(["ingest", "imap"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    # Nothing of the mail either: `imaplib` aborts here with a header line of
+    # the second mail in its text (see `ImapConnector._speaking`).
+    assert err == f"Error: the connection to the IMAP server {_IMAP_HOST}:{relay.port} broke off\n"
+    assert mail_server.password not in err
+    assert "example.org" not in err
+    assert _imap_watermark(imap.engine) == {
+        "uidvalidity": mail_server.uidvalidity(imap_folder),
+        "uid": "4",
+    }
+    assert _events(imap.engine) == 5
+
+    monkeypatch.setenv("PREVIOUSLY_IMAP_PORT", str(mail_server.port))
+    assert main(["ingest", "imap"]) == 0
+    assert capsys.readouterr() == ("imap: 2 appended, 0 known, 0 variants, up to uid 6\n", "")
+
+
+# Every setting `ingest imap` needs, each pointing nowhere that answers: a
+# run that connected anywhere before it had read them all would end in an
+# error of that connection instead of naming the setting.
+_UNREACHABLE = {
+    "PREVIOUSLY_IMAP_HOST": "127.0.0.1",
+    "PREVIOUSLY_IMAP_PORT": "1",
+    "PREVIOUSLY_IMAP_USER": "pilot",
+    "PREVIOUSLY_IMAP_PASSWORD": "not-the-password",
+    "PREVIOUSLY_IMAP_FOLDER": "Kunde Müller",
+    "PREVIOUSLY_DSN": "postgresql://previously:pw@127.0.0.1:1/previously",
+    "PREVIOUSLY_BLOB_ENDPOINT": "http://127.0.0.1:1",
+    "PREVIOUSLY_BLOB_REGION": "us-east-1",
+    "PREVIOUSLY_BLOB_BUCKET": "nowhere",
+    "PREVIOUSLY_BLOB_ACCESS_KEY": "nobody",
+    "PREVIOUSLY_BLOB_SECRET_KEY": "nothing",
+}
+
+
+def _unreachable(age_identity: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = {**_UNREACHABLE, "PREVIOUSLY_BLOB_RECIPIENT": recipient_of(age_identity)}
+    for name, value in settings.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("PREVIOUSLY_BLOB_IDENTITIES", raising=False)
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        *(name for name in _UNREACHABLE if name != "PREVIOUSLY_IMAP_PORT"),
+        "PREVIOUSLY_BLOB_RECIPIENT",
+    ],
+)
+def test_ingest_imap_names_a_missing_setting_before_it_connects(
+    missing: str,
+    age_identity: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _unreachable(age_identity, monkeypatch)
+    monkeypatch.delenv(missing)
+    assert main(["ingest", "imap"]) == 2
+    assert capsys.readouterr() == ("", f"Error: {missing} is not set\n")
+
+
+def test_ingest_imap_reads_every_setting_and_then_connects(
+    age_identity: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control of the test above: with every setting there, and the
+    directory of identities not, the run gets as far as connecting — to the
+    database first, for the watermark. A port that is no port number is
+    refused before that, like a missing setting."""
+    _unreachable(age_identity, monkeypatch)
+    assert main(["ingest", "imap"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.startswith("Error: connecting to database previously at 127.0.0.1:1 failed: ")
+
+    for port in ("0", "imaps", "65536", "²"):
+        monkeypatch.setenv("PREVIOUSLY_IMAP_PORT", port)
+        assert main(["ingest", "imap"]) == 2
+        assert capsys.readouterr() == (
+            "",
+            f"Error: PREVIOUSLY_IMAP_PORT is not a port number: {port!r}\n",
+        )

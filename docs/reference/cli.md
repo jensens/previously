@@ -3,9 +3,10 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has eleven subcommands: `migrate`, `append`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, and `stats`.
+It has twelve subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, and `stats`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
-`append --attach`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
+`append --attach`, `ingest imap`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
+`ingest imap` alone reads the five `PREVIOUSLY_IMAP_*` settings.
 A missing setting is an input error that names the first variable missing, in the form `Error: PREVIOUSLY_BLOB_BUCKET is not set`.
 A transaction the database aborts in a conflict with a concurrent one, a deadlock or a lock not granted in time, is a storage error with exit code 2, in the form `Error: the database aborted the operation in a conflict with a concurrent one; run the command again`.
 
@@ -52,6 +53,7 @@ Error: database schema incomplete — `previously migrate` has not run yet
 |---|---|---|---|
 | `migrate` | The schema stands at the newest revision, whether `migrate` ran a migration or found it up to date. | Not used. | The database is at a revision this version doesn't know, the database refused to let the role read the revision or apply a migration, or storage raised an error. |
 | `append` | The event was recorded, or an event with the same `--source` and `--external-id` and the same content already existed. | Not used. | The input was invalid, an event with the same `--source` and `--external-id` holds another content, an attachment couldn't be read, a blob setting is missing or invalid, or storage or the blob store raised an error. |
+| `ingest` | The run went through, with or without variants. | Not used. | A setting is missing or invalid, the IMAP server couldn't be reached, refused a step or broke the connection off, or storage or the blob store raised an error. |
 | `redact` | The redaction was recorded and carried out, or the target was already covered by one, every blob it made obsolete is gone from the blob store, and every projection stands at the tip of the log. | Not used. | The input was invalid, the redaction was refused, storage raised an error, or after the redaction was recorded a blob couldn't be deleted or the projections couldn't be caught up. |
 | `log` | The log was printed. | Not used. | The input was invalid, or storage raised an error. |
 | `verify` | The chain has no finding, every anchor holds, and with `--blobs` no blob has a finding. | The chain, an anchor or, with `--blobs`, a blob has at least one finding. | The input was invalid, a blob setting is missing or invalid, an identity file can't be read, or storage or the blob store raised an error. |
@@ -178,6 +180,70 @@ The payload of the event carries one reference per `--attach`, in the order give
 `media_type` comes from the name's extension, looked up in the table built into Python's `mimetypes` module and in no file of the system; without a match, or for a compression suffix such as `.gz`, it's `application/octet-stream`.
 The same file given twice is two references and one blob.
 An event without `--attach` carries no key `blobs`, and a payload must not carry it: `append` refuses it with `payload already carries the key 'blobs' — it is reserved for the attachments`.
+
+## `ingest`
+
+Takes in the mail an IMAP folder holds above the watermark of the last run; see {ref}`artifact-identity`.
+It has one form, and takes no arguments:
+
+```text
+previously ingest imap
+```
+
+`ingest imap` reads the five `PREVIOUSLY_IMAP_*` settings, `PREVIOUSLY_BLOB_RECIPIENT`, `PREVIOUSLY_DSN` and the five settings of the blob store, in that order; see {ref}`configuration-reference`.
+It doesn't read `PREVIOUSLY_BLOB_IDENTITIES`.
+It reads every setting and checks the recipient before it connects to anything, and a missing one is an input error in the form `Error: PREVIOUSLY_IMAP_PASSWORD is not set`.
+A port that isn't a number from 1 to 65535 is refused the same way:
+
+```text
+Error: PREVIOUSLY_IMAP_PORT is not a port number: 'imaps'
+```
+
+`ingest imap` connects over TLS only, and verifies the server's certificate and host name against the trust store of the system; no setting turns that off.
+OpenSSL reads a certificate file named in `SSL_CERT_FILE` in place of the system's file, and that's how a certificate outside the trust store is trusted.
+A socket operation that waits longer than 60 seconds ends the run.
+It opens the folder read-only and reads every mail with `BODY.PEEK[]`, so no mail is marked as read and nothing in the folder changes.
+
+The watermark belongs to `imap:<user>@<host>/<folder>`, with the host as `PREVIOUSLY_IMAP_HOST` spells it and without the port.
+Its position is the folder's `UIDVALIDITY` and the UID of the last mail taken in.
+The run fetches the mails above that UID, oldest first and one at a time, maps each onto its events, stores the raw mail and every attachment as a blob, and appends the events in batches; after each batch, it moves the watermark to the last mail the batch covered.
+A folder with another `UIDVALIDITY` than the watermark's, such as one deleted and created again, is read from the start, and so is a folder under another name or host; a mail whose events are in the log already counts as known.
+A mail that leaves the folder while the run fetches is passed over.
+
+`ingest imap` prints one line to standard output:
+
+```text
+imap: 5 appended, 0 known, 0 variants, up to uid 4
+```
+
+The counts are of events, not of mails: a mail with a mail attached is two events.
+`appended` counts the variants as well.
+`up to uid` is the UID the watermark stands at, and `up to uid 0` means that the folder hasn't given a mail yet.
+
+For each variant, one notice goes to standard error, with the Message-ID the variant deviates from and the `id` of its event:
+
+```text
+variant of 20261005101500.4711@example.net: event 6
+```
+
+`ingest` doesn't catch the projections up; `previously project` does, and may run beside it.
+
+Errors of the IMAP server and of the connection print one sentence to standard error and return 2:
+
+```text
+Error: cannot connect to the IMAP server mail.example.org:993: Connection refused
+Error: the certificate of the IMAP server mail.example.org:993 does not verify: self-signed certificate
+Error: the IMAP server mail.example.org:993 refused the login of pilot
+Error: the login of pilot at the IMAP server mail.example.org:993 holds a character other than ASCII, which the IMAP login cannot carry
+Error: the IMAP server mail.example.org:993 refused to open the folder 'Kunde Müller' of pilot: EXAMINE failed. No such mailbox
+Error: the connection to the IMAP server mail.example.org:993 broke off
+Error: the connection to the IMAP server mail.example.org:993 broke off: The read operation timed out
+```
+
+No message names the password.
+A refused login quotes nothing of the server's answer, and a connection that broke off quotes the reason of the system, never what the server sent, which can be mail.
+A refusal to open the folder quotes the server's reason.
+On every error, the watermark stands where the last appended batch left it, and the next run fetches the rest again; a blob stored for a batch that wasn't appended stays in the store, and that run finds it there.
 
 ## `redact`
 

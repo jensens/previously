@@ -2,8 +2,8 @@
 
 # Configuration
 
-Previously reads its settings from eight environment variables.
-Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store, fetch or delete a blob, as the table below says per variable.
+Previously reads its settings from thirteen environment variables.
+Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store, fetch or delete a blob, as the table below says per variable, and the five `PREVIOUSLY_IMAP_*` variables only by `ingest imap`.
 
 ## Database
 
@@ -72,12 +72,12 @@ The blob store is an S3 bucket; see {ref}`blobs`.
 
 | Variable | Meaning | Missing at |
 |---|---|---|
-| `PREVIOUSLY_BLOB_ENDPOINT` | The address of the S3 server, such as `http://localhost:9000`. | `append --attach`, `blob get`, `verify --blobs`, a `redact` that deletes a blob |
-| `PREVIOUSLY_BLOB_REGION` | The region the server expects in a signed request, such as `us-east-1`. | `append --attach`, `blob get`, `verify --blobs`, a `redact` that deletes a blob |
-| `PREVIOUSLY_BLOB_BUCKET` | The bucket, with neither versioning nor object lock. | `append --attach`, `blob get`, `verify --blobs`, a `redact` that deletes a blob |
-| `PREVIOUSLY_BLOB_ACCESS_KEY` | The access key for the bucket. | `append --attach`, `blob get`, `verify --blobs`, a `redact` that deletes a blob |
-| `PREVIOUSLY_BLOB_SECRET_KEY` | The secret key for the bucket; no message prints it. | `append --attach`, `blob get`, `verify --blobs`, a `redact` that deletes a blob |
-| `PREVIOUSLY_BLOB_RECIPIENT` | The age X25519 recipient new blobs are sealed to, in its `age1…` spelling. It's public. | `append --attach` |
+| `PREVIOUSLY_BLOB_ENDPOINT` | The address of the S3 server, such as `http://localhost:9000`. | `append --attach`, `ingest imap`, `blob get`, `verify --blobs`, a `redact` that deletes a blob |
+| `PREVIOUSLY_BLOB_REGION` | The region the server expects in a signed request, such as `us-east-1`. | `append --attach`, `ingest imap`, `blob get`, `verify --blobs`, a `redact` that deletes a blob |
+| `PREVIOUSLY_BLOB_BUCKET` | The bucket, with neither versioning nor object lock. | `append --attach`, `ingest imap`, `blob get`, `verify --blobs`, a `redact` that deletes a blob |
+| `PREVIOUSLY_BLOB_ACCESS_KEY` | The access key for the bucket. | `append --attach`, `ingest imap`, `blob get`, `verify --blobs`, a `redact` that deletes a blob |
+| `PREVIOUSLY_BLOB_SECRET_KEY` | The secret key for the bucket; no message prints it. | `append --attach`, `ingest imap`, `blob get`, `verify --blobs`, a `redact` that deletes a blob |
+| `PREVIOUSLY_BLOB_RECIPIENT` | The age X25519 recipient new blobs are sealed to, in its `age1…` spelling. It's public. | `append --attach`, `ingest imap` |
 | `PREVIOUSLY_BLOB_IDENTITIES` | A directory holding one file per recipient, named after it, with the identity that opens what was sealed to it. No message prints an identity. | `blob get`, `verify --blobs` |
 
 A command that needs a variable and finds it unset or empty returns 2 and names the first one missing:
@@ -97,3 +97,29 @@ A directory that exists and holds no identity for a key isn't an error of the se
 An endpoint without a scheme, such as `localhost:9000`, or a region the S3 client can't parse, such as `us east 1`, returns 2 as well, with one sentence that names the endpoint, the bucket, the region and the kind of refusal, and never a key.
 
 Every other command, and `append` without `--attach` and `verify` without `--blobs`, reads none of them; `redact` reads the five settings of the store only when it has a blob to delete.
+`ingest imap` reads the five settings of the store and the recipient, and never `PREVIOUSLY_BLOB_IDENTITIES`: taking in seals and opens nothing.
+
+## Mail folder settings
+
+The folder `ingest imap` takes mail in from; see {ref}`cli-reference`.
+
+| Variable | Meaning | Missing at |
+|---|---|---|
+| `PREVIOUSLY_IMAP_HOST` | The host name or address of the IMAP server, which the server's certificate has to name. | `ingest imap` |
+| `PREVIOUSLY_IMAP_PORT` | The port of IMAP over TLS, a number from 1 to 65535. Unset or empty, it's 993. | Never; a value that isn't a port number is refused. |
+| `PREVIOUSLY_IMAP_USER` | The user that logs in. | `ingest imap` |
+| `PREVIOUSLY_IMAP_PASSWORD` | The user's password, in ASCII; no message prints it. | `ingest imap` |
+| `PREVIOUSLY_IMAP_FOLDER` | The folder, by the name a mail client shows, such as `Kunde Müller`. | `ingest imap` |
+
+`ingest imap` reads all five before it connects to anything, and names the first one missing, as the blob settings do:
+
+```text
+Error: PREVIOUSLY_IMAP_FOLDER is not set
+```
+
+The host, the user and the folder make the name of the watermark, `imap:<user>@<host>/<folder>`, and the port doesn't.
+A change to any of the three starts another watermark, and the folder is read from the start; every mail in the log counts as known.
+
+There is no setting for a certificate.
+`ingest imap` verifies the server's certificate and host name against the trust store of the system, and OpenSSL reads a certificate file named in `SSL_CERT_FILE` in place of the system's file.
+
