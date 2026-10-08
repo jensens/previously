@@ -22,17 +22,11 @@ Gebaut und abgenommen, auf `main`:
 | — | Der äußere Anker: `anchor`, `verify --anchors [--exact]`, `examine` in einem Schnappschuss | `specs/2026-10-04-aeusserer-anker.md` | PR #2, `2bc42d4` |
 | 1c | Hash-Format v=2 mit Salz; Tilgung von Event, Einheiten und Blob als Event der Art `action`, mit Anordnung und Vollzug in `verify`; Projektionen folgen einer Tilgung; Blobs im Format `age` auf S3, `append --attach`, `blob get`, `verify --blobs`; `redact` | `specs/2026-10-04-stufe-1c-blobs-und-tilgung.md` | PR #5, `d16f3fc` |
 | Auslieferung | Die Migrationen im Paket und `previously migrate` unter einer Advisory-Sperre; `PREVIOUSLY_DSN` nach einer eigenen Grammatik gelesen; ein Image aus dem Paket auf PyPI, mit Smoke-Test; `release.yml`: Test-PyPI bei jedem Push auf `main`, PyPI und Image für zwei Plattformen bei einem veröffentlichten Release; der Handoff an kup6s | `specs/2026-10-05-auslieferung.md` | PR #6, `fd3e17f`; veröffentlicht als `0.1.0a1`, wie der Spec der Aufnahme festhält |
+| Aufnahme | `RawEvent` trägt `artifact_hash` und `channel_identities`, `append` vergleicht die Inhaltsidentität und weist Abweichendes mit `ArtifactChanged` ab; eine Mail als Event (`core/mail.py`), mit Rohmail und Anhängen als Blobs und einer Mail im Anhang als eigenem Event; `Connector`, `Fetched`, `Watermark`, `WatermarkStore` in `contract`, die Tabelle `watermark` (Migration `0005_watermark`); der Lauf (`core/ingest.py`), der das Wasserzeichen erst nach dem Anfügen schreibt; `connectors/imap.py` und `previously ingest imap`; der Handoff `handoffs/2026-10-06-kup6s-ingest.md` | `specs/2026-10-06-pilot-imap-aufnahme.md` | PR #7, `009c669`; Bedingung 11, der Lauf des Betreuers gegen seinen echten Mailu-Ordner, bestanden am 2026-10-09 |
 
 Mit Stufe 1c ist Teilprojekt 1 gebaut und abgeschlossen, wie die Architektur
-es in §12.1 zuschneidet: Log, Projektionen, Blobs.
-
-Die Aufnahme aus einem IMAP-Ordner, Einheit 1 des Piloten, ist auf dem Zweig
-`worktree-pilot-aufnahme` gebaut; abgenommen ist sie mit dem Merge dieses
-Zweigs nach `main`, und nicht vorher:
-
-| Einheit | Inhalt | Spec | Abnahme |
-|---|---|---|---|
-| 1, Aufnahme | `RawEvent` trägt `artifact_hash` und `channel_identities`, `append` vergleicht die Inhaltsidentität und weist Abweichendes mit `ArtifactChanged` ab; eine Mail als Event (`core/mail.py`), mit Rohmail und Anhängen als Blobs und einer Mail im Anhang als eigenem Event; `Connector`, `Fetched`, `Watermark`, `WatermarkStore` in `contract`, die Tabelle `watermark` (Migration `0005_watermark`); der Lauf (`core/ingest.py`), der das Wasserzeichen erst nach dem Anfügen schreibt; `connectors/imap.py` und `previously ingest imap`; der Handoff `handoffs/2026-10-06-kup6s-ingest.md` | `specs/2026-10-06-pilot-imap-aufnahme.md` | der Merge des Zweigs `worktree-pilot-aufnahme` nach `main`; davor Bedingung 11, der Lauf des Betreuers gegen seinen echten Mailu-Ordner, lokal, Probe-Log und Bucket danach verworfen |
+es in §12.1 zuschneidet: Log, Projektionen, Blobs. Die Auslieferung und die
+Aufnahme sind die Einheiten 0 und 1 des Piloten (unten).
 
 Nicht gebaut: die Suche, jede
 Feststellung und jede Entität, MCP-Server, Gate, KI-Schicht, jeder Konnektor
@@ -57,10 +51,10 @@ die Aufnahme entsteht. Die Aufnahme kommt dann mit dem nächsten
 Alpha-Release. Was die Auslieferung offen lässt, steht unten unter
 *Auslieferung*.
 
-Die Aufnahme ist gebaut (oben). Was jetzt kommt, in dieser Reihenfolge: der
-Lauf des Betreuers gegen seinen echten Ordner (Bedingung 11), der Merge, das
-nächste Alpha-Release mit `ingest imap`, und in kup6s Einheit 2 nach den
-beiden Handoffs — die erste Aufnahme des echten Ordners geschieht dort. Was
+Die Aufnahme ist abgenommen, und Bedingung 11 ist bestanden (oben). Was
+jetzt kommt, in dieser Reihenfolge: das nächste Alpha-Release mit
+`ingest imap`, und in kup6s Einheit 2 nach den beiden Handoffs — die erste
+Aufnahme des echten Ordners geschieht dort. Was
 die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an den
 Einheiten, zu denen es gehört.
 
@@ -93,7 +87,7 @@ Spec:
 | # | Einheit | bringt | Spec |
 |---|---|---|---|
 | 0 | Auslieferung: Migrationen im Paket, `previously migrate`, Image, Release-Weg, Handoff an kup6s | ein Image, aus dem kup6s alles startet | `specs/2026-10-05-auslieferung.md`, eingefroren am 2026-10-05; abgenommen mit PR #6 (oben) |
-| 1 | Aufnahme aus dem IMAP-Ordner, mit dem Einwurf- und dem Konnektor-Vertrag | Chronik des Kunden; echte Post im Log | `specs/2026-10-06-pilot-imap-aufnahme.md`, eingefroren am 2026-10-06; **gebaut** auf dem Zweig `worktree-pilot-aufnahme`, abgenommen mit dessen Merge (oben). Er ersetzt den Entwurf vom 2026-10-04 auf dem Zweig `worktree-pilot-imap-aufnahme` (`9b493f0`) |
+| 1 | Aufnahme aus dem IMAP-Ordner, mit dem Einwurf- und dem Konnektor-Vertrag | Chronik des Kunden; echte Post im Log | `specs/2026-10-06-pilot-imap-aufnahme.md`, eingefroren am 2026-10-06; abgenommen mit PR #7 (oben). Er ersetzt den Entwurf vom 2026-10-04 auf dem Zweig `worktree-pilot-imap-aufnahme` (`9b493f0`) |
 | 2 | Betrieb in kup6s: Datenbank mit Sicherung, Restore-Probe, Bucket, Werkzeug-Pod, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | beginnt beim Image aus Einheit 0; gebaut wird er vom Agenten in kup6s, nie von hier. Was er braucht, sagen die Handoffs `handoffs/2026-10-05-kup6s-delivery.md` und, für die Aufnahme, `handoffs/2026-10-06-kup6s-ingest.md`, englisch; sie liegen |
 | 3 | Gate und Policy: Organisationsprofil des Pilotkunden, ein Anbieter-Adapter, Audit, Offenlegungsprüfung | die Grenze, hinter der ein Modell Inhalt sieht | — |
 | 4 | MCP-Lesezugang, mit der Offenlegungsprüfung davor | Claude Code fragt das Log | — |
@@ -796,6 +790,17 @@ Spec der Pilot-Einheit 1 mit Abschnitt, **P-PI** ihr Ausführungsprotokoll
 
 ## Erledigt, seit es auf einer Liste stand
 
+- ~~Bedingung 11 der Abnahme der Aufnahme~~ (PI §10 Punkt 11) — der Lauf des
+  Betreuers am 2026-10-09, lokal, aus `main` nach PR #7 (`009c669`), gegen
+  einen eigenen, bis dahin ungenutzten Mailu-Benutzer in kup6s und dessen
+  Ordner `previously-pilot`; `chronicle`, `blob get` der Rohmail und eines
+  Anhangs und der zweite Lauf mit `0 appended` so, wie die Bedingung sie
+  verlangt („alles korrekt", Betreuer). In der Probe-Datenbank danach
+  abgelesen: 10 Events aus `email`, 2 davon Mails im Anhang einer anderen,
+  26 Zuordnungen zu 22 Blobs, 123 Einheiten, das Wasserzeichen bei UID 9.
+  Der Lauf folgte dem Merge, wie das Protokoll es festhielt (P-PI,
+  `index.md`) und der Betreuer es vorhatte; die Landkarte setzte ihn bis
+  2026-10-09 vor den Merge.
 - ~~Der Name `previously` auf PyPI ist erst belegt, wenn das erste Release
   veröffentlicht ist~~ (AL §12 Punkt 6), und mit ihm ~~Bedingung 8 der
   Abnahme~~ — Release `v0.1.0a1` vom 2026-10-05, Tag auf Commit `fd3e17f`:
