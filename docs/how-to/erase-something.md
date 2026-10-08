@@ -15,6 +15,8 @@ Pick the smallest target that holds everything that has to go:
   `previously show` prints the payload, so check it there first.
   Units can be erased only at events in hash format 2; for an older event, `previously redact units` refuses and names `previously redact event` instead.
 - If it's an attached file that has to go wherever it's attached, erase the **blob**.
+- If it's a mail that `previously ingest imap` took in, erase the **event**, never its units: the subject stands in the payload too, the raw mail is a blob, and the payload's artifact hash confirms a short text that somebody guesses.
+  {ref}`ingest-a-mail-folder` says what else to erase with it, and gives the query that finds most of it: its variants under the same Message-ID, the mails inside it at every depth, the mails that carried it as an attachment, the replies that quote it, and the mail in its folder.
 
 Find the event's `id`, the `seq` of each unit, and the address of each blob with `previously show`.
 
@@ -69,10 +71,10 @@ Check the event:
 ```console
 $ previously show 2
 id=2 kind=observation
-occurred_at=2026-10-05T08:53:18.734619+00:00
-hash=b39a1f0b554b1b3e7e95b0b469dde6d39e63a51d738fe0e2de2279c224a45e17
+occurred_at=2026-10-06T13:33:50.186588+00:00
+hash=036eb31a006eb971b648c6441eea8501e5e84856822d5077c555cb22232ba43a
 evidence=recollection
-payload={"blobs": [{"filename": "draft.txt", "media_type": "text/plain", "sha256": "b00c29a1d42316f16fd5ef9c72ce82bc5c1dcf24ff1280e12bfe3d61e3846373", "size": 35}], "evidence": "recollection"}
+payload={"artifact_hash": "d5814825d2183d2bbff7b7074323648f4bb54a817fd88595354d27e815946ffc", "blobs": [{"filename": "draft.txt", "media_type": "text/plain", "sha256": "b00c29a1d42316f16fd5ef9c72ce82bc5c1dcf24ff1280e12bfe3d61e3846373", "size": 35}], "evidence": "recollection"}
   ¶1 The second draft is attached.
   ¶2 <erased by event 3>
   blob b00c29a1d42316f16fd5ef9c72ce82bc5c1dcf24ff1280e12bfe3d61e3846373 35 text/plain draft.txt
@@ -96,10 +98,10 @@ The events keep their payloads and their units.
 ```console
 $ previously show 2
 id=2 kind=observation
-occurred_at=2026-10-05T08:53:18.734619+00:00
-hash=b39a1f0b554b1b3e7e95b0b469dde6d39e63a51d738fe0e2de2279c224a45e17
+occurred_at=2026-10-06T13:33:50.186588+00:00
+hash=036eb31a006eb971b648c6441eea8501e5e84856822d5077c555cb22232ba43a
 evidence=recollection
-payload={"blobs": [{"filename": "draft.txt", "media_type": "text/plain", "sha256": "b00c29a1d42316f16fd5ef9c72ce82bc5c1dcf24ff1280e12bfe3d61e3846373", "size": 35}], "evidence": "recollection"}
+payload={"artifact_hash": "d5814825d2183d2bbff7b7074323648f4bb54a817fd88595354d27e815946ffc", "blobs": [{"filename": "draft.txt", "media_type": "text/plain", "sha256": "b00c29a1d42316f16fd5ef9c72ce82bc5c1dcf24ff1280e12bfe3d61e3846373", "size": 35}], "evidence": "recollection"}
   ¶1 The second draft is attached.
   ¶2 <erased by event 3>
   blob b00c29a1d42316f16fd5ef9c72ce82bc5c1dcf24ff1280e12bfe3d61e3846373 35 text/plain draft.txt <erased by event 4>
@@ -129,8 +131,8 @@ Check the event:
 ```console
 $ previously show 1
 id=1 kind=observation
-occurred_at=2026-10-05T08:53:17.476912+00:00
-hash=c61e165239d35bc0bb59d9a4ade637320af3bed50433d5d53df512bce8bf72e6
+occurred_at=2026-10-06T13:33:48.421930+00:00
+hash=32a7dba45866f0764113f20281948296f79f5db5c0f36d4935870296e2acae8d
 payload=<erased by event 5>
   ¶1 <erased by event 5>
   blob 72f4f2c5a92ade61b696c0fe800b8af775fd2f3982b123693379e6ee7cd264f2 <erased by event 5>
@@ -181,5 +183,5 @@ An erasure takes the content out of the log and the blob out of the store.
 It stays in every backup of the database, and in every backup or copy of the bucket, until their retention runs out, and a restore to a point before the erasure brings it back; {ref}`restore-from-a-backup` shows what to do then.
 The address of a blob, the source key `(source, external_id)` and every hash stay as well.
 An event written before stage 1c, in hash format 1, has no salt, so short erased content stays guessable from its digests; see {ref}`erasure`.
-An erasure of units leaves their wording in a payload that holds it too, as *Erase units* says.
+An erasure of units leaves their wording in a payload that holds it too, as *Erase units* says, and it leaves the payload's `artifact_hash`, which has no salt and so confirms a short erased text that somebody guesses.
 For why, see {ref}`erasure`.

@@ -11,6 +11,7 @@ erase-something
 attach-and-fetch-a-file
 run-a-blob-store-on-your-machine
 keep-the-blob-key-safe
+ingest-a-mail-folder
 add-a-migration
 rebuild-a-projection
 run-the-image

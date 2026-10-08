@@ -2,8 +2,8 @@
 
 # About the frozen design records
 
-Seven German documents under `docs/superpowers/specs/` hold how this project was decided: the design, the architecture, the detailed specification of stage 1a, the one for stage 1b, the one for the external anchor, the one for stage 1c, and the one for delivery.
-The first three froze on 2026-10-03, the next two on 2026-10-04, and the last two on 2026-10-05, and nothing pulls any of them forward again.
+Eight German documents under `docs/superpowers/specs/` hold how this project was decided: the design, the architecture, the detailed specification of stage 1a, the one for stage 1b, the one for the external anchor, the one for stage 1c, the one for delivery, and the one for taking mail in from an IMAP folder.
+The first three froze on 2026-10-03, the next two on 2026-10-04, two more on 2026-10-05, and the last on 2026-10-06, and nothing pulls any of them forward again.
 The reasoning that gets maintained along with the code lives in this quadrant instead, and where a specification and a page disagree, the page is what holds.
 
 Until this documentation existed, those first three documents were the only place a reason was written down, so the code cited them: 72 paragraph references across 21 files in `src/`, `tests/` and `migrations/`, pointing at 20 paragraphs.
@@ -38,6 +38,12 @@ It's no stage of the architecture but the first unit of work of the pilot, and i
 It's also the first record that a page contradicts on the day it froze.
 Its §10 point 7 has the release workflow run once by hand on the branch before the merge, and GitHub starts a workflow by hand only from a file on the default branch, so that run can't happen; the record keeps the plan as it stood, and {ref}`cut-a-release` says how it is.
 Its open points went into the map as well.
+
+The specification of the pilot's first unit, taking mail in from an IMAP folder, is dated 2026-10-06 and froze the same day, once its pages stood.
+It changed the contract every later connector writes against: an event carries the identity of its artifact and the identities its channel names, and `append` compares the first under a key it knows already.
+{ref}`connectors` carries its reasoning, and {ref}`erasure` took what it means for erasing a mail; {ref}`mail-mapping` took the mapping of a mail, field by field, {ref}`hash-format` the identity of an artifact, and {ref}`cli-reference`, {ref}`configuration-reference` and {ref}`database-schema` the command, its settings and the watermark.
+{ref}`ingest-a-mail-folder` took the routine, and a second handoff, `docs/superpowers/handoffs/2026-10-06-kup6s-ingest.md`, tells whoever runs the Kubernetes environment what the ingest needs there.
+Its open points went into the map, each under the unit of work it belongs to.
 
 ## What a frozen record is still good for
 
@@ -112,6 +118,10 @@ Its code cites {ref}`erasure`, {ref}`blobs` and {ref}`hash-version-2` instead, a
 No row names the specification of delivery either.
 Measured on 2026-10-05, once its pages stood, `grep -rn "§" src tests | grep -v "frozen design record"` printed nothing, and the signs still stand on the same fifteen lines in the same seven files.
 Its code cites {ref}`delivery` instead, in `storage/migrate.py`, where the gate checks the label, and in a comment of the `Dockerfile`, which no gate reads.
+
+No row names the specification of the pilot's first unit either.
+Measured on 2026-10-06, once its pages stood, `grep -rn "§" src tests | grep -v "frozen design record"` printed nothing, and the signs stand on the same fifteen lines in the same seven files as at the start of the unit.
+Its code cites {ref}`artifact-identity` and {ref}`cli-reference` instead.
 
 ## Two kinds of citation, and the code shows which is which
 

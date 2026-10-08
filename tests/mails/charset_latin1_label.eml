@@ -1,0 +1,9 @@
+From: shop@example.de
+To: office@example.org
+Subject: Angebot
+Date: Wed, 07 Oct 2026 10:00:00 +0200
+Message-ID: <angebot-cp1252@example.de>
+Content-Type: text/plain; charset="iso-8859-1"
+Content-Transfer-Encoding: 8bit
+
+„Angebot“ – 100 € für Müller

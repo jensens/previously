@@ -1,0 +1,105 @@
+From: level0@example.org
+To: office@example.org
+Subject: Ebene 0 / level 0
+Date: Mon, 01 Nov 2026 09:00:00 +0100
+Message-ID: <level-0@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="level-0"
+
+--level-0
+Content-Type: text/plain; charset=utf-8
+
+Text der Ebene 0.
+--level-0
+Content-Type: message/rfc822
+
+From: level1@example.org
+To: office@example.org
+Subject: Ebene 1 / level 1
+Date: Mon, 02 Nov 2026 09:00:00 +0100
+Message-ID: <level-1@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="level-1"
+
+--level-1
+Content-Type: text/plain; charset=utf-8
+
+Text der Ebene 1.
+--level-1
+Content-Type: message/rfc822
+
+From: level2@example.org
+To: office@example.org
+Subject: Ebene 2 / level 2
+Date: Mon, 03 Nov 2026 09:00:00 +0100
+Message-ID: <level-2@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="level-2"
+
+--level-2
+Content-Type: text/plain; charset=utf-8
+
+Text der Ebene 2.
+--level-2
+Content-Type: message/rfc822
+
+From: level3@example.org
+To: office@example.org
+Subject: Ebene 3 / level 3
+Date: Mon, 04 Nov 2026 09:00:00 +0100
+Message-ID: <level-3@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="level-3"
+
+--level-3
+Content-Type: text/plain; charset=utf-8
+
+Text der Ebene 3.
+--level-3
+Content-Type: message/rfc822
+
+From: level4@example.org
+To: office@example.org
+Subject: Ebene 4 / level 4
+Date: Mon, 05 Nov 2026 09:00:00 +0100
+Message-ID: <level-4@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="level-4"
+
+--level-4
+Content-Type: text/plain; charset=utf-8
+
+Text der Ebene 4.
+--level-4
+Content-Type: message/rfc822
+
+From: level5@example.org
+To: office@example.org
+Subject: Ebene 5 / level 5
+Date: Mon, 06 Nov 2026 09:00:00 +0100
+Message-ID: <level-5@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="level-5"
+
+--level-5
+Content-Type: text/plain; charset=utf-8
+
+Text der Ebene 5.
+--level-5
+Content-Type: message/rfc822
+
+From: level6@example.org
+To: office@example.org
+Subject: Ebene 6 / level 6
+Date: Mon, 07 Nov 2026 09:00:00 +0100
+Message-ID: <level-6@example.org>
+MIME-Version: 1.0
+Content-Type: text/plain; charset=utf-8
+
+Text der Ebene 6.
+--level-5--
+--level-4--
+--level-3--
+--level-2--
+--level-1--
+--level-0--

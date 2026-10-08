@@ -1,0 +1,28 @@
+From: max@example.net
+To: team@example.org
+Subject: Freigabe Version 2
+Date: Tue, 06 Oct 2026 11:00:00 +0200
+Message-ID: <pgp-freigabe@example.net>
+MIME-Version: 1.0
+Content-Type: multipart/signed; micalg=pgp-sha256; protocol="application/pgp-signature";
+ boundary="sig"
+
+--sig
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: quoted-printable
+
+Hallo Team,
+
+die Freigabe f=C3=BCr Version 2 ist erteilt.
+
+Max
+--sig
+Content-Type: application/pgp-signature; name="signature.asc"
+Content-Disposition: attachment; filename="signature.asc"
+
+-----BEGIN PGP SIGNATURE-----
+
+iQEzBAEBCAAdInventedNotARealSignature0123456789
+=XyZw
+-----END PGP SIGNATURE-----
+--sig--

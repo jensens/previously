@@ -33,9 +33,11 @@ error.
 
 from previously.core.chain import link
 from previously.core.chain import prepare
+from previously.core.errors import ArtifactChanged
 from previously.core.errors import BatchTooLarge
 from previously.core.errors import ChainConflict
 from previously.core.errors import InvalidPayload
+from previously.core.hashing import is_address
 from previously.core.hashing import iso_utc
 from previously.storage.errors import ChainPositionTaken
 from previously.storage.errors import SourceKeyTaken
@@ -178,11 +180,11 @@ def _check_identity(field: str, value: object) -> None:
 
     The two content conditions are exactly the ones `canonical` applies to
     every string, because that is what these values are measured against
-    later. The type check is the same boundary check as in `_check_units`:
+    later. The type check is the same boundary check as in `check_units`:
     `RawEvent.source` is statically a `str`, but a connector from stage 2 on
     builds `RawEvent` without a runtime check by the type checker.
 
-    `isinstance` directly, and not `_is_text` as in `_check_units`: the
+    `isinstance` directly, and not `_is_text` as in `check_units`: the
     parameter here is already `object`, so the test is not a dead one that
     pyright would reject as `reportUnnecessaryIsInstance` — and it narrows the
     type for the two checks below, which a helper returning `bool` would not.
@@ -200,7 +202,7 @@ def _check_identity(field: str, value: object) -> None:
         ) from error
 
 
-def _check_units(units: Sequence[RawUnit]) -> None:
+def check_units(units: Sequence[RawUnit]) -> None:
     """Check the units before hashing them, not only in the database (G1).
 
     `split_plaintext` builds only valid units in stage 1a; from stage 2 on
@@ -211,6 +213,11 @@ def _check_units(units: Sequence[RawUnit]) -> None:
     content is deliberately **not** checked: `split_plaintext` discards empty
     sections already, and an empty unit out of another medium is not an error
     this stage knows about.
+
+    Public because `previously append` calls it before it hashes the text
+    into the artifact identity: the canonical form refuses a null byte or a
+    lone surrogate there as well, but names the path `$.text` of a document
+    that is never stored, where this check names the unit.
     """
     seen_seqs: set[int] = set()
     for unit in units:
@@ -247,6 +254,101 @@ def _check_units(units: Sequence[RawUnit]) -> None:
             )
 
 
+# The names under which `append` mixes the identity of the artifact and the
+# channel identities into the payload ({ref}`artifact-identity`). Reserved like
+# `evidence` and `blobs`: a payload that already carries one is refused, so
+# that it is not silently overwritten.
+_ARTIFACT_HASH = "artifact_hash"
+_CHANNEL_IDENTITIES = "channel_identities"
+
+
+def _identities(event: RawEvent) -> dict[str, object]:
+    """The artifact hash and the channel identities as they go into the
+    payload, each only when the event gives it: an event that gives neither
+    has the payload it would have had before they existed, the way an event
+    without attachments carries no `blobs`.
+
+    The artifact hash as hexadecimal, the form a JSON string can hold, and
+    the identities in the order given, with all four keys and `name` as
+    `null` where the source carries none. Going into the payload is what
+    puts them under `payload_hash`, and what lets an erasure of the event
+    take them along — for addresses and names that is wanted.
+    """
+    for name in (_ARTIFACT_HASH, _CHANNEL_IDENTITIES):
+        if name in event.payload:
+            raise InvalidPayload(
+                f"payload already carries the key '{name}' — it is reserved for the "
+                "identity of the artifact and the channel identities, so that it is "
+                "not silently overwritten"
+            )
+    mixed: dict[str, object] = {}
+    if event.artifact_hash is not None:
+        mixed[_ARTIFACT_HASH] = event.artifact_hash.hex()
+    if event.channel_identities:
+        mixed[_CHANNEL_IDENTITIES] = [
+            {
+                "channel": identity.channel,
+                "role": identity.role,
+                "address": identity.address,
+                "name": identity.name,
+            }
+            for identity in event.channel_identities
+        ]
+    return mixed
+
+
+def _check_artifact[Conn](
+    storage: LogStore[Conn], conn: Conn, event_id: int, event: RawEvent
+) -> None:
+    """Raises `ArtifactChanged` when the event under a known key carries
+    another artifact hash than the one arriving ({ref}`artifact-identity`).
+
+    The rule, row by row: the same hash is known; another one is refused;
+    an erased event — its payload `NULL` — is known, because a sighting does
+    not undo an erasure; an event without an artifact hash is known as it
+    always was. A sighting that gives none compares nothing. A value under
+    the name that is not 64 lower-case hexadecimal characters is no hash
+    `append` wrote — before this unit the name was not reserved, and a
+    caller may have used it — and counts as none.
+
+    One `read` per sighting of a known key, inside the transaction that
+    looked the key up, so `LogStore` needs nothing new.
+    """
+    if event.artifact_hash is None:
+        return
+    row = next(iter(storage.read(conn, event_id, 1)))
+    if row.payload is None:
+        return
+    known = row.payload.get(_ARTIFACT_HASH)
+    if not isinstance(known, str) or not is_address(known):
+        return
+    if known != event.artifact_hash.hex():
+        raise ArtifactChanged(
+            event.source,
+            event.external_id,
+            known=bytes.fromhex(known),
+            arrived=event.artifact_hash,
+        )
+
+
+def known_id[Conn](storage: LogStore[Conn], conn: Conn, event: RawEvent) -> int | None:
+    """The `id` of the event under the key of `event`, or `None` when the key
+    is new; raises `ArtifactChanged` when the event there carries another
+    artifact ({ref}`artifact-identity`).
+
+    The one place the rule lives for a key the log holds. `append` asks it
+    for every event of a batch inside its transaction; `core.ingest` asks it
+    before it stores the blobs of a mail, so that a mail the log already
+    holds — or holds erased — does not put its raw bytes into the store
+    again. A key that only the batch of a run holds so far is compared by
+    the run itself (`_Run._holds` in `core.ingest`), by the same rule.
+    """
+    existing = storage.lookup(conn, event.source, event.external_id)
+    if existing is not None:
+        _check_artifact(storage, conn, existing, event)
+    return existing
+
+
 def _prepare(
     events: Sequence[RawEvent],
 ) -> list[tuple[RawEvent, Prepared]]:
@@ -280,7 +382,7 @@ def _prepare(
     seen_keys: dict[tuple[str, str], int] = {}
     for index, event in enumerate(events):
         iso_utc(event.occurred_at)
-        # Before `_check_units` and, above all, before the retry loop: these
+        # Before `check_units` and, above all, before the retry loop: these
         # two are the first values that leave `core` (through `lookup`), so
         # they have to be checked before anything of this event touches the
         # driver (finding W-1).
@@ -320,7 +422,7 @@ def _prepare(
             )
         seen_keys[key] = index
 
-        _check_units(event.units)
+        check_units(event.units)
         if "evidence" in event.payload:
             # The kind of evidence ({ref}`canonicalization`) separates proof
             # from report and cannot be supplied after the fact in an
@@ -334,6 +436,7 @@ def _prepare(
         payload: Mapping[str, object] = {
             **event.payload,
             "evidence": event.evidence.value,
+            **_identities(event),
         }
         prepared.append(
             (
@@ -380,7 +483,11 @@ def append[Conn](
                 prev = None if tip is None else tip.hash
 
                 for event, ready in prepared:
-                    existing = storage.lookup(conn, event.source, event.external_id)
+                    # `ArtifactChanged` is raised inside the transaction,
+                    # which rolls back, so nothing of the batch is kept, the
+                    # events written before this one included
+                    # ({ref}`artifact-identity`).
+                    existing = known_id(storage, conn, event)
                     if existing is not None:
                         ids.append(existing)
                         continue
@@ -467,6 +574,12 @@ def append[Conn](
             #
             # Should the retry collide with a *third* writer, it collides on
             # the chain position — and that is the branch that does back off.
+            #
+            # The early return below hands back the identifiers without
+            # comparing the artifact hashes, which the loop body does for a
+            # key it finds ({ref}`artifact-identity`). Should this branch
+            # ever become reachable, a competitor's other artifact under one
+            # of these keys would pass here unrefused.
             with storage.begin() as conn:
                 reread = [storage.lookup(conn, e.source, e.external_id) for e in events]
             if all(i is not None for i in reread):

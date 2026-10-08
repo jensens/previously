@@ -5,15 +5,19 @@ r"""The store protocols: what `core` may ask of a store, and nothing more.
 
 `LogStore` is what the modules of `core` that write or read the log call —
 thirteen methods, counted on 2026-10-05, after the final fixes of stage 1c,
-by this command, run from the root of the repository in bash or fish:
+and counted again on 2026-10-06 once `core/ingest.py` had joined, which
+calls none the others do not, by this command, run from the root of the
+repository in bash or fish:
 
     grep -ohE '(storage|log)\.[a-z_]*\(' src/previously/core/append.py \
         src/previously/core/verify.py src/previously/core/redact.py \
         src/previously/core/redaction.py src/previously/core/projection/worker.py \
+        src/previously/core/ingest.py \
         | sed 's/.*\.//' | sort -u | wc -l
 
-The files are the five modules that name `LogStore` today, and the count is
-not copied from the method list of the implementation. The docstring is raw
+The files are the six modules that name `LogStore` today, found with
+`grep -rl LogStore src/previously/core`, and the count is not copied from
+the method list of the implementation. The docstring is raw
 so that the text in this file is the command, backslashes as they stand.
 Without the `sed` stage, as the command stood here until then, `sort -u`
 leaves 21 lines, a name once for each of the two prefixes it is called
@@ -60,6 +64,7 @@ if TYPE_CHECKING:
     from previously.contract.rows import SourceStatsRow
     from previously.contract.rows import Tip
     from previously.contract.rows import UnitRow
+    from previously.contract.types import Watermark
 
 
 class LogStore[Conn](Protocol):
@@ -153,3 +158,20 @@ class ProjectionStore[Conn](Protocol):
     def delete_chronicle(self, conn: Conn, event_id: int, seqs: Sequence[int] | None) -> None: ...
     def source_stats(self, conn: Conn, sources: Sequence[str]) -> dict[str, SourceStatsRow]: ...
     def upsert_source_stats(self, conn: Conn, rows: Sequence[SourceStatsRow]) -> None: ...
+
+
+class WatermarkStore[Conn](Protocol):
+    """How far each connector has read, one row per connector.
+
+    A protocol of its own, so that what a connector remembers stays apart
+    from the log: nothing typed against `LogStore` can write a watermark, and
+    nothing typed against this one can append. `watermark` reads the row of
+    one connector, or `None` when it has read nothing yet. `set_watermark`
+    writes the row and replaces whatever stood there, the position as a
+    whole; it runs in the caller's transaction, so that a watermark can stand
+    or fall with the events it covers. It refuses a `set_at` without a time
+    zone with a `ValueError`.
+    """
+
+    def watermark(self, conn: Conn, connector: str) -> Watermark | None: ...
+    def set_watermark(self, conn: Conn, mark: Watermark) -> None: ...

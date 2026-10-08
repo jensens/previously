@@ -5,6 +5,7 @@ from datetime import datetime
 from datetime import UTC
 from itertools import pairwise
 from previously.contract.types import BlobRef
+from previously.contract.types import ChannelIdentity
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.contract.types import RawUnit
@@ -12,9 +13,13 @@ from previously.core.append import append
 from previously.core.append import BACKOFF_CAP
 from previously.core.append import backoff_delay
 from previously.core.append import MAX_BATCH
+from previously.core.chain import link
+from previously.core.chain import prepare
+from previously.core.errors import ArtifactChanged
 from previously.core.errors import BatchTooLarge
 from previously.core.errors import InvalidPayload
 from previously.core.hashing import payload_hash_v2
+from previously.core.redact import redact_event
 from previously.core.units import split_plaintext
 from previously.core.verify import verify
 from previously.storage.postgres import PostgresStorage
@@ -478,9 +483,9 @@ def test_a_seq_below_one_is_refused(db: Engine) -> None:
         units=(RawUnit(seq=0, content="x"),),
         payload={},
     )
-    # The whole clause, not just "seq" (finding N5): four of the six messages
-    # in `_check_units` carry the word "seq", so "seq" would stay green on any
-    # of the other three complaints about this unit.
+    # The whole clause, not just "seq" (finding N5): two of the seven
+    # messages of `check_units` carry the word "seq", so "seq" would stay
+    # green on the other one, the complaint about a duplicate.
     with pytest.raises(InvalidPayload, match=r"seq must be >= 1"):
         append(storage, [event], recorded_at=NOW)
 
@@ -522,8 +527,8 @@ def test_a_null_byte_in_a_unit_is_refused(db: Engine) -> None:
 @pytest.mark.db
 def test_a_lone_surrogate_in_a_unit_is_refused_by_name(db: Engine) -> None:
     """The message names the unit, as for a null byte, before anything is
-    written. Measured on 2026-10-05 with the check in `_check_units`
-    removed: the unit digest refused it as `$.content: string not
+    written. Measured on 2026-10-05 with the check in `check_units`, then
+    named `_check_units`, removed: the unit digest refused it as `$.content: string not
     representable as UTF-8 ...`, which names no unit."""
     storage = PostgresStorage(db)
     event = RawEvent(
@@ -739,3 +744,209 @@ def test_an_identity_that_is_not_a_string_is_refused(db: Engine) -> None:
     )
     with pytest.raises(InvalidPayload, match="source: value is not a string, but int"):
         append(storage, [event], recorded_at=NOW)
+
+
+# --- The identity of the artifact ({ref}`artifact-identity`) ------------------------
+#
+# The rule for a key that exists already, one test per row of the table: the
+# same artifact is known, another one is refused, an erased event and an event
+# without an artifact hash stay known.
+
+_ARTIFACT = bytes.fromhex("11" * 32)
+_OTHER_ARTIFACT = bytes.fromhex("22" * 32)
+
+
+def _sighting(
+    external_id: str,
+    artifact_hash: bytes | None,
+    content: str = "Hello",
+    channel_identities: tuple[ChannelIdentity, ...] = (),
+) -> RawEvent:
+    return RawEvent(
+        source="email",
+        external_id=external_id,
+        occurred_at=OCCURRED,
+        evidence=Evidence.VERBATIM,
+        units=split_plaintext(content),
+        artifact_hash=artifact_hash,
+        channel_identities=channel_identities,
+    )
+
+
+def _event_count(db: Engine) -> int:
+    with db.connect() as c:
+        return c.execute(text("SELECT count(*) FROM event")).scalar_one()
+
+
+@pytest.mark.db
+def test_same_key_same_artifact_is_known(db: Engine) -> None:
+    """The units may differ: they are derived, and a better split of the same
+    artifact is no other artifact."""
+    storage = PostgresStorage(db)
+    first = append(storage, [_sighting("m1", _ARTIFACT)], recorded_at=NOW)
+    second = append(storage, [_sighting("m1", _ARTIFACT, "Hello\n\nagain")], recorded_at=NOW)
+    assert first == second == [1]
+    assert _event_count(db) == 1
+
+
+@pytest.mark.db
+def test_same_key_other_artifact_is_refused_and_nothing_is_written(db: Engine) -> None:
+    """Measurement M1 of the checkpoint: until this unit, a second sighting
+    with another content came back with the first one's `id`, and its content
+    was lost without a word. Now it is refused, naming the key and both
+    hashes, and the whole batch with it: the new event before it in the same
+    call is not written either."""
+    storage = PostgresStorage(db)
+    append(storage, [_sighting("m1", _ARTIFACT)], recorded_at=NOW)
+
+    batch = [_sighting("m2", None), _sighting("m1", _OTHER_ARTIFACT)]
+    with pytest.raises(ArtifactChanged) as raised:
+        append(storage, batch, recorded_at=NOW)
+
+    error = raised.value
+    assert (error.source, error.external_id) == ("email", "m1")
+    assert (error.known, error.arrived) == (_ARTIFACT, _OTHER_ARTIFACT)
+    assert str(error) == (
+        "email/m1 is known with another content (artifact 1111111111111111 ≠ 2222222222222222)"
+    )
+    assert _event_count(db) == 1
+    with storage.begin() as c:
+        assert storage.lookup(c, "email", "m2") is None
+
+
+@pytest.mark.db
+def test_an_erased_event_stays_known(db: Engine) -> None:
+    """A sighting does not undo an erasure: the erased event is known whatever
+    arrives under its key, and nothing is written back into it."""
+    storage = PostgresStorage(db)
+    append(storage, [_sighting("m1", _ARTIFACT)], recorded_at=NOW)
+    redact_event(storage, storage, 1, reason="asked to", recorded_at=NOW)
+
+    assert append(storage, [_sighting("m1", _OTHER_ARTIFACT)], recorded_at=NOW) == [1]
+    # The event and its redaction, and nothing third.
+    assert _event_count(db) == 2
+    with storage.begin() as c:
+        row = next(iter(storage.read(c, from_id=1, limit=1)))
+    assert row.payload is None
+
+
+@pytest.mark.db
+def test_an_event_without_artifact_hash_stays_known(db: Engine) -> None:
+    """Written before this unit, or by a caller that names no artifact: there
+    is nothing to compare against, and the key is known as it always was."""
+    storage = PostgresStorage(db)
+    append(storage, [_sighting("m1", None)], recorded_at=NOW)
+    assert append(storage, [_sighting("m1", _ARTIFACT)], recorded_at=NOW) == [1]
+    assert _event_count(db) == 1
+
+
+@pytest.mark.db
+def test_a_sighting_without_artifact_hash_is_known(db: Engine) -> None:
+    """`None` means "not given", not "empty": a sighting that names no
+    artifact compares nothing, also against an event that carries one."""
+    storage = PostgresStorage(db)
+    append(storage, [_sighting("m1", _ARTIFACT)], recorded_at=NOW)
+    assert append(storage, [_sighting("m1", None)], recorded_at=NOW) == [1]
+    assert _event_count(db) == 1
+
+
+@pytest.mark.db
+def test_a_foreign_value_under_the_name_counts_as_no_artifact_hash(db: Engine) -> None:
+    """Before this unit the name was not reserved, so an event of that time
+    may carry `artifact_hash` with a meaning of its caller's. A value that is
+    not 64 lower-case hexadecimal characters is no hash `append` wrote, and
+    the event counts as one without an artifact hash: known, not a
+    `ValueError` out of the comparison. Written the way `append` wrote it
+    then, through `prepare`, `link` and `insert_event`."""
+    storage = PostgresStorage(db)
+    ready = prepare(
+        kind="observation",
+        occurred_at=OCCURRED,
+        payload={"artifact_hash": "draft 3", "evidence": "verbatim"},
+        units=split_plaintext("Hello"),
+        key=("email", "m1"),
+    )
+    row, units = link(ready, event_id=1, prev_hash=None, recorded_at=NOW)
+    with storage.begin() as c:
+        storage.insert_event(c, row, units, ready.key, ready.blobs)
+
+    assert append(storage, [_sighting("m1", _ARTIFACT)], recorded_at=NOW) == [1]
+    assert _event_count(db) == 1
+
+
+@pytest.mark.db
+def test_artifact_hash_and_channel_identities_land_in_the_payload(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    identities = (
+        ChannelIdentity(channel="email", role="from", address="Ada@Example.org", name="Ada"),
+        ChannelIdentity(channel="email", role="to", address="bob@example.org"),
+    )
+    sightings = [
+        _sighting("m1", _ARTIFACT, channel_identities=identities),
+        _sighting("m2", _OTHER_ARTIFACT, channel_identities=identities),
+    ]
+    append(storage, sightings, recorded_at=NOW)
+    with storage.begin() as c:
+        row = next(iter(storage.read(c, from_id=1, limit=1)))
+    assert row.payload is not None
+    assert row.payload["artifact_hash"] == "11" * 32
+    # In the order given, the address as it came, `name` as `null` where the
+    # source carries none.
+    assert row.payload["channel_identities"] == [
+        {"channel": "email", "role": "from", "address": "Ada@Example.org", "name": "Ada"},
+        {"channel": "email", "role": "to", "address": "bob@example.org", "name": None},
+    ]
+    assert verify(storage) == []
+
+    # Covered by `payload_hash`: changed by hand, either one is a finding.
+    with db.begin() as c:
+        c.execute(
+            text(
+                "UPDATE event SET payload = jsonb_set(payload, '{artifact_hash}', :value) "
+                "WHERE id = 1"
+            ),
+            {"value": '"' + "33" * 32 + '"'},
+        )
+        c.execute(
+            text(
+                "UPDATE event SET payload = jsonb_set("
+                "payload, '{channel_identities,1,address}', '\"eve@example.org\"') WHERE id = 2"
+            )
+        )
+    findings = verify(storage)
+    assert [(f.event_id, f.reason) for f in findings] == [
+        (1, "payload_hash does not match the payload"),
+        (2, "payload_hash does not match the payload"),
+    ]
+
+
+@pytest.mark.db
+def test_without_either_the_payload_carries_neither_name(db: Engine) -> None:
+    """Like `blobs`: an event that names no artifact and no identity has the
+    payload it would have had before this unit."""
+    storage = PostgresStorage(db)
+    append(storage, [_sighting("m1", None)], recorded_at=NOW)
+    with storage.begin() as c:
+        row = next(iter(storage.read(c, from_id=1, limit=1)))
+    assert row.payload == {"evidence": "verbatim"}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("name", ["artifact_hash", "channel_identities"])
+def test_the_new_names_are_reserved(db: Engine, name: str) -> None:
+    """Reserved like `evidence`: a payload that carries one of them is refused
+    rather than overwritten, whether the event names an artifact or not."""
+    storage = PostgresStorage(db)
+    for artifact_hash in (None, _ARTIFACT):
+        event = RawEvent(
+            source="email",
+            external_id="m1",
+            occurred_at=OCCURRED,
+            evidence=Evidence.VERBATIM,
+            units=split_plaintext("Hello"),
+            payload={name: "anything"},
+            artifact_hash=artifact_hash,
+        )
+        with pytest.raises(InvalidPayload, match=f"payload already carries the key '{name}'"):
+            append(storage, [event], recorded_at=NOW)
+    assert _event_count(db) == 0

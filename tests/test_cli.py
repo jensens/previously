@@ -4,7 +4,9 @@
 from contextlib import contextmanager
 from datetime import datetime
 from datetime import UTC
+from mailserver import Relay
 from previously.cli import COMMANDS
+from previously.cli import escape_controls
 from previously.cli import escape_field
 from previously.cli import main
 from previously.cli import MAX_TEXT_BYTES
@@ -18,6 +20,7 @@ from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
 from previously.core.errors import InvalidPayload
+from previously.core.identity import artifact_hash_of
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
 from previously.core.redact import redact_blob
@@ -30,6 +33,8 @@ from typing import TYPE_CHECKING
 
 import hashlib
 import io
+import json
+import mailfiles
 import os
 import pytest
 import re
@@ -43,6 +48,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from collections.abc import Generator
     from collections.abc import Sequence
+    from mailserver import MailServer
     from previously.contract.blobs import ClosableSource
     from previously.contract.blobs import StoredBlob
     from previously.storage.s3 import S3BlobStore
@@ -119,6 +125,71 @@ def test_appending_twice_gives_the_same_id(
 
 
 @pytest.mark.db
+def test_another_text_under_a_known_key_is_refused(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The same text twice is known; another text under the same key is
+    refused with one sentence and 2, and nothing is written. The hashes are
+    those of the text and the sorted attachment addresses, here none."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
+    submit = ["append", "--source", "cli", "--external-id", "a", "--text"]
+    assert main([*submit, "A"]) == 0
+    assert main([*submit, "A"]) == 0
+    assert capsys.readouterr().out == "1\n1\n"
+
+    assert main([*submit, "B"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    known = artifact_hash_of({"text": "A", "attachments": []}).hex()[:16]
+    arrived = artifact_hash_of({"text": "B", "attachments": []}).hex()[:16]
+    assert _single_line(err) == (
+        f"Error: cli/a is known with another content (artifact {known} ≠ {arrived})"
+    )
+    with db.connect() as c:
+        assert c.execute(text("SELECT count(*) FROM event")).scalar_one() == 1
+
+
+@pytest.mark.parametrize("ending", ["\r\n", "\r"], ids=["crlf", "cr"])
+@pytest.mark.db
+def test_the_same_text_with_other_line_endings_is_known(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, ending: str
+) -> None:
+    """Text pasted from a Windows clipboard ends its lines in CRLF, and
+    `split_plaintext` reads it as the same units; the artifact reads it the
+    same way, so the text is known and not refused as another content. The
+    hash is that of the text with LF."""
+    _setup(db, monkeypatch)
+    submit = ["append", "--source", "cli", "--external-id", "a", "--text"]
+    assert main([*submit, "Erster Absatz.\n\nZweiter Absatz."]) == 0
+    assert main([*submit, f"Erster Absatz.{ending}{ending}Zweiter Absatz."]) == 0
+    out, err = capsys.readouterr()
+    assert (out, err) == ("1\n1\n", "")
+
+    assert main(["show", "1"]) == 0
+    expected = artifact_hash_of(
+        {"text": "Erster Absatz.\n\nZweiter Absatz.", "attachments": []}
+    ).hex()
+    assert f'"artifact_hash": "{expected}"' in capsys.readouterr().out
+
+
+@pytest.mark.db
+def test_a_text_that_differs_in_more_than_its_line_endings_is_refused(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control of the test above: the line endings are all that is
+    made alike."""
+    _setup(db, monkeypatch)
+    submit = ["append", "--source", "cli", "--external-id", "a", "--text"]
+    assert main([*submit, "Erster Absatz.\n\nZweiter Absatz."]) == 0
+    assert main([*submit, "Erster Absatz.\r\n\r\nZweiter Absatz!"]) == 2
+    assert "is known with another content" in capsys.readouterr().err
+
+
+@pytest.mark.db
 def test_show_displays_the_event_with_its_units(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -179,9 +250,12 @@ def test_show_displays_the_evidence_and_the_payload(
     # The payload as canonical-ish JSON with sorted keys, so the line is
     # stable: jsonb does not give the keys back in the order written. The
     # text is in the units alone: `append --text` adds nothing to the payload
-    # but the kind of evidence. Measured on 2026-10-05 with the text copied
-    # into the payload again: this comparison failed.
-    assert 'payload={"evidence": "verbatim"}\n  ¶1 Hello\n' in output
+    # but the hash of the artifact and the kind of evidence. Measured on
+    # 2026-10-05 with the text copied into the payload again: this comparison
+    # failed.
+    artifact = artifact_hash_of({"text": "Hello", "attachments": []}).hex()
+    payload = f'{{"artifact_hash": "{artifact}", "evidence": "verbatim"}}'
+    assert f"payload={payload}\n  ¶1 Hello\n" in output
 
 
 @pytest.mark.db
@@ -1030,6 +1104,79 @@ def test_escape_field_folds_tab_newline_return_and_backslash_into_two_characters
     assert escape_field("plain") == "plain"
 
 
+# Terminal commands a stranger can write into a mail: an OSC sequence that
+# sets the window title, ended by BEL; a CSI sequence that turns text red,
+# once with ESC and `[`, once as the one C1 character U+009B; DEL.
+HOSTILE = "\x1b]0;Titel gesetzt\x07Rot: \x1b[31mja\x9b0m\x7f"
+HOSTILE_ESCAPED = "\\x1b]0;Titel gesetzt\\x07Rot: \\x1b[31mja\\x9b0m\\x7f"
+
+
+def _raw_controls(text: str) -> list[str]:
+    """Every control character in `text` but tab and line feed."""
+    return [c for c in text if (ord(c) < 0x20 and c not in "\t\n") or 0x7F <= ord(c) <= 0x9F]
+
+
+def test_escape_controls_writes_every_control_but_tab_and_line_feed_as_hex() -> None:
+    assert escape_controls(HOSTILE) == HOSTILE_ESCAPED
+    assert escape_controls("\x00\r\x1f\x80\x9f") == "\\x00\\x0d\\x1f\\x80\\x9f"
+
+
+def test_escape_controls_keeps_tab_line_feed_and_every_other_character() -> None:
+    """The control of the test above: text, tabs and line breaks pass."""
+    text = "Grüße\tan alle\nÄ € \xa0 \u2028 \\x1b"
+    assert escape_controls(text) == text
+
+
+def test_escape_field_writes_a_control_as_hex_and_stays_reversible() -> None:
+    """A control and the four characters it already escaped; a literal
+    backslash and `x1b` stay apart from an ESC."""
+    assert escape_field(HOSTILE) == HOSTILE_ESCAPED
+    assert escape_field("\\x1b\x1b\t") == "\\\\x1b\\x1b\\t"
+
+
+@pytest.mark.db
+def test_show_and_chronicle_print_no_control_of_a_unit_or_a_payload_raw(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A mail puts what its sender wrote into the units and the payload:
+    `show` writes each control as `\\xNN` in a unit and as `\\u00NN` in the
+    JSON of the payload, and keeps a unit's line break; `chronicle` writes
+    each as `\\xNN`. The log holds the text unchanged."""
+    from sqlalchemy import Engine
+
+    assert isinstance(db, Engine)
+    _setup(db, monkeypatch)
+    storage = PostgresStorage(db)
+    moment = datetime(2026, 10, 6, 9, 0, tzinfo=UTC)
+    event = RawEvent(
+        source="email",
+        external_id="hostile@example.org",
+        occurred_at=moment,
+        evidence=Evidence.VERBATIM,
+        units=split_plaintext(f"{HOSTILE}\nzweite Zeile"),
+        payload={"headers": [["Subject", HOSTILE]]},
+    )
+    append(storage, [event], recorded_at=moment)
+
+    assert main(["show", "1"]) == 0
+    out = capsys.readouterr().out
+    assert _raw_controls(out) == []
+    assert f"  ¶1 {HOSTILE_ESCAPED}\nzweite Zeile\n" in out
+    (line,) = [line for line in out.splitlines() if line.startswith("payload=")]
+    assert json.loads(line.removeprefix("payload="))["headers"] == [["Subject", HOSTILE]]
+    assert "\\u001b]0;Titel gesetzt\\u0007" in line
+    assert "\\u009b0m\\u007f" in line
+
+    assert main(["project"]) == 0
+    capsys.readouterr()
+    assert main(["chronicle"]) == 0
+    out = capsys.readouterr().out
+    assert _raw_controls(out) == []
+    assert out.endswith(f"\temail\thostile@example.org\t{HOSTILE_ESCAPED}\\nzweite Zeile\n")
+    with storage.begin() as conn:
+        assert [unit.content for unit in storage.units(conn, 1)] == [f"{HOSTILE}\nzweite Zeile"]
+
+
 def _setup(db: object, monkeypatch: pytest.MonkeyPatch) -> None:
     from sqlalchemy import Engine
 
@@ -1761,7 +1908,11 @@ def test_redact_units_on_an_event_of_append_leaves_no_text_and_says_nothing(
 
     assert main(["show", "1"]) == 0
     output = capsys.readouterr().out
-    assert 'payload={"evidence": "recollection"}\n  ¶1 One\n  ¶2 <erased by event 2>\n' in output
+    # The payload keeps the artifact hash, which is no wording: a digest of
+    # the text, not the text ({ref}`artifact-identity`).
+    artifact = artifact_hash_of({"text": "One\n\nTwo", "attachments": []}).hex()
+    payload = f'{{"artifact_hash": "{artifact}", "evidence": "recollection"}}'
+    assert f"payload={payload}\n  ¶1 One\n  ¶2 <erased by event 2>\n" in output
     assert "Two" not in output
 
 
@@ -2352,6 +2503,32 @@ def _events(engine: Engine) -> int:
 
     with engine.connect() as c:
         return c.execute(text("SELECT count(*) FROM event")).scalar_one()
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_the_artifact_of_append_is_the_text_and_the_sorted_attachment_addresses(
+    blobs: _Blobs, tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The same files in the other order are the same artifact; another file
+    is another one, and refused under the same key."""
+    from sqlalchemy import text
+
+    first = _file(tmp_path, "first.txt", b"The first attachment, invented for this test.\n")
+    second = _file(tmp_path, "second.txt", b"The second attachment, invented for this test.\n")
+    third = _file(tmp_path, "third.txt", b"A third one, not attached before.\n")
+    addresses = sorted(hashlib.sha256(path.read_bytes()).hexdigest() for path in (first, second))
+
+    assert main(_attach("a", second, first)) == 0
+    assert main(_attach("a", first, second)) == 0
+    assert capsys.readouterr().out == "1\n1\n"
+    with blobs.engine.connect() as c:
+        stored = c.execute(text("SELECT payload ->> 'artifact_hash' FROM event")).scalar_one()
+    assert stored == artifact_hash_of({"text": "See attached.", "attachments": addresses}).hex()
+
+    assert main(_attach("a", first, third)) == 2
+    assert "Error: cli/a is known with another content" in capsys.readouterr().err
+    assert _events(blobs.engine) == 1
 
 
 @pytest.mark.db
@@ -3477,3 +3654,341 @@ def test_blob_get_answers_from_the_log_without_any_blob_setting(
     assert capsys.readouterr() == ("", f"blob {erased} is erased (event 3)\n")
     assert main(["blob", "get", kept, "--output", target]) == 2
     assert capsys.readouterr() == ("", "Error: PREVIOUSLY_BLOB_IDENTITIES is not set\n")
+
+
+# --- ingest imap ({ref}`cli-reference`) ---------------------------------------
+
+_IMAP_VARIABLES = (
+    "PREVIOUSLY_IMAP_HOST",
+    "PREVIOUSLY_IMAP_PORT",
+    "PREVIOUSLY_IMAP_USER",
+    "PREVIOUSLY_IMAP_PASSWORD",
+    "PREVIOUSLY_IMAP_FOLDER",
+)
+# The folder every test of `ingest imap` reads, at `127.0.0.1`: an address
+# the certificate of the test server names, and the one the relay listens on,
+# so that a run through the relay keeps the watermark of a run without it —
+# the host is part of the connector's name, the port is not.
+_IMAP_HOST = "127.0.0.1"
+_IMAP_CONNECTOR = "imap:pilot@127.0.0.1/Kunde Müller"
+
+
+@pytest.fixture
+def imap(
+    blobs: _Blobs,
+    mail_server: MailServer,
+    imap_folder: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> _Blobs:
+    """What the blob commands work with, a folder of four mails at UIDs 1 to
+    4, and the five settings that reach it.
+
+    The command line keeps no switch for a certificate it cannot verify, so
+    the test trusts the server the way OpenSSL trusts anything:
+    `SSL_CERT_FILE` names the certificate the container made, and the
+    default context reads it. The directory of identities is unset, because
+    taking in reads none."""
+    values = (_IMAP_HOST, str(mail_server.port), mail_server.user, mail_server.password)
+    for name, value in zip(_IMAP_VARIABLES, (*values, imap_folder), strict=True):
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("SSL_CERT_FILE", str(mail_server.certificate))
+    monkeypatch.delenv("PREVIOUSLY_BLOB_IDENTITIES")
+    return blobs
+
+
+def _imap_watermark(engine: Engine) -> dict[str, str] | None:
+    storage = PostgresStorage(engine)
+    with storage.snapshot() as conn:
+        mark = storage.watermark(conn, _IMAP_CONNECTOR)
+    return None if mark is None else dict(mark.position)
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_takes_in_the_folder_and_a_second_run_appends_nothing(
+    imap: _Blobs, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Four mails, five events — the fourth has a mail attached — and then
+    nothing new. The chronicle shows each subject once the projections are
+    caught up."""
+    assert main(["ingest", "imap"]) == 0
+    assert capsys.readouterr() == ("imap: 5 appended, 0 known, 0 variants, up to uid 4\n", "")
+    assert main(["ingest", "imap"]) == 0
+    assert capsys.readouterr() == ("imap: 0 appended, 0 known, 0 variants, up to uid 4\n", "")
+    assert _events(imap.engine) == 5
+
+    assert main(["project"]) == 0
+    capsys.readouterr()
+    assert main(["chronicle"]) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    contents = {line.split("\t")[5] for line in out.splitlines()}
+    assert {
+        "Angebot für den Relaunch",
+        "Re: Angebot für den Relaunch",
+        "AW: Angebot für den Relaunch",
+        "Fwd: Rechnung Oktober",
+        "Rechnung Oktober",
+    } <= contents
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_names_each_variant_on_standard_error(
+    imap: _Blobs, mail_server: MailServer, imap_folder: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A mail under a Message-ID the log holds with another body is taken in
+    as a variant, counted on standard output and named on standard error."""
+    assert main(["ingest", "imap"]) == 0
+    capsys.readouterr()
+    mail_server.append(imap_folder, mailfiles.PLAIN_OTHER_BODY)
+    assert main(["ingest", "imap"]) == 0
+    assert capsys.readouterr() == (
+        "imap: 1 appended, 0 known, 1 variants, up to uid 5\n",
+        "variant of 20261005101500.4711@example.net: event 6\n",
+    )
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_escapes_a_control_in_the_message_id_of_a_variant(
+    imap: _Blobs, mail_server: MailServer, imap_folder: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The Message-ID is the sender's, raw ESC and BEL included; the line
+    that names the variant writes them as `\\xNN`."""
+    plain_id = b"<20261005101500.4711@example.net>"
+    hostile_id = b"<ein\x1b]0;Titel\x07@example.net>"
+    assert main(["ingest", "imap"]) == 0
+    capsys.readouterr()
+    mail_server.append(imap_folder, mailfiles.PLAIN.replace(plain_id, hostile_id))
+    mail_server.append(imap_folder, mailfiles.PLAIN_OTHER_BODY.replace(plain_id, hostile_id))
+    assert main(["ingest", "imap"]) == 0
+    assert capsys.readouterr() == (
+        "imap: 2 appended, 0 known, 1 variants, up to uid 6\n",
+        "variant of ein\\x1b]0;Titel\\x07@example.net: event 7\n",
+    )
+
+
+@pytest.mark.db
+def test_an_error_writes_a_control_in_the_key_it_quotes_as_hex(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ArtifactChanged` quotes the key, and the key of a mail is its
+    Message-ID; the `Error:` line writes a control in it as `\\xNN`."""
+    _setup(db, monkeypatch)
+    submit = ["append", "--source", "cli", "--external-id", "a\x1b[2Jb", "--text"]
+    assert main([*submit, "A"]) == 0
+    assert main([*submit, "B"]) == 2
+    err = capsys.readouterr().err
+    assert _raw_controls(err) == []
+    assert err.startswith("Error: cli/a\\x1b[2Jb is known with another content")
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+@pytest.mark.parametrize("tail", ["", "-Grüße"])
+def test_ingest_imap_refuses_a_wrong_password_without_printing_it(
+    imap: _Blobs,
+    mail_server: MailServer,
+    tail: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """One sentence, exit code 2, and the password in neither stream: a
+    password the server refuses, and one with a character beyond ASCII,
+    which `imaplib` writes the login in and would otherwise end in a stack
+    trace."""
+    password = f"wrong-{secrets.token_hex(8)}{tail}"
+    monkeypatch.setenv("PREVIOUSLY_IMAP_PASSWORD", password)
+    assert main(["ingest", "imap"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    server = f"{_IMAP_HOST}:{mail_server.port}"
+    if tail:
+        assert err == (
+            f"Error: the login of pilot at the IMAP server {server} holds a character other "
+            "than ASCII, and previously sends the login in ASCII only\n"
+        )
+    else:
+        assert err == f"Error: the IMAP server {server} refused the login of pilot\n"
+    for secret in (password, password.removeprefix("wrong-"), mail_server.password):
+        assert secret not in out + err
+    assert _events(imap.engine) == 0
+    assert _imap_watermark(imap.engine) is None
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_verifies_the_certificate_and_the_host_name(
+    imap: _Blobs,
+    mail_server: MailServer,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Without `SSL_CERT_FILE`, the system trusts nothing the container made;
+    with it, a name the certificate does not carry is refused all the same.
+    `127.0.0.2` reaches the same server on Linux, where all of `127.0.0.0/8`
+    is the loopback."""
+    monkeypatch.delenv("SSL_CERT_FILE")
+    assert main(["ingest", "imap"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the certificate of the IMAP server {_IMAP_HOST}:{mail_server.port} "
+        "does not verify: self-signed certificate\n",
+    )
+
+    monkeypatch.setenv("SSL_CERT_FILE", str(mail_server.certificate))
+    monkeypatch.setenv("PREVIOUSLY_IMAP_HOST", "127.0.0.2")
+    assert main(["ingest", "imap"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the certificate of the IMAP server 127.0.0.2:{mail_server.port} "
+        "does not verify: IP address mismatch, certificate is not valid for '127.0.0.2'.\n",
+    )
+    assert _events(imap.engine) == 0
+
+
+def _large_mail(number: int) -> bytes:
+    """An invented mail of a little over 1 MiB, most of it an attachment of
+    one byte value repeated: its size is what a test of the relay needs, not
+    its content."""
+    head = (
+        "From: Archiv <archiv@example.org>",
+        "To: pilot@example.org",
+        f"Subject: Scan {number}",
+        "Date: Tue, 06 Oct 2026 08:00:00 +0200",
+        f"Message-ID: <scan-large-{number}@example.org>",
+        "MIME-Version: 1.0",
+        'Content-Type: multipart/mixed; boundary="part"',
+        "",
+        "--part",
+        "Content-Type: text/plain; charset=utf-8",
+        "",
+        f"Scan {number}, invented for this test.",
+        "--part",
+        "Content-Type: application/octet-stream",
+        f'Content-Disposition: attachment; filename="scan-{number}.bin"',
+        "Content-Transfer-Encoding: base64",
+        "",
+    )
+    attachment = mailfiles.base64_lines(bytes([number]) * (768 * 1024))
+    return b"\r\n".join([*(line.encode() for line in head), *attachment, b"--part--"]) + b"\r\n"
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_stops_at_a_dropped_connection_with_the_watermark_at_the_last_batch(
+    imap: _Blobs,
+    mail_server: MailServer,
+    imap_folder: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The connection breaks off in the middle of a run: one sentence, exit
+    code 2, nothing of the broken batch in the log, and the watermark where
+    the last appended batch left it. The next run takes in the rest.
+
+    The break is a relay that ends the connection once the server has sent
+    the size of the first large mail and half a mebibyte more (`Relay`): the
+    login, the search and the first mail take a few kibibytes beyond that
+    size, so the break falls about half a mebibyte into the second. Stopping
+    the container from a thread while the run fetches was the other way, and
+    it is not one a test can rely on: the session's server would be gone for
+    every later test, and where the stop lands — before the login, between
+    two mails, after the run — depends on how two threads are scheduled. A
+    byte count puts the break inside the second mail every time."""
+    assert main(["ingest", "imap"]) == 0
+    capsys.readouterr()
+    mail_server.append(imap_folder, _large_mail(1), _large_mail(2))
+
+    with Relay(mail_server, limit=len(_large_mail(1)) + 512 * 1024) as relay:
+        monkeypatch.setenv("PREVIOUSLY_IMAP_PORT", str(relay.port))
+        assert main(["ingest", "imap"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    # Nothing of the mail either: `imaplib` aborts here with a header line of
+    # the second mail in its text (see `ImapConnector._speaking`).
+    assert err == f"Error: the connection to the IMAP server {_IMAP_HOST}:{relay.port} broke off\n"
+    assert mail_server.password not in err
+    assert "example.org" not in err
+    assert _imap_watermark(imap.engine) == {
+        "uidvalidity": mail_server.uidvalidity(imap_folder),
+        "uid": "4",
+    }
+    assert _events(imap.engine) == 5
+
+    monkeypatch.setenv("PREVIOUSLY_IMAP_PORT", str(mail_server.port))
+    assert main(["ingest", "imap"]) == 0
+    assert capsys.readouterr() == ("imap: 2 appended, 0 known, 0 variants, up to uid 6\n", "")
+
+
+# Every setting `ingest imap` needs, each pointing nowhere that answers: a
+# run that connected anywhere before it had read them all would end in an
+# error of that connection instead of naming the setting.
+_UNREACHABLE = {
+    "PREVIOUSLY_IMAP_HOST": "127.0.0.1",
+    "PREVIOUSLY_IMAP_PORT": "1",
+    "PREVIOUSLY_IMAP_USER": "pilot",
+    "PREVIOUSLY_IMAP_PASSWORD": "not-the-password",
+    "PREVIOUSLY_IMAP_FOLDER": "Kunde Müller",
+    "PREVIOUSLY_DSN": "postgresql://previously:pw@127.0.0.1:1/previously",
+    "PREVIOUSLY_BLOB_ENDPOINT": "http://127.0.0.1:1",
+    "PREVIOUSLY_BLOB_REGION": "us-east-1",
+    "PREVIOUSLY_BLOB_BUCKET": "nowhere",
+    "PREVIOUSLY_BLOB_ACCESS_KEY": "nobody",
+    "PREVIOUSLY_BLOB_SECRET_KEY": "nothing",
+}
+
+
+def _unreachable(age_identity: str, monkeypatch: pytest.MonkeyPatch) -> None:
+    settings = {**_UNREACHABLE, "PREVIOUSLY_BLOB_RECIPIENT": recipient_of(age_identity)}
+    for name, value in settings.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.delenv("PREVIOUSLY_BLOB_IDENTITIES", raising=False)
+
+
+@pytest.mark.parametrize(
+    "missing",
+    [
+        *(name for name in _UNREACHABLE if name != "PREVIOUSLY_IMAP_PORT"),
+        "PREVIOUSLY_BLOB_RECIPIENT",
+    ],
+)
+def test_ingest_imap_names_a_missing_setting_before_it_connects(
+    missing: str,
+    age_identity: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _unreachable(age_identity, monkeypatch)
+    monkeypatch.delenv(missing)
+    assert main(["ingest", "imap"]) == 2
+    assert capsys.readouterr() == ("", f"Error: {missing} is not set\n")
+
+
+def test_ingest_imap_reads_every_setting_and_then_connects(
+    age_identity: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control of the test above: with every setting there, and the
+    directory of identities not, the run gets as far as connecting — to the
+    database first, for the watermark. A port that is no port number is
+    refused before that, like a missing setting."""
+    _unreachable(age_identity, monkeypatch)
+    assert main(["ingest", "imap"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.startswith("Error: connecting to database previously at 127.0.0.1:1 failed: ")
+
+    for port in ("0", "imaps", "65536", "²"):
+        monkeypatch.setenv("PREVIOUSLY_IMAP_PORT", port)
+        assert main(["ingest", "imap"]) == 2
+        assert capsys.readouterr() == (
+            "",
+            f"Error: PREVIOUSLY_IMAP_PORT is not a port number: {port!r}\n",
+        )

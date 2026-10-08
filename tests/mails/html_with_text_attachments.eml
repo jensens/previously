@@ -1,0 +1,22 @@
+From: lea@example.com
+To: office@example.org
+Subject: Notizen
+Date: Wed, 07 Oct 2026 08:30:00 +0200
+Message-ID: <html-notiz@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="notes"
+
+--notes
+Content-Type: text/html; charset=utf-8
+
+<p>Hier der eigentliche Text der Mail.</p>
+--notes
+Content-Type: text/plain; charset=utf-8; name="notiz.txt"
+Content-Disposition: inline; filename="notiz.txt"
+
+Inhalt der Notiz.
+--notes
+Content-Type: text/plain; charset=utf-8; name="liste.txt"
+
+Inhalt der Liste.
+--notes--

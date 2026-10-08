@@ -16,12 +16,15 @@ from dataclasses import dataclass
 from datetime import datetime
 from datetime import UTC
 from pathlib import Path
+from previously.connectors.imap import ImapConnector
+from previously.connectors.imap import PORT as IMAP_PORT
 from previously.contract.types import BlobRef
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.anchor import format_anchor
 from previously.core.anchor import parse_anchors
 from previously.core.append import append
+from previously.core.append import check_units
 from previously.core.blob import fetch_blob
 from previously.core.blob import store_blob
 from previously.core.chain import read_references
@@ -34,6 +37,8 @@ from previously.core.errors import RedactionRefused
 from previously.core.errors import SinkUnwritable
 from previously.core.errors import SourceUnreadable
 from previously.core.hashing import is_address
+from previously.core.identity import artifact_hash_of
+from previously.core.ingest import ingest
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
 from previously.core.projection import Outcome
@@ -45,6 +50,7 @@ from previously.core.redact import redact_units
 from previously.core.redaction import blob_erasure
 from previously.core.redaction import read_index
 from previously.core.sealing import check_recipient
+from previously.core.units import normalize_line_endings
 from previously.core.units import split_plaintext
 from previously.core.verify import BlobCheck
 from previously.core.verify import examine
@@ -63,12 +69,15 @@ import io
 import json
 import mimetypes
 import os
+import re
 import signal
+import ssl
 import sys
 import tempfile
 
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
     from collections.abc import Sequence
     from previously.contract.blobs import BlobStore
     from previously.contract.blobs import KeyProvider
@@ -136,11 +145,53 @@ def escape_field(text: str) -> str:
     and two fields instead of one line with six, and `stats` printed six
     fields instead of five.
 
+    Every other control character comes out as `\\xNN` (`escape_controls`),
+    after the backslash, so the mapping stays reversible.
+
     Public rather than `_escape` because a test calls it directly, and a
     direct test earns a public name instead of a suppressed private-usage
     warning.
     """
-    return text.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
+    escaped = (
+        text.replace("\\", "\\\\").replace("\t", "\\t").replace("\n", "\\n").replace("\r", "\\r")
+    )
+    return escape_controls(escaped)
+
+
+# Every C0 control character but tab and line feed, DEL, and every C1
+# control character (U+0080 to U+009F).
+_CONTROLS = re.compile("[\x00-\x08\x0b-\x1f\x7f-\x9f]")
+
+# What `json.dumps` leaves raw with `ensure_ascii=False`: it escapes every
+# character below U+0020 itself, DEL and C1 not.
+_JSON_CONTROLS = re.compile("[\x7f-\x9f]")
+
+
+def escape_controls(text: str) -> str:
+    """`text` with every control character but tab and line feed as `\\xNN`,
+    for output a person reads on a terminal.
+
+    Since `ingest`, what the reading commands print is written by strangers:
+    a subject, a mail's text, a Message-ID. A terminal takes ESC and its
+    sequences as commands: an OSC sequence such as `ESC]0;title BEL` sets
+    the window title, OSC 52 the clipboard, and `ESC[2J` clears the screen.
+    Measured on 2026-10-06, `show` printed both from a unit raw before this
+    function existed. C1 characters are the same commands in one character,
+    U+009B for `ESC[`, and DEL is no character to read. The log holds the
+    text unchanged.
+
+    Public because a test calls it directly, as for `escape_field`.
+    """
+    return _CONTROLS.sub(lambda match: f"\\x{ord(match.group()):02x}", text)
+
+
+def _json_line(payload: Mapping[str, object]) -> str:
+    """The payload as one line of JSON, with sorted keys, and DEL and the
+    C1 controls as `\\u00NN`, which is JSON for the same character: the line
+    stays valid JSON and says the same, and no control reaches a terminal
+    raw."""
+    line = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return _JSON_CONTROLS.sub(lambda match: f"\\u{ord(match.group()):04x}", line)
 
 
 def _plural(n: int, noun: str) -> str:
@@ -434,6 +485,10 @@ def _cmd_append(args: argparse.Namespace) -> int:
     occurred = parse_moment(args.occurred_at) if args.occurred_at else datetime.now(UTC)
     evidence = _parse_evidence(args.evidence)
     units = split_plaintext(args.text)
+    # Before the text is hashed into the artifact identity below: the
+    # canonical form would refuse a null byte or a lone surrogate there too,
+    # but as `$.text` of a document nothing stores, where this names the unit.
+    check_units(units)
     # The database setting before anything is stored: `_storage` refuses an
     # unset `PREVIOUSLY_DSN` without connecting, and a blob stored before that
     # refusal would lie in the bucket with no event to name it. Then the
@@ -441,6 +496,18 @@ def _cmd_append(args: argparse.Namespace) -> int:
     # there is something to attach.
     with _storage() as storage:
         blobs = _attach(args.attach) if args.attach else ()
+        # The artifact is what was submitted: the text with its line endings
+        # as LF, and the attachments by their addresses, sorted, so that their
+        # order on the command line and their file names do not make another
+        # artifact ({ref}`artifact-identity`). Not the units, which are
+        # derived. The line endings the way `split_plaintext` reads them: the
+        # same text pasted from a Windows clipboard, with CRLF, gives the same
+        # units, and would otherwise be refused under its own key as another
+        # content.
+        artifact = {
+            "text": normalize_line_endings(args.text),
+            "attachments": sorted(blob.sha256 for blob in blobs),
+        }
         event = RawEvent(
             source=args.source,
             external_id=args.external_id,
@@ -448,9 +515,80 @@ def _cmd_append(args: argparse.Namespace) -> int:
             evidence=evidence,
             units=units,
             blobs=blobs,
+            artifact_hash=artifact_hash_of(artifact),
         )
         ids = append(storage, [event], recorded_at=datetime.now(UTC))
     print(ids[0])
+    return 0
+
+
+# --- Taking in mail ({ref}`cli-reference`) -------------------------------------
+
+
+def _ingest_arguments(parser: argparse.ArgumentParser) -> None:
+    # A second level, like `blob`: the source is a word of its own, and the
+    # next connector is the next word beside it.
+    sources = parser.add_subparsers(dest="source", required=True)
+    sentence = "take in the mail an IMAP folder holds above the watermark of the last run"
+    sources.add_parser("imap", help=sentence, description=sentence)
+
+
+def _imap_port() -> int:
+    """`PREVIOUSLY_IMAP_PORT`, or the port of IMAP over TLS when it is unset
+    or empty, like every other setting that is empty."""
+    text = os.environ.get("PREVIOUSLY_IMAP_PORT") or str(IMAP_PORT)
+    if not (text.isascii() and text.isdigit() and 0 < int(text) < 65536):
+        raise PreviouslyError(f"PREVIOUSLY_IMAP_PORT is not a port number: {text!r}")
+    return int(text)
+
+
+def _imap_connector() -> ImapConnector:
+    """The folder out of its five settings, read before anything connects.
+
+    The certificate is verified against the system's trust store, and so is
+    the host name: `ssl.create_default_context()`, with no setting that turns
+    it off. A server with a certificate of its own is trusted the way
+    OpenSSL trusts anything, through `SSL_CERT_FILE` or the trust store, not
+    through a switch of this command.
+    """
+    return ImapConnector(
+        host=_setting("PREVIOUSLY_IMAP_HOST"),
+        port=_imap_port(),
+        user=_setting("PREVIOUSLY_IMAP_USER"),
+        password=_setting("PREVIOUSLY_IMAP_PASSWORD"),
+        folder=_setting("PREVIOUSLY_IMAP_FOLDER"),
+        ssl_context=ssl.create_default_context(),
+    )
+
+
+def _cmd_ingest(_args: argparse.Namespace) -> int:
+    """Takes in what the folder holds above its watermark ({ref}`cli-reference`).
+
+    Every setting is read, and the recipient checked, before anything
+    connects: the folder's five, the recipient, `PREVIOUSLY_DSN` and the
+    store's five, in that order. The directory of identities is not among
+    them: taking in seals and opens nothing.
+
+    Standard output is one line, the counts and the UID the watermark stands
+    at; `up to uid 0` is a folder that has given nothing yet, since a UID is
+    never 0. Each variant is one line on standard error. The projections are
+    not caught up: `project` does that, and the two may run side by side.
+    """
+    connector = _imap_connector()
+    recipient = _recipient()
+    with _storage() as storage, _blob_store() as store:
+        result = ingest(
+            storage, storage, store, connector, recipient=recipient, recorded_at=datetime.now(UTC)
+        )
+    # The Message-ID is the mail's, so it is escaped like a field of
+    # `chronicle`: one line per variant, and no control reaches the terminal.
+    for message_id, event_id in result.variants:
+        print(f"variant of {escape_field(message_id)}: event {event_id}", file=sys.stderr)
+    uid = "0" if result.position is None else result.position["uid"]
+    print(
+        f"imap: {result.appended} appended, {result.known} known, "
+        f"{len(result.variants)} variants, up to uid {uid}"
+    )
     return 0
 
 
@@ -650,14 +788,16 @@ def _cmd_show(args: argparse.Namespace) -> int:
                 # `sort_keys` so the output is stable across runs: `payload`
                 # comes back out of jsonb, and the order of keys in jsonb is
                 # not the order they were written in.
-                print(f"payload={json.dumps(row.payload, ensure_ascii=False, sort_keys=True)}")
+                print(f"payload={_json_line(row.payload)}")
             for unit in storage.units(conn, row.id):
                 # An erased unit says so, like the payload above, rather than
                 # printing `None` where its text stood.
                 content = unit.content
+                # A unit keeps its line breaks here, unlike in `chronicle`,
+                # and loses every other control character (`escape_controls`).
                 if content is None:
                     content = _erased(index.of_unit(row.id, unit.seq))
-                print(f"  ¶{unit.seq} {content}")
+                print(f"  ¶{unit.seq} {escape_controls(content)}")
             for line in _blob_lines(row, index):
                 print(line)
             return 0
@@ -847,12 +987,13 @@ def _payload_line(event_id: int) -> str:
     units are erased; this says so, and names the command that erases it,
     rather than leave the line on standard output to read as "the content is
     gone". `append --text` writes none of the text into the payload, only
-    what `append` adds — the kind of evidence, and with attachments their
-    names, media types and addresses —, so for an event it wrote the notice
-    comes only where the wording of an erased unit equals or lies inside one
-    of those values, such as a unit that reads `minutes.txt` beside an
-    attachment of that name. The notice is then true: the payload holds that
-    wording."""
+    what `append` adds — the kind of evidence, the artifact hash, and with
+    attachments their names, media types and addresses —, so for an event it
+    wrote the notice comes only where the wording of an erased unit equals or
+    lies inside one of those values, such as a unit that reads `minutes.txt`
+    beside an attachment of that name, or a unit of a few hexadecimal
+    characters that the artifact hash happens to contain. The notice is then
+    true: the payload holds that wording."""
     return (
         f"the payload of event {event_id} is not erased and holds the wording of an "
         f"erased unit; `previously redact event {event_id}` erases it"
@@ -1121,6 +1262,7 @@ COMMANDS: tuple[Command, ...] = (
     # runs before the schema stands.
     Command("migrate", "bring the database schema up to the newest revision", _cmd_migrate),
     Command("append", "submit text", _cmd_append, _append_arguments),
+    Command("ingest", "take in new mail from an IMAP folder", _cmd_ingest, _ingest_arguments),
     Command("redact", "erase an event, units of it, or a blob", _cmd_redact, _redact_arguments),
     # "print the chronicle" until stage 1b, which is now the other command:
     # `log` is the chain order and `chronicle` the chronology ({ref}`projections`).
@@ -1198,7 +1340,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         # exceptions that `storage` does not know this branch deliberately does
         # not catch — they are to come through as a stack trace, not dressed up
         # as a one-liner.
-        print(f"Error: {error}", file=sys.stderr)
+        # The sentence can quote a key, and the key of a mail is the
+        # mail's Message-ID (`escape_controls`).
+        print(f"Error: {escape_controls(str(error))}", file=sys.stderr)
         return 2
     finally:
         signal.signal(signal.SIGTERM, previous)

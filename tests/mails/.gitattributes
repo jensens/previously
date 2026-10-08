@@ -1,0 +1,3 @@
+# The test mails are bytes, CRLF line endings included: IMAP delivers those,
+# and test_mail.py holds every file against tests/mailfiles.py byte for byte.
+*.eml -text

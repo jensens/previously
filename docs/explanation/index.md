@@ -8,6 +8,7 @@ Understand the decisions behind the log and what it doesn't promise.
 hash-chain
 erasure
 blobs
+connectors
 canonicalization
 concurrency
 module-boundaries

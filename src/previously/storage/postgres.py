@@ -29,6 +29,7 @@ from previously.contract.rows import SourceStatsRow
 from previously.contract.rows import Tip
 from previously.contract.rows import TipAndBookmark
 from previously.contract.rows import UnitRow
+from previously.contract.types import Watermark
 from previously.storage.errors import ChainPositionTaken
 from previously.storage.errors import InvalidDsn
 from previously.storage.errors import MigrationPending
@@ -43,6 +44,7 @@ from previously.storage.schema import p_source_stats
 from previously.storage.schema import projection_state
 from previously.storage.schema import source_key
 from previously.storage.schema import unit
+from previously.storage.schema import watermark
 from sqlalchemy import Connection
 from sqlalchemy import create_engine
 from sqlalchemy import delete
@@ -789,6 +791,47 @@ class PostgresStorage:
                 }
                 for r in rows
             ],
+        )
+
+    # --- WatermarkStore -------------------------------------------------------
+
+    def watermark(self, conn: Connection, connector: str) -> Watermark | None:
+        """The watermark of one connector, or `None` when it has read nothing.
+
+        The position comes back as a plain `dict`, the form the JSON column
+        gives it, so that what a caller compares or copies is the same type
+        whichever store it came from.
+        """
+        row = conn.execute(
+            select(watermark).where(watermark.c.connector == connector)
+        ).one_or_none()
+        if row is None:
+            return None
+        return Watermark(connector=row.connector, position=dict(row.position), set_at=row.set_at)
+
+    def set_watermark(self, conn: Connection, mark: Watermark) -> None:
+        """Writes the row of `mark.connector`, replacing the one that stood
+        there, in the caller's transaction.
+
+        A `set_at` without a time zone is refused before anything is sent:
+        PostgreSQL would read it in the session's zone, and a moment that
+        depends on the session is not one to write down. The same refusal
+        stands in `core.hashing.iso_utc`, which cannot be reached from here.
+        """
+        moment = mark.set_at
+        if moment.tzinfo is None or moment.tzinfo.utcoffset(moment) is None:
+            raise ValueError("set_at has no time zone — local time would not be reproducible")
+        statement = pg_insert(watermark).values(
+            connector=mark.connector, position=dict(mark.position), set_at=moment
+        )
+        conn.execute(
+            statement.on_conflict_do_update(
+                index_elements=[watermark.c.connector],
+                set_={
+                    "position": statement.excluded.position,
+                    "set_at": statement.excluded.set_at,
+                },
+            )
         )
 
     # --- Reads for the command line, outside the protocols -------------------

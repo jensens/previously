@@ -2,12 +2,14 @@
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Test setup: real PostgreSQL in a container, migrations run against the
-container, and a real S3 server in a second one for the blobs."""
+container, a real S3 server in a second one for the blobs, and a real IMAP
+server in a third for the mail."""
 
 from alembic import command
 from alembic.config import Config
 from botocore.exceptions import BotoCoreError
 from botocore.exceptions import ClientError
+from mailserver import MailServer
 from pathlib import Path
 from previously.contract.rows import EventRow
 from previously.contract.rows import UnitRow
@@ -27,11 +29,13 @@ from testcontainers.core.container import DockerContainer
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
+import imaplib
 import itertools
 import os
 import pyrage
 import pytest
 import secrets
+import ssl
 import time
 
 
@@ -304,3 +308,89 @@ def s3_connections(s3_settings: dict[str, str]) -> ConnectionCount:
         return established
 
     return count
+
+
+# The user of the IMAP test server and its password, and the password of the
+# keystore its certificate lies in, both drawn at run time like the S3 secret.
+_IMAP_USER = "pilot"
+_IMAP_PASSWORD = secrets.token_hex(16)
+# Inside the container, in the home of the user GreenMail runs as.
+_KEYSTORE = "/home/greenmail/previously-test.p12"
+_KEYSTORE_PASSWORD = secrets.token_hex(16)
+# The folder every IMAP test reads: a name with an umlaut, because that is the
+# case a customer's folder brings.
+IMAP_FOLDER = "Kunde Müller"
+# The mails every IMAP test starts from, out of `tests/mails/`: three that map
+# to one event each, and one with a mail attached, which maps to two.
+IMAP_MAILS = ("plain.eml", "reply.eml", "html_only.eml", "forwarded.eml")
+
+
+@pytest.fixture(scope="session")
+def mail_server(tmp_path_factory: pytest.TempPathFactory) -> Iterator[MailServer]:
+    """A real IMAP server for the session: GreenMail in a container, IMAP
+    over TLS only, one user with a password, and a certificate made for this
+    run.
+
+    GreenMail's own certificate names no host, so a client that checks the
+    host name — the command line always does — refuses it. The container
+    therefore makes a key pair for `localhost` and `127.0.0.1` with the
+    `keytool` of its own JDK before GreenMail starts, and the test takes the
+    certificate out of the container to trust it: no software on the host,
+    and nothing about it in the tree. The image is named as a literal, like
+    the other two.
+    """
+    generate = (
+        "keytool -genkeypair -alias greenmail -keyalg EC -groupname secp256r1 "
+        "-dname CN=localhost -ext SAN=dns:localhost,ip:127.0.0.1 -validity 2 "
+        f"-storetype PKCS12 -keystore {_KEYSTORE} "
+        f"-storepass {_KEYSTORE_PASSWORD} -keypass {_KEYSTORE_PASSWORD}"
+    )
+    options = (
+        "-Dgreenmail.setup.test.imaps -Dgreenmail.hostname=0.0.0.0 "
+        f"-Dgreenmail.tls.keystore.file={_KEYSTORE} "
+        f"-Dgreenmail.tls.keystore.password={_KEYSTORE_PASSWORD} "
+        f"-Dgreenmail.users={_IMAP_USER}:{_IMAP_PASSWORD}@example.org"
+    )
+    container = (
+        DockerContainer("greenmail/standalone:2.1.14")
+        .with_exposed_ports(3993)
+        .with_env("GREENMAIL_OPTS", options)
+        .with_kwargs(entrypoint=["bash", "-c", f"{generate} && exec ./run_greenmail.sh"])
+    )
+    with container:
+        host = container.get_container_host_ip()
+        port = int(container.get_exposed_port(3993))
+        certificate = tmp_path_factory.mktemp("imap") / "greenmail.pem"
+        # The container counts as started before the key pair is written and
+        # before GreenMail answers, so the fixture waits on both. 60 s is a
+        # ceiling, not a measurement.
+        deadline = time.monotonic() + 60
+        while True:
+            code, output = container.exec(
+                [
+                    *("keytool", "-exportcert", "-rfc", "-alias", "greenmail"),
+                    *("-keystore", _KEYSTORE, "-storepass", _KEYSTORE_PASSWORD),
+                ]
+            )
+            if code == 0 and isinstance(output, bytes):
+                certificate.write_bytes(output)
+                server = MailServer(host, port, _IMAP_USER, _IMAP_PASSWORD, certificate)
+                try:
+                    with server.session():
+                        break
+                except imaplib.IMAP4.error, OSError, ssl.SSLError:
+                    pass
+            if time.monotonic() > deadline:
+                raise TimeoutError(f"GreenMail did not answer: {output!r}")
+            time.sleep(0.2)
+        yield server
+
+
+@pytest.fixture
+def imap_folder(mail_server: MailServer) -> str:
+    """`IMAP_FOLDER`, made anew for this test and holding `IMAP_MAILS` as
+    UIDs 1 to 4, in that order."""
+    mails = Path(__file__).resolve().parent / "mails"
+    mail_server.recreate(IMAP_FOLDER)
+    mail_server.append(IMAP_FOLDER, *((mails / name).read_bytes() for name in IMAP_MAILS))
+    return IMAP_FOLDER

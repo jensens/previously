@@ -1,0 +1,25 @@
+From: lea@example.com
+To: office@example.org
+Subject: Termin
+Date: Wed, 07 Oct 2026 08:00:00 +0200
+Message-ID: <apple-split@example.com>
+MIME-Version: 1.0
+Content-Type: multipart/mixed; boundary="apple"
+
+--apple
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+Erster Teil vor dem Anhang.
+--apple
+Content-Type: application/pdf; name="Termin.pdf"
+Content-Transfer-Encoding: base64
+Content-Disposition: inline; filename="Termin.pdf"
+
+JVBERi0xLjcKJSBpbnZlbnRlZCwgbm90IGEgcmVhbCBkb2N1bWVudAolJUVPRgo=
+--apple
+Content-Type: text/plain; charset=utf-8
+Content-Transfer-Encoding: 7bit
+
+Zweiter Teil nach dem Anhang: der Termin ist am Freitag.
+--apple--

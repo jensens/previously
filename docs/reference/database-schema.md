@@ -2,11 +2,12 @@
 
 # Database schema
 
-Previously stores its data in seven PostgreSQL tables.
+Previously stores its data in eight PostgreSQL tables.
 Three hold the log: `event`, `unit`, and `source_key`.
 One is the blob register beside the log: `event_blob`.
+One is the watermark of the connectors: `watermark`.
 Three hold projections, which are derived from the log and disposable: `projection_state`, `p_chronicle`, and `p_source_stats`; {ref}`projections` explains what that means.
-`src/previously/storage/schema.py` declares all seven as SQLAlchemy Core tables, with no ORM.
+`src/previously/storage/schema.py` declares all eight as SQLAlchemy Core tables, with no ORM.
 Each event relates to zero or more units, to at most one source key, and to zero or more rows of the blob register.
 
 ```{mermaid}
@@ -193,3 +194,26 @@ Three more tables hold projections derived from the tables above.
 |---|---|---|
 | `p_source_stats_pkey` | `source` | Primary key. |
 | `p_source_stats_last_event_id_fkey` | `last_event_id` | Foreign key to `event.id`. |
+
+## `watermark`
+
+How far each connector has read: one row for each connector.
+The table isn't a projection, because the log can't rebuild it, and it has no foreign key, because a position names a place in the connector's source and not an event.
+
+| Column | Type | Accepts NULL | Meaning |
+|---|---|---|---|
+| `connector` | `text` | No | The connector's name. |
+| `position` | `jsonb` | No | The position the connector reported last, a JSON object of text to text; its keys are the connector's own. |
+| `set_at` | `timestamp with time zone` | No | The moment the caller gives with the position; `ingest` gives the moment its run started, which every event of the run carries as `recorded_at`. |
+
+A write replaces the row of its connector as a whole: the new `position` takes the place of the old one, and no key of the old one survives.
+The store refuses a `set_at` without a time zone with a `ValueError`, before it sends anything.
+
+### Constraints and indexes
+
+| Name | On | Enforces |
+|---|---|---|
+| `watermark_pkey` | `connector` | Primary key. |
+
+The migration `0005_watermark` creates the table, and refuses to go back below it while the table holds a row.
+The refusal leaves the database at `0005_watermark`, because a connector without its watermark reads its source from the start.

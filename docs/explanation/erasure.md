@@ -108,7 +108,15 @@ A payload that holds the wording of a unit keeps it after the unit is erased; on
 `previously append --text` puts the text into the units alone and none of it into the payload, so for the events it writes, erasing units takes the wording.
 It used to copy the whole text into the payload as well, under `text`, and an event written before that changed keeps the copy, since its hash covers the payload as it was written: `previously show` prints a payload with a key `text`.
 Most of those events are in hash format 1, written before stage 1c, and their units can only be erased together with the event anyway.
-Which events carry their text in the payload alone, in the units alone, or in both is for the contract of the connectors to settle, and until it does, erasing units of a connector's events can reach less than its name suggests.
+
+A payload can confirm a wording without holding it, too.
+Every event that `append --text` or a connector writes carries the hash of its artifact in the payload, `artifact_hash`, and that hash has no salt: two sightings of the same artifact have to give the same value, or the log couldn't recognize the second one, and a salt drawn per event would make them differ.
+So after `redact units`, the artifact hash still stands, and for a short text it confirms a guess the way an unsalted digest does.
+Only an erasure of the event takes it.
+
+For a mail, the contract of the connectors has settled what stands where, and the answer makes erasing units the wrong tool.
+The text of the body stands in the units alone, but the subject stands in the payload as well, among the headers, the raw mail is a blob that holds every word, and the artifact hash is unsalted.
+Erasing a mail therefore means erasing its event; {ref}`mail-mapping` says where each of the three stands, and {ref}`connectors` explains why the raw mail is a blob and the artifact hash has no salt.
 
 Erasing all of them has a cost of its own, and version 1 carries it beside its unsalted digests.
 Once every text is gone, nothing is left to recompute the units digest from, so the check computes nothing for the units of that event.
@@ -187,6 +195,22 @@ Whoever holds the file already can therefore show that it stood in the log, and 
 **The source key stays.**
 `source` and `external_id` go into the event hash and have no digest of their own to stand in for them.
 A message identifier carries a domain, and whoever can't let that stand can't erase it without breaking the chain.
+
+**A mail stays where it came from.**
+A connector reads its source and never changes it, so a mail erased from the log still lies in its folder, in the mail client of everybody who received it, and in the backups of the mail server.
+Whoever promises the erasure of a mail deletes it there too, and the retention of those backups belongs to the promise as much as the retention of the database and the bucket.
+As long as the mail lies in the folder, the log keeps it out only by knowing its key: a restore to a point before it was taken in forgets the key, and the next run takes the mail in again.
+
+**Quotes outlive the mail.**
+A reply usually quotes the mail it answers, and the reply is an event of its own, so its quote stays when the mail it quotes is erased.
+Whoever has to erase the content of a mail erases those replies as well.
+They name the mail they answer in their `In-Reply-To` and `References` headers, which is how they can be found, and a reply that quotes without naming can't be found that way.
+
+**An erasure holds for the event, not for the content.**
+The same content stands in every event whose raw mail or attachment holds it: a variant of the mail under its Message-ID, with a raw mail of its own, and every mail that carried it as an attachment, whose raw mail holds it whole.
+Erasing the one event leaves the others, and their blobs with them; no command finds them, and {ref}`ingest-a-mail-folder` gives a query that does.
+A mail forwarded as an attachment is an event of its own, keyed by its Message-ID, and its key stays known after an erasure, so it isn't written again.
+But the forwarding mail is a new event, and the forwarded bytes are its attachment: they go into the store again, by the rule of *When a blob has to lie in the store* above, for a content that arrives again at a new event.
 
 **What was derived or copied stays where it went.**
 Output printed in a terminal, a copy in another system, anything outside the log is beyond the reach of any erasure.

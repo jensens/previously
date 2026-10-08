@@ -62,13 +62,13 @@ docker run --rm --network previously-blobs -e PREVIOUSLY_DSN \
 On a new database, it prints the revision the database came from and the one it's at now:
 
 ```text
-migrated: (empty) -> 0004_event_blob
+migrated: (empty) -> 0005_watermark
 ```
 
 Run it again, and it reports that nothing had to run:
 
 ```text
-up to date: 0004_event_blob
+up to date: 0005_watermark
 ```
 
 Don't rely on the other commands to notice a schema that's behind: `migrate` is the only command that compares revisions.

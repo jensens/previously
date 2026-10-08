@@ -3,10 +3,12 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has eleven subcommands: `migrate`, `append`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, and `stats`.
+It has twelve subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, and `stats`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
-`append --attach`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
+`append --attach`, `ingest imap`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
+`ingest imap` alone reads the five `PREVIOUSLY_IMAP_*` settings.
 A missing setting is an input error that names the first variable missing, in the form `Error: PREVIOUSLY_BLOB_BUCKET is not set`.
+An error sentence prints every control character but a tab and a line feed as `\xNN`, such as `\x1b` for the escape character, because a key it quotes can be the Message-ID of a mail.
 A transaction the database aborts in a conflict with a concurrent one, a deadlock or a lock not granted in time, is a storage error with exit code 2, in the form `Error: the database aborted the operation in a conflict with a concurrent one; run the command again`.
 
 A message about the database names the database, the host and the port from `PREVIOUSLY_DSN`, and of the connection string nothing else, in its own words.
@@ -51,7 +53,8 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | Command | 0 | 1 | 2 |
 |---|---|---|---|
 | `migrate` | The schema stands at the newest revision, whether `migrate` ran a migration or found it up to date. | Not used. | The database is at a revision this version doesn't know, the database refused to let the role read the revision or apply a migration, or storage raised an error. |
-| `append` | The event was recorded, or an event with the same `--source` and `--external-id` already existed. | Not used. | The input was invalid, an attachment couldn't be read, a blob setting is missing or invalid, or storage or the blob store raised an error. |
+| `append` | The event was recorded, or an event with the same `--source` and `--external-id` and the same content already existed. | Not used. | The input was invalid, an event with the same `--source` and `--external-id` holds another content, an attachment couldn't be read, a blob setting is missing or invalid, or storage or the blob store raised an error. |
+| `ingest` | The run went through, with or without variants. | Not used. | A setting is missing or invalid, the IMAP server couldn't be reached, refused a step or broke the connection off, the log refused a batch, for a mail with more than 500 events or a variant key held with another content (see {ref}`mail-mapping`), or storage or the blob store raised an error. |
 | `redact` | The redaction was recorded and carried out, or the target was already covered by one, every blob it made obsolete is gone from the blob store, and every projection stands at the tip of the log. | Not used. | The input was invalid, the redaction was refused, storage raised an error, or after the redaction was recorded a blob couldn't be deleted or the projections couldn't be caught up. |
 | `log` | The log was printed. | Not used. | The input was invalid, or storage raised an error. |
 | `verify` | The chain has no finding, every anchor holds, and with `--blobs` no blob has a finding. | The chain, an anchor or, with `--blobs`, a blob has at least one finding. | The input was invalid, a blob setting is missing or invalid, an identity file can't be read, or storage or the blob store raised an error. |
@@ -77,9 +80,9 @@ It takes no arguments.
 `migrate` prints one line to standard output, in one of two forms:
 
 ```text
-migrated: (empty) -> 0004_event_blob
-migrated: 0002_projections -> 0004_event_blob
-up to date: 0004_event_blob
+migrated: (empty) -> 0005_watermark
+migrated: 0002_projections -> 0005_watermark
+up to date: 0005_watermark
 ```
 
 The first form names the revision the database was at, or `(empty)` for a database without a schema, and the newest revision, which the database is at now.
@@ -95,14 +98,14 @@ The lock is a session lock outside any transaction, and a `migrate` that fails g
 A database at a revision this version doesn't know, such as one that a newer version of previously has migrated already, is refused, and nothing changes:
 
 ```text
-Error: the database is at revision 0005_example, which this version of previously does not know; it knows revisions up to 0004_event_blob
+Error: the database is at revision 0006_example, which this version of previously does not know; it knows revisions up to 0005_watermark
 ```
 
 A database that refuses the role in `PREVIOUSLY_DSN` the reading of the revision or a step of the migration gives one sentence that names the newest revision and the database's own reason:
 
 ```text
-Error: the database refused the migration to 0004_event_blob: permission denied for schema public
-Error: the database refused the migration to 0004_event_blob: permission denied for table alembic_version
+Error: the database refused the migration to 0005_watermark: permission denied for schema public
+Error: the database refused the migration to 0005_watermark: permission denied for table alembic_version
 ```
 
 The first comes from a role that may not create a table in schema `public`, which since PostgreSQL 15 is every role but the owner of the database and a superuser.
@@ -124,17 +127,29 @@ Submits one event and prints its `id`.
 | `--attach FILE` | No | — | A file to store as a blob and name at the event; may repeat. |
 
 `append` splits `--text` into units, one per paragraph, and the text stands in those units alone.
-The payload of the event is a JSON object that holds the kind of evidence under `evidence`, and nothing of the text:
+The payload of the event is a JSON object that holds the artifact hash under `artifact_hash` and the kind of evidence under `evidence`, and nothing of the text:
 
 ```json
-{"evidence": "recollection"}
+{"artifact_hash": "f20cefad341c110ed191bef30ee347645f114e81202c754d4298bf5794d83a5d", "evidence": "recollection"}
 ```
 
-With `--attach`, the payload carries a second key, `blobs`; see *Attachments* below.
+The artifact hash is the SHA-256 of the canonical form of `{"text": <--text>, "attachments": <the attachment addresses, sorted>}`, here for `--text Hello` without attachments; see {ref}`artifact-identity`.
+The text enters with every line ending as LF, CRLF and a lone CR included, the way `append` splits it into units.
+With `--attach`, the payload carries a third key, `blobs`; see *Attachments* below.
 
 `append` prints exactly one line to standard output: the new event's `id`.
-Calling `append` again with the same `--source` and `--external-id` doesn't create a second event.
+Calling `append` again with the same `--source`, `--external-id` and `--text`, the text with other line endings included, and the same attachments in any order, doesn't create a second event.
 It prints the existing event's `id` and returns 0.
+An event that was erased, or that was written before events carried an artifact hash, counts as the same whatever the text.
+
+Calling `append` with the same `--source` and `--external-id` and another text or other attachments is refused with one sentence on standard error, and nothing is written:
+
+```text
+Error: cli/a is known with another content (artifact 7b1a628ef0d8a64e ≠ 0a422dac18a45b5e)
+```
+
+The example is `--text A` followed by `--text B` under the same key.
+The sentence names the source and the external identifier, then the first 16 hexadecimal characters of the artifact hash the event carries and of the one that arrived.
 
 ### Attachments
 
@@ -168,6 +183,89 @@ The payload of the event carries one reference per `--attach`, in the order give
 The same file given twice is two references and one blob.
 An event without `--attach` carries no key `blobs`, and a payload must not carry it: `append` refuses it with `payload already carries the key 'blobs' — it is reserved for the attachments`.
 
+## `ingest`
+
+Takes in the mail an IMAP folder holds above the watermark of the last run.
+{ref}`mail-mapping` says what a mail turns into, {ref}`artifact-identity` how a sighting is told from a changed mail, and {ref}`connectors` why.
+It has one form, and takes no arguments:
+
+```text
+previously ingest imap
+```
+
+`ingest imap` reads the five `PREVIOUSLY_IMAP_*` settings, `PREVIOUSLY_BLOB_RECIPIENT`, `PREVIOUSLY_DSN` and the five settings of the blob store, in that order; see {ref}`configuration-reference`.
+It doesn't read `PREVIOUSLY_BLOB_IDENTITIES`.
+It reads every setting and checks the recipient before it connects to anything, and a missing one is an input error in the form `Error: PREVIOUSLY_IMAP_PASSWORD is not set`.
+A port that isn't a number from 1 to 65535 is refused the same way:
+
+```text
+Error: PREVIOUSLY_IMAP_PORT is not a port number: 'imaps'
+```
+
+`ingest imap` connects over TLS only, and verifies the server's certificate and host name against the trust store of the system; no setting turns that off.
+OpenSSL reads a certificate file named in `SSL_CERT_FILE` in place of the system's file, and that's how a certificate outside the trust store is trusted.
+A socket operation that waits longer than 60 seconds ends the run.
+It opens the folder read-only and reads every mail with `BODY.PEEK[]`, so no mail is marked as read and nothing in the folder changes.
+
+The watermark belongs to `imap:<user>@<host>/<folder>`, with the host as `PREVIOUSLY_IMAP_HOST` spells it and without the port.
+Its position is the folder's `UIDVALIDITY` and the UID of the last mail taken in.
+The run fetches the mails above that UID, oldest first and one at a time, maps each onto its events, stores the raw mail and every attachment as a blob, and appends the events in batches; after each batch, it moves the watermark to the last mail the batch covered.
+A folder with another `UIDVALIDITY` than the watermark's, such as one deleted and created again, is read from the start, and so is a folder under another name or host; a mail whose events are in the log already counts as known.
+A mail that leaves the folder while the run fetches is passed over.
+
+`ingest imap` prints one line to standard output:
+
+```text
+imap: 5 appended, 0 known, 0 variants, up to uid 4
+```
+
+The counts are of events, not of mails: a mail with a mail attached is two events.
+`appended` counts the variants as well.
+`up to uid` is the UID the watermark stands at, and `up to uid 0` means that the folder hasn't given a mail yet.
+
+For each variant, one notice goes to standard error, with the Message-ID the variant deviates from and the `id` of its event:
+
+```text
+variant of 20261005101500.4711@example.net: event 6
+```
+
+The Message-ID is escaped the way `chronicle` escapes its fields.
+
+`ingest` doesn't catch the projections up; `previously project` does, and may run beside it.
+
+Errors of the IMAP server and of the connection print one sentence to standard error and return 2:
+
+```text
+Error: cannot connect to the IMAP server mail.example.org:993: Connection refused
+Error: the certificate of the IMAP server mail.example.org:993 does not verify: self-signed certificate
+Error: the IMAP server mail.example.org:993 refused the login of pilot
+Error: the login of pilot at the IMAP server mail.example.org:993 holds a character other than ASCII, and previously sends the login in ASCII only
+Error: the IMAP server mail.example.org:993 refused to open the folder 'Kunde Müller' of pilot: EXAMINE failed. No such mailbox
+Error: the IMAP server mail.example.org:993 names no UIDVALIDITY for the folder 'Kunde Müller'
+Error: the IMAP server mail.example.org:993 refused the search in the folder 'Kunde Müller': SEARCH failed
+Error: the IMAP server mail.example.org:993 refused to fetch uid 7 from the folder 'Kunde Müller': FETCH failed
+Error: the IMAP server mail.example.org:993 gave uid 7 the INTERNALDATE '31-Okt-2026 10:00:00 +0000', which is not a date
+Error: the IMAP server mail.example.org:993 refused a command: got more than 1000000 bytes
+Error: the connection to the IMAP server mail.example.org:993 broke off
+Error: the connection to the IMAP server mail.example.org:993 broke off: The read operation timed out
+```
+
+No message names the password.
+A refused login quotes nothing of the server's answer, and a connection that broke off quotes the reason of the system, never what the server sent, which can be mail.
+A refusal to open the folder, to search it or to fetch a mail quotes the server's reason, and so does a command the server answers in a way Python's `imaplib` refuses, such as a line longer than 1,000,000 bytes.
+An `INTERNALDATE` that isn't a date in the form of RFC 3501 is quoted as the server wrote it.
+On every error, the watermark stands where the last appended batch left it, and the next run fetches the rest again; a blob stored for a batch that wasn't appended stays in the store, and that run finds it there.
+
+Two refusals of the log come back at every run until the mail that causes them leaves the folder; {ref}`mail-mapping` describes both:
+
+```text
+Error: email/20261005101500.4711@example.net#afe0b335e95e6b9e is known with another content (artifact afe0b335e95e6b9e ≠ afe0b335e95e6b9e)
+Error: 501 events in one transaction, 500 are allowed — larger batches starve against small submissions
+```
+
+The first is a variant key the log already holds with another content, which takes two artifact hashes that share their first 64 bits, so the message shows the same 16 characters twice.
+The second is a mail that makes more than 500 events together with the mails attached to it.
+
 ## `redact`
 
 Erases an event, units of one event, or a blob, and records the erasure as a redaction event; see {ref}`erasure`.
@@ -191,7 +289,8 @@ previously redact blob HASH --reason TEXT
 `redact event` erases the event's payload, and the content, speaker, timestamps and salt of every unit.
 `redact units` erases the content, speaker, timestamps and salt of the named units, and leaves the event's payload as it is.
 A payload that holds the wording of a unit keeps it after `redact units`, readable where `show` prints the payload; `redact event` erases it.
-The payload of an event `append` writes holds none of the text, only the kind of evidence and, with `--attach`, the references to the blobs, so for such an event `redact units` takes the wording with the units.
+The payload of an event `append` writes holds none of the text, only the artifact hash, the kind of evidence and, with `--attach`, the references to the blobs, so for such an event `redact units` takes the wording with the units.
+The artifact hash stays in the payload after `redact units`; it's an unsalted digest of the whole text, and `redact event` erases it.
 The order of the `SEQ` arguments doesn't matter, and a `SEQ` given twice counts once.
 `redact blob` erases the blob for every event whose reference to it isn't erased yet; their payloads and units stay as they are.
 Every hash, the source key, the rows of the units and the rows of the blob register stay, and after `redact units` the payload as well.
@@ -485,6 +584,8 @@ For an erased payload it then prints `payload=<erased by event <id>>`, naming th
 Otherwise it prints `evidence=<verbatim|recollection>` when the payload carries the key `evidence`, and then `payload=<JSON object, with sorted keys>`.
 A redaction carries no `evidence`, so `show` prints no `evidence=` line for it.
 It then prints one line per unit, in `seq` order: `  ¶<seq> <content>`, or for a unit without content `  ¶<seq> <erased by event <id>>`, or `  ¶<seq> <erased>` when no redaction covers it.
+`content` keeps its tabs and line breaks, and prints every other control character as `\xNN`: the C0 controls, a carriage return among them, DEL, and the C1 controls from U+0080 to U+009F.
+In the payload, JSON writes the C0 controls as escape sequences itself, and `show` writes DEL and the C1 controls as `\u007f` to `\u009f`, so the line stays JSON with the same value.
 Last, it prints one line per reference in the payload's `blobs`, in their order: `  blob <sha256> <size> <media_type> <filename>`, with `-` for a reference without a file name.
 A reference that a redaction erased ends in ` <erased by event <id>>`, naming the earliest redaction that erased it.
 For an erased payload, the lines come from the redaction of the event instead, one per hash it names, as `  blob <sha256> <erased by event <id>>`; without a redaction, `show` prints no blob line.
@@ -596,6 +697,7 @@ Lines come out ordered by `occurred_at`, then `event_id`, then `seq`.
 
 Four characters print as two characters each, in every field and not in `content` alone: a tab as `\t`, a newline as `\n`, a carriage return as `\r`, and a backslash as `\\`.
 `source` and `external_id` carry whatever `append` was given, and a tab there would otherwise add a field and a newline would break the record in two.
+Every other control character prints as `\xNN`: the C0 controls, DEL, and the C1 controls from U+0080 to U+009F, such as `\x1b` for the escape character.
 The backslash is escaped first, so the escaping is reversible.
 The stored values are unchanged; the escaping is part of the output format.
 

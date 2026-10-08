@@ -1,0 +1,19 @@
+From: Eva Huber <eva.huber@example.org>
+To: max@example.net
+Subject: Logo ohne start
+Date: Wed, 07 Oct 2026 15:30:00 +0200
+Message-ID: <logo-no-start@example.org>
+MIME-Version: 1.0
+Content-Type: multipart/related; boundary="rel"
+
+--rel
+Content-Type: text/html; charset=utf-8
+
+<p>Nur HTML, das Logo danach.</p>
+--rel
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-ID: <logo@example.org>
+
+iVBORw0KGgogaW52ZW50ZWQsIG5vdCBhIHJlYWwgaW1hZ2U=
+--rel--
