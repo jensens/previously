@@ -128,7 +128,7 @@ Every address of the headers `From`, `Sender`, `Reply-To`, `To`, `Cc` and `Bcc`,
 
 A group contributes its members, an empty group nothing.
 An address list the parser can't read in full contributes the addresses it reads.
-A header on which the parser raises an exception, such as `To: eva.huber@example.org, "` with its lone quote, contributes no address, and the mail maps as usual; the header stays under `headers` as written.
+A header on which the parser raises an exception, such as `To: eva.huber@example.org, :` with its group without a name, contributes no address, and the mail maps as usual; the header stays under `headers` as written.
 
 ## Blobs
 

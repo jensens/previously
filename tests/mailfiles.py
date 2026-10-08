@@ -900,15 +900,15 @@ DATE_OUT_OF_RANGE = _lines(
     "Diese Mail kommt aus der Zukunft.",
 )
 
-# An address list that ends in a lone quote, which the standard library's
-# parser raises on; the `From` and `Cc` beside it are whole.
-ADDRESS_LONE_QUOTE = _lines(
+# An address list that ends in a group without a name, which the standard
+# library's parser raises on; the `From` and `Cc` beside it are whole.
+ADDRESS_EMPTY_GROUP_NAME = _lines(
     "From: Max Gruber <max@example.net>",
-    'To: eva.huber@example.org, "',
+    "To: eva.huber@example.org, :",
     "Cc: office@example.org",
     "Subject: Unterlagen",
     "Date: Thu, 08 Oct 2026 09:30:00 +0200",
-    "Message-ID: <lone-quote@example.net>",
+    "Message-ID: <empty-group-name@example.net>",
     "Content-Type: text/plain; charset=utf-8",
     "",
     "Die Unterlagen kommen morgen.",
@@ -958,7 +958,7 @@ MAILS: dict[str, bytes] = {
     "related_without_start": RELATED_WITHOUT_START,
     "message_id_long": MESSAGE_ID_LONG,
     "date_out_of_range": DATE_OUT_OF_RANGE,
-    "address_lone_quote": ADDRESS_LONE_QUOTE,
+    "address_empty_group_name": ADDRESS_EMPTY_GROUP_NAME,
 }
 
 

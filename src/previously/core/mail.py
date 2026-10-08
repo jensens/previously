@@ -570,9 +570,12 @@ def _addresses(name: str, value: str) -> tuple[Address, ...]:
     header stays under `headers` as written.
 
     The parser of address lists raises on some broken ones — `IndexError`
-    for a list that ends in a lone `"`, measured on 2026-10-06 with Python
-    3.14.3 — and one broken `To` would otherwise make the whole mail
-    unreadable, its subject and text with it. Every exception, not that one:
+    for a list that ends in a group without a name, `, :`, measured on
+    2026-10-08 with Python 3.14.0, 3.14.3 and 3.14.8. Which lists those are
+    moves between patch releases: a list that ends in a lone `"` raises in
+    3.14.3 and reads as `<>` in 3.14.8. One broken `To` would otherwise make
+    the whole mail unreadable, its subject and text with it. Every
+    exception, not that one:
     which class the parser raises is the library's choice, not a rule of
     this module."""
     try:

@@ -947,21 +947,21 @@ def test_a_date_with_no_time_in_utc_falls_back_to_internaldate(
 
 
 def test_an_address_list_the_parser_raises_on_contributes_no_identity() -> None:
-    """`To` ends in a lone quote: that header contributes nothing, and the
-    mail maps as it would without it — subject, text, and the addresses of
-    the headers beside it."""
-    mapped = _map("address_lone_quote")
+    """`To` ends in a group without a name: that header contributes
+    nothing, and the mail maps as it would without it — subject, text, and
+    the addresses of the headers beside it."""
+    mapped = _map("address_empty_group_name")
     assert _contents(mapped) == ["Unterlagen", "Die Unterlagen kommen morgen."]
     assert mapped.event.channel_identities == (
         ChannelIdentity("email", "from", "max@example.net", "Max Gruber"),
         ChannelIdentity("email", "cc", "office@example.org", None),
     )
-    assert ["To", 'eva.huber@example.org, "'] in _headers(mapped)
+    assert ["To", "eva.huber@example.org, :"] in _headers(mapped)
 
 
-def test_the_same_address_list_without_the_quote_contributes_its_address() -> None:
+def test_the_same_address_list_without_the_group_contributes_its_address() -> None:
     """The control of the test above: the list it breaks is read."""
-    whole = mailfiles.ADDRESS_LONE_QUOTE.replace(b'org, "', b"org")
+    whole = mailfiles.ADDRESS_EMPTY_GROUP_NAME.replace(b"org, :", b"org")
     event = map_mail(whole, internaldate=INTERNALDATE, found_in=FOUND_IN).event
     assert event.channel_identities == (
         ChannelIdentity("email", "from", "max@example.net", "Max Gruber"),
