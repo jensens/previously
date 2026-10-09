@@ -16,6 +16,8 @@ dependencies = [
     "boto3>=1.43",
     "pyrage>=1.4",
     "html2text>=2025.4",
+    "anthropic>=1.13.0",
+    "openai>=3.27.0",
 ]
 
 [project.scripts]

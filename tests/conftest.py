@@ -9,6 +9,8 @@ from alembic import command
 from alembic.config import Config
 from botocore.exceptions import BotoCoreError
 from botocore.exceptions import ClientError
+from http.server import BaseHTTPRequestHandler
+from http.server import ThreadingHTTPServer
 from mailserver import MailServer
 from pathlib import Path
 from previously.contract.rows import EventRow
@@ -26,22 +28,26 @@ from sqlalchemy import Engine
 from sqlalchemy import text
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
+from typing import cast
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import imaplib
 import itertools
+import json
 import os
 import pyrage
 import pytest
 import secrets
 import ssl
+import threading
 import time
 
 
 if TYPE_CHECKING:
     from collections.abc import Callable
     from collections.abc import Iterator
+    from collections.abc import Mapping
     from collections.abc import Sequence
     from datetime import datetime
     from previously.contract.types import RawEvent
@@ -394,3 +400,80 @@ def imap_folder(mail_server: MailServer) -> str:
     mail_server.recreate(IMAP_FOLDER)
     mail_server.append(IMAP_FOLDER, *((mails / name).read_bytes() for name in IMAP_MAILS))
     return IMAP_FOLDER
+
+
+class ModelServer:
+    """Stands in for the model providers over real HTTP.
+
+    It answers `POST /v1/messages` (Anthropic) and `POST /v1/chat/completions`
+    (OpenAI-compatible) with the responses a test queued beforehand, one per
+    request, and records every request it receives as (path, parsed JSON). A
+    request with nothing queued is answered 500 and recorded all the same, so
+    a client that retries silently shows up as a longer `requests`, not as a
+    hang. The real SDK clients talk to it; nothing in between is a mock.
+    """
+
+    def __init__(self) -> None:
+        self.requests: list[tuple[str, dict[str, object]]] = []
+        self._queue: list[tuple[str, int, Mapping[str, object], float]] = []
+        self._lock = threading.Lock()
+        outer = self
+
+        class Handler(BaseHTTPRequestHandler):
+            def do_POST(self) -> None:
+                length = int(self.headers.get("Content-Length", "0"))
+                parsed: object = json.loads(self.rfile.read(length) or b"{}")
+                body = cast("dict[str, object]", parsed)
+                status, answer, delay = outer.receive(self.path, body)
+                if delay:
+                    time.sleep(delay)
+                data = json.dumps(answer).encode()
+                try:
+                    self.send_response(status)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.end_headers()
+                    self.wfile.write(data)
+                except OSError:
+                    # The client gave up first (a timeout test): nothing to answer.
+                    return
+
+        self._server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        self._server.daemon_threads = True
+        self._thread = threading.Thread(
+            target=self._server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
+        self._thread.start()
+        self.url = f"http://127.0.0.1:{self._server.server_port}"
+
+    def enqueue(
+        self, path: str, status: int, body: Mapping[str, object], *, delay: float = 0.0
+    ) -> None:
+        """Queue the next answer for `path`; `delay` holds it back that many seconds."""
+        with self._lock:
+            self._queue.append((path, status, body, delay))
+
+    def receive(
+        self, path: str, body: dict[str, object]
+    ) -> tuple[int, Mapping[str, object], float]:
+        with self._lock:
+            self.requests.append((path, body))
+            for index, (queued_path, status, answer, delay) in enumerate(self._queue):
+                if queued_path == path:
+                    del self._queue[index]
+                    return status, answer, delay
+        return 500, {"error": {"message": f"nothing queued for {path}"}}, 0.0
+
+    def close(self) -> None:
+        self._server.shutdown()
+        self._server.server_close()
+        self._thread.join(timeout=5)
+
+
+@pytest.fixture
+def model_server() -> Iterator[ModelServer]:
+    server = ModelServer()
+    try:
+        yield server
+    finally:
+        server.close()

@@ -3,8 +3,9 @@
 # About the module boundaries
 
 Previously is one code base with one dependency set and one database, divided into modules whose dependencies run one way.
-There are six of them, and the order is `cli` above `connectors` above `core` and `migrations`, which share a layer, above `storage` above `contract`.
+There are seven of them, and the order is `cli` above `connectors` and `gate`, which share a layer, above `core` and `migrations`, which share a layer, above `storage` above `contract`.
 `migrations` joined the others on 2026-10-05, when the Alembic migrations moved from the repository root into the package so that an installed wheel carries them, and `connectors` on 2026-10-06, with the first connector.
+`gate` joined `connectors` on 2026-10-09, with the adapters to the model providers.
 The order isn't a convention somebody is asked to respect.
 It's `import-linter` contracts, eight of them since 2026-10-06, checked by a gate, and the gate prints the contract names, so the names themselves are part of the design rather than labels on it.
 
@@ -13,6 +14,9 @@ The point of the boundaries is narrow and worth stating before the mechanics.
 `storage` carries rows and knows nothing about the domain.
 `contract` is pure types and knows nothing at all, which is the only reason it can sit underneath both without closing a cycle: `core` has to be able to accept a `RawEvent`, and if the connector contract lived in `connectors` the core wouldn't know it and every connector would reinvent it.
 `connectors` holds the connectors themselves, each speaking the protocol of a foreign source, and sits above `core`, because a connector hands bytes to `core` and `core` must not know where they came from; {ref}`connectors` says what a connector does and what it leaves to `core`.
+`gate` is where a call to a model is made, and it sits beside `connectors` for the same reason: it hands its result to `core` and `core` must not know where it came from.
+The two never import each other, and sharing a layer is what enforces that.
+The adapters under `gate.adapters` are the only modules that import a vendor SDK, which {ref}`the contract for the gate adapters <module-boundaries-gate-adapters>` holds.
 Since stage 1b `contract` also holds the row types and the store protocol that `core` is typed against, and both are types in the same sense—no logic, no dependency outside the standard library.
 `migrations` is the Alembic environment and the revisions that build the schema.
 It reads the table metadata from `storage.schema` and nothing from `core`, and `core` reads nothing from it, so it sits beside `core` rather than above or below it.
@@ -21,11 +25,11 @@ It reads the table metadata from `storage.schema` and nothing from `core`, and `
 ## The edges
 
 The diagram shows which module imports which, and since stage 1b there's nothing dashed in it.
-The two arrows that stage 1c added, to `pyrage` and to `boto3`, each have a contract that names the one module allowed to draw them, and so do the arrow to `html2text` that the mapping of a mail added on 2026-10-06 and the arrow to `imaplib` that the first connector added the same day.
+The two arrows that stage 1c added, to `pyrage` and to `boto3`, each have a contract that names the one module allowed to draw them, and so do the arrow to `html2text` that the mapping of a mail added on 2026-10-06, the arrow to `imaplib` that the first connector added the same day, and the two arrows to `anthropic` and `openai` that the adapters of the gate added on 2026-10-09.
 The arrows to `sqlalchemy` and `alembic` are held the other way round: their contracts name the modules that mustn't draw them, `core` for both and `contract` for `sqlalchemy`, as the section on the contracts explains.
 
 ```{mermaid}
-:caption: The import edges on 2026-10-06: ten between its own modules, and not one of them exempted. Eight arrows leave the package.
+:caption: The import edges on 2026-10-09: eleven between its own modules, and not one of them exempted. Ten arrows leave the package.
 
 graph TD
     cli[cli] --> connectors[connectors]
@@ -46,17 +50,20 @@ graph TD
     storage --> boto3[boto3]
     core --> html2text[html2text]
     connectors --> imaplib[imaplib]
+    gate --> core
+    gate --> anthropic[anthropic]
+    gate --> openai[openai]
 ```
 
 Two things in that picture answer questions the contract names don't.
 
 `contract` has no outgoing edge, and that's the property the layer order rests on.
 A layers contract settles the *order* in which modules may depend on each other; whether an edge exists is a separate question.
-Counted out, the order permits fourteen edges between distinct modules: five from `cli`, four from `connectors`, two each from `core` and `migrations`, one from `storage`.
+Counted out, the order permits nineteen edges between distinct modules: six from `cli`, four each from `connectors` and `gate`, two each from `core` and `migrations`, one from `storage`.
 None runs between `core` and `migrations`, because modules that share a layer may not import each other.
-Ten of the fourteen exist, and the four that don't are `cli → migrations`, `connectors → migrations`, `connectors → storage` and `migrations → contract`.
+Eleven of the nineteen exist, and the eight that don't are `cli → migrations`, `cli → gate`, `connectors → migrations`, `connectors → storage`, `gate → migrations`, `gate → storage`, `gate → contract` and `migrations → contract`.
 
-That count was five until stage 1b, and seven until 2026-10-06.
+That count was five until stage 1b, and seven until 2026-10-06; the eleventh edge, `gate → core`, arrived on 2026-10-09, because an `AdapterError` is a `PreviouslyError`.
 `storage` had no edge to `contract` at all, not even though the layer order would have permitted one, and the sixth edge arrived when the row types moved out of `storage/rows.py` into `contract/rows.py`—the store protocol in `contract.store` names those types, and `contract` may import nothing above itself.
 The seventh, `migrations → storage`, is older than the module it starts from: the migrations imported `storage.schema` while they still sat outside the package, where no contract looked, and the edge became countable on 2026-10-05 when they moved in.
 The other three arrived with `connectors` on 2026-10-06: `cli → connectors`, because the command line builds the connector, and `connectors → core` and `connectors → contract`, because the connector hands its bytes over as a `Fetched` from `contract` and raises a `PreviouslyError` from `core`.
@@ -72,6 +79,10 @@ from previously.storage
 $ grep -rhoE 'from previously\.[a-z]+' src/previously/connectors | sort -u
 from previously.contract
 from previously.core
+
+$ grep -rhoE 'from previously\.[a-z]+' src/previously/gate | sort -u
+from previously.core
+from previously.gate
 
 $ grep -rhoE 'from previously\.[a-z]+' src/previously/core | sort -u
 from previously.contract
@@ -90,8 +101,8 @@ $ grep -rhoE 'from previously\.[a-z]+' src/previously/contract | sort -u
 from previously.contract
 ```
 
-Four target packages for `cli`, two for `connectors`, three for `core` of which one is itself, two for `migrations` of which one is itself, two for `storage` of which one is itself, and for `contract` nothing but itself.
-That's ten edges between distinct modules, and the last line is the layer order's foundation stated as a measurement.
+Four target packages for `cli`, two for `connectors`, two for `gate` of which one is itself, three for `core` of which one is itself, two for `migrations` of which one is itself, two for `storage` of which one is itself, and for `contract` nothing but itself.
+That's eleven edges between distinct modules, and the last line is the layer order's foundation stated as a measurement.
 
 And `cli` reaches `storage.postgres` directly, for `from_dsn` and the storage type, and it never needed an exemption for that.
 Until stage 1b this page carried two dashed edges from `core` into `storage.postgres`, and `cli` was no inconsistency beside them.
@@ -103,10 +114,10 @@ The exemptions weren't about the edge `core → storage` being forbidden—the l
 What `.importlinter` holds, in the words the gate prints:
 
 ```text
-Layers: cli, connectors, core beside migrations, storage, contract KEPT
+Layers: cli, connectors beside gate, core beside migrations, storage, contract KEPT
 core knows no foreign system and no model KEPT
 core and contract import no sqlalchemy KEPT
-No vendor SDK in the package KEPT
+Only the gate adapters import vendor SDKs KEPT (2 ignored imports)
 Only core.sealing imports pyrage KEPT (1 ignored import)
 Only storage.s3 imports boto3 KEPT (2 ignored imports)
 Only core.mail imports html2text KEPT (1 ignored import)
@@ -115,10 +126,12 @@ Only connectors.imap imports imaplib KEPT (1 ignored import)
 Contracts: 8 kept, 0 broken.
 ```
 
-The output was measured on 2026-10-06.
+The output was measured on 2026-10-09.
 The seventh contract arrived that day with the mapping of a mail, which turns HTML into text and names the converter's version in the payload; a second module converting HTML would write units the payload doesn't account for.
 The eighth arrived the same day with the first connector, and the first line took its present name with it, when `connectors` came in between `cli` and `core`.
-The first line read `Layers: core beside migrations, both above storage, contract below all` from 2026-10-05 until then, and `Layers: core above storage, contract below both` before, until `migrations` joined `core` in the second layer; each time the name followed the layers, because the name is what the gate prints.
+The first line read `Layers: cli, connectors, core beside migrations, storage, contract` until 2026-10-09, when `gate` came in beside `connectors`.
+Before that it read `Layers: core beside migrations, both above storage, contract below all` from 2026-10-05 until then, and `Layers: core above storage, contract below both` before, until `migrations` joined `core` in the second layer; each time the name followed the layers, because the name is what the gate prints.
+The fourth line read `No vendor SDK in the package` until 2026-10-09, when the adapters of the gate became the first modules to call a model and the contract gained its two named exemptions and its present name.
 The third line read `Only storage imports sqlalchemy` until 2026-10-05, and the move of the migrations made that name false: the migrations import SQLAlchemy, and they're inside the package now.
 The contract itself didn't change, because its sources were always `core` and `contract`, so the name now says what it checks; the older blocks further down keep the name of their day.
 Sharing a layer keeps the two apart in both directions: measured on 2026-10-05, an import of `migrations.dsn` written into `core/units.py` broke the first contract with `previously.core is not allowed to import previously.migrations`, and the second contract as well, because `migrations.dsn` imports `alembic`.
@@ -189,6 +202,16 @@ The probe that proves the contract goes into `core`, beside `core.mail`, so it s
 `imaplib` may be imported by `connectors.imap` and nowhere else, although it's part of the standard library, which `import-linter` counts among the external packages once `include_external_packages` is on.
 Speaking IMAP is the connector's, and what the connector hands on is bytes, a position, and its own error: a second module with `imaplib` would be a second place where a folder could be changed, or where a password could end up in a message.
 The layers contract keeps `core` from importing `connectors`, so the mapping of a mail can't reach the server either, and stays the pure function {ref}`connectors` asks for.
+
+(module-boundaries-gate-adapters)=
+
+## A contract for the gate adapters
+
+`anthropic` may be imported by `gate.adapters.anthropic`, and `openai` by `gate.adapters.openai_compatible`, and neither anywhere else.
+A call to a model happens where the gate is, and an SDK stays inside the adapter that speaks for its provider: what leaves an adapter is a `Response` or an `AdapterError`, never a type of the vendor.
+Until 2026-10-09 the contract forbade both packages everywhere and carried no exemption, because no module called a model.
+The two exemptions are named edges and not a pattern over `gate.adapters`, so that a third adapter needs its own grant.
+The SDK of one adapter in the module of the other is as wrong as the SDK in `core`, and the tests probe both: `anthropic` and `openai` each from `core` and from beside the adapters, measured on 2026-10-09 to break the contract by name.
 
 ## Why the two exemptions were enumerated and not matched
 
