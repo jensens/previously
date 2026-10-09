@@ -1,8 +1,30 @@
 # Previously — Pilot, Einheit 3: Gate und Policy
 
+> **Eingefrorener Entwurfsbericht, Stand 2026-10-09.**
+> Dieses Dokument wird nicht mehr nachgezogen.
+> Es hält fest, **wie und warum** entschieden wurde, und bleibt dafür im
+> Repository. Die lebende Begründung steht in der Dokumentation unter
+> `docs/` — soweit sie dort steht; wo sie fehlt, ist dieses Dokument die
+> einzige Quelle. Weicht es von der Doku ab, gilt die Doku.
+>
+> Ein neuer Spec für eine neue Stufe entsteht wieder auf Deutsch — das ist
+> die Sprache, in der die Absicht formuliert wird. Er friert ein, sobald
+> seine Explanation-Seiten stehen. Das Einfrieren als **Ablauf**, und die
+> Karte von jedem zitierten Paragraphen zu seiner Seite, stehen in
+> [About the frozen design records](../../explanation/design-records.md).
+
 **Datum:** 2026-10-09
-**Status:** Entwurf, vom Betreuer am 2026-10-09 durchgesehen („spec passt"),
-Grundlage des Plans
+**Status:** eingefroren am 2026-10-09; zuvor Entwurf, vom Betreuer am
+2026-10-09 durchgesehen („spec passt"), Grundlage des Plans
+`docs/superpowers/plans/2026-10-09-pilot-gate-und-policy.md`; am selben Tag
+nachgezogen: die Messungen der Anbieter (Commit `62d044f`) und die Fassung von
+§2.5 Punkt 5 und §8 Punkt 3 (Commits `5a2fa6f`, `26f4cb4`). Bedingung 10 aus
+§10 folgt dem Merge. Wo der Bau vom Wortlaut abweicht, steht es im Plan und im
+Ausführungsprotokoll: Mistral geht über den Client `openai` statt über
+`mistralai` (§3.3, §7.3), das Ausgabeschema ist ein Pydantic-Modell (§7.3),
+die Entscheidung liegt in `core/decide.py` und der Schreibweg in
+`core/policy.py` (§7.1), und das Gate nimmt nur Events der Art `observation`
+als Eingabe.
 
 Detail-Spec für die dritte Einheit des Piloten an einem echten Kunden. Setzt
 die Stufen 1a, 1b, den äußeren Anker, Stufe 1c, die Auslieferung und die
@@ -16,8 +38,8 @@ Anbietern (Modelle, Preise, `inference_geo`) sind am 2026-10-09 in der
 Dokumentation von Anthropic nachgesehen; was dort nicht stand, ist unten als
 ungeprüft benannt.
 
-Dieser Spec friert ein, sobald seine Explanation-Seiten stehen (`CLAUDE.md`);
-seine offenen Punkte gehen dann in die Landkarte.
+Dieser Spec fror ein, als seine Explanation-Seiten standen (`CLAUDE.md`);
+seine offenen Punkte gingen dann in die Landkarte.
 
 ---
 
@@ -670,6 +692,14 @@ wie bei der Aufnahme.
 ---
 
 ## 11. Was offen bleibt
+
+Gepflegt, solange der Spec lebte; beim Einfrieren am 2026-10-09 gingen die
+Punkte in die Landkarte (`docs/superpowers/landkarte.md`), jeder unter die
+Einheit, zu der er gehört: die Prüfung vor dem Schreiben nach außen und die
+Punkte zum Gate selbst unter *Gate und Policy (Pilot, Einheit 3)*, der Weg per
+Prompt unter *Spätere Teilprojekte* (MCP-Server, Einheit 4), Projekte als
+Geltungsbereich bei den Feststellungen und Entitäten (Einheit 5), die Batch
+API bei der KI-Schicht (Einheit 6). Die Liste hier ist der Stand dieses Tages.
 
 1. **Die Prüfung vor dem Schreiben nach außen** (§1.2), mit der ersten Aktion,
    die nach außen schreibt.
