@@ -46,9 +46,8 @@ class AnthropicAdapter:
             config["effort"] = request.effort
         try:
             # The raw response, for its headers: Anthropic names the request in
-            # `request-id` (`req_…`), and that is the id its support asks for.
-            # The body's `id` (`msg_…`) names the message. Measured on
-            # 2026-10-09.
+            # `request-id` (`req_…`); the body's `id` (`msg_…`) names the
+            # message. Measured on 2026-10-09.
             raw = self._client.messages.with_raw_response.create(
                 model=request.model,
                 max_tokens=MAX_TOKENS,
