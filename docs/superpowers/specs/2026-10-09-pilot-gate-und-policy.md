@@ -33,12 +33,13 @@ jeder Aufruf — auch ein abgelehnter — wird ein Event in der Kette.**
    Mitgliedschaften, Regeln, Zusagen der Anbieter, eigene Identitäten (§2).
 2. **Die Entscheidung** als reine Funktion über diese Events und den Inhalt
    (§2.5).
-3. **Das Gate** mit zwei Adaptern, Anthropic und Mistral, und einer ersten
-   Aufgabe, `mail_overview` (§3).
+3. **Das Gate** mit drei Adaptern — Anthropic, Mistral und ein lokales
+   Modell über die OpenAI-kompatible Schnittstelle von Ollama oder
+   llama.cpp — und einer ersten Aufgabe, `mail_overview` (§3).
 4. **Das Audit** als Event der Art `action`, mit der Kaskade der Tilgung und
    den Prüfungen in `verify` (§4).
-5. **Kommandos:** `previously policy …`, `previously gate explain`,
-   `previously gate try` (§5).
+5. **Kommandos:** `previously policy …`, `previously policy gaps`,
+   `previously gate explain`, `previously gate try` (§5).
 6. **Die Dokumentation dazu**, darunter eine Seite über die Vertrauensgrenzen
    des ganzen Systems, und ein Handoff an kup6s, im selben Pull-Request
    (§9, §6).
@@ -57,8 +58,10 @@ jeder Aufruf — auch ein abgelehnter — wird ein Event in der Kette.**
   Zuordnung (Einheit 5).
 - **Feststellungen** (`assertion`) und ihr Schreibweg (Einheit 5). Die
   Policy braucht keinen davon (§1.2).
-- **Die KI-Schicht** mit Vorschlägen (Einheit 6), die Batch API, OpenRouter,
-  der OpenAI-kompatible Adapter.
+- **Die KI-Schicht** mit Vorschlägen (Einheit 6), die Batch API, OpenRouter.
+- **Ein Modellserver in kup6s.** Der lokale Adapter wird gegen Ollama auf dem
+  Rechner des Betreuers abgenommen; der Server im Cluster folgt als Handoff
+  (§6).
 - **Der MCP-Server** (Einheit 4). Er verwendet die Entscheidung aus §2.5
   wieder, um zu prüfen, was Claude Code sehen darf.
 
@@ -68,6 +71,11 @@ Die Datenpolitik des Pilotkunden erlaubt, dass sein Inhalt an Anthropic geht
 (Betreuer, 2026-10-04). Der Betreuer hat am 2026-10-09 dennoch zwei Anbieter
 verlangt, Anthropic und Mistral, damit die Policy schon im Piloten zwischen
 zwei Anbietern mit verschiedenen Zusagen wählt — eine Verifizierung mehr.
+
+Ein lokales Modell, das in kup6s neben der Datenbank läuft, sieht nichts,
+was nicht ohnehin dort liegt: seine Verarbeitung ist der von Previously
+gleichwertig (Betreuer, 2026-10-09). Darauf ruht die Vorgabe „ohne Regel nur
+lokal" (§2.5).
 
 Der Betreuer wird nicht einen Posteingang je Kunde haben. Welcher Inhalt zu
 wem gehört, ergibt sich deshalb aus den Beteiligten, nicht aus dem Ordner
@@ -162,9 +170,12 @@ ist.** Beteiligte sind die `channel_identities` des Events (seit Einheit 1).
   dem er arbeitet. Was als `own_identity` gesetzt ist, wird vor der
   Auflösung entfernt.
 - **Unbekannte Beteiligte binden nicht.** Eine Adresse, die keinem Kreis
-  angehört, trägt keine Auflage bei. Das ist eine Grenze, und die
+  angehört, trägt keine Auflage bei. Gilt für ihren Inhalt auch keine Regel
+  der Quelle, greift die Vorgabe „nur lokal" (§2.5), und der Rückfall wird
+  sichtbar (§2.6). Gilt eine Regel der Quelle, etwa „`source:email`
+  überall", geht der Inhalt nach ihr hinaus. Das ist eine Grenze, und die
   Dokumentation nennt sie (§9): wer einen Kreis nicht anlegt, schützt ihn
-  nicht.
+  nur so weit, wie die Regel der Quelle reicht.
 
 ### 2.3 Regeln
 
@@ -199,6 +210,7 @@ Aufbewahrung und Speicherort sind Zusagen aus Konto und Vertrag. Deshalb
 | `storage` | wo der Anbieter speichert |
 | `retention_days` | wie lange; `null` heißt unbekannt |
 | `reports_inference_geo` | ob die Antwort den Raum meldet |
+| `local` | ob der Anbieter auf Hardware läuft, die der Betreiber selbst betreibt, im selben Vertrauensbereich wie die Datenbank |
 
 Für den Piloten, Stand 2026-10-09:
 
@@ -206,6 +218,12 @@ Für den Piloten, Stand 2026-10-09:
 |---|---|---|---|---|
 | `anthropic` | `global` → überall, `us` → `us` | `us` | 30 (Konsole: „Organization default", vom Betreuer abgelesen) | ja |
 | `mistral` | `eu` | `eu` | unbekannt; Training abbestellt | nein |
+| `local` (Ollama) | `eu`, der Standort der Hardware | keine | 0 | nein |
+
+`local` ist die einzige Zusage, die der Betreiber nicht einem Vertrag
+entnimmt, sondern selbst verantwortet: er betreibt die Hardware. Sie ist
+deshalb an eine Adresse gebunden, die er setzt (§3.3), und steht wie jede
+Zusage im Log.
 
 Eine Zusage löst die vorige ab, sobald sich etwas ändert — etwa wenn Zero
 Retention bei einem Anbieter vereinbart wird.
@@ -220,25 +238,48 @@ gelesen. Es sind wenige Events.
    gegen die Mitgliedschaften.
 2. **Regeln sammeln:** jede Regel für einen dieser Kreise, und die Regel für
    die Quelle des Events.
-3. **Ablehnen, wenn ein beteiligter Kreis keine Regel hat** — ein Kreis, für
-   den nichts erlaubt ist, erlaubt nichts. **Ablehnen, wenn überhaupt keine
-   Regel gilt.** Ein Modell sieht nur, was ausdrücklich erlaubt ist.
+3. **Fehlt eine Regel, gilt „nur lokal".** Ein beteiligter Kreis ohne
+   Regel trägt die eingebaute Regel `local_only` bei — nur Anbieter mit
+   `local` —, und dieselbe gilt, wenn überhaupt keine Regel gilt. Außer Haus
+   geht nur, was ausdrücklich erlaubt ist. Die eingebaute Regel steht in
+   `policy show`, damit niemand eine stille Vorgabe suchen muss.
 4. **Zusammenführen, die strengste gewinnt** (Leitsatz 8): `regions` als
    Schnitt, `max_retention_days` als Minimum, `excluded_providers` als
-   Vereinigung.
+   Vereinigung, `local_only`, sobald eine Regel es verlangt.
 5. **Kandidaten:** die Modelle der Aufgabe in ihrer Reihenfolge (§3.1). Ein
-   Kandidat besteht, wenn sein Anbieter nicht ausgeschlossen ist, sein
-   `storage` in `regions` liegt, `retention_days` bekannt und höchstens
+   Kandidat besteht, wenn sein Anbieter nicht ausgeschlossen ist, unter
+   `local_only` `local` ist, sein `storage` in `regions` liegt oder er
+   nichts speichert, `retention_days` bekannt und höchstens
    `max_retention_days` ist (sofern eine Grenze gilt), und eine wählbare
    `inference` ganz in `regions` liegt. Von mehreren wählbaren Räumen nimmt
    das Gate den weitesten, der passt: `global` vor `us`, weil `us` bei
    Anthropic das 1,1-Fache kostet.
 6. **Der erste Kandidat gewinnt.** Besteht keiner: ablehnen, mit dem Grund
-   je Kandidat.
+   je Kandidat — unter `local_only` ohne deklarierten lokalen Anbieter heißt
+   der Grund „kein lokaler Anbieter".
 
 Die Entscheidung trägt, was sie getragen hat: die Kreise, die Ids der
 Regeln und Zusagen, die zusammengeführten Auflagen, den gewählten Anbieter,
-Modell und Raum, oder den Grund der Ablehnung.
+Modell und Raum, oder den Grund der Ablehnung — und den Rückfall (§2.6).
+
+### 2.6 Der Rückfall wird sichtbar
+
+„Nur lokal" ist sicher, aber ein lokales Modell auf CPU ist schwächer. Die
+Gefahr ist, dass der Rückfall unbemerkt bleibt und die Qualität still
+sinkt (Betreuer, 2026-10-09). Er wird deshalb an drei Stellen sichtbar:
+
+1. **Im Event.** Ein `model_call`, unter dem die eingebaute Regel gewirkt
+   hat, trägt `policy.fallback`, etwa `{"reason": "no_rule", "circles":
+   ["xz"]}`, oder mit leerer Liste, wenn gar keine Regel galt. Das ist kein
+   Alarm — nichts ist schiefgelaufen —, sondern eine eigene Markierung: das
+   Ergebnis ist schwächer, als es sein müsste.
+2. **Beim Aufruf.** `gate explain` und `gate try` sagen es auf stderr, mit
+   dem Kommando, das es behebt.
+3. **Über die Zeit.** `previously policy gaps [--since …]` listet die Kreise
+   und Quellen, deren Aufrufe zurückgefallen sind, mit Anzahl und letztem
+   Datum — eine Leseabfrage über die `model_call`-Events, ohne Tabelle. Läufe
+   der KI-Schicht (Einheit 6) sieht niemand einzeln; diese Liste schon. Der
+   MCP-Server kann sie Claude Code zeigen, ein CronJob sie melden.
 
 ---
 
@@ -273,8 +314,10 @@ Events. Ausgabe:
 
 `language` als Sprachkennung nach BCP 47, `topic` ein Satz, `participants`
 die im Text genannten Personen. Modelle: zuerst `claude-haiku-5-5` mit
-Aufwand `low`, dann ein Modell von Mistral, das der Plan nach Prüfung der
-Ausgabe mit Schema festlegt.
+Aufwand `low`, dann ein Modell von Mistral, dann ein lokales; die beiden
+letzten legt der Plan fest, nachdem er gemessen hat, ob sie die Ausgabe mit
+Schema zuverlässig liefern — das lokale auf CPU, in einer Zeit, die für eine
+Mail tragbar ist.
 
 Sie ist eine Probe, keine Funktion des Systems: sie lässt Policy, Adapter,
 Audit und den Nachweis des Raums einmal ganz durchlaufen. Ihr Ergebnis wird
@@ -321,6 +364,11 @@ der Plan wählt und nach `CLAUDE.md` auf Pflege prüft; die Ausgabe mit Schema
 über Mistrals eigenes Merkmal, sofern es eine erzwingt — sonst prüft nur das
 Gate, und der Spec-Abschnitt wird nachgezogen.
 
+**Lokal** über die OpenAI-kompatible Schnittstelle, die Ollama und
+llama.cpp beide anbieten, an einer Adresse, die `PREVIOUSLY_LOCAL_MODEL_URL`
+setzt; die Ausgabe mit Schema über das Merkmal des Servers, im Plan an
+Ollama gemessen. Kein gemeldeter Raum, keine Kosten.
+
 Das Gate prüft jede Ausgabe selbst gegen das Schema, auch wenn der Anbieter
 sie erzwingt: Leitsatz 1 hängt nicht an einer Zusage.
 
@@ -358,7 +406,7 @@ payload
               "regions": ["any"], "max_retention_days": null,
               "decision": "allowed", "provider": "anthropic",
               "model": "claude-haiku-5-5", "inference_geo": "global",
-              "reason": "…"},
+              "fallback": null, "reason": "…"},
   "response": {"request_id": "req_…", "model": "claude-haiku-5-5",
                "inference_geo": "us", "stop_reason": "end_turn",
                "usage": {"input_tokens": 1830, "output_tokens": 212},
@@ -375,6 +423,8 @@ units
   die Mail.
 - **Das Ergebnis steht in den Einheiten**, als kanonisches JSON in einer
   Einheit.
+- `policy.fallback` ist `null`, wo eine echte Regel galt, sonst der Grund
+  des Rückfalls (§2.6).
 - `response` fehlt bei `denied`; `response.inference_geo` ist `null`, wo der
   Anbieter nichts meldet. Zusage und Meldung bleiben getrennt: was zugesagt
   war, sagen die Ids unter `policy.providers`.
@@ -433,7 +483,9 @@ neuen Events haben keine Quelle.
   zeigt die strukturierte Fassung und schreibt erst nach Bestätigung;
   `--yes` überspringt die Frage für Skripte.
 - **`previously policy show [--at <zeit>]`** — die geltende Policy, als
-  Tabelle.
+  Tabelle, die eingebaute Regel `local_only` eingeschlossen.
+- **`previously policy gaps [--since <zeit>]`** — wo die Vorgabe „nur
+  lokal" gewirkt hat (§2.6).
 - **`previously gate explain <event>`** — die Entscheidung für
   `mail_overview` über dieses Event, **ohne Aufruf**: Kreise, Regeln,
   Auflagen, jeder Kandidat mit Grund, die Wahl. Kostet nichts und schreibt
@@ -455,9 +507,14 @@ ihn nicht überliest.
   - Netz nach außen: die beiden API-Hosts auf Port 443;
   - wahlweise die Preisdatei als ConfigMap, über `PREVIOUSLY_PRICES`;
   - kein CronJob: `gate try` stößt man von Hand an. Die erste Policy setzt
-    der Betreuer im Werkzeug-Pod.
-- **Ein Host mit `docker-compose`.** Zwei Umgebungsvariablen, wahlweise eine
-  Datei. Keine Tabelle, keine Migration, kein Zeitgeber.
+    der Betreuer im Werkzeug-Pod;
+  - **danach, als eigener Handoff:** ein Modellserver (Ollama oder
+    llama.cpp) im Cluster, nur von innen erreichbar, mit einem kleinen
+    Modell auf CPU, und `PREVIOUSLY_LOCAL_MODEL_URL` im Werkzeug-Pod. Bis er
+    steht, lehnt das Gate im Cluster ab, wo die Vorgabe „nur lokal" greift.
+- **Ein Host mit `docker-compose`.** Drei Umgebungsvariablen, wahlweise eine
+  Datei, und ein Dienst `ollama` neben der Datenbank. Keine Tabelle, keine
+  Migration, kein Zeitgeber.
 - **Die Schlüssel erscheinen nirgends:** nicht im Event, nicht in einer
   Fehlermeldung.
 - **Die Aufbewahrung beim Anbieter gehört zur Tilgungszusage.** Was an
@@ -465,7 +522,9 @@ ihn nicht überliest.
   diese Kopie nicht. Die Seite zur Tilgung und die zu den Vertrauensgrenzen
   sagen es.
 - **Der Einfachheits-Check** fällt gut aus: keine neue Tabelle, keine
-  Migration; neu sind zwei Geheimnisse und zwei Hosts nach außen.
+  Migration; neu sind zwei Geheimnisse, zwei Hosts nach außen und ein
+  Modellserver, den man auch weglassen kann — dann lehnt das Gate ab, statt
+  lokal zu rechnen.
 
 ---
 
@@ -482,7 +541,7 @@ ihn nicht überliest.
 | `core/projection/chronicle.py` | nur `observation` (§4.4) |
 | `gate/task.py`, `gate/tasks/mail_overview.py` | Aufgabe, Vorlage, Schema |
 | `gate/gate.py` | der Ablauf (§3.2), das Schreiben des `model_call` |
-| `gate/adapters/anthropic.py`, `gate/adapters/mistral.py` | die Adapter |
+| `gate/adapters/anthropic.py`, `gate/adapters/mistral.py`, `gate/adapters/local.py` | die Adapter |
 | `gate/prices.py`, `gate/prices.toml` | Preisdatei und Schätzung |
 | `cli.py` | die Kommandos |
 
@@ -499,6 +558,10 @@ wiederverwendet und ein Modell dafür nicht gebraucht wird.
 - **`anthropic`**, das offizielle SDK.
 - **Ein Client für Mistral**, im Plan gewählt; Kandidat ist das offizielle
   `mistralai`.
+- **Ein Client für die OpenAI-kompatible Schnittstelle** des lokalen
+  Servers; Kandidat ist `openai`, den die Verträge im `import-linter` heute
+  schon außerhalb von `gate` verbieten. Ob Mistral über denselben Client
+  geht, entscheidet der Plan.
 - **Ein Prüfer für JSON Schema** — Pydantic (Architektur §10.1, bisher
   zurückgestellt) oder `jsonschema`; Wahl im Plan.
 
@@ -517,29 +580,32 @@ Messages-API von Anthropic und die Chat-API von Mistral auf HTTP-Ebene
 beantwortet, mit festgelegten Antworten; die echten Clients reden über eine
 umgelenkte Basis-URL mit ihm. Ein echter Aufruf ist Sache der Abnahme (§10).
 
-1. **Ohne Regel keine Verarbeitung.**
-2. **Ein beteiligter Kreis ohne Regel: abgelehnt.**
+1. **Ohne Regel nur lokal**; ohne lokalen Anbieter abgelehnt, mit Grund.
+2. **Ein beteiligter Kreis ohne Regel: nur lokal**, auch wenn für einen
+   anderen beteiligten Kreis „überall" gilt.
 3. **Die strengste gewinnt:** eine zusätzliche Regel macht eine Entscheidung
    nie lockerer (Hypothesis).
 4. **Eigene Identitäten zählen nicht.**
 5. **„EU" führt zu Mistral, „überall" zu Anthropic mit `global`, „us" zu
    Anthropic mit `us`.**
 6. **Unbekannte Aufbewahrung besteht keine Grenze.**
-7. **Ein neueres Policy-Event löst das ältere ab; ein Widerruf hebt auf;
+7. **Der Rückfall ist markiert** — im Event, auf stderr, in `policy gaps` —,
+   und ein Aufruf unter einer echten Regel trägt keine Markierung.
+8. **Ein neueres Policy-Event löst das ältere ab; ein Widerruf hebt auf;
    `--at` liest die damalige Policy.**
-8. **Jeder Aufruf wird ein `model_call`**, auch abgelehnt, gescheitert, vom
+9. **Jeder Aufruf wird ein `model_call`**, auch abgelehnt, gescheitert, vom
    Modell verweigert oder mit falscher Ausgabe.
-9. **Die Nutzlast eines `model_call` enthält keinen Inhalt** des Events, das
-   er liest.
-10. **Der Raum wird immer gesetzt; eine Abweichung ist ein Alarm**, mit
+10. **Die Nutzlast eines `model_call` enthält keinen Inhalt** des Events, das
+    er liest.
+11. **Der Raum wird immer gesetzt; eine Abweichung ist ein Alarm**, mit
     Rückgabewert 3.
-11. **Die Kaskade:** eine Tilgung der Quelle — Event, Einheiten, Blob — tilgt
+12. **Die Kaskade:** eine Tilgung der Quelle — Event, Einheiten, Blob — tilgt
     die Einheiten jedes `model_call`, der sie las; `verify` findet eine
     unvollständige.
-12. **Die Chronik zeigt keinen `model_call` und kein Policy-Event.**
-13. **Die Schlüssel erscheinen nirgends**, auch bei abgewiesener Anmeldung.
-14. **Nur `gate` importiert die Clients der Anbieter** (`lint-imports`).
-15. **Was die Referenz zu Kommandos und Nutzlast zitiert**, wird gegen den
+13. **Die Chronik zeigt keinen `model_call` und kein Policy-Event.**
+14. **Die Schlüssel erscheinen nirgends**, auch bei abgewiesener Anmeldung.
+15. **Nur `gate` importiert die Clients der Anbieter** (`lint-imports`).
+16. **Was die Referenz zu Kommandos und Nutzlast zitiert**, wird gegen den
     Code gehalten.
 
 ---
@@ -575,7 +641,7 @@ Im selben Pull-Request, nach `plone-doc-style:author`.
 | # | Bedingung |
 |---|---|
 | 1 | Die fünf Arten aus §2.1 werden als `action` mit `policy` geschrieben, abgelöst und widerrufen; `policy show --at` liest die damalige Policy. |
-| 2 | Die Entscheidung folgt §2.5; jeder Fall aus §8 Punkt 1–7 hat einen Test. |
+| 2 | Die Entscheidung folgt §2.5; jeder Fall aus §8 Punkt 1–8 hat einen Test. |
 | 3 | Jeder Aufruf und jede Ablehnung wird ein `model_call` nach §4.1; die Nutzlast enthält keinen Inhalt. |
 | 4 | Die Kaskade tilgt das Ergebnis mit der Quelle; `verify` findet eine unvollständige. |
 | 5 | Die Chronik zeigt nur Wahrnehmungen. |
@@ -583,7 +649,9 @@ Im selben Pull-Request, nach `plone-doc-style:author`.
 | 7 | Jede Zusicherung aus §8 hat eine gemessene Mutation und eine grüne Kontrolle. |
 | 8 | Die Dokumente aus §9 stehen. |
 | 9 | Alle sechs Tore grün; `pip-audit` ohne Befund. |
-| 10 | **Ein Lauf des Betreuers, lokal, gegen die echten APIs**, nach dem Merge: zwei Zusagen, ein Kreis mit einer Mitgliedschaft, eine eigene Identität; Regel „überall" → `gate explain` und `gate try` wählen Anthropic, `response.inference_geo` steht im Event; Regel auf „EU" geändert → Mistral, ohne gemeldeten Raum; die Quelle getilgt → die Einheiten des `model_call` sind leer, `verify` grün. Danach Probe-Log verwerfen. |
+| 10 | **Ein Lauf des Betreuers, lokal, gegen die echten APIs**, nach dem Merge: zwei Zusagen, ein Kreis mit einer Mitgliedschaft, eine eigene Identität; Regel „überall" → `gate explain` und `gate try` wählen Anthropic, `response.inference_geo` steht im Event; Regel auf „EU" geändert → Mistral, ohne gemeldeten Raum; Regel
+widerrufen → das lokale Modell über Ollama, mit Warnung, und `policy gaps`
+nennt den Kreis; die Quelle getilgt → die Einheiten des `model_call` sind leer, `verify` grün. Danach Probe-Log verwerfen. |
 
 Abgenommen ist die Arbeit mit dem Merge nach `main`; Bedingung 10 folgt ihm,
 wie bei der Aufnahme.
@@ -599,12 +667,15 @@ wie bei der Aufnahme.
 4. **Die Reihenfolge der Modelle einer Aufgabe** ist eine Behauptung; sie
    durch Vergleiche an echten Fällen zu begründen, etwa über OpenRouter, ist
    offen.
-5. **Unbekannte Beteiligte binden nicht.** Ob ein Inhalt mit Beteiligten
-   außerhalb jedes Kreises strenger behandelt werden soll, ist offen.
-6. **Ein Aufruf ohne Audit**, wenn der Prozess zwischen Antwort und Schreiben
+5. **Unbekannte Beteiligte binden nicht**, wo eine Regel der Quelle gilt
+   (§2.2). Ob ein Inhalt mit Beteiligten außerhalb jedes Kreises dann
+   strenger behandelt werden soll, ist offen.
+6. **Der Modellserver in kup6s** (§6) und welches lokale Modell dort
+   reicht.
+7. **Ein Aufruf ohne Audit**, wenn der Prozess zwischen Antwort und Schreiben
    abbricht (§3.2).
-7. **Zero Retention** bei Anthropic und Mistral: beantragen, dann deklarieren.
-8. **Die Aufbewahrung bei Mistral** nachsehen und deklarieren.
-9. **Die Batch API** für Masse, mit der KI-Schicht.
-10. **Die Preisdatei** pflegt sich nicht selbst; ein veralteter Preis macht
+8. **Zero Retention** bei Anthropic und Mistral: beantragen, dann deklarieren.
+9. **Die Aufbewahrung bei Mistral** nachsehen und deklarieren.
+10. **Die Batch API** für Masse, mit der KI-Schicht.
+11. **Die Preisdatei** pflegt sich nicht selbst; ein veralteter Preis macht
     nur die Schätzung falsch.
