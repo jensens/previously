@@ -169,14 +169,14 @@ def test_a_version_bump_rebuilds_and_without_it_nothing_moves(db: Engine) -> Non
 
 @pytest.mark.db
 def test_a_lower_code_version_rebuilds_too(db: Engine) -> None:
-    """Review Focus 4: `!=`, not `<`. Code at version 2, table at version 3
+    """Review Focus 4: `!=`, not `<`. Code at version 3, table at version 4
     — a rolled-back release derives differently from the table it meets."""
     storage = PostgresStorage(db)
     append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
-    catch_up(storage, storage, ChronicleProjection(version=3))
-    outcome = catch_up(storage, storage, ChronicleProjection(version=2))
-    assert outcome.rebuilt_from == 3
-    assert outcome.version == 2
+    catch_up(storage, storage, ChronicleProjection(version=4))
+    outcome = catch_up(storage, storage, ChronicleProjection(version=3))
+    assert outcome.rebuilt_from == 4
+    assert outcome.version == 3
     assert outcome.events == 1
 
 
@@ -810,9 +810,9 @@ def test_a_catch_up_stops_when_another_release_rebuilds_under_it(db: Engine) -> 
     append(PostgresStorage(db), [_raw(1, "email", NOW)], recorded_at=NOW)
 
     assert _catch_up_beside(db, None) == []
-    (error,) = _catch_up_beside(db, ChronicleProjection(version=3))
+    (error,) = _catch_up_beside(db, ChronicleProjection(version=4))
     assert isinstance(error, ProjectionRebuilt)
     assert str(error) == (
         "projection chronicle was rebuilt while this catch-up ran: it stands at "
-        "version 3, and this code declares version 2"
+        "version 4, and this code declares version 3"
     )

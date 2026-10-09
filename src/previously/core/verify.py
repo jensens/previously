@@ -31,6 +31,8 @@ from dataclasses import dataclass
 from previously.contract.blobs import BlobStore
 from previously.contract.blobs import KeyProvider
 from previously.contract.types import Anchor
+from previously.core.action import KNOWN_ACTIONS
+from previously.core.action import REDACTION
 from previously.core.blob import fetch_blob
 from previously.core.canonical import canonical
 from previously.core.chain import read_references
@@ -50,7 +52,6 @@ from previously.core.redaction import action_name
 from previously.core.redaction import blob_expected
 from previously.core.redaction import MalformedAction
 from previously.core.redaction import parse
-from previously.core.redaction import REDACTION
 from previously.core.redaction import RedactionIndex
 from previously.core.sealing import NullSink
 from typing import cast
@@ -411,10 +412,15 @@ class _Erasures:
         if row.kind != "action" or row.payload is None:
             return []
         try:
-            if action_name(row.payload) == REDACTION:
+            name = action_name(row.payload)
+            if name == REDACTION:
                 self._redactions.add(parse(row.id, row.payload))
         except MalformedAction:
             return [Finding(row.id, "action has no valid form")]
+        # A name nobody here knows cannot be read, and so cannot be told from
+        # a forgery. The form of the known names is checked where each is read.
+        if name not in KNOWN_ACTIONS:
+            return [Finding(row.id, f'unknown action "{name}"')]
         return []
 
     def reconcile[Conn](self, storage: LogStore[Conn], conn: Conn) -> list[Finding]:

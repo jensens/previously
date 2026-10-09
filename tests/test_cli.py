@@ -1215,10 +1215,10 @@ def test_project_on_an_empty_log_is_up_to_date_at_zero_but_still_names_a_rebuild
     ]
 
     with db.begin() as c:
-        c.execute(text("UPDATE projection_state SET version = 3 WHERE name = 'chronicle'"))
+        c.execute(text("UPDATE projection_state SET version = 4 WHERE name = 'chronicle'"))
     assert main(["project"]) == 0
     assert capsys.readouterr().out.splitlines() == [
-        "chronicle       rebuilt: version 3 -> 2, 0 events, up_to_id 0",
+        "chronicle       rebuilt: version 4 -> 3, 0 events, up_to_id 0",
         "source-stats    up to date, up_to_id 0",
     ]
 
@@ -1270,12 +1270,12 @@ def test_project_says_which_path_it_took(
     # reference page promises and nothing produces. `source-stats` is left
     # alone, so the two projections report different paths in the same run.
     with db.begin() as c:
-        c.execute(text("UPDATE projection_state SET version = 3 WHERE name = 'chronicle'"))
+        c.execute(text("UPDATE projection_state SET version = 4 WHERE name = 'chronicle'"))
     capsys.readouterr()
     assert main(["project"]) == 0
     fourth = capsys.readouterr().out.splitlines()
     assert fourth == [
-        "chronicle       rebuilt: version 3 -> 2, 2 events, up_to_id 2",
+        "chronicle       rebuilt: version 4 -> 3, 2 events, up_to_id 2",
         "source-stats    up to date, up_to_id 2",
     ]
 
@@ -2301,7 +2301,7 @@ def test_redact_reports_a_rebuild_it_runs_on_standard_error(
     assert main(["redact", "event", "1", "--reason", "r"]) == 0
     assert capsys.readouterr() == (
         "redacted by event 2\n",
-        "chronicle       rebuilt: version 1 -> 2, 2 events, up_to_id 2\n",
+        "chronicle       rebuilt: version 1 -> 3, 2 events, up_to_id 2\n",
     )
     assert main(["project"]) == 0
     assert capsys.readouterr().out.splitlines() == [
@@ -2317,7 +2317,7 @@ def test_project_rebuilds_a_chronicle_built_at_version_1(
     """Version 1 of the chronicle did not read redactions, so a table it built
     can still hold the rows of an erased event. The state row is set to what
     such a table carries — version 1, caught up past the redaction — and the
-    first `project` of version 2 rebuilds it and says so."""
+    first `project` of version 3 rebuilds it and says so."""
     from sqlalchemy import text
 
     engine = _connect(db, monkeypatch)
@@ -2334,7 +2334,7 @@ def test_project_rebuilds_a_chronicle_built_at_version_1(
 
     assert main(["project"]) == 0
     assert capsys.readouterr().out.splitlines()[0] == (
-        "chronicle       rebuilt: version 1 -> 2, 3 events, up_to_id 3"
+        "chronicle       rebuilt: version 1 -> 3, 3 events, up_to_id 3"
     )
     assert main(["chronicle"]) == 0
     out = capsys.readouterr().out

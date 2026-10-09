@@ -326,7 +326,7 @@ An ordinary catch-up prints nothing.
 A catch-up that builds a projection for the first time, or rebuilds it because its version changed, prints the line `project` prints for that projection, on standard error:
 
 ```text
-chronicle       rebuilt: version 1 -> 2, 12000 events, up_to_id 12000
+chronicle       rebuilt: version 2 -> 3, 12000 events, up_to_id 12000
 ```
 
 Standard output carries the one line either way.
@@ -671,8 +671,8 @@ Two catch-ups of one projection, such as a `project` and the catch-up of a `reda
 A catch-up that finds the state row at another version than its own, or gone, between two of its batches stops with exit code 2 and one sentence on standard error:
 
 ```text
-Error: projection chronicle was rebuilt while this catch-up ran: it stands at version 3, and this code declares version 2
-Error: projection chronicle was rebuilt while this catch-up ran: it has no state row, and this code declares version 2
+Error: projection chronicle was rebuilt while this catch-up ran: it stands at version 4, and this code declares version 3
+Error: projection chronicle was rebuilt while this catch-up ran: it has no state row, and this code declares version 3
 ```
 
 The first means that a catch-up of another version of the code ran against the same database and rebuilt the projection between two batches of this one.
@@ -683,7 +683,7 @@ Inside `redact`, the same sentence stands in parentheses in the sentence of an u
 
 ## `chronicle`
 
-Prints the chronicle in time order, one line per unit.
+Prints the chronicle in time order, one line per unit of an observation; the units of an action aren't in it ({ref}`projections`).
 
 | Argument | Required | Default | Description |
 |---|---|---|---|

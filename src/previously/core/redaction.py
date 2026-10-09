@@ -21,6 +21,7 @@ to lie, and `verify --blobs` reports what breaks it ({ref}`erasure`).
 
 from dataclasses import dataclass
 from itertools import pairwise
+from previously.core.action import REDACTION
 from previously.core.hashing import is_address
 from typing import cast
 from typing import Literal
@@ -35,8 +36,6 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from previously.contract.store import LogStore
 
-
-REDACTION = "redaction"
 
 type Scope = Literal["event", "units", "blob"]
 

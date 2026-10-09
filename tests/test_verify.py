@@ -8,6 +8,7 @@ from previously.contract.types import Anchor
 from previously.contract.types import BlobRef
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
+from previously.core.action import append_action
 from previously.core.append import append
 from previously.core.blob import store_blob
 from previously.core.chain import link
@@ -1366,3 +1367,22 @@ def test_the_rule_holds_end_to_end(
     _stored(blob_store, age_identity, content)
     append(storage, [_attached("c", shared)], recorded_at=NOW)
     assert findings() == ()
+
+
+@pytest.mark.db
+def test_an_action_with_an_unknown_name_fires(db: Engine) -> None:
+    """The name is the only thing that tells `verify` how to read an action.
+    A name nobody here knows is a finding, and it names the action."""
+    storage = PostgresStorage(db)
+    event_id = append_action(storage, {"action": "teleport"}, (), recorded_at=NOW)
+    assert verify(storage) == [Finding(event_id, 'unknown action "teleport"')]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("name", ["policy", "model_call"])
+def test_an_action_with_a_known_name_is_no_finding(db: Engine, name: str) -> None:
+    """The control of the test above: the same call with a name that is
+    known. The form of each name is checked by the task that writes it."""
+    storage = PostgresStorage(db)
+    append_action(storage, {"action": name}, (), recorded_at=NOW)
+    assert verify(storage) == []

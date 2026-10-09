@@ -29,11 +29,8 @@ in none.
 from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
-from previously.core.append import backoff_delay
-from previously.core.append import MAX_RETRIES
-from previously.core.chain import link
-from previously.core.chain import prepare
-from previously.core.errors import ChainConflict
+from previously.core.action import retrying
+from previously.core.action import write_action
 from previously.core.errors import InvalidPayload
 from previously.core.errors import RedactionRefused
 from previously.core.hashing import HASH_VERSION_1
@@ -48,15 +45,11 @@ from previously.core.redaction import parse
 from previously.core.redaction import read_index
 from previously.core.redaction import units_payload
 from previously.core.units import normalize_line_endings
-from previously.storage.errors import ChainPositionTaken
 from typing import cast
 from typing import TYPE_CHECKING
 
-import time
-
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from collections.abc import Iterable
     from collections.abc import Sequence
     from datetime import datetime
@@ -67,8 +60,7 @@ if TYPE_CHECKING:
     from previously.core.redaction import RedactionIndex
 
 
-# A redaction is something the system does, not something a source reported:
-# the kind `action`, with what kind of action it is in `payload.action`.
+# A redaction is an action of the system ({ref}`erasure`): the kind `action`.
 _KIND = "action"
 
 
@@ -125,53 +117,6 @@ def _target(row: EventRow | None, event_id: int) -> EventRow:
             f"event {event_id} is a redaction, and a redaction cannot be redacted"
         )
     return row
-
-
-def _write[Conn](
-    log: LogStore[Conn], conn: Conn, payload: Mapping[str, object], recorded_at: datetime
-) -> int:
-    """Appends the redaction event on the tip and returns its `id`.
-
-    Prepared here, on every attempt, and not once before the first as
-    `append` does: what the redaction names depends on the redactions read
-    under the lock, and those can differ between two attempts. `occurred_at`
-    is `recorded_at`, because an action of the system happens when it is
-    recorded.
-    """
-    prepared = prepare(kind=_KIND, occurred_at=recorded_at, payload=payload, units=(), key=None)
-    tip = log.tip(conn)
-    row, units = link(
-        prepared,
-        event_id=1 if tip is None else tip.id + 1,
-        prev_hash=None if tip is None else tip.hash,
-        recorded_at=recorded_at,
-    )
-    log.insert_event(conn, row, units, None)
-    return row.id
-
-
-def _retrying[Conn](log: LogStore[Conn], once: Callable[[Conn], Redacted]) -> Redacted:
-    """Runs `once` in a transaction of its own until it gets a chain position.
-
-    The policy is `append`'s ({ref}`concurrency`): a lost chain position rolls
-    the transaction back and the next attempt starts from the lock. The
-    position is lost at `insert_event`, before any tombstone is set, so the
-    rollback undoes the lock and nothing else. The tombstones are written by
-    an attempt that got its position, or by one that needed none because a
-    redaction already covers its target and it writes no event. Every other
-    error rolls back as well and is not retried.
-    """
-    for attempt in range(MAX_RETRIES):
-        try:
-            with log.begin() as conn:
-                return once(conn)
-        except ChainPositionTaken:
-            time.sleep(backoff_delay(attempt))
-    raise ChainConflict(
-        f"chain position not acquired after {MAX_RETRIES} attempts — "
-        "under lasting contention the answer would be a single writing "
-        "process, not a lock"
-    )
 
 
 def _lock_ascending[Conn](
@@ -282,7 +227,7 @@ def redact_event[Conn](
             # Once the payload is erased, the list of blobs in the redaction
             # is what attests them ({ref}`blobs`).
             payload = event_payload(event_id, blobs=registered, reason=reason)
-            redaction_id = _write(log, conn, payload, recorded_at)
+            redaction_id = write_action(log, conn, payload, (), recorded_at=recorded_at)
             index.add(parse(redaction_id, payload))
         else:
             redaction_id = covering.id
@@ -296,7 +241,7 @@ def redact_event[Conn](
             kept_blobs=kept,
         )
 
-    return _retrying(log, once)
+    return retrying(log, once)
 
 
 def redact_units[Conn](
@@ -361,7 +306,7 @@ def redact_units[Conn](
         fresh = [seq for seq, by in covering.items() if by is None]
         if fresh:
             payload = units_payload(event_id, fresh, reason=reason)
-            redaction_id = _write(log, conn, payload, recorded_at)
+            redaction_id = write_action(log, conn, payload, (), recorded_at=recorded_at)
         else:
             redaction_id = max(by.id for by in covering.values() if by is not None)
         eraser.erase_units(conn, event_id, wanted)
@@ -372,7 +317,7 @@ def redact_units[Conn](
             payload_holds_wording=_holds_any(target.payload, wordings),
         )
 
-    return _retrying(log, once)
+    return retrying(log, once)
 
 
 def redact_blob[Conn](
@@ -407,7 +352,7 @@ def redact_blob[Conn](
         fresh = _unerased(index, sha256, users)
         if fresh:
             payload = blob_payload(sha256, fresh, reason=reason)
-            redaction_id = _write(log, conn, payload, recorded_at)
+            redaction_id = write_action(log, conn, payload, (), recorded_at=recorded_at)
             index.add(parse(redaction_id, payload))
         else:
             # Every reference is erased, so there is a redaction to name.
@@ -420,4 +365,4 @@ def redact_blob[Conn](
             kept_blobs=kept,
         )
 
-    return _retrying(log, once)
+    return retrying(log, once)

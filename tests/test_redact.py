@@ -636,6 +636,7 @@ def test_read_index_passes_over_what_it_cannot_read(db: Engine) -> None:
     assert [(r.id, r.scope, r.blob) for r in index] == [(2, "blob", blob)]
     assert verify(storage) == [
         Finding(3, "action has no valid form"),
+        Finding(4, 'unknown action "something"'),
         Finding(5, "payload is erased without a redaction"),
     ]
 
