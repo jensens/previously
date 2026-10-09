@@ -57,8 +57,22 @@ class Response:
 
 
 class AdapterError(PreviouslyError):
-    """A call failed. One sentence naming the provider and the kind of failure;
-    it holds neither the key nor the prompt."""
+    """A call failed. One sentence naming the provider and the kind of
+    failure, and those two again with the HTTP status, where there is one, as
+    fields of their own.
+
+    The sentence never holds the key. It may hold up to `MAX_DETAIL`
+    characters of what the provider said, and a provider can echo in its
+    error what it was sent, the prompt included. So the sentence is for the
+    person at the terminal, and the audit takes the fields alone: `provider`,
+    `kind`, the class name of the client's exception, and `status`.
+    """
+
+    def __init__(self, sentence: str, *, provider: str, kind: str, status: int | None) -> None:
+        super().__init__(sentence)
+        self.provider = provider
+        self.kind = kind
+        self.status = status
 
 
 class Adapter(Protocol):
@@ -82,6 +96,14 @@ def adapter_error(provider: str, error: Exception, key: str) -> AdapterError:
         text = text.replace(key, "[key removed]")
     text = re.sub(r"\s+", " ", text).strip()[:MAX_DETAIL]
     kind = type(error).__name__
+    # Both SDKs give an error with an HTTP status a `status_code`; an error
+    # without one, such as a refused connection, has none.
+    status = getattr(error, "status_code", None)
     return AdapterError(
-        f"{provider}: call failed ({kind}): {text}" if text else f"{provider}: call failed ({kind})"
+        f"{provider}: call failed ({kind}): {text}"
+        if text
+        else f"{provider}: call failed ({kind})",
+        provider=provider,
+        kind=kind,
+        status=status if isinstance(status, int) else None,
     )

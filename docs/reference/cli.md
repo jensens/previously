@@ -3,10 +3,10 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has thirteen subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, and `policy`.
+It has fourteen subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, and `gate`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
 `append --attach`, `ingest imap`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
-`ingest imap` alone reads the five `PREVIOUSLY_IMAP_*` settings.
+`ingest imap` alone reads the five `PREVIOUSLY_IMAP_*` settings, and `gate try` alone reads `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `PREVIOUSLY_LOCAL_MODEL_URL` and `PREVIOUSLY_PRICES`.
 A missing setting is an input error that names the first variable missing, in the form `Error: PREVIOUSLY_BLOB_BUCKET is not set`.
 An error sentence prints every control character but a tab and a line feed as `\xNN`, such as `\x1b` for the escape character, because a key it quotes can be the Message-ID of a mail.
 A transaction the database aborts in a conflict with a concurrent one, a deadlock or a lock not granted in time, is a storage error with exit code 2, in the form `Error: the database aborted the operation in a conflict with a concurrent one; run the command again`.
@@ -64,7 +64,10 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `project` | Every projection stands at the tip of the log. | Not used. | Storage raised an error, the worker found a gap in the log, or a catch-up at another version rebuilt a projection while this one ran. |
 | `chronicle` | The chronicle was printed, even when the window holds no row. | Not used. | The input was invalid, or storage raised an error. |
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
-| `policy` | The statement was written, or `show` printed the policy. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the statement was refused, or storage raised an error. |
+| `policy` | The statement was written, `show` printed the policy, or `gaps` printed what fell back, even when nothing did. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the statement was refused, or storage raised an error. |
+| `gate` | `explain` printed the decision, whether it allows a call or denies it; `try` made the call, got an answer that matches the schema, and recorded it. | Not used. | The event doesn't exist, the price file can't be read, storage raised an error, or `try` recorded a call that was denied, failed, refused by the model, or answered against the schema. |
+
+`gate try` returns 3 when the call was made and recorded with an answer that matches the schema, and the provider reported another inference region than the one requested; the code differs from 0 so that a script doesn't read past the alarm.
 
 Every command that receives `SIGTERM` once it has started stops with exit code 143, 128 and the signal's number, and prints nothing to standard error.
 The handler is set after the command's imports; a `SIGTERM` in the first fraction of a second, measured at about 0.7 s in the image, isn't caught, and as process 1 of a container the command then runs on until the grace period ends.
@@ -739,7 +742,7 @@ The two commands report the lag of the projection each one reads, so after a reb
 
 Sets one statement of the processing policy, or prints the policy in force.
 Every statement is an event of the kind `action` with `payload.action` set to `policy`, written with no source key and no units.
-It has six forms, and the five that write take the same three options:
+It has seven forms, and the five that write take the same three options:
 
 ```text
 previously policy circle NAME --statement TEXT
@@ -748,6 +751,7 @@ previously policy own ADDRESS-OR-@DOMAIN --statement TEXT
 previously policy rule SCOPE --regions REGION [REGION ...] --statement TEXT
 previously policy provider NAME --retention-days N|unknown --statement TEXT
 previously policy show [--at TIME]
+previously policy gaps [--since TIME]
 ```
 
 | Option | Required | Default | Description |
@@ -804,3 +808,120 @@ The rules table starts with the built-in rule `local_only`, which isn't an event
 A newer event with the same key replaces the older one, a revocation lifts the statement, and an event whose payload was erased counts for nothing.
 
 `verify` reports a policy event whose form isn't sound, such as one that has no name, with a finding of the form `policy event has no valid form: it has no "name"`.
+
+`policy gaps` lists where the built-in rule `local_only` acted: the circles without a rule, and the sources whose content no rule covered at all, each with the number of calls that fell back and the time of the last, sorted by name, one per line, the three fields separated by a tab:
+
+```text
+circle:xz	3	2026-10-09T14:02:11.482113Z
+source:email	1	2026-10-09T12:00:00.000000Z
+```
+
+It reads the `model_call` events and nothing else, and counts a call whether the local model answered it or not.
+`--since TIME` counts only the calls recorded from that moment on; the time needs a zone.
+A call over an event that has no source and no circle stands under `event:<id>`.
+When no call fell back, standard output stays empty, and one notice goes to standard error:
+
+```text
+no call fell back to local only
+```
+
+(cli-gate)=
+
+## `gate`
+
+Shows or runs one task over one event.
+The one task is `mail_overview`: the language of a mail, its topic in one sentence, and the people its text names.
+It has two forms:
+
+```text
+previously gate explain EVENT
+previously gate try EVENT
+```
+
+`EVENT` is the `id` of an event in the log.
+The caller names the event and never the model: the processing policy decides which model may see the content, and in which inference region.
+The task names its models in this order, and the first one the policy lets through is the one called:
+
+| Provider | Model | Effort |
+|---|---|---|
+| `anthropic` | `claude-haiku-5-5` | `low` |
+| `mistral` | `mistral-small-2603` | — |
+| `local` | `qwen3:4b` | — |
+
+An event that doesn't exist is an input error, `Error: there is no event 9`, and nothing is written.
+
+### `gate explain`
+
+Prints the decision for the event, calls nothing and writes nothing.
+One line per item, the fields separated by a tab: the circles of the people involved, the rules that applied with the event that set each, the merged regions, the retention limit, the excluded providers, every candidate with what became of it, and the decision with the inference region the call would set.
+For the example of `previously policy`, with a rule `eu` for the circle and a rule `any` for `source:email`, the mail goes to Mistral:
+
+```text
+circles	xz
+rules	circle:xz (event 8),source:email (event 9)
+regions	eu
+max retention days	-
+excluded providers	-
+candidate	anthropic/claude-haiku-5-5	rejected: anthropic/claude-haiku-5-5: the provider stores in ['us'], outside the allowed ['eu']
+candidate	mistral/mistral-small-2603	chosen
+candidate	local/qwen3:4b	not reached
+decision	mistral/mistral-small-2603, inference_geo -
+```
+
+`-` stands for nothing: no inference region is set for a provider that declares a single one.
+`local_only` stands in the rules line, without an event, where the built-in rule acted.
+A reason that belongs to no candidate, such as `no local provider is declared`, stands on a line of its own with `-` in place of the candidate, and a decision that allows no candidate reads `decision	denied`.
+An erased event is denied with the reason `the event is erased`.
+
+### `gate try`
+
+Runs the task over the event, and records the call as an event of the kind `action` with `payload.action` set to `model_call`, whatever became of it.
+It reads four settings, described in {ref}`configuration-reference`: `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `PREVIOUSLY_LOCAL_MODEL_URL` and `PREVIOUSLY_PRICES`.
+A missing key or address is no error by itself: only the adapter of that provider is missing, and the call fails only when the policy chooses that provider.
+
+On standard output it prints the answer as one line of JSON, and then the `id` of the `model_call`:
+
+```text
+{"language": "de", "participants": ["Eva Huber"], "topic": "An offer for the relaunch"}
+model_call: event 12
+```
+
+A call that didn't end with an answer prints only the second line, and one sentence on standard error, with exit code 2.
+Every outcome but `ok` is recorded the same way, with no units: a denial, a refusal by the model, an answer the schema refuses, and a call that failed.
+A denial and a refusal by the model read:
+
+```text
+denied: the event is erased
+refused: anthropic/claude-haiku-5-5 declined the task
+```
+
+A denial names every reason, joined by `; `, such as `no local provider is declared; anthropic/claude-haiku-5-5: the provider anthropic is not local, and only local applies`.
+
+`gate try` writes these lines to standard error as well:
+
+```text
+processed locally: no rule for circle:xz — set one with previously policy rule circle:xz …
+alarm: inference_geo requested us, reported global
+schema_invalid: the answer of anthropic/claude-haiku-5-5 does not match the schema of mail_overview
+Error: anthropic: the provider is not configured — set ANTHROPIC_API_KEY
+Error: local: call failed (APIConnectionError): Connection error. — the local model server is http://localhost:11434/v1
+```
+
+The first comes before everything else, one line per circle without a rule, or for the source when no rule applied at all, and `gate explain` writes it too; under a real rule there's no such line.
+The second is an alarm: the provider reported another inference region than the one requested, and the call returns 3.
+The third is an answer that isn't JSON, lacks a field, or has a field too many; the gate checks every answer itself, even where the provider enforces the schema.
+The fourth names the setting that's missing, and the fifth the address of the local model server that didn't answer.
+A call that failed prints the sentence of the client, after the provider and the class of the error, and never the key.
+What the provider said doesn't go into the event: the event names the provider, the class of the error and the HTTP status.
+
+`verify` holds every `model_call` to its form: an outcome it knows, units exactly when the outcome is `ok`, and a list `inputs` whose every entry names an event.
+Each break of that form is a finding:
+
+```text
+FINDING 12: model_call has no valid form: it has no outcome
+FINDING 12: model_call has no valid form: it has the unknown outcome "teleported"
+FINDING 12: model_call has no valid form: it is ok and has no units
+FINDING 12: model_call has no valid form: it is denied and has units
+FINDING 12: model_call has no valid form: it has no list "inputs"
+FINDING 12: model_call has no valid form: it has an "inputs" entry without an event
+```

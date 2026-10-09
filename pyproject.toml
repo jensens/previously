@@ -18,6 +18,7 @@ dependencies = [
     "html2text>=2025.4",
     "anthropic>=1.13.0",
     "openai>=3.27.0",
+    "pydantic>=2.14",
 ]
 
 [project.scripts]
@@ -102,8 +103,8 @@ ban-relative-imports = "all"
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "T201"]
 # Printing to stdout is what this module is for — a `# noqa: T201` on each of
-# the forty `print` calls would be the same justification repeated
-# forty times (ruling T9-c of the stage 1a execution, whose ledger is
+# the forty-nine `print` calls would be the same justification repeated
+# forty-nine times (ruling T9-c of the stage 1a execution, whose ledger is
 # lost, so the label resolves nowhere). The count is measured against this
 # configuration with every per-file ignore emptied out, `ruff check --select
 # T201 --config 'lint.per-file-ignores = {}' src/previously/cli.py` — that
@@ -124,6 +125,10 @@ ban-relative-imports = "all"
 # its line on standard output and one notice per variant. `policy` took it to
 # forty on 2026-10-09, measured the same way: the structured form, the notice
 # that nothing was written, the event id and the lines of `policy show`.
+# `gate` and `policy gaps` took it to forty-nine on 2026-10-09, measured the
+# same way: the lines and the notice of `policy gaps`, the lines and the
+# fallback of `gate explain`, and the fallback, the output, the event id, the
+# alarm and the failure of `gate try`.
 "src/previously/cli.py" = ["T201"]
 
 [tool.ruff.lint.flake8-type-checking]
@@ -133,17 +138,13 @@ ban-relative-imports = "all"
 # TYPE_CHECKING block would break that with a NameError, so the imports there
 # are real imports.
 runtime-evaluated-decorators = ["dataclasses.dataclass"]
-# The counterpart for pydantic, for when it comes back (ruling T2-e). It is
-# not a dependency any more — stage 1a validates by hand in
-# `core/canonical.py`, and nothing imported pydantic — but as soon as the
-# first `BaseModel` arises, this entry is needed here:
-#
-#     runtime-evaluated-base-classes = ["pydantic.BaseModel"]
-#
-# Without it ruff moves the `BaseModel` imports under `TYPE_CHECKING`, and
-# pydantic then fails at runtime, because it resolves the annotations of a
-# model while the class is being built. The countermeasure is written here and
-# not only in the ledger, so that it does not vanish along with it.
+# The counterpart for pydantic, whose first `BaseModel` arrived with the gate on
+# 2026-10-09, as the output schema of a task. Without this entry ruff moves the
+# `BaseModel` imports under `TYPE_CHECKING`, and pydantic then fails at
+# runtime, because it resolves the annotations of a model while the class is
+# being built (ruling T2-e of the stage 1a execution, whose ledger is lost, so
+# the label resolves nowhere and this sentence is the reason).
+runtime-evaluated-base-classes = ["pydantic.BaseModel"]
 
 [tool.pyright]
 # The migrations are not an accessory: `versions/0001_log.py` creates the

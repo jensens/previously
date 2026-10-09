@@ -4148,3 +4148,9 @@ def test_the_help_names_policy_with_its_sentence(capsys: pytest.CaptureFixture[s
     assert re.search(
         r"^\s+policy\s+set and show the processing policy$", capsys.readouterr().out, re.M
     )
+
+
+def test_the_help_names_gate_with_its_sentence(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    assert re.search(r"^\s+gate\s+explain or try a model call$", capsys.readouterr().out, re.M)

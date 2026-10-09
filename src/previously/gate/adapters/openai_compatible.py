@@ -64,7 +64,12 @@ class OpenAICompatibleAdapter:
         except Exception as error:
             raise adapter_error(self.provider, error, self._key) from None
         if not completion.choices:
-            raise AdapterError(f"{self.provider}: the answer holds no choice")
+            raise AdapterError(
+                f"{self.provider}: the answer holds no choice",
+                provider=self.provider,
+                kind="NoChoice",
+                status=None,
+            )
         choice = completion.choices[0]
         usage = completion.usage
         return Response(

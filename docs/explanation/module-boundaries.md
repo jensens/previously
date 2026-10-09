@@ -29,13 +29,14 @@ The two arrows that stage 1c added, to `pyrage` and to `boto3`, each have a cont
 The arrows to `sqlalchemy` and `alembic` are held the other way round: their contracts name the modules that mustn't draw them, `core` for both and `contract` for `sqlalchemy`, as the section on the contracts explains.
 
 ```{mermaid}
-:caption: The import edges on 2026-10-09: eleven between its own modules, and not one of them exempted. Ten arrows leave the package.
+:caption: The import edges on 2026-10-09: thirteen between its own modules, and not one of them exempted. Ten arrows leave the package.
 
 graph TD
     cli[cli] --> connectors[connectors]
     cli --> core[core]
     cli --> storage[storage]
     cli --> contract[contract]
+    cli --> gate[gate]
     connectors --> core
     connectors --> contract
     core --> storage
@@ -51,6 +52,7 @@ graph TD
     core --> html2text[html2text]
     connectors --> imaplib[imaplib]
     gate --> core
+    gate --> contract
     gate --> anthropic[anthropic]
     gate --> openai[openai]
 ```
@@ -61,19 +63,21 @@ Two things in that picture answer questions the contract names don't.
 A layers contract settles the *order* in which modules may depend on each other; whether an edge exists is a separate question.
 Counted out, the order permits nineteen edges between distinct modules: six from `cli`, four each from `connectors` and `gate`, two each from `core` and `migrations`, one from `storage`.
 None runs between `core` and `migrations`, because modules that share a layer may not import each other.
-Eleven of the nineteen exist, and the eight that don't are `cli → migrations`, `cli → gate`, `connectors → migrations`, `connectors → storage`, `gate → migrations`, `gate → storage`, `gate → contract` and `migrations → contract`.
+Thirteen of the nineteen exist, and the six that don't are `cli → migrations`, `connectors → migrations`, `connectors → storage`, `gate → migrations`, `gate → storage` and `migrations → contract`.
 
 That count was five until stage 1b, and seven until 2026-10-06; the eleventh edge, `gate → core`, arrived on 2026-10-09, because an `AdapterError` is a `PreviouslyError`.
+The twelfth and the thirteenth came the same day with the gate itself: `cli → gate`, because the command line builds the adapters and runs a call, and `gate → contract`, because the answer of a call becomes a unit, a `RawUnit` from `contract`, and the gate reads the event as the row types from there.
 `storage` had no edge to `contract` at all, not even though the layer order would have permitted one, and the sixth edge arrived when the row types moved out of `storage/rows.py` into `contract/rows.py`—the store protocol in `contract.store` names those types, and `contract` may import nothing above itself.
 The seventh, `migrations → storage`, is older than the module it starts from: the migrations imported `storage.schema` while they still sat outside the package, where no contract looked, and the edge became countable on 2026-10-05 when they moved in.
 The other three arrived with `connectors` on 2026-10-06: `cli → connectors`, because the command line builds the connector, and `connectors → core` and `connectors → contract`, because the connector hands its bytes over as a `Fetched` from `contract` and raises a `PreviouslyError` from `core`.
-Counted per module, over import statements only, because two modules under `storage` mention `previously.core` in prose rather than in an import, and a count over all text would include them, measured on 2026-10-06:
+Counted per module, over import statements only, because two modules under `storage` mention `previously.core` in prose rather than in an import, and a count over all text would include them, measured on 2026-10-09:
 
 ```text
 $ grep -rhoE 'from previously\.[a-z]+' src/previously/cli.py | sort -u
 from previously.connectors
 from previously.contract
 from previously.core
+from previously.gate
 from previously.storage
 
 $ grep -rhoE 'from previously\.[a-z]+' src/previously/connectors | sort -u
@@ -81,6 +85,7 @@ from previously.contract
 from previously.core
 
 $ grep -rhoE 'from previously\.[a-z]+' src/previously/gate | sort -u
+from previously.contract
 from previously.core
 from previously.gate
 
@@ -101,8 +106,8 @@ $ grep -rhoE 'from previously\.[a-z]+' src/previously/contract | sort -u
 from previously.contract
 ```
 
-Four target packages for `cli`, two for `connectors`, two for `gate` of which one is itself, three for `core` of which one is itself, two for `migrations` of which one is itself, two for `storage` of which one is itself, and for `contract` nothing but itself.
-That's eleven edges between distinct modules, and the last line is the layer order's foundation stated as a measurement.
+Five target packages for `cli`, two for `connectors`, three for `gate` of which one is itself, three for `core` of which one is itself, two for `migrations` of which one is itself, two for `storage` of which one is itself, and for `contract` nothing but itself.
+That's thirteen edges between distinct modules, and the last line is the layer order's foundation stated as a measurement.
 
 And `cli` reaches `storage.postgres` directly, for `from_dsn` and the storage type, and it never needed an exemption for that.
 Until stage 1b this page carried two dashed edges from `core` into `storage.postgres`, and `cli` was no inconsistency beside them.
@@ -212,6 +217,8 @@ A call to a model happens where the gate is, and an SDK stays inside the adapter
 Until 2026-10-09 the contract forbade both packages everywhere and carried no exemption, because no module called a model.
 The two exemptions are named edges and not a pattern over `gate.adapters`, so that a third adapter needs its own grant.
 The SDK of one adapter in the module of the other is as wrong as the SDK in `core`, and the tests probe both: `anthropic` and `openai` each from `core` and from beside the adapters, measured on 2026-10-09 to break the contract by name.
+`cli` imports the two adapter modules inside the function that builds the adapters for `gate try`, not at its head.
+The two vendor clients take about a second to import, measured on 2026-10-09 at 1.3 to 1.5 s for `previously.cli` with the Anthropic adapter against 0.5 s without, and every other command would pay that second.
 
 ## Why the two exemptions were enumerated and not matched
 

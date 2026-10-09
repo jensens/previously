@@ -29,6 +29,7 @@ from sqlalchemy import text
 from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
 from typing import cast
+from typing import override
 from typing import TYPE_CHECKING
 from urllib.parse import urlsplit
 
@@ -420,6 +421,12 @@ class ModelServer:
         outer = self
 
         class Handler(BaseHTTPRequestHandler):
+            @override
+            def log_message(self, format: str, *args: object) -> None:
+                """Silent. The default writes an access line per request to
+                standard error, where a test of the command line reads what
+                the command itself says."""
+
             def do_POST(self) -> None:
                 length = int(self.headers.get("Content-Length", "0"))
                 parsed: object = json.loads(self.rfile.read(length) or b"{}")

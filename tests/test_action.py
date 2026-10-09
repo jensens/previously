@@ -60,7 +60,15 @@ def test_actions_chain_on_the_tip_and_verify_passes(db: Engine) -> None:
         "revoked": False,
     }
     first = append_action(storage, circle, (), recorded_at=NOW)
-    second = append_action(storage, {"action": MODEL_CALL}, (), recorded_at=NOW)
+    # A `model_call` in the smallest form `verify` takes since the gate: an
+    # outcome without an answer, and no units.
+    denied: dict[str, object] = {
+        "action": MODEL_CALL,
+        "inputs": [],
+        "outcome": "denied",
+        "alarms": [],
+    }
+    second = append_action(storage, denied, (), recorded_at=NOW)
     assert (first, second) == (1, 2)
     assert verify(storage) == []
 

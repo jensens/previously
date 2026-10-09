@@ -1382,9 +1382,16 @@ def test_an_action_with_an_unknown_name_fires(db: Engine) -> None:
 def test_an_action_with_a_known_name_is_no_finding(db: Engine) -> None:
     """The control of the test above: the same call with a name that is
     known. The form of each name is checked by the task that writes it; a
-    `policy` is checked in `tests/test_policy.py`."""
+    `policy` is checked in `tests/test_policy.py`, a `model_call` in
+    `tests/test_gate.py`, and this one has the smallest form that passes."""
     storage = PostgresStorage(db)
-    append_action(storage, {"action": "model_call"}, (), recorded_at=NOW)
+    denied: dict[str, object] = {
+        "action": "model_call",
+        "inputs": [],
+        "outcome": "denied",
+        "alarms": [],
+    }
+    append_action(storage, denied, (), recorded_at=NOW)
     assert verify(storage) == []
 
 

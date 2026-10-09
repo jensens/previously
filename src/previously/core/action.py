@@ -48,6 +48,15 @@ MODEL_CALL = "model_call"
 
 KNOWN_ACTIONS: frozenset[str] = frozenset({REDACTION, POLICY, MODEL_CALL})
 
+# What became of a model call. Every call the gate decides on is written,
+# whatever became of it, and only `ok` keeps an answer, in the units.
+OK = "ok"
+DENIED = "denied"
+REFUSED = "refused"
+SCHEMA_INVALID = "schema_invalid"
+ERROR = "error"
+OUTCOMES: frozenset[str] = frozenset({OK, DENIED, REFUSED, SCHEMA_INVALID, ERROR})
+
 _KIND = "action"
 
 

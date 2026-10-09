@@ -32,6 +32,9 @@ from previously.contract.blobs import BlobStore
 from previously.contract.blobs import KeyProvider
 from previously.contract.types import Anchor
 from previously.core.action import KNOWN_ACTIONS
+from previously.core.action import MODEL_CALL
+from previously.core.action import OK
+from previously.core.action import OUTCOMES
 from previously.core.action import POLICY
 from previously.core.action import REDACTION
 from previously.core.blob import fetch_blob
@@ -425,6 +428,8 @@ class _Erasures:
             return [Finding(row.id, f'unknown action "{name}"')]
         if name == POLICY and (problem := check_payload(row.payload)) is not None:
             return [Finding(row.id, f"policy event {problem}")]
+        if name == MODEL_CALL and (problem := _model_call_problem(row.payload, units)) is not None:
+            return [Finding(row.id, f"model_call has no valid form: {problem}")]
         return []
 
     def reconcile[Conn](self, storage: LogStore[Conn], conn: Conn) -> list[Finding]:
@@ -463,6 +468,36 @@ class _Erasures:
             if frozenset(bytes.fromhex(sha256) for sha256 in redaction.blobs) != registered:
                 findings.append(Finding(event_id, "blob register does not match the payload"))
         return findings
+
+
+def _model_call_problem(payload: Mapping[str, object], units: Sequence[UnitRow]) -> str | None:
+    """What is wrong with the form of a `model_call`, or `None`.
+
+    Units exactly at `ok`: the answer goes into the units, and only a call
+    that got a valid answer has one. A unit erased by a cascade is still a
+    row, so an erased answer keeps its call sound. `inputs` is what an
+    erasure of a source follows to the calls that read it, so an entry
+    without an event would be a call no erasure can reach.
+    """
+    outcome = payload.get("outcome")
+    if not isinstance(outcome, str):
+        return "it has no outcome"
+    if outcome not in OUTCOMES:
+        return f'it has the unknown outcome "{outcome}"'
+    if outcome == OK and not units:
+        return "it is ok and has no units"
+    if outcome != OK and units:
+        return f"it is {outcome} and has units"
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, list):
+        return 'it has no list "inputs"'
+    for entry in cast("list[object]", inputs):
+        event = (
+            cast("Mapping[str, object]", entry).get("event") if isinstance(entry, dict) else None
+        )
+        if not isinstance(event, int) or isinstance(event, bool):
+            return 'it has an "inputs" entry without an event'
+    return None
 
 
 def _execution_findings[Conn](

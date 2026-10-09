@@ -1,0 +1,35 @@
+# The prices the gate estimates the cost of a call with, in US dollars per
+# million tokens. Read on 2026-10-09 from:
+#
+#   https://platform.claude.com/docs/en/about-claude/pricing
+#     Claude Haiku 5.5: $0.10 input and $0.50 output per million tokens, for
+#     prompts up to 100,000 tokens; a prompt over that pays more, which this
+#     file does not model. `inference_geo: "us"` applies a 1.1x multiplier
+#     to every token; `global` uses the standard price.
+#   https://docs.mistral.ai/models/mistral-small-4-0-26-03
+#   https://docs.mistral.ai/inference/pricing
+#     Mistral Small 4 (`mistral-small-2603`): $0.15 input and $0.6 output
+#     per million tokens, standard mode.
+#
+# `qwen3:4b` runs locally and has no price, so a call to it carries
+# `cost_usd: null`. A model missing here fails nothing: its calls carry
+# `cost_usd: null` too. The estimate is an estimate; the provider's bill is
+# what counts, and a stale price makes only the estimate wrong.
+#
+# Each `model_call` names the SHA-256 of this file as it lies on disk, so a
+# change of a comment is a new file as well.
+
+as_of = 2026-10-09
+
+[models.claude-haiku-5-5]
+input = 0.10
+output = 0.50
+
+[models.mistral-small-2603]
+input = 0.15
+output = 0.6
+
+# The factor on input and output for a call made in this inference region.
+# Only Anthropic offers `us`, and the factor is Anthropic's.
+[surcharges]
+us = 1.1
