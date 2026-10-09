@@ -44,6 +44,12 @@ def _evidence(payload: Mapping[str, object] | None) -> str | None:
 def derive(batch: Batch) -> list[ChronicleRow]:
     rows: list[ChronicleRow] = []
     for event in batch.events:
+        # The chronicle tells what happened, line by line, as sources
+        # reported it. An action is something the system did; its units (a
+        # model call keeps its answer as units) are not a statement of a
+        # source and would stand among them as one.
+        if event.kind != "observation":
+            continue
         key = batch.keys.get(event.id)
         evidence = _evidence(event.payload)
         for unit in batch.units.get(event.id, ()):
@@ -106,16 +112,20 @@ class ChronicleProjection:
     """Name and version as `projection_state` knows them, and the write step.
 
     A frozen dataclass rather than module constants, so a test can say
-    `ChronicleProjection(version=3)` to force a rebuild without touching this
+    `ChronicleProjection(version=4)` to force a rebuild without touching this
     module.
 
     Version 2 since the chronicle reads redactions: a table version 1 built
     can still hold the rows of an erased unit, and the version is what makes
     the first catch-up of version 2 rebuild it.
+
+    Version 3 since the chronicle shows observations only: a table version 2
+    built can hold the rows of an action's units, and the version is what
+    makes the first catch-up of version 3 rebuild it.
     """
 
     name: str = "chronicle"
-    version: int = 2
+    version: int = 3
 
     def write[Conn](self, store: ProjectionStore[Conn], conn: Conn, batch: Batch) -> None:
         # Insert first, then delete. A redaction that `redact` wrote finds

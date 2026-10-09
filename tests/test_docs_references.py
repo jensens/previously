@@ -24,10 +24,12 @@ stage 1b with no gate in sight.
 """
 
 from previously.core.errors import ArtifactChanged
+from typing import Any
 from typing import cast
 from typing import TYPE_CHECKING
 
 import ast
+import json
 import pathlib
 import re
 
@@ -465,9 +467,9 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     five restrictions below" with a row missing. Deriving the payloads from
     the code is the fix and it is not built yet.
 
-    The second half holds the eleven standard-error sentences, the two
+    The second half holds the seventeen standard-error sentences, the two
     lines of `redact` and the three of `migrate` on standard output that
-    `cli.md` quotes, in eleven blocks, against the literals in `cli.py` — not
+    `cli.md` quotes, in thirteen blocks, against the literals in `cli.py` — not
     the line `blob get` prints on success, which `_message_patterns` does
     not collect, since it reads standard-error sentences and returned lines
     only; the seven refusals of `redact` against the messages
@@ -485,8 +487,8 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     against the messages `connectors/imap.py` raises as `ImapError`, and
     its line on standard output against the f-string `cli.py` prints it
     with;
-    the thirteen findings it quotes, three from the anchors, nine from
-    the hash formats and erasure and one from the blob register, against the
+    the fourteen findings it quotes, three from the anchors, ten from
+    the hash formats, erasure and action names and one from the blob register, against the
     reasons `core/verify.py` hands to `Finding`; and the four findings about
     blobs against the reasons `_blob_reason` in `core/verify.py` returns,
     since the `Finding` they stand in interpolates the reason whole. The first two sentences
@@ -536,6 +538,8 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         ("When no event names the blob, `blob get` returns 1", 1),
         ("When every reference to the blob is erased, `blob get` returns 1", 1),
         ("For each variant, one notice goes to standard error", 1),
+        ("When no call fell back, standard output stays empty, and one notice goes", 1),
+        ("`gate try` writes these lines to standard error as well", 5),
     ):
         notices = _quoted_block(page, after)
         assert len(notices) == expected, f"{after!r}: {notices}"
@@ -664,10 +668,13 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     reasons = _finding_patterns(ROOT / "src" / "previously" / "core" / "verify.py")
     findings = [
         *_quoted_block(page, "Three findings come from the anchors"),
-        *_quoted_block(page, "Nine findings come from the hash formats and from erasure"),
+        *_quoted_block(
+            page,
+            "Ten findings come from the hash formats, from erasure and from the names of actions",
+        ),
         *_quoted_block(page, "One finding comes from the blob register"),
     ]
-    assert len(findings) == 13, findings
+    assert len(findings) == 14, findings
     for line in findings:
         # The prefix is held as well, or a page quoting `FINDINGS 42: ...`
         # would pass on the strength of its reason. Its form is written down
@@ -833,12 +840,12 @@ def _mapped_events(name: str) -> list[RawEvent]:
     return found
 
 
-def _first_cells(page: str, heading: str, after: str) -> set[str]:
+def _first_cells(page: str, heading: str, after: str, *, name: str = "mail-mapping.md") -> set[str]:
     """The code spans in the first column of the first table after the
     sentence `after`, in the section under `heading`."""
-    assert heading in page, f"mail-mapping.md no longer has the section {heading!r}"
+    assert heading in page, f"{name} no longer has the section {heading!r}"
     section = page.split(heading, 1)[1].split("\n## ", 1)[0]
-    assert after in section, f"mail-mapping.md no longer carries the sentence {after!r}"
+    assert after in section, f"{name} no longer carries the sentence {after!r}"
     rows: list[str] = []
     for line in section.split(after, 1)[1].splitlines():
         if line.startswith("|"):
@@ -930,4 +937,204 @@ def test_the_mail_mapping_names_the_converter_and_quotes_the_batch_refusal() -> 
         _quoted_block(page, "makes more than 500 events is refused at every run"),
         _raised_patterns(ROOT / "src" / "previously" / "core" / "append.py", "BatchTooLarge"),
         "BatchTooLarge",
+    )
+
+
+# The reference on policy events and model calls names the keys of two kinds of
+# payload and quotes the fixed words of a model call: its outcomes, its alarm,
+# its reasons for a denial. Every one of them is held here against the code
+# that writes it. The keys are read out of the dict displays of `gate/gate.py`
+# and `core/policy.py` and not from a payload written by a test, because a key
+# that only some path writes, such as `error`, would be missing from a payload
+# of the path that was run. The two examples on the page are held whole: the
+# policy event against `to_payload`, the model call against the key sets.
+POLICY_PAGE = DOCS / "reference" / "policy-and-model-calls.md"
+GATE_MODULE = ROOT / "src" / "previously" / "gate" / "gate.py"
+POLICY_PAGE_NAME = "policy-and-model-calls.md"
+
+
+def _policy_cells(heading: str, after: str) -> set[str]:
+    return _first_cells(
+        POLICY_PAGE.read_text(encoding="utf-8"), heading, after, name=POLICY_PAGE_NAME
+    )
+
+
+def _display_keys(function: str, *markers: str) -> set[str]:
+    """The string keys of the smallest dict display in a function of
+    `gate/gate.py` that has all of `markers` among its keys."""
+    tree = ast.parse(GATE_MODULE.read_text(encoding="utf-8"))
+    functions = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.FunctionDef) and node.name == function
+    ]
+    assert len(functions) == 1, f"gate.py has {len(functions)} functions named {function}"
+    found: list[set[str]] = []
+    for node in ast.walk(functions[0]):
+        if isinstance(node, ast.Dict):
+            keys = {
+                key.value
+                for key in node.keys
+                if isinstance(key, ast.Constant) and isinstance(key.value, str)
+            }
+            if set(markers) <= keys:
+                found.append(keys)
+    assert found, f"gate.py:{function} has no dict display with the keys {markers}"
+    return min(found, key=len)
+
+
+def _payload_keys_set_later() -> set[str]:
+    """The keys `call` sets on the payload after the dict display: every
+    `payload["key"] = ...` in it, the nested `record` included."""
+    tree = ast.parse(GATE_MODULE.read_text(encoding="utf-8"))
+    (call,) = (
+        node for node in ast.walk(tree) if isinstance(node, ast.FunctionDef) and node.name == "call"
+    )
+    return {
+        target.slice.value
+        for node in ast.walk(call)
+        if isinstance(node, ast.Assign)
+        for target in node.targets
+        if isinstance(target, ast.Subscript)
+        and isinstance(target.value, ast.Name)
+        and target.value.id == "payload"
+        and isinstance(target.slice, ast.Constant)
+        and isinstance(target.slice.value, str)
+    }
+
+
+def _json_block(after: str) -> dict[str, Any]:
+    """The first `json` code block after the sentence `after`."""
+    page = POLICY_PAGE.read_text(encoding="utf-8")
+    assert after in page, f"{POLICY_PAGE_NAME} no longer carries the sentence {after!r}"
+    block = page.split(after, 1)[1].split("```json\n", 1)[1].split("\n```", 1)[0]
+    return cast("dict[str, Any]", json.loads(block))
+
+
+def test_the_policy_reference_names_the_keys_of_every_statement() -> None:
+    """The four common keys, the replacement key of each kind and the keys of
+    a rule and of a provider, each held against what `to_payload` writes."""
+    from previously.core.policy import Circle
+    from previously.core.policy import Inference
+    from previously.core.policy import key_of
+    from previously.core.policy import KINDS
+    from previously.core.policy import Membership
+    from previously.core.policy import OwnIdentity
+    from previously.core.policy import Provider
+    from previously.core.policy import Rule
+    from previously.core.policy import to_payload
+
+    statements = [
+        Circle("xz"),
+        Membership("xz", "@example.net"),
+        OwnIdentity("@example.org"),
+        Rule("circle:xz", frozenset({"eu"}), None, frozenset()),
+        Provider("p", (Inference("eu", frozenset({"eu"})),), frozenset({"eu"}), None, False, True),
+    ]
+    payloads = [to_payload(item, statement="s") for item in statements]
+    common: set[str] = set(payloads[0]).intersection(*(set(payload) for payload in payloads[1:]))
+    assert _policy_cells("## Policy events", "Four keys are common to all five kinds.") == common
+    assert _policy_cells("### The five kinds", "beside the four common ones:") == set(KINDS)
+    assert [payload["policy"] for payload in payloads] == list(KINDS)
+    page = POLICY_PAGE.read_text(encoding="utf-8")
+    for item, payload in zip(statements, payloads, strict=True):
+        kind, _ = key_of(item)
+        row = next(line for line in page.splitlines() if line.startswith(f"| `{kind}` |"))
+        _, replacement, further = (cell.strip() for cell in row.strip("|").split("|"))
+        own = [name for name in payload if name not in common]
+        assert further == ", ".join(f"`{name}`" for name in own), (
+            f"the row of {kind!r} on {POLICY_PAGE_NAME} names other keys than {own}"
+        )
+        assert set(re.findall(r"`([a-z_]+)`", replacement)) <= set(own), replacement
+    rule_and_provider = (set(payloads[3]) | set(payloads[4])) - common
+    assert (
+        _policy_cells(
+            "### The five kinds", "The keys of a `rule` and a `provider`, with their values:"
+        )
+        == rule_and_provider
+    )
+
+
+def test_the_policy_reference_names_the_keys_of_a_model_call() -> None:
+    """The payload, its six entries and the examples, against the dict displays
+    of `gate/gate.py`; the example against the keys it would have to hold."""
+    top = _display_keys("call", "action", "task", "inputs", "policy") | _payload_keys_set_later()
+    task = _display_keys("call", "prompt_sha256")
+    inputs = _display_keys("call", "event", "units", "blobs")
+    policy = _display_keys("_policy_part", "decision")
+    fallback = _display_keys("_policy_part", "reason", "circles")
+    response = _display_keys("_response_part", "request_id")
+    usage = _display_keys("_response_part", "input_tokens")
+    error = _display_keys("call", "provider", "kind", "status")
+    for heading, after, expected in (
+        ("### The payload", "The keys of the payload:", top),
+        ("### The payload", "The entry of `task`:", task),
+        ("### The payload", "An entry of `inputs`:", inputs),
+        ("### The payload", "The entry of `policy`:", policy),
+        ("### The payload", "The entry of `fallback`:", fallback),
+        ("### The payload", "The entry of `response`:", response),
+        ("### The payload", "The entry of `error`:", error),
+    ):
+        assert _policy_cells(heading, after) == expected, after
+    assert usage == {"input_tokens", "output_tokens"}
+    example = _json_block("A call that recorded an answer looks like this:")
+    assert set(example) | {"error"} == top
+    assert set(example["task"]) == task
+    assert set(example["inputs"][0]) == inputs
+    assert set(example["policy"]) == policy
+    assert set(example["response"]) == response
+    assert set(example["response"]["usage"]) == usage
+
+
+def test_the_policy_reference_example_is_what_the_code_writes() -> None:
+    """The example of a rule, whole: written again by `to_payload` from what
+    it says, it is the same payload."""
+    from previously.core.policy import Rule
+    from previously.core.policy import to_payload
+
+    example = _json_block("A rule written like this holds for content of the circle `xz`:")
+    written = to_payload(
+        Rule(
+            "circle:xz",
+            frozenset(example["regions"]),
+            None,
+            frozenset(example["excluded_providers"]),
+        ),
+        statement=example["statement"],
+    )
+    assert written == example
+
+
+def test_the_policy_reference_holds_the_words_the_gate_writes() -> None:
+    """The action names `verify` accepts, the outcomes, the alarm, the
+    fallback reason and the reasons for a denial, as the code defines them."""
+    from previously.core.action import KNOWN_ACTIONS
+    from previously.core.action import OUTCOMES
+    from previously.core.decide import NO_LOCAL_PROVIDER
+    from previously.core.decide import NO_RULE
+    from previously.gate.gate import ERASED
+    from previously.gate.gate import GEO_MISMATCH
+    from previously.gate.gate import NO_UNITS
+    from previously.gate.gate import NOT_OBSERVATION
+    from previously.gate.tasks.mail_overview import MailOverview
+
+    page = POLICY_PAGE.read_text(encoding="utf-8")
+    names = ", ".join(f"`{name}`" for name in ("redaction", "policy", "model_call"))
+    assert set(KNOWN_ACTIONS) == {"redaction", "policy", "model_call"}
+    assert "`redaction`, `policy` and `model_call`" in page, names
+    assert _policy_cells("### The outcomes", "The outcome of a call is one of these:") == set(
+        OUTCOMES
+    )
+    assert _policy_cells("### Alarms", "The alarms the gate raises:") == {GEO_MISMATCH}
+    assert _policy_cells("### Reasons for a denial", "has one of these reasons:") == {
+        NOT_OBSERVATION,
+        ERASED,
+        NO_UNITS,
+    }
+    assert _policy_cells("### Reasons for a denial", "under `local_only`, one more:") == {
+        NO_LOCAL_PROVIDER
+    }
+    assert f"| `reason` | `{NO_RULE}`. |" in page
+    assert _policy_cells("### The unit of an `ok` call", "with these keys:") == set(
+        MailOverview.model_fields
     )

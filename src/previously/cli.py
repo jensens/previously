@@ -36,9 +36,25 @@ from previously.core.errors import reason_of
 from previously.core.errors import RedactionRefused
 from previously.core.errors import SinkUnwritable
 from previously.core.errors import SourceUnreadable
+from previously.core.gaps import gaps
 from previously.core.hashing import is_address
+from previously.core.hashing import iso_utc
 from previously.core.identity import artifact_hash_of
 from previously.core.ingest import ingest
+from previously.core.policy import Circle
+from previously.core.policy import Inference
+from previously.core.policy import key_of
+from previously.core.policy import LOCAL_ONLY
+from previously.core.policy import Membership
+from previously.core.policy import normalized
+from previously.core.policy import OwnIdentity
+from previously.core.policy import PolicyRefused
+from previously.core.policy import Provider
+from previously.core.policy import read_policy
+from previously.core.policy import refusal
+from previously.core.policy import Rule
+from previously.core.policy import set_policy
+from previously.core.policy import to_payload
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
 from previously.core.projection import Outcome
@@ -54,6 +70,10 @@ from previously.core.units import normalize_line_endings
 from previously.core.units import split_plaintext
 from previously.core.verify import BlobCheck
 from previously.core.verify import examine
+from previously.gate.gate import call
+from previously.gate.gate import explain
+from previously.gate.prices import load_prices
+from previously.gate.tasks.mail_overview import MAIL_OVERVIEW
 from previously.storage.errors import StorageError
 from previously.storage.keys import DirectoryKeys
 from previously.storage.migrate import migrate
@@ -77,17 +97,23 @@ import tempfile
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from collections.abc import Mapping
     from collections.abc import Sequence
     from previously.contract.blobs import BlobStore
     from previously.contract.blobs import KeyProvider
     from previously.contract.rows import EventRow
     from previously.contract.types import Anchor
+    from previously.core.decide import Decision
+    from previously.core.policy import Policy
+    from previously.core.policy import Statement
     from previously.core.redact import Redacted
     from previously.core.redaction import Redaction
     from previously.core.redaction import RedactionIndex
     from previously.core.verify import Examination
     from previously.core.verify import Finding
+    from previously.gate.adapters import Adapter
+    from previously.gate.gate import Called
     from types import FrameType
     from typing import BinaryIO
 
@@ -1127,6 +1153,8 @@ def _cmd_redact(args: argparse.Namespace) -> int:
         _notice_payload(result, args)
         raise _unfinished(result.redaction_id, ", and ".join(left))
     print(_redacted_line(result))
+    for call_id in result.cascaded:
+        print(f"cascaded: model_call {call_id}")
     for seq in result.skipped_units:
         print(f"unit {seq} was already erased", file=sys.stderr)
     for address, users in result.kept_blobs.items():
@@ -1234,6 +1262,419 @@ def _cmd_stats(_args: argparse.Namespace) -> int:
     return 0
 
 
+# --- The processing policy ----------------------------------------------------
+
+
+def _policy_arguments(parser: argparse.ArgumentParser) -> None:
+    # A second level, like `redact`: which statement is set is a word of its
+    # own. Every one that writes takes `--statement`, `--revoke` and `--yes`.
+    what = parser.add_subparsers(dest="what", required=True)
+
+    def writing(name: str, sentence: str) -> argparse.ArgumentParser:
+        form = what.add_parser(name, help=sentence, description=sentence)
+        form.add_argument(
+            "--statement", required=True, help="the sentence it was set with; it stays in the log"
+        )
+        form.add_argument("--revoke", action="store_true", help="lift the statement instead")
+        form.add_argument("--yes", action="store_true", help="write without asking")
+        return form
+
+    circle = writing("circle", "create a circle")
+    circle.add_argument("name")
+    member = writing("member", "put an address or a domain into a circle")
+    member.add_argument("circle")
+    member.add_argument("member", metavar="ADDRESS-OR-@DOMAIN")
+    own = writing("own", "name an address or a domain as the operator's own")
+    own.add_argument("member", metavar="ADDRESS-OR-@DOMAIN")
+    rule = writing("rule", "give a scope its conditions")
+    rule.add_argument("scope", help="circle:<name> or source:<source>")
+    rule.add_argument("--regions", nargs="+", required=True, metavar="REGION", help="eu, us or any")
+    rule.add_argument("--max-retention-days", type=int, help="0 means zero retention")
+    rule.add_argument(
+        "--exclude-provider", action="append", default=[], metavar="NAME", help="may repeat"
+    )
+    provider = writing("provider", "declare what a provider account promises")
+    provider.add_argument("name")
+    provider.add_argument(
+        "--inference",
+        action="append",
+        default=[],
+        metavar="NAME=REGIONS",
+        help="a space of inference and what it means, such as global=any or us=us; may repeat",
+    )
+    # Required, with no value allowed: an empty storage means the provider
+    # stores nothing, which passes every region rule, so it has to be said
+    # and never fall out of a forgotten option.
+    provider.add_argument(
+        "--storage",
+        nargs="*",
+        required=True,
+        metavar="REGION",
+        help="where the provider stores; give it no region for one that stores nothing",
+    )
+    provider.add_argument(
+        "--retention-days", required=True, metavar="N|unknown", help="how long the provider keeps"
+    )
+    provider.add_argument("--reports-geo", action="store_true", help="the answer names the region")
+    provider.add_argument("--local", action="store_true", help="runs on hardware the operator runs")
+    show = what.add_parser("show", help="print the policy in force", description="print the policy")
+    show.add_argument("--at", metavar="TIME", help="the policy as it was then (ISO 8601, a zone)")
+    sentence = "list the circles and sources whose calls fell back to local only"
+    found = what.add_parser("gaps", help=sentence, description=sentence)
+    found.add_argument("--since", metavar="TIME", help="only calls from then on (ISO 8601, a zone)")
+
+
+def _inference_of(text: str) -> Inference:
+    name, equals, regions = text.partition("=")
+    if not equals:
+        raise InvalidPayload(f"{text!r} is not NAME=REGIONS, such as global=any")
+    return Inference(name, frozenset(part for part in regions.split(",") if part))
+
+
+def _retention_of(text: str) -> int | None:
+    if text == "unknown":
+        return None
+    try:
+        return int(text)
+    except ValueError as error:
+        raise InvalidPayload(f"{text!r} is not a number of days or unknown") from error
+
+
+def _policy_statement(args: argparse.Namespace) -> Statement:
+    """The statement the arguments of a writing form describe."""
+    if args.what == "circle":
+        return Circle(args.name)
+    if args.what == "member":
+        return Membership(args.circle, args.member)
+    if args.what == "own":
+        return OwnIdentity(args.member)
+    if args.what == "rule":
+        return Rule(
+            args.scope,
+            frozenset(args.regions),
+            args.max_retention_days,
+            frozenset(args.exclude_provider),
+        )
+    return Provider(
+        args.name,
+        tuple(_inference_of(text) for text in args.inference),
+        frozenset(args.storage),
+        _retention_of(args.retention_days),
+        args.reports_geo,
+        args.local,
+    )
+
+
+def _confirmed(args: argparse.Namespace) -> bool:
+    """Asks on the terminal unless `--yes`; an answer that never comes (the
+    input ended) is a no."""
+    if args.yes:
+        return True
+    try:
+        answer = input("write? [y/N] ")
+    except EOFError:
+        return False
+    return answer.strip().lower() in {"y", "yes"}
+
+
+def _cmd_policy_set(args: argparse.Namespace) -> int:
+    """Shows the structured statement, asks, and writes one policy event.
+    A refusal comes before the question, so nobody confirms what cannot be
+    written."""
+    item = normalized(_policy_statement(args))
+    with _storage() as storage:
+        with storage.begin() as conn:
+            current = read_policy(storage, conn)
+        sentence = refusal(item, statement=args.statement, revoked=args.revoke, current=current)
+        if sentence is not None:
+            raise PolicyRefused(sentence)
+        payload = to_payload(item, statement=args.statement, revoked=args.revoke)
+        print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
+        if not _confirmed(args):
+            print("nothing written", file=sys.stderr)
+            return 1
+        event_id = set_policy(
+            storage,
+            item,
+            statement=args.statement,
+            revoked=args.revoke,
+            recorded_at=datetime.now(UTC),
+        )
+    print(f"policy event {event_id}")
+    return 0
+
+
+def _list(names: Iterable[str]) -> str:
+    return ",".join(sorted(names)) or "-"
+
+
+def _policy_lines(policy: Policy) -> list[str]:
+    """The tables of `policy show`, one per kind, each row ending in the id
+    of the event that set it."""
+
+    def event(kind: str, key: str) -> str:
+        return f"(event {policy.ids[(kind, key)]})"
+
+    lines = ["circles"]
+    lines += [f"  {escape_field(name)}\t{event('circle', name)}" for name in sorted(policy.circles)]
+    lines += ["memberships"]
+    for member in policy.memberships:
+        key = key_of(member)[1]
+        who = f"{escape_field(member.circle)}\t{escape_field(member.member)}"
+        lines.append(f"  {who}\t{event('membership', key)}")
+    lines += ["own identities"]
+    lines += [
+        f"  {escape_field(own.member)}\t{event('own_identity', own.member)}" for own in policy.own
+    ]
+    lines += ["rules", f"  {LOCAL_ONLY}\tbuilt-in: without a rule, only providers with local"]
+    for scope, rule in sorted(policy.rules.items()):
+        days = "-" if rule.max_retention_days is None else str(rule.max_retention_days)
+        lines.append(
+            f"  {escape_field(scope)}\tregions {_list(rule.regions)}\tmax retention days {days}"
+            f"\texcluded {_list(rule.excluded_providers)}\t{event('rule', scope)}"
+        )
+    lines += ["providers"]
+    for name, provider in sorted(policy.providers.items()):
+        days = "unknown" if provider.retention_days is None else str(provider.retention_days)
+        inference = ",".join(
+            f"{space.name}={_list(space.regions)}"
+            for space in sorted(provider.inference, key=lambda space: space.name)
+        )
+        reports = "yes" if provider.reports_inference_geo else "no"
+        local = "yes" if provider.local else "no"
+        lines.append(
+            f"  {escape_field(name)}\tinference {inference or '-'}"
+            f"\tstorage {_list(provider.storage)}\tretention days {days}"
+            f"\treports geo {reports}\tlocal {local}\t{event('provider', name)}"
+        )
+    return lines
+
+
+def _cmd_policy_gaps(args: argparse.Namespace) -> int:
+    """Prints one line per scope whose calls fell back: the scope, how many
+    calls, and the time of the last ({ref}`cli-reference`)."""
+    since = parse_moment(args.since) if args.since else None
+    with _storage() as storage, storage.begin() as conn:
+        found = gaps(storage, conn, since=since)
+    if not found:
+        print("no call fell back to local only", file=sys.stderr)
+    for gap in found:
+        print(f"{escape_field(gap.what)}\t{gap.count}\t{iso_utc(gap.last)}")
+    return 0
+
+
+def _cmd_policy(args: argparse.Namespace) -> int:
+    """Sets one statement of the policy, prints the policy in force, or
+    lists where the built-in rule acted."""
+    if args.what == "gaps":
+        return _cmd_policy_gaps(args)
+    if args.what != "show":
+        return _cmd_policy_set(args)
+    at = parse_moment(args.at) if args.at else None
+    with _storage() as storage, storage.begin() as conn:
+        policy = read_policy(storage, conn, at=at)
+    for line in _policy_lines(policy):
+        print(line)
+    return 0
+
+
+# --- The gate ---------------------------------------------------------------------
+#
+# One task for now, `mail_overview`. The caller names the event, never the
+# model: the policy decides which model may see the content.
+
+# The variable each provider's adapter is built from; without it set, that
+# adapter is absent and a call the policy gives to that provider ends as an
+# error that names the variable.
+_PROVIDER_SETTINGS: Mapping[str, str] = {
+    "anthropic": "ANTHROPIC_API_KEY",
+    "mistral": "MISTRAL_API_KEY",
+    "local": "PREVIOUSLY_LOCAL_MODEL_URL",
+}
+
+
+def _gate_arguments(parser: argparse.ArgumentParser) -> None:
+    how = parser.add_subparsers(dest="how", required=True)
+    sentence = "show the decision for an event, without a call"
+    explaining = how.add_parser("explain", help=sentence, description=sentence)
+    explaining.add_argument("event", type=int, metavar="EVENT")
+    sentence = "run mail_overview over an event and record the call"
+    trying = how.add_parser("try", help=sentence, description=sentence)
+    trying.add_argument("event", type=int, metavar="EVENT")
+
+
+def _adapters() -> dict[str, Adapter]:
+    """One adapter per provider whose setting is present.
+
+    Imported here and not at the head of the module: the two vendor clients
+    take about a second to import, measured on 2026-10-09 with
+    `python -c "import previously.cli, previously.gate.adapters.anthropic"`
+    at 1.3 to 1.5 s against 0.5 s for `previously.cli` alone, and every
+    other command would pay for it, and stay that much longer deaf to
+    `SIGTERM`.
+    """
+    from previously.gate.adapters.anthropic import AnthropicAdapter
+    from previously.gate.adapters.openai_compatible import MISTRAL_BASE_URL
+    from previously.gate.adapters.openai_compatible import OpenAICompatibleAdapter
+
+    found: dict[str, Adapter] = {}
+    if key := os.environ.get(_PROVIDER_SETTINGS["anthropic"]):
+        found["anthropic"] = AnthropicAdapter(api_key=key)
+    if key := os.environ.get(_PROVIDER_SETTINGS["mistral"]):
+        found["mistral"] = OpenAICompatibleAdapter(
+            provider="mistral", api_key=key, base_url=MISTRAL_BASE_URL
+        )
+    if url := os.environ.get(_PROVIDER_SETTINGS["local"]):
+        # Measured on 2026-10-09 against `qwen3:4b` on Ollama: without
+        # `reasoning_effort` set to `none` the model thinks for over 600 s.
+        found["local"] = OpenAICompatibleAdapter(
+            provider="local", api_key="unused", base_url=url, extra={"reasoning_effort": "none"}
+        )
+    return found
+
+
+def _fallback_lines(storage: PostgresStorage, decision: Decision, event_id: int) -> list[str]:
+    """One line per scope without a rule, with the command that sets one,
+    where the built-in rule `local_only` acted and a local model was chosen.
+
+    A decision that chose nothing gets no line: `processed locally` would be
+    false there, since no local provider is declared, and the reason of the
+    denial already says so."""
+    fallback = decision.fallback
+    if fallback is None or decision.chosen is None:
+        return []
+    scopes = [f"circle:{circle}" for circle in fallback.circles]
+    if not scopes:
+        with storage.begin() as conn:
+            key = storage.source_keys(conn, [event_id]).get(event_id)
+        scopes = [f"event:{event_id}" if key is None else f"source:{key[0]}"]
+    return [_fallback_line(escape_field(scope)) for scope in scopes]
+
+
+def _fallback_line(scope: str) -> str:
+    return f"processed locally: no rule for {scope} — set one with previously policy rule {scope} …"
+
+
+def _explain_lines(decision: Decision, rule_ids: Mapping[tuple[str, str], int]) -> list[str]:
+    """The decision as `gate explain` prints it: what it rested on, each
+    candidate with what became of it, and the choice."""
+
+    def rule(scope: str) -> str:
+        known = rule_ids.get(("rule", scope))
+        return escape_field(scope) if known is None else f"{escape_field(scope)} (event {known})"
+
+    days = decision.max_retention_days
+    lines = [
+        f"circles\t{_list(escape_field(c) for c in decision.circles)}",
+        f"rules\t{','.join(rule(scope) for scope in decision.rule_keys) or '-'}",
+        f"regions\t{_list(decision.regions)}",
+        f"max retention days\t{'-' if days is None else days}",
+        f"excluded providers\t{_list(escape_field(p) for p in decision.excluded_providers)}",
+    ]
+    names = [f"{c.provider}/{c.model}" for c in MAIL_OVERVIEW.candidates]
+    lines += [
+        f"candidate\t-\t{escape_field(reason)}"
+        for reason in decision.reasons
+        if not any(reason.startswith(f"{name}: ") for name in names)
+    ]
+    chosen = decision.chosen
+    for candidate, name in zip(MAIL_OVERVIEW.candidates, names, strict=True):
+        reasons = [r for r in decision.reasons if r.startswith(f"{name}: ")]
+        if candidate == chosen:
+            state = "chosen"
+        elif reasons:
+            state = f"rejected: {escape_field(reasons[0])}"
+        else:
+            state = "not reached"
+        lines.append(f"candidate\t{escape_field(name)}\t{state}")
+    if chosen is None:
+        lines.append("decision\tdenied")
+    else:
+        geo = decision.inference_geo or "-"
+        lines.append(f"decision\t{chosen.provider}/{chosen.model}, inference_geo {geo}")
+    return lines
+
+
+def _cmd_gate_explain(args: argparse.Namespace) -> int:
+    with _storage() as storage:
+        decision = explain(storage, MAIL_OVERVIEW, args.event)
+        with storage.begin() as conn:
+            rule_ids = read_policy(storage, conn).ids
+        fallback = _fallback_lines(storage, decision, args.event)
+    for line in _explain_lines(decision, rule_ids):
+        print(line)
+    for line in fallback:
+        print(line, file=sys.stderr)
+    return 0
+
+
+def _failure_line(called: Called, adapters: Mapping[str, Adapter]) -> str:
+    """The one sentence on standard error for a call that did not end `ok`."""
+    message = escape_controls(called.message or "")
+    chosen = called.decision.chosen
+    if called.outcome == "denied" or chosen is None:
+        return f"denied: {message}"
+    if called.outcome == "refused":
+        return f"refused: {message}"
+    if called.outcome == "schema_invalid":
+        return f"schema_invalid: {message}"
+    setting = _PROVIDER_SETTINGS.get(chosen.provider)
+    if chosen.provider not in adapters and setting is not None:
+        return f"Error: {message} — set {setting}"
+    if chosen.provider == "local" and setting is not None:
+        url = os.environ.get(setting, "")
+        return f"Error: {message} — the local model server is {escape_controls(url)}"
+    return f"Error: {message}"
+
+
+def _cmd_gate_try(args: argparse.Namespace) -> int:
+    """Runs the task and records the call: the output and the id of the
+    `model_call` on standard output; the fallback, an alarm and a failure
+    on standard error. 2 for anything but `ok`, and for an `ok` whose input
+    was erased while the call ran; 3 for `ok` with an alarm, so that a script
+    does not read past it.
+
+    The fallback is said only where the local model answered: a call that
+    ended `error` processed nothing, and one that was denied called nothing."""
+    prices_path = os.environ.get("PREVIOUSLY_PRICES")
+    prices = load_prices(Path(prices_path) if prices_path else None)
+    adapters = _adapters()
+    with _storage() as storage:
+        called = call(
+            storage,
+            storage,
+            MAIL_OVERVIEW,
+            args.event,
+            adapters,
+            prices,
+            recorded_at=datetime.now(UTC),
+        )
+        answered = called.outcome != "error"
+        fallback = _fallback_lines(storage, called.decision, args.event) if answered else []
+    for line in fallback:
+        print(line, file=sys.stderr)
+    if called.output is not None:
+        print(_json_line(called.output.model_dump(mode="json")))
+    print(f"model_call: event {called.event_id}")
+    for _alarm in called.alarms:
+        requested = called.decision.inference_geo
+        reported = escape_controls(called.reported_geo or "nothing")
+        print(f"alarm: inference_geo requested {requested}, reported {reported}", file=sys.stderr)
+    if called.outcome != "ok":
+        print(_failure_line(called, adapters), file=sys.stderr)
+        return 2
+    if called.erased_by is not None:
+        print(f"erased: {called.message}; the answer is erased with it", file=sys.stderr)
+        return 2
+    return 3 if called.alarms else 0
+
+
+def _cmd_gate(args: argparse.Namespace) -> int:
+    if args.how == "explain":
+        return _cmd_gate_explain(args)
+    return _cmd_gate_try(args)
+
+
 def _no_arguments(_parser: argparse.ArgumentParser) -> None:
     """For a command that takes no arguments."""
 
@@ -1274,6 +1715,8 @@ COMMANDS: tuple[Command, ...] = (
     Command("project", "bring the projections up to the tip of the log", _cmd_project),
     Command("chronicle", "print the chronicle in time order", _cmd_chronicle, _chronicle_arguments),
     Command("stats", "print the per-source statistics", _cmd_stats),
+    Command("policy", "set and show the processing policy", _cmd_policy, _policy_arguments),
+    Command("gate", "explain or try a model call", _cmd_gate, _gate_arguments),
 )
 
 

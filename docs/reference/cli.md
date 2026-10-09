@@ -3,10 +3,10 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has twelve subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, and `stats`.
+It has fourteen subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, and `gate`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
 `append --attach`, `ingest imap`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
-`ingest imap` alone reads the five `PREVIOUSLY_IMAP_*` settings.
+`ingest imap` alone reads the five `PREVIOUSLY_IMAP_*` settings, and `gate try` alone reads `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `PREVIOUSLY_LOCAL_MODEL_URL` and `PREVIOUSLY_PRICES`.
 A missing setting is an input error that names the first variable missing, in the form `Error: PREVIOUSLY_BLOB_BUCKET is not set`.
 An error sentence prints every control character but a tab and a line feed as `\xNN`, such as `\x1b` for the escape character, because a key it quotes can be the Message-ID of a mail.
 A transaction the database aborts in a conflict with a concurrent one, a deadlock or a lock not granted in time, is a storage error with exit code 2, in the form `Error: the database aborted the operation in a conflict with a concurrent one; run the command again`.
@@ -64,6 +64,10 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `project` | Every projection stands at the tip of the log. | Not used. | Storage raised an error, the worker found a gap in the log, or a catch-up at another version rebuilt a projection while this one ran. |
 | `chronicle` | The chronicle was printed, even when the window holds no row. | Not used. | The input was invalid, or storage raised an error. |
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
+| `policy` | The statement was written, `show` printed the policy, or `gaps` printed what fell back, even when nothing did. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the statement was refused, or storage raised an error. |
+| `gate` | `explain` printed the decision, whether it allows a call or denies it; `try` made the call, got an answer that matches the schema, and recorded it. | Not used. | The event doesn't exist, the price file can't be read, storage raised an error, or `try` recorded a call that was denied, failed, refused by the model, or answered against the schema. |
+
+`gate try` returns 3 when the call was made and recorded with an answer that matches the schema, and the provider reported another inference region than the one requested; the code differs from 0 so that a script doesn't read past the alarm.
 
 Every command that receives `SIGTERM` once it has started stops with exit code 143, 128 and the signal's number, and prints nothing to standard error.
 The handler is set after the command's imports; a `SIGTERM` in the first fraction of a second, measured at about 0.7 s in the image, isn't caught, and as process 1 of a container the command then runs on until the grace period ends.
@@ -319,6 +323,16 @@ The first names the redaction it wrote.
 The second means that a redaction already covers the target and nothing was written; it names that redaction, for units the newest of the redactions that cover them, and for a blob the newest of the redactions that erased its references.
 In both cases the tombstones are set, and the blobs that no longer have to lie are deleted.
 
+When a `model_call` read the target, `redact` erases the units of that call with it, by a redaction of its own with the reason `cascade of redaction ID`, where `ID` is the redaction that triggered it.
+For each such call it prints one more line to standard output, after the first:
+
+```text
+cascaded: model_call 43
+```
+
+A target that no call read prints no such line, and neither does a repeat of an erasure whose cascade stands.
+`redact` refuses a redaction as a target and accepts every other action, a policy event and a `model_call` included.
+
 `redact` works in this order: it records the redaction and sets the tombstones in one transaction, deletes the blobs that no longer have to lie, and brings every projection up to the tip of the log, the way `project` does.
 Only then does it print the line to standard output.
 The chronicle then holds no row of what was erased, without a separate `project`.
@@ -326,7 +340,7 @@ An ordinary catch-up prints nothing.
 A catch-up that builds a projection for the first time, or rebuilds it because its version changed, prints the line `project` prints for that projection, on standard error:
 
 ```text
-chronicle       rebuilt: version 1 -> 2, 12000 events, up_to_id 12000
+chronicle       rebuilt: version 2 -> 3, 12000 events, up_to_id 12000
 ```
 
 Standard output carries the one line either way.
@@ -473,7 +487,7 @@ The first two name the anchored `id`, the third names the tip.
 `the log ends at` names the `id` of the last event in the log, and `0` for an empty log.
 The number in parentheses in the third is the `id` of the newest anchor.
 
-Nine findings come from the hash formats and from erasure:
+Ten findings come from the hash formats, from erasure and from the names of actions:
 
 ```text
 FINDING 7: unit 2 does not match its digest
@@ -485,6 +499,7 @@ FINDING 9: redaction of unit 2 of event 7 is not carried out
 FINDING 9: redaction names a target that does not exist
 FINDING 7: units are erased in part, which version 1 cannot attest
 FINDING 9: action has no valid form
+FINDING 9: unknown action "teleport"
 ```
 
 | Finding | Condition | Event |
@@ -498,6 +513,7 @@ FINDING 9: action has no valid form
 | `redaction names a target that does not exist` | The event a redaction names doesn't stand before the redaction in the chain, or doesn't have a unit it names; for a redaction of a blob, an event it names doesn't stand before it or doesn't name the blob in the blob register. | The redaction. |
 | `units are erased in part, which version 1 cannot attest` | An event in hash format 1 has some units without content, and others with it. | The event. |
 | `action has no valid form` | An event of kind `action` carries no `action` name in its payload, or a redaction's payload doesn't have exactly the form `redact` writes. | The action. |
+| `unknown action "<name>"` | An event of kind `action` carries an `action` name that isn't `redaction`, `policy` or `model_call`. | The action. |
 
 One finding comes from the blob register:
 
@@ -671,8 +687,8 @@ Two catch-ups of one projection, such as a `project` and the catch-up of a `reda
 A catch-up that finds the state row at another version than its own, or gone, between two of its batches stops with exit code 2 and one sentence on standard error:
 
 ```text
-Error: projection chronicle was rebuilt while this catch-up ran: it stands at version 3, and this code declares version 2
-Error: projection chronicle was rebuilt while this catch-up ran: it has no state row, and this code declares version 2
+Error: projection chronicle was rebuilt while this catch-up ran: it stands at version 4, and this code declares version 3
+Error: projection chronicle was rebuilt while this catch-up ran: it has no state row, and this code declares version 3
 ```
 
 The first means that a catch-up of another version of the code ran against the same database and rebuilt the projection between two batches of this one.
@@ -683,7 +699,7 @@ Inside `redact`, the same sentence stands in parentheses in the sentence of an u
 
 ## `chronicle`
 
-Prints the chronicle in time order, one line per unit.
+Prints the chronicle in time order, one line per unit of an observation; the units of an action aren't in it ({ref}`projections`).
 
 | Argument | Required | Default | Description |
 |---|---|---|---|
@@ -731,3 +747,201 @@ An event with no source attribution appears in no line.
 
 `stats` reports the lag of `source-stats` on standard error, in the same sentence `chronicle` uses and with the same exit code 0.
 The two commands report the lag of the projection each one reads, so after a rebuild of one of the two the numbers can differ.
+
+## `policy`
+
+Sets one statement of the processing policy, or prints the policy in force.
+Every statement is an event of the kind `action` with `payload.action` set to `policy`, written with no source key and no units.
+It has seven forms, and the five that write take the same three options:
+
+```text
+previously policy circle NAME --statement TEXT
+previously policy member CIRCLE ADDRESS-OR-@DOMAIN --statement TEXT
+previously policy own ADDRESS-OR-@DOMAIN --statement TEXT
+previously policy rule SCOPE --regions REGION [REGION ...] --statement TEXT
+previously policy provider NAME --storage [REGION ...] --retention-days N|unknown --statement TEXT
+previously policy show [--at TIME]
+previously policy gaps [--since TIME]
+```
+
+| Option | Required | Default | Description |
+|---|---|---|---|
+| `--statement TEXT` | Yes | — | The sentence the statement was set with. It stays in the log, and nothing evaluates it. An empty sentence or one of white space is refused. |
+| `--revoke` | No | off | Lift the statement instead of setting it. The older event stays in the chain. |
+| `--yes` | No | off | Write without asking. |
+
+| Form | Key | Meaning |
+|---|---|---|
+| `circle` | `NAME` | A circle exists. |
+| `member` | `CIRCLE` and `ADDRESS-OR-@DOMAIN` | An address, or a domain written `@domain.tld`, belongs to the circle. The domain is stored in lower case, and the local part as typed. |
+| `own` | `ADDRESS-OR-@DOMAIN` | The operator's own identity. It doesn't count as a member of any circle. |
+| `rule` | `SCOPE` | A scope gets conditions. `SCOPE` is `circle:<name>` or `source:<source>`. |
+| `provider` | `NAME` | What a provider account promises. |
+
+`rule` takes these further options:
+
+| Option | Required | Default | Description |
+|---|---|---|---|
+| `--regions REGION ...` | Yes | — | `eu`, `us`, both, or `any`. `any` can't stand beside another region. |
+| `--max-retention-days N` | No | no limit | A whole number of days. `0` means zero retention. |
+| `--exclude-provider NAME` | No | none | A provider the scope never uses. May repeat. |
+
+`provider` takes these further options:
+
+| Option | Required | Default | Description |
+|---|---|---|---|
+| `--inference NAME=REGIONS` | No | none | A space of inference and what it means, such as `global=any` or `us=us`. May repeat. |
+| `--storage [REGION ...]` | Yes | — | Where the provider stores. Given with no region, the provider stores nothing, as a local one does. |
+| `--retention-days N\|unknown` | Yes | — | How long the provider keeps what it receives. |
+| `--reports-geo` | No | off | The answer of the provider names the region. |
+| `--local` | No | off | The provider runs on hardware the operator runs. |
+
+A form that writes prints the statement as a JSON object, asks `write? [y/N]` and reads the answer from standard input.
+`y` and `yes`, in any case, write the event and print `policy event ID`.
+Any other answer, or an input that ends, writes nothing, prints `nothing written` to standard error and returns 1.
+`--yes` skips the question.
+
+A statement the write path refuses is an input error: one sentence on standard error, return code 2, no question asked and nothing written.
+These are refused:
+
+- a membership in a circle that doesn't exist, as `Error: no circle "nowhere" exists — create it first with previously policy circle nowhere`;
+- a scope of the form `project:<name>`, as `Error: scope "project:alpha" is not effective yet: project scopes arrive with the projects; use circle:<name> or source:<source>`;
+- any other scope that isn't `circle:<name>` or `source:<source>`;
+- `--regions` with no region, with `any` beside another region, or with a word that isn't a region;
+- a negative number of days;
+- an address or a domain that has no dot in its domain part;
+- an empty statement.
+
+`policy show` prints one table per kind, with a row ending in the id of the event that set it.
+The rules table starts with the built-in rule `local_only`, which isn't an event and can't be revoked: where no other rule applies, only a provider declared `local` is used.
+`--at TIME` prints the policy as it stood at that moment, which is the log read up to it; the time needs a zone, as for `--occurred-at`.
+A newer event with the same key replaces the older one, a revocation lifts the statement, and an event whose payload was erased counts for nothing.
+
+`verify` reports a policy event whose form isn't sound, such as one that has no name, with a finding of the form `policy event has no valid form: it has no "name"`.
+It reports a policy event that has units with `policy event has units`: the write path never gives one any.
+
+`policy gaps` lists where the built-in rule `local_only` acted: the circles without a rule, and the sources whose content no rule covered at all, each with the number of calls that fell back and the time of the last, sorted by name, one per line, the three fields separated by a tab:
+
+```text
+circle:xz	3	2026-10-09T14:02:11.482113Z
+source:email	1	2026-10-09T12:00:00.000000Z
+```
+
+It reads the `model_call` events, and the source of each event that a call read where the fallback named no circle, and counts a call whether the local model answered it or not.
+`--since TIME` counts only the calls recorded from that moment on; the time needs a zone.
+A call over an event that has no source and no circle stands under `event:<id>`.
+When no call fell back, standard output stays empty, and one notice goes to standard error:
+
+```text
+no call fell back to local only
+```
+
+(cli-gate)=
+
+## `gate`
+
+Shows or runs one task over one event.
+The one task is `mail_overview`: the language of a mail, its topic in one sentence, and the people its text names.
+It has two forms:
+
+```text
+previously gate explain EVENT
+previously gate try EVENT
+```
+
+`EVENT` is the `id` of an event in the log.
+The caller names the event and never the model: the processing policy decides which model may see the content, and in which inference region.
+The task names its models in this order, and the first one the policy lets through is the one called:
+
+| Provider | Model | Effort |
+|---|---|---|
+| `anthropic` | `claude-haiku-5-5` | `low` |
+| `mistral` | `mistral-small-2603` | — |
+| `local` | `qwen3:4b` | — |
+
+An event that doesn't exist is an input error, `Error: there is no event 9`, and nothing is written.
+
+### `gate explain`
+
+Prints the decision for the event, calls nothing and writes nothing.
+One line per item, the fields separated by a tab: the circles of the people involved, the rules that applied with the event that set each, the merged regions, the retention limit, the excluded providers, every candidate with what became of it, and the decision with the inference region the call would set.
+For the example of `previously policy`, with a rule `eu` for the circle and a rule `any` for `source:email`, the mail goes to Mistral:
+
+```text
+circles	xz
+rules	circle:xz (event 8),source:email (event 9)
+regions	eu
+max retention days	-
+excluded providers	-
+candidate	anthropic/claude-haiku-5-5	rejected: anthropic/claude-haiku-5-5: the provider stores in ['us'], outside the allowed ['eu']
+candidate	mistral/mistral-small-2603	chosen
+candidate	local/qwen3:4b	not reached
+decision	mistral/mistral-small-2603, inference_geo -
+```
+
+`-` stands for nothing: no inference region is set for a provider that declares a single one.
+`local_only` stands in the rules line, without an event, where the built-in rule acted.
+A reason that belongs to no candidate, such as `no local provider is declared`, stands on a line of its own with `-` in place of the candidate, and a decision that allows no candidate reads `decision	denied`.
+An erased event is denied with the reason `the event is erased`.
+An event that isn't an observation, such as a policy event, a redaction or a `model_call`, is denied with the reason `the event is not an observation`.
+Where the built-in rule `local_only` acted and the decision chose the local model, `gate explain` writes the `processed locally` line of `gate try` to standard error, after the table; a denial gets no such line.
+
+### `gate try`
+
+Runs the task over the event, and records the call as an event of the kind `action` with `payload.action` set to `model_call`, whatever became of it.
+It reads four settings, described in {ref}`configuration-reference`: `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `PREVIOUSLY_LOCAL_MODEL_URL` and `PREVIOUSLY_PRICES`.
+A missing key or address is no error by itself: only the adapter of that provider is missing, and the call fails only when the policy chooses that provider.
+
+On standard output it prints the answer as one line of JSON, and then the `id` of the `model_call`:
+
+```text
+{"language": "de", "participants": ["Eva Huber"], "topic": "An offer for the relaunch"}
+model_call: event 12
+```
+
+A call that didn't end with an answer prints only the second line, and one sentence on standard error, with exit code 2.
+So does a call whose input was erased while the provider was answering: it's recorded as `ok`, but its answer is erased with the input in the same transaction ({ref}`erasure`), so it isn't printed either, and the sentence names the redaction:
+
+```text
+erased: the input was erased by redaction 14 while the call ran; the answer is erased with it
+```
+
+Every outcome but `ok` is recorded the same way, with no units: a denial, a refusal by the model, an answer the schema refuses, and a call that failed.
+A denial and a refusal by the model read:
+
+```text
+denied: the event is erased
+refused: anthropic/claude-haiku-5-5 declined the task
+```
+
+A denial names every reason, joined by `; `, such as `no local provider is declared; anthropic/claude-haiku-5-5: the provider anthropic is not local, and only local applies`.
+
+`gate try` writes these lines to standard error as well:
+
+```text
+processed locally: no rule for circle:xz — set one with previously policy rule circle:xz …
+alarm: inference_geo requested us, reported global
+schema_invalid: the answer of anthropic/claude-haiku-5-5 does not match the schema of mail_overview
+Error: anthropic: the provider is not configured — set ANTHROPIC_API_KEY
+Error: local: call failed (APIConnectionError): Connection error. — the local model server is http://localhost:11434/v1
+```
+
+The first comes before everything else, one line per circle without a rule, or for the source when no rule applied at all; under a real rule there's no such line.
+It's written only where the local model answered: a call denied because no local provider is declared, and a call to a local server that didn't answer, processed nothing, and print their own sentence alone.
+The second is an alarm: the provider reported another inference region than the one requested, and the call returns 3.
+The third is an answer that isn't JSON, lacks a field, or has a field too many; the gate checks every answer itself, even where the provider enforces the schema.
+The fourth names the setting that's missing, and the fifth the address of the local model server that didn't answer.
+A call that failed prints the sentence of the client, after the provider and the class of the error, and never the key.
+What the provider said doesn't go into the event: the event names the provider, the class of the error and the HTTP status.
+
+`verify` holds every `model_call` to its form: an outcome it knows, units exactly when the outcome is `ok`, and a list `inputs` whose every entry names an event.
+Each break of that form is a finding:
+
+```text
+FINDING 12: model_call has no valid form: it has no outcome
+FINDING 12: model_call has no valid form: it has the unknown outcome "teleported"
+FINDING 12: model_call has no valid form: it is ok and has no units
+FINDING 12: model_call has no valid form: it is denied and has units
+FINDING 12: model_call has no valid form: it has no list "inputs"
+FINDING 12: model_call has no valid form: it has an "inputs" entry without an event
+```

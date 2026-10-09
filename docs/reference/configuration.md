@@ -2,8 +2,8 @@
 
 # Configuration
 
-Previously reads its settings from thirteen environment variables.
-Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store, fetch or delete a blob, as the table below says per variable, and the five `PREVIOUSLY_IMAP_*` variables only by `ingest imap`.
+Previously reads its settings from seventeen environment variables.
+Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store, fetch or delete a blob, as the table below says per variable, the five `PREVIOUSLY_IMAP_*` variables only by `ingest imap`, and the four settings of the model providers only by `gate try`.
 
 ## Database
 
@@ -128,3 +128,42 @@ The server names its delimiter in its answer to the `LIST` command, and a mail c
 There is no setting for a certificate.
 `ingest imap` verifies the server's certificate and host name against the trust store of the system, and OpenSSL reads a certificate file named in `SSL_CERT_FILE` in place of the system's file.
 
+## Model provider settings
+
+The providers `gate try` can call, and the price file it estimates the cost of a call with; see {ref}`cli-reference`.
+
+| Variable | Meaning | Missing at |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | The API key of the Anthropic account. No message and no event holds it. | A call the policy gives to `anthropic`. |
+| `MISTRAL_API_KEY` | The API key of the Mistral account. No message and no event holds it. | A call the policy gives to `mistral`. |
+| `PREVIOUSLY_LOCAL_MODEL_URL` | The address of the OpenAI-compatible API of the local model server, such as `http://localhost:11434/v1`, where `ollama serve` listens by default. | A call the policy gives to `local`. |
+| `PREVIOUSLY_PRICES` | The path of a price file to use in place of the one in the package. | Never; unset or empty, the file in the package applies. |
+
+`gate try` reads all four, and no other command reads any of them: `gate explain` calls nothing and estimates nothing.
+A missing key or address doesn't stop `gate try`.
+Only the adapter of that provider is missing, and only a call the policy gives to that provider fails: it's recorded as a `model_call` with the outcome `error`, and the command returns 2 with a sentence that names the variable:
+
+```text
+Error: anthropic: the provider is not configured — set ANTHROPIC_API_KEY
+```
+
+A key the provider refuses is the same outcome, with the provider's own sentence, from which `previously` removes the key.
+The Anthropic client reads `ANTHROPIC_BASE_URL` on its own, when it's set, and sends the call to that address in place of the one of Anthropic; `previously` names no address for Anthropic, and the tests point the client at a server of their own that way.
+Mistral's address is fixed in `previously`, `https://api.mistral.ai/v1`.
+
+The price file is TOML, with the date the prices were read, the price of a million input and a million output tokens per model in dollars, and the factor an inference region adds:
+
+```toml
+as_of = 2026-10-09
+
+[models.claude-haiku-5-5]
+input = 0.10
+output = 0.50
+
+[surcharges]
+us = 1.1
+```
+
+Each `model_call` carries the SHA-256 of the file as it lies on disk, and the estimate as a decimal string under `cost_usd`, which is `null` for a model the file doesn't name, such as the local one.
+The file in the package was read on 2026-10-09 and names its sources in its header.
+A file that can't be read, isn't TOML or has no date `as_of` stops `gate try` before it calls anything, with exit code 2 and one sentence that names the file.

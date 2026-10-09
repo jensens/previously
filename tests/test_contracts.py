@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING
 
 import previously.connectors
 import previously.core
+import previously.gate.adapters
 import previously.storage
 import pytest
 import subprocess
@@ -49,7 +50,10 @@ _STORAGE_PROBE = Path(previously.storage.__file__).parent / "_violation.py"
 # The third: `connectors`, beside `connectors.imap`, the one module allowed to
 # import `imaplib`.
 _CONNECTORS_PROBE = Path(previously.connectors.__file__).parent / "_violation.py"
-_PROBES = (_PROBE, _STORAGE_PROBE, _CONNECTORS_PROBE)
+# The fourth: `gate/adapters`, beside the two adapters, the only modules allowed
+# to import a vendor SDK.
+_ADAPTERS_PROBE = Path(previously.gate.adapters.__file__).parent / "_violation.py"
+_PROBES = (_PROBE, _STORAGE_PROBE, _CONNECTORS_PROBE, _ADAPTERS_PROBE)
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -230,3 +234,25 @@ def test_imaplib_outside_connectors_imap_breaks_its_contract(probe: Path) -> Non
     assert "Only connectors.imap imports imaplib BROKEN" in output, output
     package = probe.parent.name
     assert f"previously.{package}._violation -> imaplib" in output, output
+
+
+@pytest.mark.parametrize("sdk", ["anthropic", "openai"])
+@pytest.mark.parametrize("probe", [_PROBE, _ADAPTERS_PROBE], ids=["core", "adapters"])
+def test_a_vendor_sdk_outside_its_adapter_breaks_its_contract(probe: Path, sdk: str) -> None:
+    """A vendor SDK anywhere but in its own adapter breaks the contract by
+    name: in `core`, and beside the two adapters, so the exemptions are shown
+    to be those two modules and not their package. Each SDK is probed apart
+    because each exemption is its own named edge: `openai` imported from the
+    Anthropic adapter's package is as wrong as `anthropic` imported from
+    `core`."""
+    with _probe_module(f"import {sdk}\n", probe):
+        result = _gate()
+    output = result.stdout + result.stderr
+
+    assert result.returncode != 0, output
+    assert "Only the gate adapters import vendor SDKs BROKEN" in output, output
+    # The package path below `src/`, which `previously` names twice in a
+    # worktree: once as the checkout and once as the package.
+    parts = probe.parent.parts
+    package = ".".join(parts[len(parts) - 1 - parts[::-1].index("previously") :])
+    assert f"{package}._violation -> {sdk}" in output, output

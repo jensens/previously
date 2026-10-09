@@ -31,6 +31,12 @@ from dataclasses import dataclass
 from previously.contract.blobs import BlobStore
 from previously.contract.blobs import KeyProvider
 from previously.contract.types import Anchor
+from previously.core.action import KNOWN_ACTIONS
+from previously.core.action import MODEL_CALL
+from previously.core.action import OK
+from previously.core.action import OUTCOMES
+from previously.core.action import POLICY
+from previously.core.action import REDACTION
 from previously.core.blob import fetch_blob
 from previously.core.canonical import canonical
 from previously.core.chain import read_references
@@ -46,11 +52,11 @@ from previously.core.hashing import payload_hash_v2
 from previously.core.hashing import unit_digest
 from previously.core.hashing import units_hash
 from previously.core.hashing import units_hash_v2
+from previously.core.policy import check_payload
 from previously.core.redaction import action_name
 from previously.core.redaction import blob_expected
 from previously.core.redaction import MalformedAction
 from previously.core.redaction import parse
-from previously.core.redaction import REDACTION
 from previously.core.redaction import RedactionIndex
 from previously.core.sealing import NullSink
 from typing import cast
@@ -385,6 +391,10 @@ class _Erasures:
         self._units: list[tuple[int, int]] = []
         self._partial: list[int] = []
         self._registered: dict[int, frozenset[bytes]] = {}
+        # The `model_call` events that still keep a result, with what they
+        # read: (id, [(event, units, blobs)]). The ones whose units are all
+        # gone keep nothing and are not remembered.
+        self._calls: list[tuple[int, list[tuple[int, list[int], list[str]]]]] = []
 
     @property
     def redactions(self) -> RedactionIndex:
@@ -411,10 +421,19 @@ class _Erasures:
         if row.kind != "action" or row.payload is None:
             return []
         try:
-            if action_name(row.payload) == REDACTION:
+            name = action_name(row.payload)
+            if name == REDACTION:
                 self._redactions.add(parse(row.id, row.payload))
         except MalformedAction:
             return [Finding(row.id, "action has no valid form")]
+        # A name nobody here knows cannot be read, and so cannot be told from
+        # a forgery. The form of the known names is checked where each is read.
+        if name not in KNOWN_ACTIONS:
+            return [Finding(row.id, f'unknown action "{name}"')]
+        if (finding := _form_finding(name, row.id, row.payload, units)) is not None:
+            return [finding]
+        if name == MODEL_CALL and any(unit.content is not None for unit in units):
+            self._calls.append((row.id, _inputs_read(row.payload)))
         return []
 
     def reconcile[Conn](self, storage: LogStore[Conn], conn: Conn) -> list[Finding]:
@@ -438,6 +457,11 @@ class _Erasures:
         findings.extend(self._register_findings())
         for redaction in index:
             findings.extend(_execution_findings(storage, conn, redaction))
+        findings.extend(
+            Finding(call_id, f"model_call {call_id} keeps the result of erased input")
+            for call_id, read in self._calls
+            if any(_erased(index, event, units, blobs) for event, units, blobs in read)
+        )
         return findings
 
     def _register_findings(self) -> list[Finding]:
@@ -453,6 +477,88 @@ class _Erasures:
             if frozenset(bytes.fromhex(sha256) for sha256 in redaction.blobs) != registered:
                 findings.append(Finding(event_id, "blob register does not match the payload"))
         return findings
+
+
+def _form_finding(
+    name: str, event_id: int, payload: Mapping[str, object], units: Sequence[UnitRow]
+) -> Finding | None:
+    """The finding about the form of a policy event or a `model_call`, or
+    `None`."""
+    if name == POLICY:
+        if (problem := check_payload(payload)) is not None:
+            return Finding(event_id, f"policy event {problem}")
+        # A policy event is a statement of the operator and holds nothing a
+        # source said, so it has no units; one that has them did not come
+        # through `set_policy`, and its units could hold anything.
+        if units:
+            return Finding(event_id, "policy event has units")
+    if name == MODEL_CALL and (problem := _model_call_problem(payload, units)) is not None:
+        return Finding(event_id, f"model_call has no valid form: {problem}")
+    return None
+
+
+def _inputs_read(payload: Mapping[str, object]) -> list[tuple[int, list[int], list[str]]]:
+    """What a well-formed `model_call` read: per entry of `inputs`, the event,
+    its units and its blobs. An entry or a list of another shape is left out;
+    `_model_call_problem` reports the call whose event is missing, and a
+    `units` or `blobs` that is no list names nothing that could be erased."""
+    read: list[tuple[int, list[int], list[str]]] = []
+    for entry in cast("list[object]", payload.get("inputs")):
+        named = cast("Mapping[str, object]", entry)
+        units = named.get("units")
+        blobs = named.get("blobs")
+        read.append(
+            (
+                cast("int", named["event"]),
+                [u for u in cast("list[object]", units) if isinstance(u, int)]
+                if isinstance(units, list)
+                else [],
+                [b for b in cast("list[object]", blobs) if isinstance(b, str)]
+                if isinstance(blobs, list)
+                else [],
+            )
+        )
+    return read
+
+
+def _erased(index: RedactionIndex, event: int, units: Sequence[int], blobs: Sequence[str]) -> bool:
+    """Whether a redaction covers the event, one of the units or one of the
+    blobs that a call read."""
+    return (
+        index.of_event(event) is not None
+        or any(index.of_unit(event, seq) is not None for seq in units)
+        or any(index.of_reference(event, sha256) is not None for sha256 in blobs)
+    )
+
+
+def _model_call_problem(payload: Mapping[str, object], units: Sequence[UnitRow]) -> str | None:
+    """What is wrong with the form of a `model_call`, or `None`.
+
+    Units exactly at `ok`: the answer goes into the units, and only a call
+    that got a valid answer has one. A unit erased by a cascade is still a
+    row, so an erased answer keeps its call sound. `inputs` is what an
+    erasure of a source follows to the calls that read it, so an entry
+    without an event would be a call no erasure can reach.
+    """
+    outcome = payload.get("outcome")
+    if not isinstance(outcome, str):
+        return "it has no outcome"
+    if outcome not in OUTCOMES:
+        return f'it has the unknown outcome "{outcome}"'
+    if outcome == OK and not units:
+        return "it is ok and has no units"
+    if outcome != OK and units:
+        return f"it is {outcome} and has units"
+    inputs = payload.get("inputs")
+    if not isinstance(inputs, list):
+        return 'it has no list "inputs"'
+    for entry in cast("list[object]", inputs):
+        event = (
+            cast("Mapping[str, object]", entry).get("event") if isinstance(entry, dict) else None
+        )
+        if not isinstance(event, int) or isinstance(event, bool):
+            return 'it has an "inputs" entry without an event'
+    return None
 
 
 def _execution_findings[Conn](

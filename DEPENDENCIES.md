@@ -50,6 +50,9 @@ not appear in it at all.
 | `boto3` | The S3 client in `storage/s3.py`, the one module allowed to import it ([About blobs](docs/explanation/blobs.md)) | the MinIO Python SDK: last release 7.2.20 on 2025-11-27, and the server project it belongs to, `minio/minio`, is archived (checked 2026-10-05) | 2026-10-05, active — 1.43.108 on 2026-10-02, a release on each of the four working days before it; repository `boto/boto3` pushed 2026-10-02, not archived. Brings `botocore` (same day), `s3transfer` (0.19.2, 2026-07-22) and `jmespath` (1.1.0, 2026-01-22) |
 | `pyrage` | Seals and opens blobs in the `age` format in `core/sealing.py`, the one module allowed to import it | `cryptography` with AES-GCM in one piece holds the plaintext, the ciphertext and the opened copy at once and stops at 2 GiB — measured on 2026-10-05 with `docs/superpowers/plans/2026-10-04-stufe-1c-anlagen/measure_gcm.py`: a peak of 793 MiB at 256 MiB, and at 2048 MiB `OverflowError: Data or associated data too long. Max 2**31 - 1 bytes`; with a chunked scheme of our own it would be security-critical code and a format of our own; Tink pulls in `protobuf`, `absl-py` and `bazel-runfiles` | 2026-10-05, **released rarely, judgement: acceptable because the format carries it** — 1.4.0 on 2026-08-23, before that 2025-06-14 and 2025-04-02; one maintainer; repository `woodruffw/pyrage` pushed 2026-09-30, last commit 2026-09-27, not archived, MIT. A thin binding to the Rust crate `age` (0.12.1, per the wheel's SBOM), with no Python dependencies and `abi3` wheels from Python 3.10. The judgement rests on the **format, not on the binding**: should the binding be orphaned, every other `age` implementation — the `age` tool, `rage` — still reads the blobs |
 | `html2text` | Turns every HTML part of the body of a mail into text in `core/mail.py`, the one module allowed to import it; its version goes into the payload as `body.converter` | `inscriptis` 2.7.5 loses the marking of a quote and brings `lxml` and `requests`; `beautifulsoup4` 4.15.0 splits a signature and table cells into units of their own — both measured on 2026-10-06 against six invented HTML mails, in the plan `docs/superpowers/plans/2026-10-06-pilot-imap-aufnahme.md`. None of the three fetches anything from the network while converting | 2026-10-06, **released rarely, judgement: finished, not abandoned**, like `hatch-vcs` — 2025.4.15 on 2025-04-15, before that 2024-02-27 and 2024-02-25, 38 releases; repository `Alir3z4/html2text` last pushed 2025-10-28, not archived, 99 open issues. No dependencies, ships `py.typed`. GPL-3.0-or-later, which section 13 of the AGPL lets this project combine with; the first runtime dependency under a strong copyleft (`psycopg` is LGPL-3.0-only), accepted by the maintainer on 2026-10-06. Should it be orphaned, the converter is one function in `core/mail.py`, and `inscriptis` is the replacement measured. One setting is not optional: without `unicode_snob` it writes the entity `&uuml;` as `u`, measured on 2026-10-06 |
+| `anthropic` | The Anthropic client in `gate/adapters/anthropic.py`, the one module allowed to import it ([About the module boundaries](docs/explanation/module-boundaries.md)) | calling the HTTP API by hand would mean our own request and error handling for a provider whose parameters (`output_config`, `inference_geo`) the SDK already types | 2026-10-09, active — 1.13.0 on 2026-10-09, 226 releases; repository `anthropics/anthropic-sdk-python` pushed 2026-10-09, not archived, MIT; ships `py.typed`. Brings `pydantic` (2.14.0, 2026-10-08), `httpx2` (2.13.1, 2026-09-23, 18 releases; the HTTP client both SDKs now depend on; repository `pydantic/httpx2`), `anyio`, `jiter`, `sniffio`, `docstring-parser` and `typing-inspection`. Built with `max_retries=0`: the gate records every attempt |
+| `openai` | The client for OpenAI-compatible endpoints in `gate/adapters/openai_compatible.py`, the one module allowed to import it; it serves Mistral and a local Ollama | `mistralai`, the vendor's own client, would add a second dependency for what the OpenAI-compatible endpoint does measured on 2026-10-09 (`mistral-small-2603`), and Ollama has no other SDK worth the name | 2026-10-09, active — 3.27.0 on 2026-10-09, 445 releases; repository `openai/openai-python` pushed 2026-10-09, not archived, Apache-2.0; ships `py.typed`. Shares its transitive dependencies with `anthropic`. Built with `max_retries=0` |
+| `pydantic` | The output schema of a task of the gate, in `gate/task.py` and `gate/tasks/`: `model_json_schema` is the schema a provider is asked to keep, and `model_validate_json` is the check the gate makes of every answer itself | `jsonschema` would need stubs for pyright strict, and a second description of each output beside the code that reads it | 2026-10-09, active — 2.14.0 on 2026-10-08, 207 releases; repository `pydantic/pydantic` pushed 2026-10-09, not archived, MIT; ships `py.typed`. Installed since 2026-10-09 as a dependency of `anthropic` and `openai`, and declared since the same day, when `src/` first imported it |
 | `pyrage-stubs` | Types for `pyrage`, for pyright strict; the wheel of `pyrage` ships no `py.typed` and no `.pyi` (checked against its `RECORD`) | — | 2026-10-05, active — 1.4.0 on 2026-08-23, the same day as `pyrage` 1.4.0, out of the same repository; MIT. Only for type checking |
 | `types-boto3-lite[s3]` | Types for `boto3` and its S3 client, for pyright strict; neither `boto3` nor `botocore` ships a `py.typed` | `types-boto3[s3]`, the full flavor: under strict mode `boto3.client` is "partially unknown" with it, because its overloads point into the unknown for every service that is not installed; with `lite` and `pyrage-stubs` pyright reports nothing. Both halves are the measurement of 2026-10-04 against a draft of the adapter, recorded in the header of `docs/superpowers/plans/2026-10-04-stufe-1c-anlagen/blob_spike.py`; not repeated here. What was measured on 2026-10-05 is only that the tree, with `lite`, reports 0 errors under strict mode | 2026-10-05, active — 1.43.108 on 2026-10-02, generated daily; MIT. Brings `types-boto3-s3` (1.43.106, 2026-09-30), `botocore-stubs` (1.43.67, 2026-08-08) and `types-s3transfer` (0.16.0, 2025-12-08). Only for type checking |
 
@@ -80,23 +83,17 @@ the Go binary; its version encodes the Vale version (`3.22.0.0` → Vale
 truth" rule holds even though the binary itself ships from a different
 ecosystem.
 
-**No `pydantic` — not yet.** It stood in this table until 2026-10-03 with
-"validation of payloads" as the purpose and "schema export for MCP later" as
-the reason the hand-written alternative had been rejected. Measured,
-`grep -rn pydantic src tests migrations` found **nothing**: the validation in
-stage 1a is done by hand in `core/canonical.py`, and the reason given was a
-reason for **later**. A declared but never imported dependency is the zombie
-in its purest form (§10.7 of the architecture) — it gets installed, enlarges
-the attack surface, and nobody notices when it is orphaned. So it goes, and
-it comes back together with its user: the schema export of the MCP interface
-(§8.6 of the architecture) is a real purpose, just not one of stage 1a's.
-
-One thing is already prepared for that return, because it was measured once
-and would otherwise have to be measured again (ruling T2-e): as soon as the
-first `BaseModel` arises, `[tool.ruff.lint.flake8-type-checking]` needs the
-entry `runtime-evaluated-base-classes = ["pydantic.BaseModel"]`, or ruff moves
-the `BaseModel` imports under `TYPE_CHECKING` and pydantic fails at runtime.
-That note stands in `pyproject.toml`, at the place where it will be needed.
+**`pydantic` went and came back.** It stood in this table until 2026-10-03
+with "validation of payloads" as the purpose, and nothing imported it: the
+validation of stage 1a is done by hand in `core/canonical.py`. A declared but
+never imported dependency is the zombie in its purest form (§10.7 of the
+architecture), so it went, to come back with a user. The one foreseen then
+was the schema export of the MCP interface (§8.6 of the architecture); the
+one that brought it back on 2026-10-09 is the gate, whose tasks describe
+their output as a pydantic model. The ruff entry the return needed,
+`runtime-evaluated-base-classes = ["pydantic.BaseModel"]`, came with it:
+without it ruff moves the `BaseModel` imports under `TYPE_CHECKING`, and
+pydantic fails at runtime.
 
 **No library for JCS.** The permitted payload range is so restricted (no
 floating point numbers, ASCII keys, integers inside the safe range) that

@@ -14,7 +14,8 @@ line with its source attribution.
 **Stages 1a, 1b and 1c are built and run: the append-only log with its hash
 chain, the projections derived from it, and blobs and erasure. A release
 publishes a package on PyPI and an image on ghcr.io. The first connector takes
-the mail of an IMAP folder in.** Not a product surface — a command line
+the mail of an IMAP folder in, and a gate lets a language model read it only
+as far as a policy in the log allows.** Not a product surface — a command line
 thin enough to get at the log by hand, so that each stage is *runnable* and not
 merely described.
 
@@ -69,8 +70,19 @@ merely described.
   instead of being lost; see
   [About connectors](docs/explanation/connectors.md) and
   [How to take in the mail of a folder](docs/how-to/ingest-a-mail-folder.md)
-- the twelve commands `migrate`, `append`, `ingest`, `redact`, `log`,
-  `verify`, `anchor`, `show`, `blob`, `project`, `chronicle` and `stats`
+- **the gate and the processing policy** (`policy`, `gate`): circles of people,
+  rules for them and what each provider promises, all as events in the same
+  chain; for a mail, `gate explain` shows which model at which provider in
+  which region may read it, and `gate try` makes the call. Without a rule only
+  a local model is allowed, and the fallback shows. Every attempt, a denied one
+  included, becomes a `model_call` event that holds no content, and an erasure
+  of the mail takes the answer with it; see
+  [About the processing policy](docs/explanation/processing-policy.md),
+  [About trust boundaries](docs/explanation/trust-boundaries.md) and
+  [How to set a policy and try a call](docs/how-to/set-a-policy-and-try-a-call.md)
+- the fourteen commands `migrate`, `append`, `ingest`, `redact`, `log`,
+  `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`,
+  `policy` and `gate`
 - the schema as Alembic migrations inside the package, applied by
   `previously migrate`
 
@@ -79,8 +91,9 @@ come out of the gate; no assignment of events to projects, so the chronicle is
 the chronicle of the whole log and not of one project; no job queue — the
 projection worker is a command, run when somebody runs it; one connector,
 for an IMAP folder, and none for anything else yet, such as a shared folder
-or an issue tracker; no MCP interface, no language model and therefore no
-assertions, and no action but the redaction; no search, no user
+or an issue tracker; no MCP interface, no assertions, no action that writes
+into a foreign system, and one task only for the gate, an overview of a mail
+that is a probe and no result anything relies on; no search, no user
 administration and no network interface.
 
 And one limit that is not a gap but the nature of the thing: a hash chain by

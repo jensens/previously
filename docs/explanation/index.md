@@ -16,5 +16,7 @@ projections
 backup-encryption
 silent-losses
 delivery
+trust-boundaries
+processing-policy
 design-records
 ```

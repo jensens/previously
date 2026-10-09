@@ -8,6 +8,7 @@ from previously.contract.types import Anchor
 from previously.contract.types import BlobRef
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
+from previously.core.action import append_action
 from previously.core.append import append
 from previously.core.blob import store_blob
 from previously.core.chain import link
@@ -1366,3 +1367,52 @@ def test_the_rule_holds_end_to_end(
     _stored(blob_store, age_identity, content)
     append(storage, [_attached("c", shared)], recorded_at=NOW)
     assert findings() == ()
+
+
+@pytest.mark.db
+def test_an_action_with_an_unknown_name_fires(db: Engine) -> None:
+    """The name is the only thing that tells `verify` how to read an action.
+    A name nobody here knows is a finding, and it names the action."""
+    storage = PostgresStorage(db)
+    event_id = append_action(storage, {"action": "teleport"}, (), recorded_at=NOW)
+    assert verify(storage) == [Finding(event_id, 'unknown action "teleport"')]
+
+
+@pytest.mark.db
+def test_an_action_with_a_known_name_is_no_finding(db: Engine) -> None:
+    """The control of the test above: the same call with a name that is
+    known. The form of each name is checked by the task that writes it; a
+    `policy` is checked in `tests/test_policy.py`, a `model_call` in
+    `tests/test_gate.py`, and this one has the smallest form that passes."""
+    storage = PostgresStorage(db)
+    denied: dict[str, object] = {
+        "action": "model_call",
+        "inputs": [],
+        "outcome": "denied",
+        "alarms": [],
+    }
+    append_action(storage, denied, (), recorded_at=NOW)
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_a_policy_event_that_took_another_way_in_is_a_finding(db: Engine) -> None:
+    """The write path of the policy refuses a broken statement; `verify` is
+    for the one that came around it (here: no name for the circle). The
+    control is the same statement written properly."""
+    storage = PostgresStorage(db)
+    good = append_action(
+        storage,
+        {"action": "policy", "policy": "circle", "name": "xz", "statement": "s", "revoked": False},
+        (),
+        recorded_at=NOW,
+    )
+    assert verify(storage) == []
+    bad = append_action(
+        storage,
+        {"action": "policy", "policy": "circle", "statement": "s", "revoked": False},
+        (),
+        recorded_at=NOW,
+    )
+    assert good == 1
+    assert verify(storage) == [Finding(bad, 'policy event has no valid form: it has no "name"')]

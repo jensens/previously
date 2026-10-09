@@ -8,11 +8,11 @@ root_package = previously
 include_external_packages = True
 
 [importlinter:contract:layers]
-name = Layers: cli, connectors, core beside migrations, storage, contract
+name = Layers: cli, connectors beside gate, core beside migrations, storage, contract
 type = layers
 layers =
     previously.cli
-    previously.connectors
+    previously.connectors | previously.gate
     previously.core | previously.migrations
     previously.storage
     previously.contract
@@ -20,6 +20,10 @@ layers =
 # connector: a connector speaks a foreign protocol and hands bytes to `core`,
 # so it may use `core` and `core` may not know it. The name followed, because
 # the name is what the gate prints.
+# `gate` joined `connectors` in its layer on 2026-10-09, and the name followed
+# again. The two never import each other: a connector reads a source, the gate
+# calls a model, and each hands its result to `core`. The layers contract
+# keeps them apart in both directions because they share a layer.
 
 [importlinter:contract:core-is-clean]
 name = core knows no foreign system and no model
@@ -78,13 +82,23 @@ forbidden_modules =
 # sources were always `core` and `contract`, and the name now says so.
 
 [importlinter:contract:no-vendor-sdk]
-name = No vendor SDK in the package
+name = Only the gate adapters import vendor SDKs
 type = forbidden
 source_modules =
     previously
 forbidden_modules =
     anthropic
     openai
+ignore_imports =
+    previously.gate.adapters.anthropic -> anthropic
+    previously.gate.adapters.openai_compatible -> openai
+# A call to a model happens where the gate is, and an SDK stays inside the
+# adapter that speaks for its provider: what leaves an adapter is a `Response`
+# or an `AdapterError`, never a type of the vendor. Until 2026-10-09 the
+# contract was called `No vendor SDK in the package` and had no exemption,
+# because no module called a model. The whole package is the source and the
+# two edges are named, never a pattern, for the reason `core-is-clean` gives:
+# a third adapter has to be granted deliberately.
 
 [importlinter:contract:only-sealing-knows-age]
 name = Only core.sealing imports pyrage

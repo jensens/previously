@@ -266,6 +266,16 @@ A tombstone that only emptied the payload would have left the wording standing i
 So an erasure of an event takes the content of its units too.
 What stays of the older behavior is the tombstone without an order: `test_a_payload_erased_without_a_redaction_keeps_its_chronicle_rows_with_evidence_null` sets a payload to `NULL` by hand, leaves the units standing, and finds their rows with `evidence` empty.
 
+## Why the chronicle shows observations only
+
+The chronicle answers "what happened, line by line, and how it's known," and the answer is a statement a source made.
+An action is something the system did, so it isn't one.
+Since the pilot's gate a model call is an action that keeps the answer it received as units, so that an erasure can take them out one by one, and without a rule those units would stand in the chronicle among the lines of a mail.
+The derivation therefore skips every event whose kind isn't `observation`, and the chronicle's version went from 2 to 3 so that the first catch-up after the upgrade rebuilds the table.
+A redaction is an action too, but it has no units, so the table of version 2 holds no row of one; the rebuild matters for the actions written with units.
+`test_the_upgrade_to_version_3_rebuilds_and_ends_as_a_fresh_build` puts such a row into a table the way version 2 would have built it, and finds the rebuilt table equal to a fresh one.
+What an action did stays readable in `log`, which reads the chain one event at a time and shows every kind.
+
 `p_source_stats` doesn't change, and its version stays at 1.
 An erasure leaves the rows of its units in the log as tombstones, so no row disappears, and the append-only argument for catching up a minimum still holds.
 `units` therefore counts the units recorded, erased ones included, and not the units that still carry content.
