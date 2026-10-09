@@ -1379,10 +1379,33 @@ def test_an_action_with_an_unknown_name_fires(db: Engine) -> None:
 
 
 @pytest.mark.db
-@pytest.mark.parametrize("name", ["policy", "model_call"])
-def test_an_action_with_a_known_name_is_no_finding(db: Engine, name: str) -> None:
+def test_an_action_with_a_known_name_is_no_finding(db: Engine) -> None:
     """The control of the test above: the same call with a name that is
-    known. The form of each name is checked by the task that writes it."""
+    known. The form of each name is checked by the task that writes it; a
+    `policy` is checked in `tests/test_policy.py`."""
     storage = PostgresStorage(db)
-    append_action(storage, {"action": name}, (), recorded_at=NOW)
+    append_action(storage, {"action": "model_call"}, (), recorded_at=NOW)
     assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_a_policy_event_that_took_another_way_in_is_a_finding(db: Engine) -> None:
+    """The write path of the policy refuses a broken statement; `verify` is
+    for the one that came around it (here: no name for the circle). The
+    control is the same statement written properly."""
+    storage = PostgresStorage(db)
+    good = append_action(
+        storage,
+        {"action": "policy", "policy": "circle", "name": "xz", "statement": "s", "revoked": False},
+        (),
+        recorded_at=NOW,
+    )
+    assert verify(storage) == []
+    bad = append_action(
+        storage,
+        {"action": "policy", "policy": "circle", "statement": "s", "revoked": False},
+        (),
+        recorded_at=NOW,
+    )
+    assert good == 1
+    assert verify(storage) == [Finding(bad, 'policy event has no valid form: it has no "name"')]

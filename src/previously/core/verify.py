@@ -32,6 +32,7 @@ from previously.contract.blobs import BlobStore
 from previously.contract.blobs import KeyProvider
 from previously.contract.types import Anchor
 from previously.core.action import KNOWN_ACTIONS
+from previously.core.action import POLICY
 from previously.core.action import REDACTION
 from previously.core.blob import fetch_blob
 from previously.core.canonical import canonical
@@ -48,6 +49,7 @@ from previously.core.hashing import payload_hash_v2
 from previously.core.hashing import unit_digest
 from previously.core.hashing import units_hash
 from previously.core.hashing import units_hash_v2
+from previously.core.policy import check_payload
 from previously.core.redaction import action_name
 from previously.core.redaction import blob_expected
 from previously.core.redaction import MalformedAction
@@ -421,6 +423,8 @@ class _Erasures:
         # a forgery. The form of the known names is checked where each is read.
         if name not in KNOWN_ACTIONS:
             return [Finding(row.id, f'unknown action "{name}"')]
+        if name == POLICY and (problem := check_payload(row.payload)) is not None:
+            return [Finding(row.id, f"policy event {problem}")]
         return []
 
     def reconcile[Conn](self, storage: LogStore[Conn], conn: Conn) -> list[Finding]:

@@ -69,8 +69,9 @@ merely described.
   instead of being lost; see
   [About connectors](docs/explanation/connectors.md) and
   [How to take in the mail of a folder](docs/how-to/ingest-a-mail-folder.md)
-- the twelve commands `migrate`, `append`, `ingest`, `redact`, `log`,
-  `verify`, `anchor`, `show`, `blob`, `project`, `chronicle` and `stats`
+- the thirteen commands `migrate`, `append`, `ingest`, `redact`, `log`,
+  `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats` and
+  `policy`
 - the schema as Alembic migrations inside the package, applied by
   `previously migrate`
 

@@ -3,7 +3,7 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has twelve subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, and `stats`.
+It has thirteen subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, and `policy`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
 `append --attach`, `ingest imap`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
 `ingest imap` alone reads the five `PREVIOUSLY_IMAP_*` settings.
@@ -64,6 +64,7 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `project` | Every projection stands at the tip of the log. | Not used. | Storage raised an error, the worker found a gap in the log, or a catch-up at another version rebuilt a projection while this one ran. |
 | `chronicle` | The chronicle was printed, even when the window holds no row. | Not used. | The input was invalid, or storage raised an error. |
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
+| `policy` | The statement was written, or `show` printed the policy. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the statement was refused, or storage raised an error. |
 
 Every command that receives `SIGTERM` once it has started stops with exit code 143, 128 and the signal's number, and prints nothing to standard error.
 The handler is set after the command's imports; a `SIGTERM` in the first fraction of a second, measured at about 0.7 s in the image, isn't caught, and as process 1 of a container the command then runs on until the grace period ends.
@@ -733,3 +734,73 @@ An event with no source attribution appears in no line.
 
 `stats` reports the lag of `source-stats` on standard error, in the same sentence `chronicle` uses and with the same exit code 0.
 The two commands report the lag of the projection each one reads, so after a rebuild of one of the two the numbers can differ.
+
+## `policy`
+
+Sets one statement of the processing policy, or prints the policy in force.
+Every statement is an event of the kind `action` with `payload.action` set to `policy`, written with no source key and no units.
+It has six forms, and the five that write take the same three options:
+
+```text
+previously policy circle NAME --statement TEXT
+previously policy member CIRCLE ADDRESS-OR-@DOMAIN --statement TEXT
+previously policy own ADDRESS-OR-@DOMAIN --statement TEXT
+previously policy rule SCOPE --regions REGION [REGION ...] --statement TEXT
+previously policy provider NAME --retention-days N|unknown --statement TEXT
+previously policy show [--at TIME]
+```
+
+| Option | Required | Default | Description |
+|---|---|---|---|
+| `--statement TEXT` | Yes | — | The sentence the statement was set with. It stays in the log, and nothing evaluates it. An empty sentence or one of white space is refused. |
+| `--revoke` | No | off | Lift the statement instead of setting it. The older event stays in the chain. |
+| `--yes` | No | off | Write without asking. |
+
+| Form | Key | Meaning |
+|---|---|---|
+| `circle` | `NAME` | A circle exists. |
+| `member` | `CIRCLE` and `ADDRESS-OR-@DOMAIN` | An address, or a domain written `@domain.tld`, belongs to the circle. The domain is stored in lower case, and the local part as typed. |
+| `own` | `ADDRESS-OR-@DOMAIN` | The operator's own identity. It doesn't count as a member of any circle. |
+| `rule` | `SCOPE` | A scope gets conditions. `SCOPE` is `circle:<name>` or `source:<source>`. |
+| `provider` | `NAME` | What a provider account promises. |
+
+`rule` takes these further options:
+
+| Option | Required | Default | Description |
+|---|---|---|---|
+| `--regions REGION ...` | Yes | — | `eu`, `us`, both, or `any`. `any` can't stand beside another region. |
+| `--max-retention-days N` | No | no limit | A whole number of days. `0` means zero retention. |
+| `--exclude-provider NAME` | No | none | A provider the scope never uses. May repeat. |
+
+`provider` takes these further options:
+
+| Option | Required | Default | Description |
+|---|---|---|---|
+| `--inference NAME=REGIONS` | No | none | A space of inference and what it means, such as `global=any` or `us=us`. May repeat. |
+| `--storage REGION ...` | No | stores nothing | Where the provider stores. |
+| `--retention-days N\|unknown` | Yes | — | How long the provider keeps what it receives. |
+| `--reports-geo` | No | off | The answer of the provider names the region. |
+| `--local` | No | off | The provider runs on hardware the operator runs. |
+
+A form that writes prints the statement as a JSON object, asks `write? [y/N]` and reads the answer from standard input.
+`y` and `yes`, in any case, write the event and print `policy event ID`.
+Any other answer, or an input that ends, writes nothing, prints `nothing written` to standard error and returns 1.
+`--yes` skips the question.
+
+A statement the write path refuses is an input error: one sentence on standard error, return code 2, no question asked and nothing written.
+These are refused:
+
+- a membership in a circle that doesn't exist, as `Error: no circle "nowhere" exists — create it first with previously policy circle nowhere`;
+- a scope of the form `project:<name>`, as `Error: scope "project:alpha" is not effective yet: project scopes arrive with the projects; use circle:<name> or source:<source>`;
+- any other scope that isn't `circle:<name>` or `source:<source>`;
+- `--regions` with no region, with `any` beside another region, or with a word that isn't a region;
+- a negative number of days;
+- an address or a domain that has no dot in its domain part;
+- an empty statement.
+
+`policy show` prints one table per kind, with a row ending in the id of the event that set it.
+The rules table starts with the built-in rule `local_only`, which isn't an event and can't be revoked: where no other rule applies, only a provider declared `local` is used.
+`--at TIME` prints the policy as it stood at that moment, which is the log read up to it; the time needs a zone, as for `--occurred-at`.
+A newer event with the same key replaces the older one, a revocation lifts the statement, and an event whose payload was erased counts for nothing.
+
+`verify` reports a policy event whose form isn't sound, such as one that has no name, with a finding of the form `policy event has no valid form: it has no "name"`.

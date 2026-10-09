@@ -52,7 +52,14 @@ def test_an_action_is_written_without_a_key_at_the_time_it_was_recorded(db: Engi
 @pytest.mark.db
 def test_actions_chain_on_the_tip_and_verify_passes(db: Engine) -> None:
     storage = PostgresStorage(db)
-    first = append_action(storage, {"action": POLICY}, (), recorded_at=NOW)
+    circle = {
+        "action": POLICY,
+        "policy": "circle",
+        "name": "xz",
+        "statement": "s",
+        "revoked": False,
+    }
+    first = append_action(storage, circle, (), recorded_at=NOW)
     second = append_action(storage, {"action": MODEL_CALL}, (), recorded_at=NOW)
     assert (first, second) == (1, 2)
     assert verify(storage) == []

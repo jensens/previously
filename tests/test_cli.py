@@ -3992,3 +3992,159 @@ def test_ingest_imap_reads_every_setting_and_then_connects(
             "",
             f"Error: PREVIOUSLY_IMAP_PORT is not a port number: {port!r}\n",
         )
+
+
+# --- policy ------------------------------------------------------------------
+
+
+def _answer(monkeypatch: pytest.MonkeyPatch, text: str) -> None:
+    monkeypatch.setattr(sys, "stdin", io.TextIOWrapper(io.BytesIO(text.encode())))
+
+
+def _action_count(db: object) -> int:
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    with db.begin() as c:
+        return c.execute(text("SELECT count(*) FROM event WHERE kind = 'action'")).scalar_one()
+
+
+@pytest.mark.db
+def test_policy_circle_with_yes_writes_and_show_lists_it_with_the_built_in_rule(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    argv = ["policy", "circle", "xz", "--statement", "customer xz", "--yes"]
+    assert main(argv) == 0
+    out = capsys.readouterr().out
+    assert '"name": "xz"' in out
+    assert out.endswith("policy event 1\n")
+    assert main(["policy", "show"]) == 0
+    shown = capsys.readouterr().out
+    assert "circles\n  xz\t(event 1)\n" in shown
+    assert "local_only\tbuilt-in: without a rule, only providers with local" in shown
+
+
+@pytest.mark.db
+def test_policy_circle_asks_and_an_n_writes_nothing(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    _answer(monkeypatch, "n\n")
+    assert main(["policy", "circle", "xz", "--statement", "s"]) == 1
+    captured = capsys.readouterr()
+    assert "write? [y/N]" in captured.out
+    assert captured.err == "nothing written\n"
+    assert _action_count(db) == 0
+
+
+@pytest.mark.db
+def test_policy_circle_asks_and_a_y_writes(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control of the `n` above."""
+    _setup(db, monkeypatch)
+    _answer(monkeypatch, "y\n")
+    assert main(["policy", "circle", "xz", "--statement", "s"]) == 0
+    assert _action_count(db) == 1
+
+
+@pytest.mark.db
+def test_policy_without_an_answer_writes_nothing(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    _answer(monkeypatch, "")
+    assert main(["policy", "circle", "xz", "--statement", "s"]) == 1
+    assert _action_count(db) == 0
+
+
+@pytest.mark.db
+def test_a_membership_in_a_circle_that_does_not_exist_is_one_sentence_and_nothing_is_written(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review focus 5 of the 2026-10-09 plan, on the command line: return 2,
+    one sentence, no question asked, nothing written."""
+    _setup(db, monkeypatch)
+    argv = ["policy", "member", "nowhere", "eva@kunde-xz.at", "--statement", "s", "--yes"]
+    assert main(argv) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.count("\n") == 1
+    assert err.startswith('Error: no circle "nowhere" exists')
+    assert _action_count(db) == 0
+
+
+@pytest.mark.db
+def test_a_rule_for_a_project_is_refused_on_the_command_line(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    argv = ["policy", "rule", "project:alpha", "--regions", "eu", "--statement", "s", "--yes"]
+    assert main(argv) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.count("\n") == 1
+    assert "is not effective yet" in err
+    assert _action_count(db) == 0
+
+
+@pytest.mark.db
+def test_policy_rule_provider_member_own_and_revoke_round_trip_through_show(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    steps = [
+        ["circle", "xz", "--statement", "s"],
+        ["member", "xz", "@Kunde-XZ.at", "--statement", "s"],
+        ["own", "me@mine.example", "--statement", "s"],
+        [
+            *("rule", "circle:xz", "--regions", "eu", "--max-retention-days", "0"),
+            *("--exclude-provider", "anthropic", "--statement", "s"),
+        ],
+        [
+            *("provider", "anthropic", "--inference", "global=any", "--inference", "us=us"),
+            *("--storage", "us", "--retention-days", "30", "--reports-geo", "--statement", "s"),
+        ],
+    ]
+    for step in steps:
+        assert main(["policy", *step, "--yes"]) == 0
+    capsys.readouterr()
+    assert main(["policy", "show"]) == 0
+    shown = capsys.readouterr().out
+    assert "  xz\t@kunde-xz.at\t(event 2)" in shown
+    assert "  me@mine.example\t(event 3)" in shown
+    assert "  circle:xz\tregions eu\tmax retention days 0\texcluded anthropic\t(event 4)" in shown
+    assert (
+        "  anthropic\tinference global=any,us=us\tstorage us\tretention days 30"
+        "\treports geo yes\tlocal no\t(event 5)" in shown
+    )
+
+    revoke = ["policy", "member", "xz", "@kunde-xz.at", "--statement", "gone", "--revoke", "--yes"]
+    assert main(revoke) == 0
+    capsys.readouterr()
+    assert main(["policy", "show"]) == 0
+    assert "@kunde-xz.at" not in capsys.readouterr().out
+
+
+@pytest.mark.db
+def test_policy_show_at_reads_the_policy_of_that_moment(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    assert main(["policy", "circle", "xz", "--statement", "s", "--yes"]) == 0
+    capsys.readouterr()
+    assert main(["policy", "show", "--at", "2000-01-01T00:00:00Z"]) == 0
+    assert "  xz" not in capsys.readouterr().out
+    assert main(["policy", "show", "--at", "2999-01-01T00:00:00Z"]) == 0
+    assert "  xz" in capsys.readouterr().out
+    assert main(["policy", "show", "--at", "2999-01-01T00:00:00"]) == 2
+
+
+def test_the_help_names_policy_with_its_sentence(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    assert re.search(
+        r"^\s+policy\s+set and show the processing policy$", capsys.readouterr().out, re.M
+    )

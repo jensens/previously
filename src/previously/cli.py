@@ -39,6 +39,20 @@ from previously.core.errors import SourceUnreadable
 from previously.core.hashing import is_address
 from previously.core.identity import artifact_hash_of
 from previously.core.ingest import ingest
+from previously.core.policy import Circle
+from previously.core.policy import Inference
+from previously.core.policy import key_of
+from previously.core.policy import LOCAL_ONLY
+from previously.core.policy import Membership
+from previously.core.policy import normalized
+from previously.core.policy import OwnIdentity
+from previously.core.policy import PolicyRefused
+from previously.core.policy import Provider
+from previously.core.policy import read_policy
+from previously.core.policy import refusal
+from previously.core.policy import Rule
+from previously.core.policy import set_policy
+from previously.core.policy import to_payload
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
 from previously.core.projection import Outcome
@@ -77,12 +91,15 @@ import tempfile
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
     from collections.abc import Mapping
     from collections.abc import Sequence
     from previously.contract.blobs import BlobStore
     from previously.contract.blobs import KeyProvider
     from previously.contract.rows import EventRow
     from previously.contract.types import Anchor
+    from previously.core.policy import Policy
+    from previously.core.policy import Statement
     from previously.core.redact import Redacted
     from previously.core.redaction import Redaction
     from previously.core.redaction import RedactionIndex
@@ -1234,6 +1251,194 @@ def _cmd_stats(_args: argparse.Namespace) -> int:
     return 0
 
 
+# --- The processing policy ----------------------------------------------------
+
+
+def _policy_arguments(parser: argparse.ArgumentParser) -> None:
+    # A second level, like `redact`: which statement is set is a word of its
+    # own. Every one that writes takes `--statement`, `--revoke` and `--yes`.
+    what = parser.add_subparsers(dest="what", required=True)
+
+    def writing(name: str, sentence: str) -> argparse.ArgumentParser:
+        form = what.add_parser(name, help=sentence, description=sentence)
+        form.add_argument(
+            "--statement", required=True, help="the sentence it was set with; it stays in the log"
+        )
+        form.add_argument("--revoke", action="store_true", help="lift the statement instead")
+        form.add_argument("--yes", action="store_true", help="write without asking")
+        return form
+
+    circle = writing("circle", "create a circle")
+    circle.add_argument("name")
+    member = writing("member", "put an address or a domain into a circle")
+    member.add_argument("circle")
+    member.add_argument("member", metavar="ADDRESS-OR-@DOMAIN")
+    own = writing("own", "name an address or a domain as the operator's own")
+    own.add_argument("member", metavar="ADDRESS-OR-@DOMAIN")
+    rule = writing("rule", "give a scope its conditions")
+    rule.add_argument("scope", help="circle:<name> or source:<source>")
+    rule.add_argument("--regions", nargs="+", required=True, metavar="REGION", help="eu, us or any")
+    rule.add_argument("--max-retention-days", type=int, help="0 means zero retention")
+    rule.add_argument(
+        "--exclude-provider", action="append", default=[], metavar="NAME", help="may repeat"
+    )
+    provider = writing("provider", "declare what a provider account promises")
+    provider.add_argument("name")
+    provider.add_argument(
+        "--inference",
+        action="append",
+        default=[],
+        metavar="NAME=REGIONS",
+        help="a space of inference and what it means, such as global=any or us=us; may repeat",
+    )
+    provider.add_argument("--storage", nargs="*", default=[], metavar="REGION")
+    provider.add_argument(
+        "--retention-days", required=True, metavar="N|unknown", help="how long the provider keeps"
+    )
+    provider.add_argument("--reports-geo", action="store_true", help="the answer names the region")
+    provider.add_argument("--local", action="store_true", help="runs on hardware the operator runs")
+    show = what.add_parser("show", help="print the policy in force", description="print the policy")
+    show.add_argument("--at", metavar="TIME", help="the policy as it was then (ISO 8601, a zone)")
+
+
+def _inference_of(text: str) -> Inference:
+    name, equals, regions = text.partition("=")
+    if not equals:
+        raise InvalidPayload(f"{text!r} is not NAME=REGIONS, such as global=any")
+    return Inference(name, frozenset(part for part in regions.split(",") if part))
+
+
+def _retention_of(text: str) -> int | None:
+    if text == "unknown":
+        return None
+    try:
+        return int(text)
+    except ValueError as error:
+        raise InvalidPayload(f"{text!r} is not a number of days or unknown") from error
+
+
+def _policy_statement(args: argparse.Namespace) -> Statement:
+    """The statement the arguments of a writing form describe."""
+    if args.what == "circle":
+        return Circle(args.name)
+    if args.what == "member":
+        return Membership(args.circle, args.member)
+    if args.what == "own":
+        return OwnIdentity(args.member)
+    if args.what == "rule":
+        return Rule(
+            args.scope,
+            frozenset(args.regions),
+            args.max_retention_days,
+            frozenset(args.exclude_provider),
+        )
+    return Provider(
+        args.name,
+        tuple(_inference_of(text) for text in args.inference),
+        frozenset(args.storage),
+        _retention_of(args.retention_days),
+        args.reports_geo,
+        args.local,
+    )
+
+
+def _confirmed(args: argparse.Namespace) -> bool:
+    """Asks on the terminal unless `--yes`; an answer that never comes (the
+    input ended) is a no."""
+    if args.yes:
+        return True
+    try:
+        answer = input("write? [y/N] ")
+    except EOFError:
+        return False
+    return answer.strip().lower() in {"y", "yes"}
+
+
+def _cmd_policy_set(args: argparse.Namespace) -> int:
+    """Shows the structured statement, asks, and writes one policy event.
+    A refusal comes before the question, so nobody confirms what cannot be
+    written."""
+    item = normalized(_policy_statement(args))
+    with _storage() as storage:
+        with storage.begin() as conn:
+            current = read_policy(storage, conn)
+        sentence = refusal(item, statement=args.statement, revoked=args.revoke, current=current)
+        if sentence is not None:
+            raise PolicyRefused(sentence)
+        payload = to_payload(item, statement=args.statement, revoked=args.revoke)
+        print(json.dumps(payload, indent=2, sort_keys=True, ensure_ascii=False))
+        if not _confirmed(args):
+            print("nothing written", file=sys.stderr)
+            return 1
+        event_id = set_policy(
+            storage,
+            item,
+            statement=args.statement,
+            revoked=args.revoke,
+            recorded_at=datetime.now(UTC),
+        )
+    print(f"policy event {event_id}")
+    return 0
+
+
+def _list(names: Iterable[str]) -> str:
+    return ",".join(sorted(names)) or "-"
+
+
+def _policy_lines(policy: Policy) -> list[str]:
+    """The tables of `policy show`, one per kind, each row ending in the id
+    of the event that set it."""
+
+    def event(kind: str, key: str) -> str:
+        return f"(event {policy.ids[(kind, key)]})"
+
+    lines = ["circles"]
+    lines += [f"  {escape_field(name)}\t{event('circle', name)}" for name in sorted(policy.circles)]
+    lines += ["memberships"]
+    for member in policy.memberships:
+        key = key_of(member)[1]
+        who = f"{escape_field(member.circle)}\t{escape_field(member.member)}"
+        lines.append(f"  {who}\t{event('membership', key)}")
+    lines += ["own identities"]
+    lines += [
+        f"  {escape_field(own.member)}\t{event('own_identity', own.member)}" for own in policy.own
+    ]
+    lines += ["rules", f"  {LOCAL_ONLY}\tbuilt-in: without a rule, only providers with local"]
+    for scope, rule in sorted(policy.rules.items()):
+        days = "-" if rule.max_retention_days is None else str(rule.max_retention_days)
+        lines.append(
+            f"  {escape_field(scope)}\tregions {_list(rule.regions)}\tmax retention days {days}"
+            f"\texcluded {_list(rule.excluded_providers)}\t{event('rule', scope)}"
+        )
+    lines += ["providers"]
+    for name, provider in sorted(policy.providers.items()):
+        days = "unknown" if provider.retention_days is None else str(provider.retention_days)
+        inference = ",".join(
+            f"{space.name}={_list(space.regions)}"
+            for space in sorted(provider.inference, key=lambda space: space.name)
+        )
+        reports = "yes" if provider.reports_inference_geo else "no"
+        local = "yes" if provider.local else "no"
+        lines.append(
+            f"  {escape_field(name)}\tinference {inference or '-'}"
+            f"\tstorage {_list(provider.storage)}\tretention days {days}"
+            f"\treports geo {reports}\tlocal {local}\t{event('provider', name)}"
+        )
+    return lines
+
+
+def _cmd_policy(args: argparse.Namespace) -> int:
+    """Sets one statement of the policy, or prints the policy in force."""
+    if args.what != "show":
+        return _cmd_policy_set(args)
+    at = parse_moment(args.at) if args.at else None
+    with _storage() as storage, storage.begin() as conn:
+        policy = read_policy(storage, conn, at=at)
+    for line in _policy_lines(policy):
+        print(line)
+    return 0
+
+
 def _no_arguments(_parser: argparse.ArgumentParser) -> None:
     """For a command that takes no arguments."""
 
@@ -1274,6 +1479,7 @@ COMMANDS: tuple[Command, ...] = (
     Command("project", "bring the projections up to the tip of the log", _cmd_project),
     Command("chronicle", "print the chronicle in time order", _cmd_chronicle, _chronicle_arguments),
     Command("stats", "print the per-source statistics", _cmd_stats),
+    Command("policy", "set and show the processing policy", _cmd_policy, _policy_arguments),
 )
 
 
