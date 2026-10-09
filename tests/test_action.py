@@ -11,8 +11,10 @@ from previously.core.action import KNOWN_ACTIONS
 from previously.core.action import MODEL_CALL
 from previously.core.action import POLICY
 from previously.core.action import REDACTION
+from previously.core.errors import InvalidPayload
 from previously.core.verify import verify
 from previously.storage.postgres import PostgresStorage
+from sqlalchemy import create_engine
 from sqlalchemy import Engine
 from sqlalchemy import text
 
@@ -54,3 +56,11 @@ def test_actions_chain_on_the_tip_and_verify_passes(db: Engine) -> None:
     second = append_action(storage, {"action": MODEL_CALL}, (), recorded_at=NOW)
     assert (first, second) == (1, 2)
     assert verify(storage) == []
+
+
+def test_a_naive_recorded_at_is_refused_before_a_transaction_opens() -> None:
+    """The store here is unreachable, so a refusal that came from anywhere but
+    the check at the top would be a connection error instead."""
+    nowhere = PostgresStorage(create_engine("postgresql+psycopg://x:y@localhost:1/z"))
+    with pytest.raises(InvalidPayload, match="without time zone"):
+        append_action(nowhere, {"action": POLICY}, (), recorded_at=NOW.replace(tzinfo=None))

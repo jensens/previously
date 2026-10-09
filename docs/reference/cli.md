@@ -473,7 +473,7 @@ The first two name the anchored `id`, the third names the tip.
 `the log ends at` names the `id` of the last event in the log, and `0` for an empty log.
 The number in parentheses in the third is the `id` of the newest anchor.
 
-Nine findings come from the hash formats and from erasure:
+Ten findings come from the hash formats, from erasure and from the names of actions:
 
 ```text
 FINDING 7: unit 2 does not match its digest
@@ -485,6 +485,7 @@ FINDING 9: redaction of unit 2 of event 7 is not carried out
 FINDING 9: redaction names a target that does not exist
 FINDING 7: units are erased in part, which version 1 cannot attest
 FINDING 9: action has no valid form
+FINDING 9: unknown action "teleport"
 ```
 
 | Finding | Condition | Event |
@@ -498,6 +499,7 @@ FINDING 9: action has no valid form
 | `redaction names a target that does not exist` | The event a redaction names doesn't stand before the redaction in the chain, or doesn't have a unit it names; for a redaction of a blob, an event it names doesn't stand before it or doesn't name the blob in the blob register. | The redaction. |
 | `units are erased in part, which version 1 cannot attest` | An event in hash format 1 has some units without content, and others with it. | The event. |
 | `action has no valid form` | An event of kind `action` carries no `action` name in its payload, or a redaction's payload doesn't have exactly the form `redact` writes. | The action. |
+| `unknown action "<name>"` | An event of kind `action` carries an `action` name that isn't `redaction`, `policy` or `model_call`. | The action. |
 
 One finding comes from the blob register:
 

@@ -33,10 +33,10 @@ See {ref}`cli-reference` for the four outcomes and their exact wording.
 Raise the projection's version in the code whenever you change how its rows are derived.
 `ChronicleProjection.version` in `src/previously/core/projection/chronicle.py` carries the chronicle's version, and `SourceStatsProjection.version` in `src/previously/core/projection/source_stats.py` carries the statistics' version.
 Read the current value there, and raise it by one.
-For a chronicle at version 2, the line becomes this one:
+For a chronicle at version 3, the line becomes this one:
 
 ```python
-version: int = 3
+version: int = 4
 ```
 
 Then run `previously project`.

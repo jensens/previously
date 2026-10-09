@@ -241,6 +241,11 @@ def redact_event[Conn](
             kept_blobs=kept,
         )
 
+    # `retrying` is `append`'s policy ({ref}`concurrency`). The position is
+    # lost at `insert_event`, before any tombstone is set, so the rollback of a
+    # lost attempt undoes the lock and nothing else. The tombstones are written
+    # by an attempt that got its position, or by one that needed none because
+    # a redaction already covers its target and it writes no event.
     return retrying(log, once)
 
 

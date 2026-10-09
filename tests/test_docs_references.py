@@ -485,8 +485,8 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     against the messages `connectors/imap.py` raises as `ImapError`, and
     its line on standard output against the f-string `cli.py` prints it
     with;
-    the thirteen findings it quotes, three from the anchors, nine from
-    the hash formats and erasure and one from the blob register, against the
+    the fourteen findings it quotes, three from the anchors, ten from
+    the hash formats, erasure and action names and one from the blob register, against the
     reasons `core/verify.py` hands to `Finding`; and the four findings about
     blobs against the reasons `_blob_reason` in `core/verify.py` returns,
     since the `Finding` they stand in interpolates the reason whole. The first two sentences
@@ -664,10 +664,13 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     reasons = _finding_patterns(ROOT / "src" / "previously" / "core" / "verify.py")
     findings = [
         *_quoted_block(page, "Three findings come from the anchors"),
-        *_quoted_block(page, "Nine findings come from the hash formats and from erasure"),
+        *_quoted_block(
+            page,
+            "Ten findings come from the hash formats, from erasure and from the names of actions",
+        ),
         *_quoted_block(page, "One finding comes from the blob register"),
     ]
-    assert len(findings) == 13, findings
+    assert len(findings) == 14, findings
     for line in findings:
         # The prefix is held as well, or a page quoting `FINDINGS 42: ...`
         # would pass on the strength of its reason. Its form is written down
