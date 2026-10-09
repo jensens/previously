@@ -592,7 +592,9 @@ umgelenkte Basis-URL mit ihm. Ein echter Aufruf ist Sache der Abnahme (§10).
 2. **Ein beteiligter Kreis ohne Regel: nur lokal**, auch wenn für einen
    anderen beteiligten Kreis „überall" gilt.
 3. **Die strengste gewinnt:** eine zusätzliche Regel macht eine Entscheidung
-   nie lockerer (Hypothesis).
+   nie lockerer (Hypothesis) — außer sie gibt einem beteiligten Kreis seine
+   erste Regel: die hebt die eingebaute `local_only` auf, und das ist ihr
+   Zweck.
 4. **Eigene Identitäten zählen nicht.**
 5. **„EU" führt zu Mistral, „überall" zu Anthropic mit `global`, „us" zu
    Anthropic mit `us`.**
