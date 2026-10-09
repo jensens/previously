@@ -70,6 +70,7 @@ if TYPE_CHECKING:
 
 GEO_MISMATCH: Final = "geo_mismatch"
 ERASED: Final = "the event is erased"
+NOT_OBSERVATION: Final = "the event is not an observation"
 NO_UNITS: Final = "no unit of the event holds content"
 NOT_CONFIGURED: Final = "not_configured"
 # The stop reason a provider gives when the model declines the task, as
@@ -141,7 +142,16 @@ def _readable(read: _Read) -> list[UnitRow]:
 def _decide(read: _Read, task: Task[Any]) -> Decision:
     """The decision for the event, or a denial where it holds nothing to
     read: an erased event leaves tombstones, and a prompt out of tombstones
-    would ask a model about nothing."""
+    would ask a model about nothing.
+
+    Only an observation is read. An action (a policy event, a `model_call`)
+    is not something a source reported, and a call that read the result of
+    another call would leave that result standing after an erasure of its
+    input unless the cascade followed calls through calls; keeping actions
+    out of the gate is what lets the cascade stay one level deep.
+    """
+    if read.row.kind != "observation":
+        return _denied(NOT_OBSERVATION)
     payload = read.row.payload
     if payload is None:
         return _denied(ERASED)

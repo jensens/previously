@@ -539,6 +539,46 @@ def test_erasing_the_event_a_call_read_erases_the_answer_of_the_call(
 
 
 @pytest.mark.db
+def test_an_action_is_denied_as_input_without_a_prompt(
+    db: Engine,
+    model_server: ModelServer,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Ruling R-11 of the 2026-10-09 gate plan: a policy event and a
+    `model_call` are no input. The observation beside them still passes."""
+    storage = PostgresStorage(db)
+    event_id = append_mail(storage)
+    declare(storage)
+    policy_id = set_rule(storage, "source:email", "any")
+    model_server.enqueue("/v1/messages", 200, anthropic_body())
+    answered = call(
+        storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER
+    )
+    assert answered.outcome == "ok"
+    requests = len(model_server.requests)
+
+    for action_id in (policy_id, answered.event_id):
+        denied = call(
+            storage,
+            MAIL_OVERVIEW,
+            action_id,
+            adapters(model_server),
+            load_prices(),
+            recorded_at=LATER,
+        )
+        assert denied.outcome == "denied"
+        assert denied.message == "the event is not an observation"
+    assert len(model_server.requests) == requests
+
+    _env(monkeypatch, db, model_server)
+    capsys.readouterr()
+    assert main(["gate", "try", str(policy_id)]) == 2
+    assert capsys.readouterr().err == "denied: the event is not an observation\n"
+    assert verify(storage) == []
+
+
+@pytest.mark.db
 def test_an_erased_event_is_denied_without_a_prompt(db: Engine, model_server: ModelServer) -> None:
     """Review focus 1: no call and no prompt out of tombstones, one
     `model_call` with `denied` and the reason."""

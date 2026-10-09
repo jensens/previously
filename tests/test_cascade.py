@@ -13,6 +13,7 @@ from previously.contract.types import RawEvent
 from previously.contract.types import RawUnit
 from previously.core.action import append_action
 from previously.core.action import MODEL_CALL
+from previously.core.action import write_action
 from previously.core.append import append
 from previously.core.errors import RedactionRefused
 from previously.core.policy import Circle
@@ -22,12 +23,17 @@ from previously.core.policy import set_policy
 from previously.core.redact import redact_blob
 from previously.core.redact import redact_event
 from previously.core.redact import redact_units
+from previously.core.redact import Redacted
+from previously.core.redaction import units_payload
 from previously.core.verify import verify
 from previously.storage.postgres import PostgresStorage
+from sqlalchemy import text
 from typing import TYPE_CHECKING
 
 import hashlib
 import pytest
+import threading
+import time
 
 
 if TYPE_CHECKING:
@@ -305,3 +311,59 @@ def test_a_call_with_malformed_inputs_does_not_stop_an_erasure(db: Engine) -> No
 
     assert result.cascaded == ()
     assert [f.event_id for f in verify(storage)] == [2]
+
+
+def _waiting_on_a_row_lock(db: Engine) -> bool:
+    with db.connect() as conn:
+        waiting = conn.execute(
+            text("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'")
+        ).scalar_one()
+    return waiting > 0
+
+
+@pytest.mark.db
+def test_an_erasure_waits_at_the_row_lock_of_the_call_before_it_takes_a_chain_position(
+    db: Engine,
+) -> None:
+    """Ruling R-12 of the 2026-10-09 gate plan. Erasure A of event 1 meets
+    erasure B of the call 2 that read it; B is held halfway, with the lock
+    on the call's row, and then writes its redaction at the tip.
+
+    If A took its chain position before it locked the call, B's write would
+    wait for A's position while A waits for B's row, and PostgreSQL would end
+    one of them with a deadlock error. The test proves that order for this
+    pair: A waits at the row, B's write goes through, both finish, `verify`
+    is green. It doesn't prove the absence of a deadlock for other
+    interleavings.
+    """
+    storage = _setup(db)
+    call = _call(storage, 1, units=(1, 2, 3))
+    outcome: list[Redacted] = []
+    failure: list[BaseException] = []
+
+    def erase() -> None:
+        try:
+            outcome.append(redact_event(storage, storage, 1, reason="wrong", recorded_at=LATER))
+        except BaseException as error:
+            failure.append(error)
+
+    with storage.begin() as held:
+        storage.lock_event(held, call)
+        eraser = threading.Thread(target=erase)
+        eraser.start()
+        deadline = time.monotonic() + 15
+        while not _waiting_on_a_row_lock(db):
+            assert time.monotonic() < deadline, "A never waited at a row lock"
+            time.sleep(0.05)
+        # B's own redaction, at the tip, while A waits.
+        payload = units_payload(call, [1, 2], reason="B erases the call itself")
+        write_action(storage, held, payload, (), recorded_at=LATER)
+        storage.erase_units(held, call, [1, 2])
+    eraser.join(timeout=30)
+
+    assert not eraser.is_alive()
+    assert failure == []
+    (result,) = outcome
+    assert result.cascaded == ()
+    assert _content(storage, call) == [None, None]
+    assert verify(storage) == []

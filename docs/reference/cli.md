@@ -882,6 +882,7 @@ decision	mistral/mistral-small-2603, inference_geo -
 `local_only` stands in the rules line, without an event, where the built-in rule acted.
 A reason that belongs to no candidate, such as `no local provider is declared`, stands on a line of its own with `-` in place of the candidate, and a decision that allows no candidate reads `decision	denied`.
 An erased event is denied with the reason `the event is erased`.
+An event that isn't an observation, such as a policy event or a `model_call`, is denied with the reason `the event is not an observation`.
 
 ### `gate try`
 

@@ -193,131 +193,65 @@ It raises its own PostgreSQL container, a RustFS container as the S3 server for 
 $ uv run pytest
 ============================= test session starts ==============================
 platform linux -- Python 3.14.8, pytest-9.1.1, pluggy-1.6.0
-Using --randomly-seed=2321377033
+Using --randomly-seed=242658258
 configfile: pyproject.toml
 testpaths: tests
 plugins: cov-7.1.0, randomly-5.0.0, hypothesis-6.168.3, platformdirs-4.12.2, anyio-4.15.1
-collected 1249 items
+collected 1251 items
 
-tests/test_migration_0003.py ..                                          [  0%]
-tests/test_contracts.py ...........                                      [  1%]
-tests/test_sealing.py .....................                              [  2%]
-tests/test_policy.py .............................                       [  5%]
-tests/test_redaction.py ..........................                       [  7%]
-tests/test_migrate.py ....................                               [  8%]
-tests/test_schema.py ...................                                 [ 10%]
-tests/test_wheel.py .                                                    [ 10%]
-tests/test_keys.py ..............                                        [ 11%]
-tests/test_blob.py ...................                                   [ 12%]
-tests/test_verify.py ................................................... [ 17%]
-................................                                         [ 19%]
-tests/test_gate.py ..................................................... [ 23%]
-........                                                                 [ 24%]
-tests/test_cli.py ...................................................... [ 28%]
-........................................................................ [ 34%]
-........................................................................ [ 40%]
-........................................................................ [ 46%]
-........................................                                 [ 49%]
-tests/test_hashing.py ........................................           [ 52%]
-tests/test_projection_worker.py ....................                     [ 54%]
-tests/test_docs_typed_output.py .                                        [ 54%]
-tests/test_chain.py ...............................                      [ 56%]
-tests/test_s3.py ....................                                    [ 58%]
-tests/test_migration_0004.py .                                           [ 58%]
-tests/test_anchor.py .............                                       [ 59%]
-tests/test_canonical.py ...............                                  [ 60%]
-tests/test_cascade.py ...............                                    [ 61%]
-tests/test_projection_derive.py ...........                              [ 62%]
-tests/test_identity.py ...                                               [ 62%]
-tests/test_mail.py ..................................................... [ 67%]
-........................................................................ [ 72%]
-..................................                                       [ 75%]
-tests/test_redact.py .......................................             [ 78%]
-tests/test_action.py ....                                                [ 79%]
-tests/test_migrations_dsn.py ...                                         [ 79%]
-tests/test_units.py .............                                        [ 80%]
-tests/test_projection_store.py ..........                                [ 81%]
-tests/test_chronicle.py ..                                               [ 81%]
-tests/test_decide.py ............................                        [ 83%]
-tests/test_gate_adapters.py ......................                       [ 85%]
-tests/test_properties.py ..........                                      [ 86%]
-tests/test_docs_build.py ......                                          [ 86%]
-tests/test_append.py ..................................................  [ 90%]
-tests/test_watermark.py ........                                         [ 91%]
-tests/test_docs_references.py ...........                                [ 92%]
-tests/test_migration_0005.py .                                           [ 92%]
-tests/test_rows.py ......                                                [ 92%]
-tests/test_imap.py ................................                      [ 95%]
-tests/test_storage.py ...........................................        [ 98%]
-tests/test_ingest.py ................                                    [100%]
+tests/test_s3.py ....................                                    [  1%]
+tests/test_projection_worker.py ....................                     [  3%]
+tests/test_docs_typed_output.py .                                        [  3%]
+tests/test_contracts.py ...........                                      [  4%]
+tests/test_wheel.py .                                                    [  4%]
+tests/test_storage.py ...........................................        [  7%]
+tests/test_cli.py ...................................................... [ 11%]
+........................................................................ [ 17%]
+........................................................................ [ 23%]
+........................................................................ [ 29%]
+........................................                                 [ 32%]
+tests/test_keys.py ..............                                        [ 33%]
+tests/test_blob.py ...................                                   [ 35%]
+tests/test_identity.py ...                                               [ 35%]
+tests/test_projection_derive.py ...........                              [ 36%]
+tests/test_schema.py ...................                                 [ 37%]
+tests/test_redaction.py ..........................                       [ 39%]
+tests/test_gate.py ..................................................... [ 44%]
+.........                                                                [ 44%]
+tests/test_projection_store.py ..........                                [ 45%]
+tests/test_verify.py ................................................... [ 49%]
+................................                                         [ 52%]
+tests/test_cascade.py ................                                   [ 53%]
+tests/test_policy.py .............................                       [ 55%]
+tests/test_migration_0003.py ..                                          [ 55%]
+tests/test_hashing.py ........................................           [ 59%]
+tests/test_append.py ..................................................  [ 63%]
+tests/test_migration_0005.py .                                           [ 63%]
+tests/test_gate_adapters.py ......................                       [ 64%]
+tests/test_ingest.py ................                                    [ 66%]
+tests/test_imap.py ................................                      [ 68%]
+tests/test_rows.py ......                                                [ 69%]
+tests/test_units.py .............                                        [ 70%]
+tests/test_docs_references.py ...........                                [ 71%]
+tests/test_canonical.py ...............                                  [ 72%]
+tests/test_decide.py ............................                        [ 74%]
+tests/test_migrations_dsn.py ...                                         [ 74%]
+tests/test_migrate.py ....................                               [ 76%]
+tests/test_chain.py ...............................                      [ 78%]
+tests/test_mail.py ..................................................... [ 83%]
+........................................................................ [ 88%]
+..................................                                       [ 91%]
+tests/test_action.py ....                                                [ 92%]
+tests/test_properties.py ..........                                      [ 92%]
+tests/test_redact.py .......................................             [ 95%]
+tests/test_chronicle.py ..                                               [ 96%]
+tests/test_migration_0004.py .                                           [ 96%]
+tests/test_docs_build.py ......                                          [ 96%]
+tests/test_watermark.py ........                                         [ 97%]
+tests/test_sealing.py .....................                              [ 98%]
+tests/test_anchor.py .............                                       [100%]
 
-================================ tests coverage ================================
-_______________ coverage: platform linux, python 3.14.8-final-0 ________________
-
-Name                                                        Stmts   Miss  Cover   Missing
------------------------------------------------------------------------------------------
-src/previously/__init__.py                                      0      0   100%
-src/previously/cli.py                                         769      8    99%   475, 953, 1321, 1327, 1330-1331, 1717-1718
-src/previously/connectors/__init__.py                           0      0   100%
-src/previously/connectors/imap.py                             180      9    95%   128, 146, 167, 199, 236, 269, 272, 277, 339
-src/previously/contract/__init__.py                             0      0   100%
-src/previously/contract/blobs.py                               21      0   100%
-src/previously/contract/connector.py                            4      4     0%   12-34
-src/previously/contract/rows.py                                27      0   100%
-src/previously/contract/store.py                               32     32     0%   53-177
-src/previously/contract/types.py                               31      0   100%
-src/previously/core/__init__.py                                 0      0   100%
-src/previously/core/action.py                                  37      0   100%
-src/previously/core/anchor.py                                  30      0   100%
-src/previously/core/append.py                                 129      1    99%   596
-src/previously/core/blob.py                                    61      0   100%
-src/previously/core/canonical.py                               41      0   100%
-src/previously/core/chain.py                                   96      0   100%
-src/previously/core/decide.py                                  85      0   100%
-src/previously/core/errors.py                                  28      0   100%
-src/previously/core/gaps.py                                    46      4    91%   43, 46, 64, 86
-src/previously/core/hashing.py                                 57      0   100%
-src/previously/core/identity.py                                 5      0   100%
-src/previously/core/ingest.py                                 130      0   100%
-src/previously/core/mail.py                                   354      4    99%   831-832, 909-912
-src/previously/core/policy.py                                 269      6    98%   221, 342, 346, 355, 369, 373
-src/previously/core/projection/__init__.py                      8      0   100%
-src/previously/core/projection/chronicle.py                    44      0   100%
-src/previously/core/projection/source_stats.py                 28      0   100%
-src/previously/core/projection/worker.py                       55      0   100%
-src/previously/core/redact.py                                 157      0   100%
-src/previously/core/redaction.py                              113      0   100%
-src/previously/core/sealing.py                                 92      2    98%   157, 194
-src/previously/core/units.py                                   13      0   100%
-src/previously/core/verify.py                                 331      0   100%
-src/previously/gate/__init__.py                                 0      0   100%
-src/previously/gate/adapters/__init__.py                       26      0   100%
-src/previously/gate/adapters/anthropic.py                      25      0   100%
-src/previously/gate/adapters/openai_compatible.py              23      0   100%
-src/previously/gate/gate.py                                   119      1    99%   149
-src/previously/gate/prices.py                                  56      1    98%   65
-src/previously/gate/task.py                                    19      0   100%
-src/previously/gate/tasks/__init__.py                           0      0   100%
-src/previously/gate/tasks/mail_overview.py                      9      0   100%
-src/previously/migrations/__init__.py                           0      0   100%
-src/previously/migrations/dsn.py                               11      0   100%
-src/previously/migrations/env.py                               30      4    87%   43-51, 100
-src/previously/migrations/versions/0001_log.py                 19      3    84%   107-109
-src/previously/migrations/versions/0002_projections.py         16      4    75%   62-65
-src/previously/migrations/versions/0003_hash_version_2.py      31      0   100%
-src/previously/migrations/versions/0004_event_blob.py          16      0   100%
-src/previously/migrations/versions/0005_watermark.py           16      0   100%
-src/previously/storage/__init__.py                              0      0   100%
-src/previously/storage/errors.py                               13      0   100%
-src/previously/storage/keys.py                                 28      0   100%
-src/previously/storage/migrate.py                              53      1    98%   113
-src/previously/storage/postgres.py                            270      0   100%
-src/previously/storage/s3.py                                  108      0   100%
-src/previously/storage/schema.py                               31      0   100%
------------------------------------------------------------------------------------------
-TOTAL                                                        4192     84    98%
-Required test coverage of 90.0% reached. Total coverage: 98.00%
-======================= 1249 passed in 190.75s (0:03:10) =======================
+======================= 1251 passed in 187.53s (0:03:07) =======================
 ```
 
 `pytest-randomly` reshuffles the file order on every run and prints its seed, so a hidden dependency between two tests surfaces instead of staying hidden.
