@@ -12,6 +12,7 @@ attach-and-fetch-a-file
 run-a-blob-store-on-your-machine
 keep-the-blob-key-safe
 ingest-a-mail-folder
+set-a-policy-and-try-a-call
 add-a-migration
 rebuild-a-projection
 run-the-image

@@ -2,8 +2,8 @@
 
 # About the frozen design records
 
-Eight German documents under `docs/superpowers/specs/` hold how this project was decided: the design, the architecture, the detailed specification of stage 1a, the one for stage 1b, the one for the external anchor, the one for stage 1c, the one for delivery, and the one for taking mail in from an IMAP folder.
-The first three froze on 2026-10-03, the next two on 2026-10-04, two more on 2026-10-05, and the last on 2026-10-06, and nothing pulls any of them forward again.
+Nine German documents under `docs/superpowers/specs/` hold how this project was decided: the design, the architecture, the detailed specification of stage 1a, the one for stage 1b, the one for the external anchor, the one for stage 1c, the one for delivery, the one for taking mail in from an IMAP folder, and the one for the gate and the policy.
+The first three froze on 2026-10-03, the next two on 2026-10-04, two more on 2026-10-05, one on 2026-10-06, and the last on 2026-10-09, and nothing pulls any of them forward again.
 The reasoning that gets maintained along with the code lives in this quadrant instead, and where a specification and a page disagree, the page is what holds.
 
 Until this documentation existed, those first three documents were the only place a reason was written down, so the code cited them: 72 paragraph references across 21 files in `src/`, `tests/` and `migrations/`, pointing at 20 paragraphs.
@@ -43,6 +43,13 @@ The specification of the pilot's first unit, taking mail in from an IMAP folder,
 It changed the contract every later connector writes against: an event carries the identity of its artifact and the identities its channel names, and `append` compares the first under a key it knows already.
 {ref}`connectors` carries its reasoning, and {ref}`erasure` took what it means for erasing a mail; {ref}`mail-mapping` took the mapping of a mail, field by field, {ref}`hash-format` the identity of an artifact, and {ref}`cli-reference`, {ref}`configuration-reference` and {ref}`database-schema` the command, its settings and the watermark.
 {ref}`ingest-a-mail-folder` took the routine, and a second handoff, `docs/superpowers/handoffs/2026-10-06-kup6s-ingest.md`, tells whoever runs the Kubernetes environment what the ingest needs there.
+Its open points went into the map, each under the unit of work it belongs to.
+
+The specification of the pilot's third unit, the gate and the policy, is dated 2026-10-09 and froze the same day.
+It decided that a policy is an action of the operator and not an assertion, and that a model call is an event in the chain whatever became of it.
+{ref}`processing-policy` carries its reasoning, and {ref}`trust-boundaries` took the list of the places where content leaves the system, which the specification asked for; {ref}`policy-and-model-calls` took the payload of a policy event and of a model call, {ref}`cli-reference` and {ref}`configuration-reference` the commands and their settings, and {ref}`erasure` the cascade that takes the answer of a call with its input.
+{ref}`set-a-policy-and-try-a-call` took the routine, and a third handoff, `docs/superpowers/handoffs/2026-10-09-kup6s-gate.md`, tells whoever runs the Kubernetes environment what the gate needs there.
+The build departs from its wording in four places, which the header of the record lists, and the pages hold.
 Its open points went into the map, each under the unit of work it belongs to.
 
 ## What a frozen record is still good for
