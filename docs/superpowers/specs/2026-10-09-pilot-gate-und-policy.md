@@ -29,7 +29,7 @@ jeder Aufruf — auch ein abgelehnter — wird ein Event in der Kette.**
 
 **Lieferungen:**
 
-1. **Das Modell der Policy** als Feststellungen im Log: Kreise,
+1. **Das Modell der Policy** als Handlungen im Log: Kreise,
    Mitgliedschaften, Regeln, Zusagen der Anbieter, eigene Identitäten (§2).
 2. **Die Entscheidung** als reine Funktion über diese Events und den Inhalt
    (§2.5).
@@ -55,8 +55,8 @@ jeder Aufruf — auch ein abgelehnter — wird ein Event in der Kette.**
   Einheit baut den strukturierten Schreibweg, auf den jener aufsetzt.
 - **Projekte** als Geltungsbereich einer Regel; es gibt noch keine
   Zuordnung (Einheit 5).
-- **Feststellungen allgemein** — vorgezogen wird nur der Schreibweg für die
-  Arten aus §2.
+- **Feststellungen** (`assertion`) und ihr Schreibweg (Einheit 5). Die
+  Policy braucht keinen davon (§1.2).
 - **Die KI-Schicht** mit Vorschlägen (Einheit 6), die Batch API, OpenRouter,
   der OpenAI-kompatible Adapter.
 - **Der MCP-Server** (Einheit 4). Er verwendet die Entscheidung aus §2.5
@@ -105,20 +105,27 @@ wem gehört, ergibt sich deshalb aus den Beteiligten, nicht aus dem Ordner
 - **Die Policy steht im Log, nicht in einer Datei.** Der Entwurf lässt offen,
   wo das Profil liegt. Der Betreuer will, dass sie sich aus dem Log ergibt
   und mit einem Satz gesetzt wird (§2).
-- **Ein vorgezogener Schreibweg für `assertion`.** Die Landkarte führt einen
-  zweiten Schreibweg neben `append` unter *Feststellungen und Entitäten*.
-  Diese Einheit baut ihn für die fünf Arten aus §2.1 und für `model_call`,
-  nicht allgemein.
+- **Die Policy ist eine Handlung, keine Feststellung.** Eine Regel ist eine
+  Entscheidung des Betreibers, und Entscheidungen sind nach dem Entwurf
+  Feststellungen. Die Architektur verlangt aber von **jeder** `assertion`
+  eine Quelle: `evidenced_by` ist nicht optional (§4.4), `$defs.sources` hat
+  `minItems: 1` (§8.6). Eine Policy hat keine Quelle im Log; sie gilt, weil
+  der Betreiber sie setzt. Als `assertion` müsste diese Einheit eine Ausnahme
+  von der Quellenpflicht festschreiben, bevor Einheit 5 die Feststellungen
+  entworfen hat. Eine Policy zu setzen ist deshalb eine **Handlung** des
+  Betreibers, wie eine Tilgung anzuordnen, die auch einen Grund trägt und
+  keinen Beleg (Betreuer, 2026-10-09). Neben `redaction` kommen zwei
+  Unterarten von `action` dazu: `policy` und `model_call`.
 
 ---
 
 ## 2. Das Modell der Policy
 
-### 2.1 Fünf Arten von Feststellungen
+### 2.1 Fünf Arten von Policy-Events
 
-Jede ist ein Event der Art `assertion`, gesetzt vom Betreuer, ohne
-Quellschlüssel. Die Unterart steht in der Nutzlast unter `assertion`, so wie
-die Unterart einer Handlung seit Stufe 1c unter `action` steht. Jede trägt
+Jedes ist ein Event der Art `action` mit `payload.action = "policy"`, gesetzt
+vom Betreuer, ohne Quellschlüssel — so wie eine Tilgung. Welche Art es ist,
+steht unter `payload.policy`. Jedes trägt
 den **Satz**, mit dem sie gesetzt wurde, unter `statement` — Herkunft, die
 das Gate nie auswertet.
 
@@ -145,7 +152,7 @@ Ein Inhalt gehört zu **jedem Kreis, dessen Mitglied unter seinen Beteiligten
 ist.** Beteiligte sind die `channel_identities` des Events (seit Einheit 1).
 
 - **Eine Mitgliedschaft wird gesetzt, nicht erraten.** Eine Adresse oder eine
-  Domain, ausdrücklich. Das ist eine Feststellung des Betreibers, keine
+  Domain, ausdrücklich. Das ist eine Setzung des Betreibers, keine
   Deutung; den Identitätsgraphen (Teilprojekt 7) braucht es dafür nicht.
 - **Verglichen wird die Domain ohne Rücksicht auf Groß- und
   Kleinschreibung**, der lokale Teil genau so, wie er steht — Domains sind
@@ -395,8 +402,15 @@ Zwei neue Prüfungen:
 1. **Die Kaskade ist vollständig:** kein `model_call` hat Einheiten mit
    Inhalt, wenn etwas, das er unter `inputs` liest, getilgt ist.
 2. **Die Form stimmt:** ein `model_call` hat eine lesbare Nutzlast; Einheiten
-   genau bei `outcome: ok`; ein Policy-Event hat seine Unterart und deren
-   Schlüssel.
+   genau bei `outcome: ok`; ein Policy-Event hat seine Art unter
+   `payload.policy` und deren Schlüssel, und keine Einheiten.
+
+`verify` verlangt seit Stufe 1c von jeder Handlung einen Namen und prüft die
+Form nur bei `redaction`; jeder andere Name besteht still. `policy` und
+`model_call` kommen als bekannte Unterarten mit ihren Regeln dazu, und **eine
+Handlung mit unbekanntem Namen wird ein Befund**: mit drei Unterarten, die
+das System selbst schreibt, ist ein fremder Name ein Schreibfehler oder eine
+Fälschung, keine Erweiterung.
 
 ### 4.4 Projektionen
 
@@ -462,7 +476,7 @@ ihn nicht überliest.
 | Ort | Was |
 |---|---|
 | `core/policy.py` | die Policy-Events lesen und prüfen, die Entscheidung als reine Funktion |
-| `core/assertion.py` | der Schreibweg für die Arten aus §2.1 |
+| `core/policy_write.py` | der Schreibweg für die Policy-Events aus §2.1 |
 | `core/redact.py` | die Kaskade (§4.2) |
 | `core/verify.py` | die Prüfungen aus §4.3 |
 | `core/projection/chronicle.py` | nur `observation` (§4.4) |
@@ -560,7 +574,7 @@ Im selben Pull-Request, nach `plone-doc-style:author`.
 
 | # | Bedingung |
 |---|---|
-| 1 | Die fünf Arten aus §2.1 werden als `assertion` geschrieben, abgelöst und widerrufen; `policy show --at` liest die damalige Policy. |
+| 1 | Die fünf Arten aus §2.1 werden als `action` mit `policy` geschrieben, abgelöst und widerrufen; `policy show --at` liest die damalige Policy. |
 | 2 | Die Entscheidung folgt §2.5; jeder Fall aus §8 Punkt 1–7 hat einen Test. |
 | 3 | Jeder Aufruf und jede Ablehnung wird ein `model_call` nach §4.1; die Nutzlast enthält keinen Inhalt. |
 | 4 | Die Kaskade tilgt das Ergebnis mit der Quelle; `verify` findet eine unvollständige. |
