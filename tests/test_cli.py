@@ -4129,6 +4129,35 @@ def test_policy_rule_provider_member_own_and_revoke_round_trip_through_show(
 
 
 @pytest.mark.db
+@pytest.mark.parametrize("storage", [None, [], ["eu"]], ids=["omitted", "empty", "eu"])
+def test_policy_provider_requires_storage(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    storage: list[str] | None,
+) -> None:
+    """An empty storage passes every region rule, so a forgotten
+    `--storage` would declare the provider the loosest it can be: argparse
+    refuses the omission and writes nothing. Given with no region, it is
+    written as `storage: []`, the way a local provider is declared."""
+    _setup(db, monkeypatch)
+    argv = ["policy", "provider", "local", "--inference", "eu=eu", "--retention-days", "0"]
+    argv += [] if storage is None else ["--storage", *storage]
+    argv += ["--statement", "s", "--yes"]
+    if storage is None:
+        with pytest.raises(SystemExit) as raised:
+            main(argv)
+        assert raised.value.code == 2
+        assert "the following arguments are required: --storage" in capsys.readouterr().err
+        assert _action_count(db) == 0
+        return
+    assert main(argv) == 0
+    statement, _ = capsys.readouterr().out.rsplit("policy event ", 1)
+    assert json.loads(statement)["storage"] == storage
+    assert _action_count(db) == 1
+
+
+@pytest.mark.db
 def test_policy_show_at_reads_the_policy_of_that_moment(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

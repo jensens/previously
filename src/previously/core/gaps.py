@@ -4,11 +4,12 @@
 """Where the built-in rule `local_only` acted: the circles and sources whose
 calls fell back, with how often and when last.
 
-A read over the `model_call` events and nothing else, no table: a call under
-the built-in rule carries `policy.fallback`, with the circles that had no
-rule, or with none when no rule applied at all. In that second case it is the
-source of the event the call read that has no rule, and the source is not in
-the payload; it is read from the source key of that event. A local model on
+A read over the `model_call` events, no table: a call under the built-in
+rule carries `policy.fallback`, with the circles of the content that had no
+rule, or with none where the content belongs to no circle and no rule
+applied. In that second case it is the source of the event the call read that
+has no rule, and the source is not in the payload; it is read from the source
+key of that event, which is all this reads beside the calls. A local model on
 CPU is weaker than the ones a rule would allow, and one call that fell back
 is seen by whoever runs it; a hundred calls of a batch are seen by nobody
 but this list.

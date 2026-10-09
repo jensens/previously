@@ -41,7 +41,9 @@ class Candidate:
 @dataclass(frozen=True)
 class Fallback:
     reason: str  # "no_rule"
-    circles: tuple[str, ...]  # the circles without a rule; empty: no rule applied at all
+    # The circles of the content without a rule; empty only where the content
+    # belongs to no circle and no rule applied.
+    circles: tuple[str, ...]
 
 
 @dataclass(frozen=True)

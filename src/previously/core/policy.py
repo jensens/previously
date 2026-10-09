@@ -28,7 +28,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from previously.core.action import POLICY
 from previously.core.action import retrying
-from previously.core.action import write_action
+from previously.core.action import write_action_at
 from previously.core.errors import PreviouslyError
 from typing import cast
 from typing import Final
@@ -308,20 +308,25 @@ def set_policy[Conn](
     """Writes one policy event and returns its `id`, or refuses with
     `PolicyRefused` and writes nothing.
 
-    The check against the circles that exist and the write are one
-    transaction, so a circle revoked in between cannot be named by a
-    membership that passed the check.
+    The check runs against every event below the position the statement
+    takes, so a circle revoked while the check ran cannot be named by a
+    membership that passed it. The tip is read before the policy and the
+    statement is written right after that tip: one transaction alone would
+    not do it, since under READ COMMITTED each statement reads a snapshot of
+    its own. A revocation that commits after the tip was read takes the
+    position, the write loses it, and the next attempt checks again.
     """
     item = normalized(item)
     payload = to_payload(item, statement=statement, revoked=revoked)
 
     def once(conn: Conn) -> int:
+        tip = log.tip(conn)
         sentence = refusal(
             item, statement=statement, revoked=revoked, current=read_policy(log, conn)
         )
         if sentence is not None:
             raise PolicyRefused(sentence)
-        return write_action(log, conn, payload, (), recorded_at=recorded_at)
+        return write_action_at(log, conn, tip, payload, (), recorded_at=recorded_at)
 
     return retrying(log, once)
 

@@ -31,10 +31,12 @@ from previously.core.policy import Provider
 from previously.core.policy import Rule
 from previously.core.policy import set_policy
 from previously.core.redact import redact_event
+from previously.core.redact import Redacted
 from previously.core.verify import verify
 from previously.gate.adapters.anthropic import AnthropicAdapter
 from previously.gate.adapters.openai_compatible import OpenAICompatibleAdapter
 from previously.gate.gate import call
+from previously.gate.gate import Called
 from previously.gate.gate import explain
 from previously.gate.prices import estimate
 from previously.gate.prices import load_prices
@@ -42,6 +44,7 @@ from previously.gate.prices import Prices
 from previously.gate.tasks.mail_overview import MAIL_OVERVIEW
 from previously.gate.tasks.mail_overview import MailOverview
 from previously.storage.postgres import PostgresStorage
+from sqlalchemy import text
 from typing import cast
 from typing import TYPE_CHECKING
 
@@ -49,13 +52,17 @@ import hashlib
 import json
 import pytest
 import socket
+import threading
+import time
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from collections.abc import Mapping
     from conftest import ModelServer
     from previously.contract.rows import EventRow
     from previously.gate.adapters import Adapter
+    from sqlalchemy import Connection
     from sqlalchemy import Engine
 
 
@@ -326,7 +333,13 @@ def test_without_a_rule_the_call_goes_local_and_carries_the_fallback(
     model_server.enqueue("/v1/chat/completions", 200, openai_body())
 
     called = call(
-        storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
     )
 
     assert called.outcome == "ok"
@@ -357,7 +370,15 @@ def test_a_circle_without_a_rule_names_the_circle_in_the_fallback(
     circle_xz(storage)
     set_rule(storage, "source:email", "any")
     model_server.enqueue("/v1/chat/completions", 200, openai_body())
-    call(storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER)
+    call(
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
+    )
     (row,) = model_calls(storage)
     assert policy_of(row)["fallback"] == {"reason": "no_rule", "circles": ["xz"]}
     assert policy_of(row)["circles"] == ["xz"]
@@ -373,7 +394,13 @@ def test_with_a_rule_the_call_carries_no_fallback(db: Engine, model_server: Mode
     model_server.enqueue("/v1/messages", 200, anthropic_body())
 
     called = call(
-        storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
     )
 
     assert called.decision.fallback is None
@@ -403,7 +430,13 @@ def test_the_region_decide_names_is_set_in_the_request(
     model_server.enqueue("/v1/messages", 200, anthropic_body(geo=expected))
 
     called = call(
-        storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
     )
 
     ((_, sent),) = model_server.requests
@@ -418,8 +451,8 @@ def test_the_region_decide_names_is_set_in_the_request(
 
 @pytest.mark.db
 def test_a_provider_with_one_space_gets_no_region(db: Engine, model_server: ModelServer) -> None:
-    """Ruling R-6: Mistral declares `eu` alone, so nothing is set, and the
-    request carries no field of the kind."""
+    """Ruling R-6 of the 2026-10-09 gate plan: Mistral declares `eu` alone,
+    so nothing is set, and the request carries no field of the kind."""
     storage = PostgresStorage(db)
     event_id = append_mail(storage)
     declare(storage)
@@ -427,7 +460,13 @@ def test_a_provider_with_one_space_gets_no_region(db: Engine, model_server: Mode
     model_server.enqueue("/v1/chat/completions", 200, openai_body(model="mistral-small-2603"))
 
     called = call(
-        storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
     )
 
     assert called.outcome == "ok"
@@ -450,7 +489,13 @@ def test_another_region_reported_is_an_alarm(db: Engine, model_server: ModelServ
     model_server.enqueue("/v1/messages", 200, anthropic_body(geo="global"))
 
     called = call(
-        storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
     )
 
     assert called.outcome == "ok"
@@ -471,7 +516,9 @@ def test_the_cost_of_a_call_is_estimated_from_the_price_file(
     set_rule(storage, "source:email", "any")
     prices = load_prices()
     model_server.enqueue("/v1/messages", 200, anthropic_body())
-    call(storage, MAIL_OVERVIEW, event_id, adapters(model_server), prices, recorded_at=LATER)
+    call(
+        storage, storage, MAIL_OVERVIEW, event_id, adapters(model_server), prices, recorded_at=LATER
+    )
     (row,) = model_calls(storage)
     response = cast("dict[str, object]", payload_of(row)["response"])
     assert response["cost_usd"] == "0.000289"
@@ -496,7 +543,13 @@ def test_a_denied_call_is_recorded_and_reaches_no_provider(
     before = event_count(storage)
 
     called = call(
-        storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
     )
 
     assert called.outcome == "denied"
@@ -525,7 +578,13 @@ def test_erasing_the_event_a_call_read_erases_the_answer_of_the_call(
     set_rule(storage, "source:email", "any")
     model_server.enqueue("/v1/messages", 200, anthropic_body())
     called = call(
-        storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
     )
     assert any(content is not None for content in units_of(storage, called.event_id))
 
@@ -536,6 +595,189 @@ def test_erasing_the_event_a_call_read_erases_the_answer_of_the_call(
     (row,) = model_calls(storage)
     assert policy_of(row)["provider"] == "anthropic"
     assert verify(storage) == []
+
+
+def _waiting_on_a_row_lock(db: Engine) -> bool:
+    with db.connect() as conn:
+        waiting = conn.execute(
+            text("SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock'")
+        ).scalar_one()
+    return waiting > 0
+
+
+def _until(condition: Callable[[], bool], what: str) -> None:
+    deadline = time.monotonic() + 15
+    while not condition():
+        assert time.monotonic() < deadline, what
+        time.sleep(0.02)
+
+
+def _cascade_reason(storage: PostgresStorage, call_id: int) -> object:
+    """The reason of the redaction that erased the units of `call_id`."""
+    with storage.begin() as conn:
+        (reason,) = [
+            row.payload["reason"]
+            for row in storage.read_by_kind(conn, "action")
+            if row.payload is not None
+            and row.payload.get("scope") == "units"
+            and row.payload.get("target") == {"event": call_id, "units": [1]}
+        ]
+    return reason
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("erased", [True, False], ids=["erased-meanwhile", "control"])
+def test_an_erasure_while_the_provider_answers_erases_the_answer(
+    db: Engine, model_server: ModelServer, erased: bool
+) -> None:
+    """Ruling R-14 of the 2026-10-09 gate plan. The gate reads the mail, the
+    provider holds its answer back, and `redact event` of the mail commits
+    in that window, before the call is written, so it finds no call to
+    cascade. The gate writes the call under the row lock of the mail, reads
+    the redactions again, finds the erasure, and erases its own answer in
+    the same transaction, naming the redaction that erased the mail.
+
+    Without the second read the call is written `ok` with its answer
+    standing, and `verify` reports that it keeps the result of erased input.
+    The control erases nothing and keeps the answer."""
+    storage = PostgresStorage(db)
+    event_id = append_mail(storage)
+    declare(storage)
+    set_rule(storage, "source:email", "any")
+    release = threading.Event()
+    model_server.enqueue("/v1/messages", 200, anthropic_body(), hold=release)
+    outcome: list[Called] = []
+    failure: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            outcome.append(
+                call(
+                    storage,
+                    storage,
+                    MAIL_OVERVIEW,
+                    event_id,
+                    adapters(model_server),
+                    load_prices(),
+                    recorded_at=LATER,
+                )
+            )
+        except BaseException as error:
+            failure.append(error)
+
+    caller = threading.Thread(target=run)
+    caller.start()
+    _until(lambda: len(model_server.requests) == 1, "the provider never got the request")
+    redaction = (
+        redact_event(storage, storage, event_id, reason="wrong list", recorded_at=LATER)
+        if erased
+        else None
+    )
+    release.set()
+    caller.join(timeout=30)
+
+    assert not caller.is_alive()
+    assert failure == []
+    (called,) = outcome
+    assert called.outcome == "ok"
+    assert verify(storage) == []
+    if redaction is None:
+        assert called.erased_by is None
+        assert called.output is not None
+        assert [content is not None for content in units_of(storage, called.event_id)] == [True]
+        return
+    assert redaction.cascaded == ()
+    assert called.erased_by == redaction.redaction_id
+    assert called.output is None
+    assert units_of(storage, called.event_id) == [None]
+    assert _cascade_reason(storage, called.event_id) == (
+        f"cascade of redaction {redaction.redaction_id}"
+    )
+
+
+class _PausingAtTheLock(PostgresStorage):
+    """The real store, except that the first `lock_event` through it, once
+    it holds the lock, waits until `go_on` is set; `holding` says it is
+    there."""
+
+    def __init__(self, engine: Engine) -> None:
+        super().__init__(engine)
+        self.holding = threading.Event()
+        self.go_on = threading.Event()
+
+    def lock_event(self, conn: Connection, event_id: int) -> EventRow | None:
+        row = super().lock_event(conn, event_id)
+        if not self.holding.is_set():
+            self.holding.set()
+            assert self.go_on.wait(timeout=15)
+        return row
+
+
+@pytest.mark.db
+def test_an_erasure_that_waits_at_the_lock_of_the_gate_finds_the_call(
+    db: Engine, model_server: ModelServer
+) -> None:
+    """Ruling R-14 of the 2026-10-09 gate plan, the other order. The gate
+    holds the row lock of the mail and has not written the call yet; `redact
+    event` of the mail reads the calls (none), and waits at that lock. The
+    gate writes the call and commits; the erasure gets the lock, reads the
+    calls again, finds the new one, and erases its answer.
+
+    Without the second read the erasure cascades over the calls it read
+    before the lock, which do not include this one, and `verify` reports
+    that the call keeps the result of erased input."""
+    plain = PostgresStorage(db)
+    event_id = append_mail(plain)
+    declare(plain)
+    set_rule(plain, "source:email", "any")
+    model_server.enqueue("/v1/messages", 200, anthropic_body())
+    pausing = _PausingAtTheLock(db)
+    called: list[Called] = []
+    erased: list[Redacted] = []
+    failure: list[BaseException] = []
+
+    def run() -> None:
+        try:
+            called.append(
+                call(
+                    pausing,
+                    pausing,
+                    MAIL_OVERVIEW,
+                    event_id,
+                    adapters(model_server),
+                    load_prices(),
+                    recorded_at=LATER,
+                )
+            )
+        except BaseException as error:
+            failure.append(error)
+
+    def erase() -> None:
+        try:
+            erased.append(
+                redact_event(plain, plain, event_id, reason="wrong list", recorded_at=LATER)
+            )
+        except BaseException as error:
+            failure.append(error)
+
+    caller = threading.Thread(target=run)
+    caller.start()
+    assert pausing.holding.wait(timeout=15)
+    eraser = threading.Thread(target=erase)
+    eraser.start()
+    _until(lambda: _waiting_on_a_row_lock(db), "the erasure never waited at the row lock")
+    pausing.go_on.set()
+    for thread in (caller, eraser):
+        thread.join(timeout=30)
+        assert not thread.is_alive()
+
+    assert failure == []
+    (result,) = called
+    (redaction,) = erased
+    assert result.erased_by is None
+    assert redaction.cascaded == (result.event_id,)
+    assert units_of(plain, result.event_id) == [None]
+    assert verify(plain) == []
 
 
 @pytest.mark.db
@@ -553,13 +795,20 @@ def test_an_action_is_denied_as_input_without_a_prompt(
     policy_id = set_rule(storage, "source:email", "any")
     model_server.enqueue("/v1/messages", 200, anthropic_body())
     answered = call(
-        storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
     )
     assert answered.outcome == "ok"
     requests = len(model_server.requests)
 
     for action_id in (policy_id, answered.event_id):
         denied = call(
+            storage,
             storage,
             MAIL_OVERVIEW,
             action_id,
@@ -589,7 +838,13 @@ def test_an_erased_event_is_denied_without_a_prompt(db: Engine, model_server: Mo
     redact_event(storage, storage, event_id, reason="wrong list", recorded_at=T0)
 
     called = call(
-        storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
     )
 
     assert called.outcome == "denied"
@@ -609,7 +864,13 @@ def test_a_refusal_by_the_model_is_recorded(db: Engine, model_server: ModelServe
     model_server.enqueue("/v1/messages", 200, anthropic_body("", stop_reason="refusal"))
 
     called = call(
-        storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
     )
 
     assert called.outcome == "refused"
@@ -644,7 +905,13 @@ def test_an_answer_against_the_schema_is_recorded_as_schema_invalid(
     model_server.enqueue("/v1/messages", 200, anthropic_body(output))
 
     called = call(
-        storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
     )
 
     assert called.outcome == "schema_invalid"
@@ -664,7 +931,13 @@ def test_a_valid_answer_is_the_control_of_the_schema_check(
     set_rule(storage, "source:email", "any")
     model_server.enqueue("/v1/messages", 200, anthropic_body())
     called = call(
-        storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
     )
     assert called.outcome == "ok"
     (row,) = model_calls(storage)
@@ -685,7 +958,13 @@ def test_an_answer_that_cannot_be_stored_is_schema_invalid(
         "/v1/messages", 200, anthropic_body(json.dumps({**OVERVIEW, "topic": "a\x00b"}))
     )
     called = call(
-        storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
     )
     assert called.outcome == "schema_invalid"
     (row,) = model_calls(storage)
@@ -696,8 +975,9 @@ def test_an_answer_that_cannot_be_stored_is_schema_invalid(
 def test_a_failed_call_is_recorded_without_the_providers_words(
     db: Engine, model_server: ModelServer
 ) -> None:
-    """Ruling R-9: the payload names the provider, the class of the error and
-    the HTTP status, never what the provider said, which may echo the prompt."""
+    """Ruling R-9 of the 2026-10-09 gate plan: the payload names the
+    provider, the class of the error and the HTTP status, never what the
+    provider said, which may echo the prompt."""
     storage = PostgresStorage(db)
     event_id = append_mail(storage)
     declare(storage)
@@ -706,7 +986,13 @@ def test_a_failed_call_is_recorded_without_the_providers_words(
     model_server.enqueue("/v1/messages", 400, echo)
 
     called = call(
-        storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
     )
 
     assert called.outcome == "error"
@@ -730,7 +1016,9 @@ def test_a_chosen_provider_without_an_adapter_is_an_error(
     set_rule(storage, "source:email", "eu")
     present = {k: v for k, v in adapters(model_server).items() if k != "mistral"}
 
-    called = call(storage, MAIL_OVERVIEW, event_id, present, load_prices(), recorded_at=LATER)
+    called = call(
+        storage, storage, MAIL_OVERVIEW, event_id, present, load_prices(), recorded_at=LATER
+    )
 
     assert called.outcome == "error"
     assert called.message == "mistral: the provider is not configured"
@@ -759,7 +1047,13 @@ def test_a_local_server_that_does_not_run_is_an_error(
         timeout=5.0,
     )
     called = call(
-        storage, MAIL_OVERVIEW, event_id, {"local": absent}, load_prices(), recorded_at=LATER
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        {"local": absent},
+        load_prices(),
+        recorded_at=LATER,
     )
     assert called.outcome == "error"
     (row,) = model_calls(storage)
@@ -774,7 +1068,15 @@ def test_an_event_that_does_not_exist_is_an_error_and_nothing_is_written(
 
     storage = PostgresStorage(db)
     with pytest.raises(PreviouslyError, match="there is no event 7"):
-        call(storage, MAIL_OVERVIEW, 7, adapters(model_server), load_prices(), recorded_at=LATER)
+        call(
+            storage,
+            storage,
+            MAIL_OVERVIEW,
+            7,
+            adapters(model_server),
+            load_prices(),
+            recorded_at=LATER,
+        )
     assert event_count(storage) == 0
 
 
@@ -802,7 +1104,15 @@ def test_the_payload_of_a_model_call_holds_no_content(
     else:
         model_server.enqueue("/v1/chat/completions", 200, openai_body())
 
-    call(storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER)
+    call(
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
+    )
 
     (row,) = model_calls(storage)
     wordings = content_of(storage, event_id)
@@ -825,7 +1135,15 @@ def test_the_payload_has_the_form_of_the_specification(
     set_rule(storage, "circle:xz", "any")
     set_rule(storage, "source:email", "any")
     model_server.enqueue("/v1/messages", 200, anthropic_body())
-    call(storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER)
+    call(
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
+    )
     (row,) = model_calls(storage)
     payload = payload_of(row)
     assert set(payload) == {
@@ -951,8 +1269,16 @@ def test_a_written_model_call_passes_verify(db: Engine, model_server: ModelServe
     event_id = append_mail(storage)
     declare(storage)
     model_server.enqueue("/v1/chat/completions", 200, openai_body())
-    call(storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER)
-    call(storage, MAIL_OVERVIEW, event_id, {}, load_prices(), recorded_at=LATER)
+    call(
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
+    )
+    call(storage, storage, MAIL_OVERVIEW, event_id, {}, load_prices(), recorded_at=LATER)
     assert verify(storage) == []
 
 
@@ -966,12 +1292,26 @@ def test_gaps_name_the_circles_and_sources_that_fell_back(
     for _ in range(2):
         model_server.enqueue("/v1/chat/completions", 200, openai_body())
         call(
-            storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=T0
+            storage,
+            storage,
+            MAIL_OVERVIEW,
+            event_id,
+            adapters(model_server),
+            load_prices(),
+            recorded_at=T0,
         )
     circle_xz(storage)
     set_rule(storage, "source:email", "any")
     model_server.enqueue("/v1/chat/completions", 200, openai_body())
-    call(storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER)
+    call(
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
+    )
 
     with storage.begin() as conn:
         found = gaps(storage, conn, since=None)
@@ -990,7 +1330,15 @@ def test_gaps_leave_out_a_call_under_a_real_rule(db: Engine, model_server: Model
     declare(storage)
     set_rule(storage, "source:email", "any")
     model_server.enqueue("/v1/messages", 200, anthropic_body())
-    call(storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER)
+    call(
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=LATER,
+    )
     with storage.begin() as conn:
         assert gaps(storage, conn, since=None) == []
 
@@ -1087,6 +1435,77 @@ def test_gate_try_without_any_rule_names_the_source(
 
 
 @pytest.mark.db
+def test_gate_try_says_no_fallback_when_the_call_is_denied(
+    db: Engine,
+    model_server: ModelServer,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """`local_only` acts and no local provider is declared: the call is
+    denied, and the one line on standard error is the denial, not a
+    `processed locally` that nothing was."""
+    storage = PostgresStorage(db)
+    event_id = append_mail(storage)
+    declare(storage, ANTHROPIC, MISTRAL)
+    _env(monkeypatch, db, model_server)
+
+    assert main(["gate", "try", str(event_id)]) == 2
+
+    err = capsys.readouterr().err
+    assert err.startswith("denied: ")
+    assert "no local provider is declared" in err
+    assert "processed locally" not in err
+    assert model_server.requests == []
+
+
+@pytest.mark.db
+def test_gate_try_whose_input_is_erased_during_the_call_prints_no_answer(
+    db: Engine,
+    model_server: ModelServer,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Ruling R-14 of the 2026-10-09 gate plan on the command line: the mail
+    is erased while the provider answers. The answer is erased with it, so
+    it is not printed either; one sentence names the redaction, and 2."""
+    storage = PostgresStorage(db)
+    event_id = append_mail(storage)
+    declare(storage)
+    set_rule(storage, "source:email", "any")
+    _env(monkeypatch, db, model_server)
+    release = threading.Event()
+    model_server.enqueue("/v1/messages", 200, anthropic_body(), hold=release)
+    erased: list[Redacted] = []
+
+    def erase() -> None:
+        # `main` installs a signal handler, which only the main thread may,
+        # so the erasure is the one that runs beside it.
+        try:
+            _until(lambda: len(model_server.requests) == 1, "the provider never got the request")
+            erased.append(
+                redact_event(storage, storage, event_id, reason="wrong list", recorded_at=LATER)
+            )
+        finally:
+            release.set()
+
+    eraser = threading.Thread(target=erase)
+    eraser.start()
+    returned = main(["gate", "try", str(event_id)])
+    eraser.join(timeout=30)
+
+    assert returned == 2
+    (redaction,) = erased
+    out, err = capsys.readouterr()
+    (row,) = model_calls(storage)
+    assert out == f"model_call: event {row.id}\n"
+    assert err == (
+        f"erased: the input was erased by redaction {redaction.redaction_id} while the call "
+        "ran; the answer is erased with it\n"
+    )
+    assert verify(storage) == []
+
+
+@pytest.mark.db
 def test_gate_try_returns_3_on_an_alarm(
     db: Engine,
     model_server: ModelServer,
@@ -1164,7 +1583,8 @@ def test_gate_try_against_a_local_server_that_does_not_run(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Review focus 4: only local applies and nothing listens. One sentence
-    that names the local server, 2, no traceback."""
+    that names the local server, 2, no traceback, and no `processed locally`:
+    nothing was."""
     storage = PostgresStorage(db)
     event_id = append_mail(storage)
     declare(storage)
@@ -1177,11 +1597,9 @@ def test_gate_try_against_a_local_server_that_does_not_run(
 
     out, err = capsys.readouterr()
     assert out.startswith("model_call: event ")
-    lines = err.splitlines()
-    assert lines[0].startswith("processed locally: ")
-    assert lines[1].startswith("Error: local: call failed (APIConnectionError)")
-    assert lines[1].endswith(f"— the local model server is {url}")
-    assert len(lines) == 2
+    (line,) = err.splitlines()
+    assert line.startswith("Error: local: call failed (APIConnectionError)")
+    assert line.endswith(f"— the local model server is {url}")
     assert "Traceback" not in err
     (row,) = model_calls(storage)
     assert payload_of(row)["outcome"] == "error"
@@ -1305,9 +1723,12 @@ def test_gate_explain_prints_the_decision_and_writes_nothing(
 
 
 @pytest.mark.db
-def test_gate_explain_says_the_fallback_and_the_denial(
+def test_gate_explain_says_no_fallback_for_a_denial(
     db: Engine, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
+    """`local_only` acts and no local provider is declared: the table says
+    both, and standard error stays empty, since nothing would be processed
+    locally."""
     storage = PostgresStorage(db)
     event_id = append_mail(storage)
     declare(storage, ANTHROPIC, MISTRAL)
@@ -1320,10 +1741,7 @@ def test_gate_explain_says_the_fallback_and_the_denial(
     assert lines[1] == "rules\tlocal_only"
     assert lines[5] == "candidate\t-\tno local provider is declared"
     assert lines[-1] == "decision\tdenied"
-    assert err == (
-        "processed locally: no rule for source:email — set one with previously policy rule "
-        "source:email …\n"
-    )
+    assert err == ""
 
 
 @pytest.mark.db
@@ -1346,7 +1764,15 @@ def test_policy_gaps_lists_what_fell_back(
     event_id = append_mail(storage)
     declare(storage)
     model_server.enqueue("/v1/chat/completions", 200, openai_body())
-    call(storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=T0)
+    call(
+        storage,
+        storage,
+        MAIL_OVERVIEW,
+        event_id,
+        adapters(model_server),
+        load_prices(),
+        recorded_at=T0,
+    )
     monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
 
     assert main(["policy", "gaps"]) == 0

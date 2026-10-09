@@ -38,9 +38,21 @@ only then locking the calls, lets erasure A of an event and erasure B of a call
 that read it meet in a cycle. A holds the event and waits for the call's row,
 which B holds, and B waits for the chain position A took. With one round, B
 waits at the row lock of the call before it has taken any position, and A
-cannot be waiting for B. A call appended after the read goes unlocked and
-uncascaded, the same race between reading and erasing that the blob section
-above names; a later erasure of the same target finds the call.
+cannot be waiting for B.
+
+A call can also come into being while an erasure runs. The gate reads its
+input in one transaction and writes the call in another, after the provider
+has answered, so from the gate's side the window between the two is the whole
+provider call: seconds, and up to the timeout of the adapter, not the moment
+between an erasure's read and its lock. Both sides close it with the same row
+lock. `append_call` writes the call holding the lock on every event it read
+and reads the redactions again under it: an erasure that committed first is
+in the index then, and the call's units are erased in the same transaction,
+by a redaction of their own that names it. An erasure that comes second waits
+at that lock, and once it holds its locks it reads the calls again: the gate
+has committed by then, and the call it wrote is found and locked in a second
+round. A call found there was not committed when the first read ran, so its
+id is above every row of the first round, and the order stays ascending.
 """
 
 from collections.abc import Mapping
@@ -76,6 +88,7 @@ if TYPE_CHECKING:
     from previously.contract.rows import EventRow
     from previously.contract.store import LogStore
     from previously.contract.store import RedactionStore
+    from previously.contract.types import RawUnit
     from previously.core.redaction import Redaction
     from previously.core.redaction import RedactionIndex
 
@@ -155,6 +168,28 @@ def _lock_ascending[Conn](
     returns them. One order for every erasure, so that two that lock the same
     rows cannot each hold one the other waits for."""
     return {event_id: eraser.lock_event(conn, event_id) for event_id in sorted(set(event_ids))}
+
+
+def _lock_round[Conn](
+    log: LogStore[Conn],
+    eraser: RedactionStore[Conn],
+    conn: Conn,
+    targets: Iterable[int],
+    wanted: Callable[[Mapping[str, object]], bool],
+) -> tuple[dict[int, EventRow | None], list[int]]:
+    """Locks the targets and the `model_call` events that read what
+    `wanted` accepts, and returns the locked rows and the calls.
+
+    The calls are read twice: once before the lock, so that they are locked
+    in one ascending round with the targets, and once after it, for a call
+    the gate wrote while this erasure waited at the lock of its input. The
+    gate holds that lock until it commits, so the second read finds the call,
+    and locks it in a round of its own (see the module docstring)."""
+    calls = _calls(log, conn, wanted)
+    rows = _lock_ascending(eraser, conn, [*targets, *calls])
+    late = [call_id for call_id in _calls(log, conn, wanted) if call_id not in rows]
+    rows.update(_lock_ascending(eraser, conn, late))
+    return rows, [*calls, *late]
 
 
 def _unerased(index: RedactionIndex, sha256: str, event_ids: Iterable[int]) -> tuple[int, ...]:
@@ -239,6 +274,21 @@ def _cascade[Conn](
     return tuple(cascaded)
 
 
+def _erasure_of(index: RedactionIndex, entry: Mapping[str, object]) -> int | None:
+    """The id of a redaction that erased what an entry of `inputs` names: its
+    event, one of its units or one of its blobs; `None` when none did. The
+    same three questions `verify` asks of a call that keeps a result."""
+    event = _entry_event(entry)
+    if not isinstance(event, int):
+        return None
+    found = [index.of_event(event)]
+    found += [index.of_unit(event, s) for s in _entry_list(entry, "units") if isinstance(s, int)]
+    found += [
+        index.of_reference(event, b) for b in _entry_list(entry, "blobs") if isinstance(b, str)
+    ]
+    return next((redaction.id for redaction in found if redaction is not None), None)
+
+
 def _entry_event(entry: Mapping[str, object]) -> object:
     return entry.get("event")
 
@@ -317,8 +367,10 @@ def redact_event[Conn](
         sharing = [
             e for sha256 in registered for e in log.events_by_blob(conn, bytes.fromhex(sha256))
         ]
-        calls = _calls(log, conn, lambda entry: _entry_event(entry) == event_id)
-        _target(_lock_ascending(eraser, conn, [event_id, *sharing, *calls])[event_id], event_id)
+        rows, calls = _lock_round(
+            log, eraser, conn, [event_id, *sharing], lambda entry: _entry_event(entry) == event_id
+        )
+        _target(rows[event_id], event_id)
         # After the lock, never before: a second erasure of this target has
         # waited at the lock and now sees the redaction the first one wrote.
         index = read_index(log, conn)
@@ -376,15 +428,17 @@ def redact_units[Conn](
         raise RedactionRefused("a redaction of units needs at least one unit")
 
     def once(conn: Conn) -> Redacted:
-        calls = _calls(
+        rows, calls = _lock_round(
             log,
+            eraser,
             conn,
+            [event_id],
             lambda entry: (
                 _entry_event(entry) == event_id
                 and any(seq in _entry_list(entry, "units") for seq in wanted)
             ),
         )
-        target = _target(_lock_ascending(eraser, conn, [event_id, *calls])[event_id], event_id)
+        target = _target(rows[event_id], event_id)
         # Version 1 attests all units of an event in one digest, so the units
         # left standing beside an erased one would be attested by nothing.
         if target.hash_version == HASH_VERSION_1:
@@ -471,8 +525,9 @@ def redact_blob[Conn](
         # against the events this redaction names, so a call that read the
         # blob through an event whose reference is erased already is erased
         # again, never one that read it and keeps its result.
-        calls = _calls(log, conn, lambda entry: sha256 in _entry_list(entry, "blobs"))
-        _lock_ascending(eraser, conn, [*users, *calls])
+        _, calls = _lock_round(
+            log, eraser, conn, users, lambda entry: sha256 in _entry_list(entry, "blobs")
+        )
         index = read_index(log, conn)
         fresh = _unerased(index, sha256, users)
         if fresh:
@@ -491,5 +546,59 @@ def redact_blob[Conn](
             kept_blobs=kept,
             cascaded=cascaded,
         )
+
+    return retrying(log, once)
+
+
+@dataclass(frozen=True)
+class AppendedCall:
+    """What `append_call` wrote: the id of the `model_call`, and the id of
+    the redaction that erased an input of the call while the call ran, where
+    one did and the call's units were erased with it; `None` otherwise."""
+
+    call_id: int
+    erased_by: int | None = None
+
+
+def append_call[Conn](
+    log: LogStore[Conn],
+    eraser: RedactionStore[Conn],
+    payload: Mapping[str, object],
+    units: Sequence[RawUnit],
+    *,
+    recorded_at: datetime,
+) -> AppendedCall:
+    """Appends a `model_call` in a transaction of its own, holding the row
+    lock an erasure takes on every event the call read.
+
+    Under that lock the redactions are read again. If one of them erased an
+    input of the call (the event, a unit the call read, a blob it read) since
+    the gate read it, the units of the call are erased in the same
+    transaction, by a redaction of units with the reason `cascade of
+    redaction <id>` that names the redaction which erased the input. The
+    answer of a call never stands beside an erased input, then, whichever of
+    the two committed first; the module docstring says why both sides need
+    the lock.
+    """
+    iso_utc(recorded_at)  # fail early if naive
+    inputs = payload.get("inputs")
+    entries = [
+        cast("Mapping[str, object]", entry)
+        for entry in (cast("list[object]", inputs) if isinstance(inputs, list) else [])
+        if isinstance(entry, dict)
+    ]
+    events = [event for entry in entries if isinstance(event := _entry_event(entry), int)]
+
+    def once(conn: Conn) -> AppendedCall:
+        _lock_ascending(eraser, conn, events)
+        index = read_index(log, conn)
+        trigger = next(
+            (found for entry in entries if (found := _erasure_of(index, entry)) is not None), None
+        )
+        call_id = write_action(log, conn, payload, units, recorded_at=recorded_at)
+        if trigger is None:
+            return AppendedCall(call_id)
+        cascaded = _cascade(log, eraser, conn, [call_id], trigger=trigger, recorded_at=recorded_at)
+        return AppendedCall(call_id, trigger if cascaded else None)
 
     return retrying(log, once)

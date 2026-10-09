@@ -430,10 +430,8 @@ class _Erasures:
         # a forgery. The form of the known names is checked where each is read.
         if name not in KNOWN_ACTIONS:
             return [Finding(row.id, f'unknown action "{name}"')]
-        if name == POLICY and (problem := check_payload(row.payload)) is not None:
-            return [Finding(row.id, f"policy event {problem}")]
-        if name == MODEL_CALL and (problem := _model_call_problem(row.payload, units)) is not None:
-            return [Finding(row.id, f"model_call has no valid form: {problem}")]
+        if (finding := _form_finding(name, row.id, row.payload, units)) is not None:
+            return [finding]
         if name == MODEL_CALL and any(unit.content is not None for unit in units):
             self._calls.append((row.id, _inputs_read(row.payload)))
         return []
@@ -479,6 +477,24 @@ class _Erasures:
             if frozenset(bytes.fromhex(sha256) for sha256 in redaction.blobs) != registered:
                 findings.append(Finding(event_id, "blob register does not match the payload"))
         return findings
+
+
+def _form_finding(
+    name: str, event_id: int, payload: Mapping[str, object], units: Sequence[UnitRow]
+) -> Finding | None:
+    """The finding about the form of a policy event or a `model_call`, or
+    `None`."""
+    if name == POLICY:
+        if (problem := check_payload(payload)) is not None:
+            return Finding(event_id, f"policy event {problem}")
+        # A policy event is a statement of the operator and holds nothing a
+        # source said, so it has no units; one that has them did not come
+        # through `set_policy`, and its units could hold anything.
+        if units:
+            return Finding(event_id, "policy event has units")
+    if name == MODEL_CALL and (problem := _model_call_problem(payload, units)) is not None:
+        return Finding(event_id, f"model_call has no valid form: {problem}")
+    return None
 
 
 def _inputs_read(payload: Mapping[str, object]) -> list[tuple[int, list[int], list[str]]]:

@@ -1302,7 +1302,16 @@ def _policy_arguments(parser: argparse.ArgumentParser) -> None:
         metavar="NAME=REGIONS",
         help="a space of inference and what it means, such as global=any or us=us; may repeat",
     )
-    provider.add_argument("--storage", nargs="*", default=[], metavar="REGION")
+    # Required, with no value allowed: an empty storage means the provider
+    # stores nothing, which passes every region rule, so it has to be said
+    # and never fall out of a forgotten option.
+    provider.add_argument(
+        "--storage",
+        nargs="*",
+        required=True,
+        metavar="REGION",
+        help="where the provider stores; give it no region for one that stores nothing",
+    )
     provider.add_argument(
         "--retention-days", required=True, metavar="N|unknown", help="how long the provider keeps"
     )
@@ -1526,9 +1535,13 @@ def _adapters() -> dict[str, Adapter]:
 
 def _fallback_lines(storage: PostgresStorage, decision: Decision, event_id: int) -> list[str]:
     """One line per scope without a rule, with the command that sets one,
-    where the built-in rule `local_only` acted."""
+    where the built-in rule `local_only` acted and a local model was chosen.
+
+    A decision that chose nothing gets no line: `processed locally` would be
+    false there, since no local provider is declared, and the reason of the
+    denial already says so."""
     fallback = decision.fallback
-    if fallback is None:
+    if fallback is None or decision.chosen is None:
         return []
     scopes = [f"circle:{circle}" for circle in fallback.circles]
     if not scopes:
@@ -1617,16 +1630,27 @@ def _failure_line(called: Called, adapters: Mapping[str, Adapter]) -> str:
 def _cmd_gate_try(args: argparse.Namespace) -> int:
     """Runs the task and records the call: the output and the id of the
     `model_call` on standard output; the fallback, an alarm and a failure
-    on standard error. 2 for anything but `ok`, 3 for `ok` with an alarm, so
-    that a script does not read past it."""
+    on standard error. 2 for anything but `ok`, and for an `ok` whose input
+    was erased while the call ran; 3 for `ok` with an alarm, so that a script
+    does not read past it.
+
+    The fallback is said only where the local model answered: a call that
+    ended `error` processed nothing, and one that was denied called nothing."""
     prices_path = os.environ.get("PREVIOUSLY_PRICES")
     prices = load_prices(Path(prices_path) if prices_path else None)
     adapters = _adapters()
     with _storage() as storage:
         called = call(
-            storage, MAIL_OVERVIEW, args.event, adapters, prices, recorded_at=datetime.now(UTC)
+            storage,
+            storage,
+            MAIL_OVERVIEW,
+            args.event,
+            adapters,
+            prices,
+            recorded_at=datetime.now(UTC),
         )
-        fallback = _fallback_lines(storage, called.decision, args.event)
+        answered = called.outcome != "error"
+        fallback = _fallback_lines(storage, called.decision, args.event) if answered else []
     for line in fallback:
         print(line, file=sys.stderr)
     if called.output is not None:
@@ -1638,6 +1662,9 @@ def _cmd_gate_try(args: argparse.Namespace) -> int:
         print(f"alarm: inference_geo requested {requested}, reported {reported}", file=sys.stderr)
     if called.outcome != "ok":
         print(_failure_line(called, adapters), file=sys.stderr)
+        return 2
+    if called.erased_by is not None:
+        print(f"erased: {called.message}; the answer is erased with it", file=sys.stderr)
         return 2
     return 3 if called.alarms else 0
 

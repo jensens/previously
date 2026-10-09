@@ -23,6 +23,9 @@ erasure can reach it.
 The event is written after the call. A process that dies between the answer
 and the write leaves a paid call that no event records; the pilot accepts
 that limit, and writing a second event before every call would close it.
+Between the read and the write lies the whole provider call, and an erasure of
+the input can land in it: the write takes the lock an erasure takes and erases
+the answer itself when that happened (`append_call`, {ref}`erasure`).
 """
 
 from collections.abc import Mapping
@@ -30,7 +33,6 @@ from dataclasses import dataclass
 from previously.contract.rows import EventRow
 from previously.contract.rows import UnitRow
 from previously.contract.types import RawUnit
-from previously.core.action import append_action
 from previously.core.action import DENIED
 from previously.core.action import ERROR
 from previously.core.action import MODEL_CALL
@@ -47,6 +49,8 @@ from previously.core.policy import Policy
 from previously.core.policy import PROVIDER
 from previously.core.policy import read_policy
 from previously.core.policy import RULE
+from previously.core.redact import append_call
+from previously.core.redact import AppendedCall
 from previously.gate.adapters import AdapterError
 from previously.gate.adapters import Request
 from previously.gate.prices import estimate
@@ -62,6 +66,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from datetime import datetime
     from previously.contract.store import LogStore
+    from previously.contract.store import RedactionStore
     from previously.gate.adapters import Adapter
     from previously.gate.adapters import Response
     from previously.gate.prices import Prices
@@ -83,7 +88,10 @@ class Called:
     """What became of one call: the id of the `model_call` that records it,
     the outcome, the decision, the checked output where there is one, the
     alarms, the sentence for the person at the terminal, and the region the
-    provider reported."""
+    provider reported.
+
+    `erased_by` names the redaction that erased the input while the provider
+    was answering; the answer is erased with it, and `output` is `None`."""
 
     event_id: int
     outcome: str
@@ -92,6 +100,7 @@ class Called:
     alarms: tuple[str, ...]
     message: str | None
     reported_geo: str | None = None
+    erased_by: int | None = None
 
 
 @dataclass(frozen=True)
@@ -226,8 +235,26 @@ def _response_part(
     }
 
 
+def _ok(
+    appended: AppendedCall,
+    decision: Decision,
+    output: BaseModel,
+    alarms: tuple[str, ...],
+    reported_geo: str | None,
+) -> Called:
+    """An `ok` call as it was written: with its output, or, where the input
+    was erased while the provider answered and the answer was erased with
+    it, without one and with a sentence that says so."""
+    erased = appended.erased_by
+    if erased is None:
+        return Called(appended.call_id, OK, decision, output, alarms, None, reported_geo)
+    message = f"the input was erased by redaction {erased} while the call ran"
+    return Called(appended.call_id, OK, decision, None, alarms, message, reported_geo, erased)
+
+
 def call[Conn](
     log: LogStore[Conn],
+    eraser: RedactionStore[Conn],
     task: Task[Any],
     event_id: int,
     adapters: Mapping[str, Adapter],
@@ -242,6 +269,10 @@ def call[Conn](
     like a call that failed. Raises `PreviouslyError` only for an event that
     does not exist, and then writes nothing: there is nothing a call could
     have read.
+
+    `eraser` is the store `log` is, for the reason `redact_event` gives: the
+    call is written under the row lock of its input, so that an erasure that
+    landed while the provider answered erases the answer with it.
     """
     iso_utc(recorded_at)  # fail early if naive
     with log.begin() as conn:
@@ -261,10 +292,13 @@ def call[Conn](
     }
 
     def record(outcome: str, alarms: Sequence[str], units: Sequence[str] = ()) -> int:
+        return written(outcome, alarms, units).call_id
+
+    def written(outcome: str, alarms: Sequence[str], units: Sequence[str] = ()) -> AppendedCall:
         payload["outcome"] = outcome
         payload["alarms"] = list(alarms)
         raw = [RawUnit(seq, content) for seq, content in enumerate(units, 1)]
-        return append_action(log, payload, raw, recorded_at=recorded_at)
+        return append_call(log, eraser, payload, raw, recorded_at=recorded_at)
 
     chosen = decision.chosen
     if chosen is None:
@@ -317,9 +351,7 @@ def call[Conn](
         # a string: the call happened and is recorded, its answer is not.
         message = f"the answer of {name} cannot be stored in the log"
     else:
-        return Called(
-            record(OK, alarms, (unit,)), OK, decision, output, alarms, None, response.reported_geo
-        )
+        return _ok(written(OK, alarms, (unit,)), decision, output, alarms, response.reported_geo)
     return Called(
         record(SCHEMA_INVALID, alarms),
         SCHEMA_INVALID,

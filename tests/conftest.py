@@ -416,7 +416,7 @@ class ModelServer:
 
     def __init__(self) -> None:
         self.requests: list[tuple[str, dict[str, object]]] = []
-        self._queue: list[tuple[str, int, Mapping[str, object], float]] = []
+        self._queue: list[tuple[str, int, Mapping[str, object], float, threading.Event | None]] = []
         self._lock = threading.Lock()
         outer = self
 
@@ -431,9 +431,11 @@ class ModelServer:
                 length = int(self.headers.get("Content-Length", "0"))
                 parsed: object = json.loads(self.rfile.read(length) or b"{}")
                 body = cast("dict[str, object]", parsed)
-                status, answer, delay = outer.receive(self.path, body)
+                status, answer, delay, hold = outer.receive(self.path, body)
                 if delay:
                     time.sleep(delay)
+                if hold is not None:
+                    hold.wait(timeout=30)
                 data = json.dumps(answer).encode()
                 try:
                     self.send_response(status)
@@ -454,22 +456,29 @@ class ModelServer:
         self.url = f"http://127.0.0.1:{self._server.server_port}"
 
     def enqueue(
-        self, path: str, status: int, body: Mapping[str, object], *, delay: float = 0.0
+        self,
+        path: str,
+        status: int,
+        body: Mapping[str, object],
+        *,
+        delay: float = 0.0,
+        hold: threading.Event | None = None,
     ) -> None:
-        """Queue the next answer for `path`; `delay` holds it back that many seconds."""
+        """Queue the next answer for `path`; `delay` holds it back that many
+        seconds, and `hold` until the test sets it (30 seconds at most)."""
         with self._lock:
-            self._queue.append((path, status, body, delay))
+            self._queue.append((path, status, body, delay, hold))
 
     def receive(
         self, path: str, body: dict[str, object]
-    ) -> tuple[int, Mapping[str, object], float]:
+    ) -> tuple[int, Mapping[str, object], float, threading.Event | None]:
         with self._lock:
             self.requests.append((path, body))
-            for index, (queued_path, status, answer, delay) in enumerate(self._queue):
+            for index, (queued_path, status, answer, delay, hold) in enumerate(self._queue):
                 if queued_path == path:
                     del self._queue[index]
-                    return status, answer, delay
-        return 500, {"error": {"message": f"nothing queued for {path}"}}, 0.0
+                    return status, answer, delay, hold
+        return 500, {"error": {"message": f"nothing queued for {path}"}}, 0.0, None
 
     def close(self) -> None:
         self._server.shutdown()

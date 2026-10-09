@@ -12,9 +12,12 @@ units, so that an erasure can take them out one by one.
 
 `write_action` appends on the tip inside the transaction of the caller, for an
 action that has to be written together with something else (a redaction with
-its tombstones, {ref}`erasure`). `append_action` opens a transaction of its
-own and retries a lost chain position the way `append` does
-({ref}`concurrency`).
+its tombstones, {ref}`erasure`). `write_action_at` appends on a tip the caller
+read earlier, for an action whose content was decided by what the caller read
+after that tip: if anything joined the chain in between, the position is
+taken and the attempt is lost, rather than written past what it did not see.
+`append_action` opens a transaction of its own and retries a lost chain
+position the way `append` does ({ref}`concurrency`).
 
 `KNOWN_ACTIONS` is the list of names `verify` accepts. A name outside it is a
 finding: an action nobody here knows how to read cannot be told from a
@@ -38,6 +41,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from collections.abc import Sequence
     from datetime import datetime
+    from previously.contract.rows import Tip
     from previously.contract.store import LogStore
     from previously.contract.types import RawUnit
 
@@ -75,8 +79,23 @@ def write_action[Conn](
     `append` does: what an action names can depend on what the caller read
     under a lock, and that can differ between two attempts.
     """
+    return write_action_at(log, conn, log.tip(conn), payload, units, recorded_at=recorded_at)
+
+
+def write_action_at[Conn](
+    log: LogStore[Conn],
+    conn: Conn,
+    tip: Tip | None,
+    payload: Mapping[str, object],
+    units: Sequence[RawUnit],
+    *,
+    recorded_at: datetime,
+) -> int:
+    """Appends the action right after `tip`, which the caller read before
+    what decided the action, and returns its `id`. An event that joined the
+    chain after `tip` holds the position, and the insert raises
+    `ChainPositionTaken`, which `retrying` answers with a fresh attempt."""
     prepared = prepare(kind=_KIND, occurred_at=recorded_at, payload=payload, units=units, key=None)
-    tip = log.tip(conn)
     row, linked = link(
         prepared,
         event_id=1 if tip is None else tip.id + 1,

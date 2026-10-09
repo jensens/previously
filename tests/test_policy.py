@@ -7,6 +7,7 @@ point in time."""
 from datetime import datetime
 from datetime import timedelta
 from datetime import UTC
+from previously.contract.types import RawUnit
 from previously.core.action import append_action
 from previously.core.policy import check_payload
 from previously.core.policy import Circle
@@ -20,6 +21,7 @@ from previously.core.policy import read_policy
 from previously.core.policy import Rule
 from previously.core.policy import set_policy
 from previously.core.policy import to_payload
+from previously.core.verify import Finding
 from previously.core.verify import verify
 from previously.storage.postgres import PostgresStorage
 from typing import TYPE_CHECKING
@@ -28,7 +30,10 @@ import pytest
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from previously.contract.rows import EventRow
     from previously.core.policy import Statement
+    from sqlalchemy import Connection
     from sqlalchemy import Engine
 
 
@@ -288,6 +293,70 @@ def test_check_payload_names_what_is_wrong(payload: dict[str, object], sentence:
     found = check_payload(payload)
     assert found is not None
     assert sentence in found
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("units", [True, False], ids=["with-units", "control"])
+def test_verify_reports_a_policy_event_with_units(db: Engine, units: bool) -> None:
+    """Spec §4.3 point 2 (frozen design record): a policy event has no
+    units. One written past `set_policy` with a unit is a finding; the
+    control, the same statement through `set_policy`, is none."""
+    storage = PostgresStorage(db)
+    if units:
+        event_id = append_action(
+            storage,
+            to_payload(Circle("xz"), statement="customer", revoked=False),
+            [RawUnit(1, "secret customer text")],
+            recorded_at=T0,
+        )
+        assert verify(storage) == [Finding(event_id, "policy event has units")]
+    else:
+        set_policy(storage, Circle("xz"), statement="customer", recorded_at=T0)
+        assert verify(storage) == []
+
+
+class _RevokingAfterTheRead(PostgresStorage):
+    """The real store, except that the first read of the actions through it,
+    once its rows are read, revokes the circle `xz` through another store, in
+    a transaction of its own that commits before the rows are handed on."""
+
+    def __init__(self, engine: Engine, *, revoke: bool) -> None:
+        super().__init__(engine)
+        self._other = PostgresStorage(engine)
+        self._revoke = revoke
+
+    def read_by_kind(self, conn: Connection, kind: str) -> Iterator[EventRow]:
+        rows = list(super().read_by_kind(conn, kind))
+        if self._revoke:
+            self._revoke = False
+            set_policy(self._other, Circle("xz"), statement="gone", revoked=True, recorded_at=T0)
+        return iter(rows)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("revoke", [True, False], ids=["revoked-meanwhile", "control"])
+def test_a_membership_checked_while_its_circle_is_revoked_is_refused(
+    db: Engine, revoke: bool
+) -> None:
+    """`set_policy` reads the policy, finds the circle, and the circle is
+    revoked before the membership is written. The membership is written
+    right after the tip read before the check, so the revocation holds that
+    position, the attempt is lost, and the next one is refused.
+
+    Written after a tip read at the write, as `write_action` does, the
+    membership goes in behind the revocation and names a circle that no
+    longer exists. The control revokes nothing, and the membership is
+    written."""
+    set_policy(PostgresStorage(db), Circle("xz"), statement="customer", recorded_at=T0)
+    storage = _RevokingAfterTheRead(db, revoke=revoke)
+    member = Membership("xz", "@example.net")
+    if revoke:
+        with pytest.raises(PolicyRefused, match='no circle "xz" exists'):
+            set_policy(storage, member, statement="theirs", recorded_at=T0)
+        assert member not in _read(storage).memberships
+    else:
+        set_policy(storage, member, statement="theirs", recorded_at=T0)
+        assert member in _read(storage).memberships
 
 
 @pytest.mark.db
