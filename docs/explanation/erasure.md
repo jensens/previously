@@ -125,6 +125,39 @@ A tombstone row deleted, or one added with an invented `seq`, passes the check w
 In hash format 2 the same forgery is a finding, because the units digest runs over the digests the tombstones keep.
 `test_the_tombstone_rows_of_a_fully_erased_version_1_event_are_attested_by_nothing` pins that limit, with the version 2 case beside it as the control.
 
+## What an erasure takes along
+
+The result of a model call goes with its input.
+
+A `model_call` is an event of kind `action` that records what the gate asked a model and what it answered.
+The answer stands in the units of the call, and the payload names what the call read under `inputs`: events, units of them, and blobs.
+An answer is derived from its input, so it can't outlive an erasure of that input without keeping a trace of it.
+
+So an erasure takes the answers of those calls along.
+When `redact event` erases an event, `redact units` erases a unit that a call read, or `redact blob` erases a blob that a call read, the units of every such call are erased too.
+Each call gets a redaction of its own, with scope `units` and the reason `cascade of redaction 7`, where 7 is the id of the redaction that triggered it.
+It's written in the same transaction and under the same lock as the triggering redaction, so neither exists without the other.
+The payload of the call stays: it says that a call happened, what it read by id, and what the policy decided, and none of that holds the content.
+
+The cascade is a redaction like any other, so `verify` reconciles it with the rules it already has: the units must be tombstones, and a tombstone needs its order.
+One check is new.
+`verify` reports a call that still holds units while an event, unit or blob it read is erased, as `model_call 12 keeps the result of erased input`.
+That finding catches an erasure that skipped the cascade, and a call written after the erasure that names what it read.
+
+A call whose units are gone already gets no second cascade, which is why erasing the same target twice writes one cascade.
+The calls are found by reading every action, which is cheap for a pilot and the first thing an index would improve.
+A cascade doesn't follow a call that read the result of another call.
+No task reads one, and `verify` would report such a call as keeping the result of erased input.
+
+An erasure also reaches a policy event.
+Its payload goes, and the policy then reads as if the statement had been revoked: the previous statement of the same key applies again, or none.
+The rule that a redaction can't be redacted is the only one about actions that stays.
+
+The provider keeps its own copy.
+Anthropic retains requests and responses for 30 days, and no erasure reaches that copy, neither the cascade nor `redact` itself.
+What the gate sent to a provider before the erasure is out of reach of this system.
+The policy a deployment sets decides what may be sent in the first place, and {ref}`cli-gate` lists the commands that make a call.
+
 ## Why a redaction can't be redacted
 
 A redaction's payload is what the check measures the tombstones against.

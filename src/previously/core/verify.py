@@ -391,6 +391,10 @@ class _Erasures:
         self._units: list[tuple[int, int]] = []
         self._partial: list[int] = []
         self._registered: dict[int, frozenset[bytes]] = {}
+        # The `model_call` events that still keep a result, with what they
+        # read: (id, [(event, units, blobs)]). The ones whose units are all
+        # gone keep nothing and are not remembered.
+        self._calls: list[tuple[int, list[tuple[int, list[int], list[str]]]]] = []
 
     @property
     def redactions(self) -> RedactionIndex:
@@ -430,6 +434,8 @@ class _Erasures:
             return [Finding(row.id, f"policy event {problem}")]
         if name == MODEL_CALL and (problem := _model_call_problem(row.payload, units)) is not None:
             return [Finding(row.id, f"model_call has no valid form: {problem}")]
+        if name == MODEL_CALL and any(unit.content is not None for unit in units):
+            self._calls.append((row.id, _inputs_read(row.payload)))
         return []
 
     def reconcile[Conn](self, storage: LogStore[Conn], conn: Conn) -> list[Finding]:
@@ -453,6 +459,11 @@ class _Erasures:
         findings.extend(self._register_findings())
         for redaction in index:
             findings.extend(_execution_findings(storage, conn, redaction))
+        findings.extend(
+            Finding(call_id, f"model_call {call_id} keeps the result of erased input")
+            for call_id, read in self._calls
+            if any(_erased(index, event, units, blobs) for event, units, blobs in read)
+        )
         return findings
 
     def _register_findings(self) -> list[Finding]:
@@ -468,6 +479,40 @@ class _Erasures:
             if frozenset(bytes.fromhex(sha256) for sha256 in redaction.blobs) != registered:
                 findings.append(Finding(event_id, "blob register does not match the payload"))
         return findings
+
+
+def _inputs_read(payload: Mapping[str, object]) -> list[tuple[int, list[int], list[str]]]:
+    """What a well-formed `model_call` read: per entry of `inputs`, the event,
+    its units and its blobs. An entry or a list of another shape is left out;
+    `_model_call_problem` reports the call whose event is missing, and a
+    `units` or `blobs` that is no list names nothing that could be erased."""
+    read: list[tuple[int, list[int], list[str]]] = []
+    for entry in cast("list[object]", payload.get("inputs")):
+        named = cast("Mapping[str, object]", entry)
+        units = named.get("units")
+        blobs = named.get("blobs")
+        read.append(
+            (
+                cast("int", named["event"]),
+                [u for u in cast("list[object]", units) if isinstance(u, int)]
+                if isinstance(units, list)
+                else [],
+                [b for b in cast("list[object]", blobs) if isinstance(b, str)]
+                if isinstance(blobs, list)
+                else [],
+            )
+        )
+    return read
+
+
+def _erased(index: RedactionIndex, event: int, units: Sequence[int], blobs: Sequence[str]) -> bool:
+    """Whether a redaction covers the event, one of the units or one of the
+    blobs that a call read."""
+    return (
+        index.of_event(event) is not None
+        or any(index.of_unit(event, seq) is not None for seq in units)
+        or any(index.of_reference(event, sha256) is not None for sha256 in blobs)
+    )
 
 
 def _model_call_problem(payload: Mapping[str, object], units: Sequence[UnitRow]) -> str | None:

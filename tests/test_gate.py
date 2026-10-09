@@ -514,6 +514,31 @@ def test_a_denied_call_is_recorded_and_reaches_no_provider(
 
 
 @pytest.mark.db
+def test_erasing_the_event_a_call_read_erases_the_answer_of_the_call(
+    db: Engine, model_server: ModelServer
+) -> None:
+    """The cascade on a call the gate wrote: the answer goes, the payload
+    stays, and `verify` reconciles the redaction of the cascade."""
+    storage = PostgresStorage(db)
+    event_id = append_mail(storage)
+    declare(storage)
+    set_rule(storage, "source:email", "any")
+    model_server.enqueue("/v1/messages", 200, anthropic_body())
+    called = call(
+        storage, MAIL_OVERVIEW, event_id, adapters(model_server), load_prices(), recorded_at=LATER
+    )
+    assert any(content is not None for content in units_of(storage, called.event_id))
+
+    result = redact_event(storage, storage, event_id, reason="wrong list", recorded_at=LATER)
+
+    assert result.cascaded == (called.event_id,)
+    assert all(content is None for content in units_of(storage, called.event_id))
+    (row,) = model_calls(storage)
+    assert policy_of(row)["provider"] == "anthropic"
+    assert verify(storage) == []
+
+
+@pytest.mark.db
 def test_an_erased_event_is_denied_without_a_prompt(db: Engine, model_server: ModelServer) -> None:
     """Review focus 1: no call and no prompt out of tombstones, one
     `model_call` with `denied` and the reason."""

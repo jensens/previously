@@ -323,6 +323,16 @@ The first names the redaction it wrote.
 The second means that a redaction already covers the target and nothing was written; it names that redaction, for units the newest of the redactions that cover them, and for a blob the newest of the redactions that erased its references.
 In both cases the tombstones are set, and the blobs that no longer have to lie are deleted.
 
+When a `model_call` read the target, `redact` erases the units of that call with it, by a redaction of its own with the reason `cascade of redaction ID`, where `ID` is the redaction that triggered it.
+For each such call it prints one more line to standard output, after the first:
+
+```text
+cascaded: model_call 43
+```
+
+A target that no call read prints no such line, and neither does a repeat of an erasure whose cascade stands.
+`redact` refuses a redaction as a target and accepts every other action, a policy event and a `model_call` included.
+
 `redact` works in this order: it records the redaction and sets the tombstones in one transaction, deletes the blobs that no longer have to lie, and brings every projection up to the tip of the log, the way `project` does.
 Only then does it print the line to standard output.
 The chronicle then holds no row of what was erased, without a separate `project`.

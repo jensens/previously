@@ -147,6 +147,23 @@ blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 stays in t
 
 If that blob has to go as well, erase it as a blob, or erase the events that still use it.
 
+## Erase what a model call read
+
+If a model call of the gate read the target, `redact` erases the answer of that call with it, for all three forms.
+The command says so after its first line, one line for each call:
+
+```text
+redacted by event 12
+cascaded: model_call 9
+```
+
+The call stays in the log with its payload, and its units are erased by a redaction of their own, with the reason `cascade of redaction 12`.
+Nothing more is needed: `previously verify` holds the cascade to the same rules as any other redaction.
+A call that read only other units, or another event, is left alone, and a target that no call read prints no `cascaded` line.
+
+The cascade doesn't reach the provider.
+Anthropic keeps requests and responses for 30 days, and nothing in Previously deletes them.
+
 ## Check the log
 
 After any erasure, check the chain:
