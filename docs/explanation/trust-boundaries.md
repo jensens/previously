@@ -29,7 +29,7 @@ That check is a different one, at a different place, and it arrives with the fir
 
 ## The mail comes in and stays in
 
-The IMAP connector is the only door through which a customer's content enters, and it opens inward only.
+The IMAP connector is the door through which a customer's mail enters, beside what the operator types or attaches with `append`, and it opens inward only.
 It never changes the folder, it never marks a mail as read, and a password that opens the one mailbox opens nothing else.
 So the connector is a boundary in one direction: nothing a run does can reach back into the mailbox.
 That's also why an erasure in the log doesn't erase the mail in the mailbox, which {ref}`erasure` states as a limit of the erasure, not of the connector.

@@ -37,6 +37,11 @@ Each kind has a replacement key and keys of its own, beside the four common ones
 
 Every set is written as a sorted list, so the same statement has the same payload whatever order it was typed in.
 
+A membership counts only while its circle exists.
+A revoked circle has no members: its membership events stay in the log, bind nothing, and count again once the circle is created again.
+The content of its people then goes by the rules that are left, such as the rule of their source, and not by `local_only`.
+`policy member` refuses a membership in a circle that doesn't exist.
+
 The keys of a `rule` and a `provider`, with their values:
 
 | Key | Value |
@@ -101,7 +106,7 @@ The entry of `task`:
 |---|---|
 | `name` | The name of the task, such as `mail_overview`. |
 | `version` | The version of the task, a whole number. |
-| `prompt_sha256` | The SHA-256 of the two halves of the prompt before any content goes in. |
+| `prompt_sha256` | The SHA-256 of the object `{"system": …, "template": …}`, the two halves of the prompt before any content goes in, as UTF-8 JSON with sorted keys and no white space. |
 | `schema_sha256` | The SHA-256 of the output schema, as JSON with sorted keys and no white space. |
 
 An entry of `inputs`:
@@ -124,7 +129,7 @@ The entry of `policy`:
 | `decision` | `allowed` or `denied`. |
 | `provider` | The provider chosen, or `null`. |
 | `model` | The model chosen, or `null`. |
-| `inference_geo` | The inference region the call requested, or `null` where the provider has a single space. |
+| `inference_geo` | The inference region the call requested, or `null` where the provider has a single space or no candidate was chosen. |
 | `fallback` | `null` under a real rule, otherwise the entry below. |
 | `reason` | The reasons the candidates were rejected, joined by `; `, or `null`. |
 
@@ -133,7 +138,7 @@ The entry of `fallback`:
 | Key | Value |
 |---|---|
 | `reason` | `no_rule`. |
-| `circles` | The circles without a rule, or an empty list where no rule applied at all. |
+| `circles` | The circles of the content that have no rule. Empty only where the content belongs to no circle and no rule applied. |
 
 The entry of `response`:
 
@@ -143,7 +148,7 @@ The entry of `response`:
 | `model` | The model the provider names in its answer. |
 | `inference_geo` | The region the provider reports, or `null` where it reports none. |
 | `stop_reason` | The reason the provider gives for stopping, or `null`. |
-| `usage` | The tokens, as `input_tokens` and `output_tokens`. |
+| `usage` | The tokens, as `input_tokens` and `output_tokens`, each `null` where the provider reports none. |
 | `cost_usd` | The estimate as a decimal string, or `null` for a model the price file doesn't name. The chain admits no floating-point number. |
 | `prices_sha256` | The SHA-256 of the price file as it lies on disk. |
 
@@ -238,7 +243,7 @@ A denial of the event itself, before any candidate is weighed, has one of these 
 
 | Reason | When |
 |---|---|
-| `the event is not an observation` | The event is a policy event or a `model_call`. |
+| `the event is not an observation` | The event is of any other kind, such as a policy event, a redaction or a `model_call`. |
 | `the event is erased` | The payload of the event is gone. |
 | `no unit of the event holds content` | Every unit is a tombstone or empty. |
 

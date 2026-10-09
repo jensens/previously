@@ -144,6 +144,14 @@ One check is new.
 `verify` reports a call that still holds units while an event, unit or blob it read is erased, as `model_call 12 keeps the result of erased input`.
 That finding catches an erasure that skipped the cascade, and a call written after the erasure that names what it read.
 
+A call can be in flight while its input is erased.
+The gate reads the event, waits for the provider, which takes seconds and may take until the timeout, and writes the call only once the answer is there.
+An erasure that commits in that window finds no call to cascade, because none is written yet.
+So the gate writes the call under the same row lock on its input that an erasure takes, and reads the redactions again under it.
+If one of them erased the input in the meantime, the gate erases its own answer in the same transaction, by a redaction with the reason `cascade of redaction 7` that names the erasure, and `gate try` prints no answer.
+An erasure that comes second waits at that lock, and once it holds its locks it reads the calls again and finds the one the gate wrote.
+Whichever of the two commits first, no answer stands beside an erased input.
+
 A call whose units are gone already gets no second cascade, which is why erasing the same target twice writes one cascade.
 The calls are found by reading every action, which is cheap for a pilot and the first thing an index would improve.
 A cascade doesn't follow a call that read the result of another call.

@@ -49,7 +49,7 @@ The specification of the pilot's third unit, the gate and the policy, is dated 2
 It decided that a policy is an action of the operator and not an assertion, and that a model call is an event in the chain whatever became of it.
 {ref}`processing-policy` carries its reasoning, and {ref}`trust-boundaries` took the list of the places where content leaves the system, which the specification asked for; {ref}`policy-and-model-calls` took the payload of a policy event and of a model call, {ref}`cli-reference` and {ref}`configuration-reference` the commands and their settings, and {ref}`erasure` the cascade that takes the answer of a call with its input.
 {ref}`set-a-policy-and-try-a-call` took the routine, and a third handoff, `docs/superpowers/handoffs/2026-10-09-kup6s-gate.md`, tells whoever runs the Kubernetes environment what the gate needs there.
-The build departs from its wording in four places, which the header of the record lists, and the pages hold.
+The build departs from its wording in six places, which the header of the record lists, and the pages hold.
 Its open points went into the map, each under the unit of work it belongs to.
 
 ## What a frozen record is still good for

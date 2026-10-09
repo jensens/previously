@@ -759,7 +759,7 @@ previously policy circle NAME --statement TEXT
 previously policy member CIRCLE ADDRESS-OR-@DOMAIN --statement TEXT
 previously policy own ADDRESS-OR-@DOMAIN --statement TEXT
 previously policy rule SCOPE --regions REGION [REGION ...] --statement TEXT
-previously policy provider NAME --retention-days N|unknown --statement TEXT
+previously policy provider NAME --storage [REGION ...] --retention-days N|unknown --statement TEXT
 previously policy show [--at TIME]
 previously policy gaps [--since TIME]
 ```
@@ -791,7 +791,7 @@ previously policy gaps [--since TIME]
 | Option | Required | Default | Description |
 |---|---|---|---|
 | `--inference NAME=REGIONS` | No | none | A space of inference and what it means, such as `global=any` or `us=us`. May repeat. |
-| `--storage REGION ...` | No | stores nothing | Where the provider stores. |
+| `--storage [REGION ...]` | Yes | — | Where the provider stores. Given with no region, the provider stores nothing, as a local one does. |
 | `--retention-days N\|unknown` | Yes | — | How long the provider keeps what it receives. |
 | `--reports-geo` | No | off | The answer of the provider names the region. |
 | `--local` | No | off | The provider runs on hardware the operator runs. |
@@ -818,6 +818,7 @@ The rules table starts with the built-in rule `local_only`, which isn't an event
 A newer event with the same key replaces the older one, a revocation lifts the statement, and an event whose payload was erased counts for nothing.
 
 `verify` reports a policy event whose form isn't sound, such as one that has no name, with a finding of the form `policy event has no valid form: it has no "name"`.
+It reports a policy event that has units with `policy event has units`: the write path never gives one any.
 
 `policy gaps` lists where the built-in rule `local_only` acted: the circles without a rule, and the sources whose content no rule covered at all, each with the number of calls that fell back and the time of the last, sorted by name, one per line, the three fields separated by a tab:
 
@@ -826,7 +827,7 @@ circle:xz	3	2026-10-09T14:02:11.482113Z
 source:email	1	2026-10-09T12:00:00.000000Z
 ```
 
-It reads the `model_call` events and nothing else, and counts a call whether the local model answered it or not.
+It reads the `model_call` events, and the source of each event that a call read where the fallback named no circle, and counts a call whether the local model answered it or not.
 `--since TIME` counts only the calls recorded from that moment on; the time needs a zone.
 A call over an event that has no source and no circle stands under `event:<id>`.
 When no call fell back, standard output stays empty, and one notice goes to standard error:
@@ -882,7 +883,8 @@ decision	mistral/mistral-small-2603, inference_geo -
 `local_only` stands in the rules line, without an event, where the built-in rule acted.
 A reason that belongs to no candidate, such as `no local provider is declared`, stands on a line of its own with `-` in place of the candidate, and a decision that allows no candidate reads `decision	denied`.
 An erased event is denied with the reason `the event is erased`.
-An event that isn't an observation, such as a policy event or a `model_call`, is denied with the reason `the event is not an observation`.
+An event that isn't an observation, such as a policy event, a redaction or a `model_call`, is denied with the reason `the event is not an observation`.
+Where the built-in rule `local_only` acted and the decision chose the local model, `gate explain` writes the `processed locally` line of `gate try` to standard error, after the table; a denial gets no such line.
 
 ### `gate try`
 
@@ -898,6 +900,12 @@ model_call: event 12
 ```
 
 A call that didn't end with an answer prints only the second line, and one sentence on standard error, with exit code 2.
+So does a call whose input was erased while the provider was answering: it's recorded as `ok`, but its answer is erased with the input in the same transaction ({ref}`erasure`), so it isn't printed either, and the sentence names the redaction:
+
+```text
+erased: the input was erased by redaction 14 while the call ran; the answer is erased with it
+```
+
 Every outcome but `ok` is recorded the same way, with no units: a denial, a refusal by the model, an answer the schema refuses, and a call that failed.
 A denial and a refusal by the model read:
 
@@ -918,7 +926,8 @@ Error: anthropic: the provider is not configured — set ANTHROPIC_API_KEY
 Error: local: call failed (APIConnectionError): Connection error. — the local model server is http://localhost:11434/v1
 ```
 
-The first comes before everything else, one line per circle without a rule, or for the source when no rule applied at all, and `gate explain` writes it too; under a real rule there's no such line.
+The first comes before everything else, one line per circle without a rule, or for the source when no rule applied at all; under a real rule there's no such line.
+It's written only where the local model answered: a call denied because no local provider is declared, and a call to a local server that didn't answer, processed nothing, and print their own sentence alone.
 The second is an alarm: the provider reported another inference region than the one requested, and the call returns 3.
 The third is an answer that isn't JSON, lacks a field, or has a field too many; the gate checks every answer itself, even where the provider enforces the schema.
 The fourth names the setting that's missing, and the fifth the address of the local model server that didn't answer.

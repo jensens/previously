@@ -18,13 +18,29 @@
 2026-10-09 durchgesehen („spec passt"), Grundlage des Plans
 `docs/superpowers/plans/2026-10-09-pilot-gate-und-policy.md`; am selben Tag
 nachgezogen: die Messungen der Anbieter (Commit `62d044f`) und die Fassung von
-§2.5 Punkt 5 und §8 Punkt 3 (Commits `5a2fa6f`, `26f4cb4`). Bedingung 10 aus
-§10 folgt dem Merge. Wo der Bau vom Wortlaut abweicht, steht es im Plan und im
-Ausführungsprotokoll: Mistral geht über den Client `openai` statt über
-`mistralai` (§3.3, §7.3), das Ausgabeschema ist ein Pydantic-Modell (§7.3),
-die Entscheidung liegt in `core/decide.py` und der Schreibweg in
-`core/policy.py` (§7.1), und das Gate nimmt nur Events der Art `observation`
-als Eingabe.
+§8 Punkt 3 (Commits `da6c574`, `5a2fa6f`). §2.5 Punkt 5 wurde nicht
+nachgezogen; der Text unten ist der vom 2026-10-09 vor dem Bau. Bedingung 10
+aus §10 folgt dem Merge. Wo der Bau vom Wortlaut abweicht, steht es im Plan
+und im Ausführungsprotokoll, an sechs Stellen:
+
+- Mistral geht über den Client `openai` statt über `mistralai` (§3.3, §7.3).
+- Das Ausgabeschema ist ein Pydantic-Modell (§7.3).
+- Die Entscheidung liegt in `core/decide.py` und der Schreibweg in
+  `core/policy.py` (§7.1).
+- Das Gate nimmt nur Events der Art `observation` als Eingabe (Ruling R-11).
+- **Die Wahl des Raums** (Ruling R-7). §2.5 Punkt 5 sagt „`us` nur, wenn
+  `regions` auf `us` beschränkt ist, sonst `global`". Der Code setzt von den
+  wählbaren Räumen, deren Bedeutung ganz in `regions` liegt, den weitesten:
+  bei `regions = {eu, us}` besteht Anthropic mit `us`, wo der Wortlaut
+  `global` verlangte und Anthropic damit ablehnte.
+- **Kein Raum bei nur einem** (Ruling R-6). §3.2 Punkt 4 und §8 Punkt 11
+  sagen, der Raum werde immer ausdrücklich gesetzt. Einem Anbieter mit nur
+  einem deklarierten Raum (Mistral `eu`, lokal) setzt der Code keinen: es
+  gibt nichts zu wählen, und was zugesagt war, nennt das Audit über die Id
+  der Zusage.
+
+Die Seite `processing-policy` (*A promise isn't a report*) trägt die beiden
+letzten, und sie gilt.
 
 Detail-Spec für die dritte Einheit des Piloten an einem echten Kunden. Setzt
 die Stufen 1a, 1b, den äußeren Anker, Stufe 1c, die Auslieferung und die

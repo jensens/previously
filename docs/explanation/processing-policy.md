@@ -16,7 +16,7 @@ They have different subjects and different places to stand.
 The first concerns a provider that processes content and, as a rule, keeps it for a while.
 The second concerns a place that shows content to people.
 A model call on the machine of the operator can be harmless for a customer whose issue tracker must never see the same text, and the other way round.
-Merging them gave one check with a name that fit neither, and an earlier plan called it the disclosure check.
+Merging them gave one check with a name that fit neither, and an earlier version of the project's map called it the disclosure check.
 That term is gone.
 
 This page and the gate are about the first check, the processing check.
@@ -39,6 +39,17 @@ Domains compare without regard to case, and local parts compare exactly, because
 The operator is in almost every mail.
 If the operator's own address counted as a member of a circle, every mail would fall under the rules of every circle the operator works with.
 The policy therefore lets the operator declare their own identities, and removes them from the participants before it resolves any circle.
+
+A membership counts only while its circle exists.
+A membership is a statement about a circle, and when the operator revokes the circle, the statement has nothing left to be about: a revoked circle has no members.
+The other reading would keep the circle binding through the back door.
+A circle that has no rule brings the built-in `local_only`, so a revoked circle whose old memberships still counted would hold the content of its former members on the machine for good, after the operator said the group no longer exists.
+
+That choice has a consequence that's easy to miss.
+Once the circle is revoked, the content of its people goes by the rules that are left, and where none is left but the rule of their source, by that rule, which may be `any`.
+Revoking a circle releases its content; it doesn't lock it away.
+An operator who wants the content of a former customer to stay local revokes the rule of the circle and keeps the circle, which brings `local_only` back.
+The memberships stay in the log either way, and creating the circle again makes them count again.
 
 ## The strictest rule wins
 
@@ -72,7 +83,7 @@ A local server reports nothing, and doesn't need to, because the operator runs t
 That was measured on 2026-10-09 against the API.
 The value names the class of routing, not the place of the computation.
 So a region is evidenced only where one was demanded: a call that requested `us` and got `us` back has the provider's word for it, and a call that requested `global` has a word that says nothing about where.
-For this reason the gate always sets the region explicitly, even when it's `global`, and raises an alarm when the reported region differs from the requested one.
+For this reason the gate sets the region explicitly wherever the provider offers a choice, even when it's `global`, and raises an alarm when the reported region differs from the requested one.
 Where the gate sets no region, because the provider has one space only, the ids of the declarations in the audit say what was promised.
 
 The gate sets the region that the rules demand, the widest one that fits.
@@ -96,10 +107,10 @@ A policy that falls back to it makes every result worse and says nothing.
 
 Because the fallback is safe and weaker, the one thing that can go wrong is that nobody notices.
 So it shows in three places.
-The `model_call` that ran under the built-in rule carries `policy.fallback`, with the circles that had no rule, or an empty list when no rule applied at all.
+The `model_call` that ran under the built-in rule carries `policy.fallback`, with the circles of the content that had no rule; the list is empty only where the content belongs to no circle and no rule applied.
 It isn't an alarm, because nothing went wrong, and it's a different mark for that reason.
 `gate explain` and `gate try` say it on standard error, with the command that fixes it.
-And `policy gaps` lists the circles and sources that fell back, with a count and the last time, from the `model_call` events alone.
+And `policy gaps` lists the circles and sources that fell back, with a count and the last time, from the `model_call` events and the source of the events they read.
 A batch of a hundred calls, run by a layer that nobody watches call by call, still leaves that list.
 
 If no local provider is declared, the same content is denied, and the reason says so.
