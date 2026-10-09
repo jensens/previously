@@ -45,7 +45,11 @@ class AnthropicAdapter:
         if request.effort is not None:
             config["effort"] = request.effort
         try:
-            message = self._client.messages.create(
+            # The raw response, for its headers: Anthropic names the request in
+            # `request-id` (`req_…`), and that is the id its support asks for.
+            # The body's `id` (`msg_…`) names the message. Measured on
+            # 2026-10-09.
+            raw = self._client.messages.with_raw_response.create(
                 model=request.model,
                 max_tokens=MAX_TOKENS,
                 system=request.system,
@@ -53,6 +57,7 @@ class AnthropicAdapter:
                 output_config=cast("OutputConfigParam", config),
                 inference_geo=omit if request.inference_geo is None else request.inference_geo,
             )
+            message = raw.parse()
         except Exception as error:
             raise adapter_error(self.provider, error, self._key) from None
         output = "".join(block.text for block in message.content if block.type == "text")
@@ -60,7 +65,7 @@ class AnthropicAdapter:
             output=output,
             reported_geo=message.usage.inference_geo,
             model=message.model,
-            request_id=message.id,
+            request_id=raw.headers.get("request-id"),
             stop_reason=message.stop_reason,
             input_tokens=message.usage.input_tokens,
             output_tokens=message.usage.output_tokens,

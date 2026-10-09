@@ -119,7 +119,8 @@ def test_anthropic_request_carries_geo_schema_and_effort(model_server: ModelServ
     assert response.output == OUTPUT
     assert response.reported_geo == "us"
     assert response.model == "claude-haiku-5-5"
-    assert response.request_id == "msg_01"
+    # The request, not the message: support asks for the id in the header.
+    assert response.request_id == model_server.anthropic_request_id
     assert response.stop_reason == "end_turn"
     assert (response.input_tokens, response.output_tokens) == (400, 130)
 

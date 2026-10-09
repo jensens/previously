@@ -414,6 +414,11 @@ class ModelServer:
     hang. The real SDK clients talk to it; nothing in between is a mock.
     """
 
+    # The request id sent with every Anthropic answer, in the `request-id`
+    # header, as the real API does (measured on 2026-10-09: `req_…` in the
+    # header, `msg_…` as the body's `id`).
+    anthropic_request_id = "req_test_01"
+
     def __init__(self) -> None:
         self.requests: list[tuple[str, dict[str, object]]] = []
         self._queue: list[tuple[str, int, Mapping[str, object], float, threading.Event | None]] = []
@@ -441,6 +446,10 @@ class ModelServer:
                     self.send_response(status)
                     self.send_header("Content-Type", "application/json")
                     self.send_header("Content-Length", str(len(data)))
+                    # Anthropic names the request in a header of its own; the
+                    # id in the body names the message, not the request.
+                    if self.path == "/v1/messages":
+                        self.send_header("request-id", outer.anthropic_request_id)
                     self.end_headers()
                     self.wfile.write(data)
                 except OSError:

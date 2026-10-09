@@ -524,7 +524,7 @@ def test_the_cost_of_a_call_is_estimated_from_the_price_file(
     assert response["cost_usd"] == "0.000289"
     assert response["prices_sha256"] == prices.sha256
     assert response["usage"] == {"input_tokens": 1830, "output_tokens": 212}
-    assert response["request_id"] == "msg_01"
+    assert response["request_id"] == model_server.anthropic_request_id
     assert response["stop_reason"] == "end_turn"
 
 
