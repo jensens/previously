@@ -104,8 +104,9 @@ wem gehört, ergibt sich deshalb aus den Beteiligten, nicht aus dem Ordner
   — ein Aufruf mit dem Parameter wird mit 400 abgewiesen —, und damit fiele
   der Nachweis des Verarbeitungsraums pro Aufruf (Entwurf §10.1) für das
   geplante Modell aus. Seit 2026-10-07 gibt es `claude-haiku-5-5`, zu einem
-  Zehntel des Preises von Haiku 4.5. Dass es `inference_geo` annimmt, sagt
-  die Doku nur pauschal („Claude 4.6 und später"); gemessen wird es im Bau.
+  Zehntel des Preises von Haiku 4.5. Gemessen am 2026-10-09: Haiku 5.5
+  nimmt `inference_geo` und `output_config.format` an; Haiku 4.5 antwortet
+  auf `inference_geo` mit 400 („does not support inference_geo").
 - **Kein Raum `eu` bei Anthropic.** `inference_geo` kennt `global` und `us`;
   gespeichert wird bei Anthropic in den USA, und die Workspace-Geo ist
   unveränderlich `us`. Eine Regel „nur EU" ist mit Anthropic nicht
@@ -412,7 +413,7 @@ payload
               "model": "claude-haiku-5-5", "inference_geo": "global",
               "fallback": null, "reason": "…"},
   "response": {"request_id": "req_…", "model": "claude-haiku-5-5",
-               "inference_geo": "us", "stop_reason": "end_turn",
+               "inference_geo": "global", "stop_reason": "end_turn",
                "usage": {"input_tokens": 1830, "output_tokens": 212},
                "cost_usd": "0.000289", "prices_sha256": "…"},
   "outcome": "ok",
@@ -430,7 +431,10 @@ units
 - `policy.fallback` ist `null`, wo eine echte Regel galt, sonst der Grund
   des Rückfalls (§2.6).
 - `response` fehlt bei `denied`; `response.inference_geo` ist `null`, wo der
-  Anbieter nichts meldet. Zusage und Meldung bleiben getrennt: was zugesagt
+  Anbieter nichts meldet. **Bei `global` meldet Anthropic `global` zurück**,
+  die Klasse der Weiterleitung, nicht den Ort der Rechnung (gemessen am
+  2026-10-09). Belegt ist ein Raum also nur, wo einer verlangt war — genau
+  dort, wo der Alarm (§3.2) greift. Zusage und Meldung bleiben getrennt: was zugesagt
   war, sagen die Ids unter `policy.providers`.
 - `cost_usd` ist eine Zeichenkette mit Dezimalzahl: die Kette lässt keine
   Gleitkommazahlen zu (Architektur §4.1).
