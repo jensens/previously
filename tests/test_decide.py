@@ -7,6 +7,7 @@ Every test builds a `Policy` from values. The function is pure, so there is
 no database to start.
 """
 
+from hypothesis import example
 from hypothesis import given
 from hypothesis import strategies as st
 from previously.core.decide import Candidate
@@ -176,54 +177,95 @@ _RULE_VALUES = st.tuples(
 )
 
 
+type _Values = tuple[frozenset[str], int | None, frozenset[str]]
+
+
 def _policy_of(
-    circle_rules: list[tuple[frozenset[str], int | None, frozenset[str]]],
+    circle_rules: list[_Values],
     bare: bool,
-    source_rule: tuple[frozenset[str], int | None, frozenset[str]] | None,
-) -> Policy:
+    *,
+    source: _Values | None = None,
+    more: _Values | None = None,
+    far: _Values | str | None = None,
+) -> tuple[Policy, list[dict[str, object]]]:
+    """A policy and the people involved.
+
+    `bare` adds an involved circle without a rule, `source` a rule for the
+    source, `more` a further involved circle with its rule, and `far` a
+    circle whose members are not involved: `"bare"` without a rule, or with
+    the rule given.
+    """
     names = [f"c{index}" for index in range(len(circle_rules))] + (["bare"] if bare else [])
     rules = [Rule(f"circle:c{i}", *values) for i, values in enumerate(circle_rules)]
-    if source_rule is not None:
-        rules.append(Rule("source:email", *source_rule))
-    return build(
+    involved = list(names)
+    if source is not None:
+        rules.append(Rule("source:email", *source))
+    if more is not None:
+        names.append("more")
+        involved.append("more")
+        rules.append(Rule("circle:more", *more))
+    if far is not None:
+        names.append("far")
+        if far != "bare":
+            assert not isinstance(far, str)
+            rules.append(Rule("circle:far", *far))
+    policy = build(
         circles=tuple(names),
         memberships=tuple((name, f"@{name}.at") for name in names),
         rules=tuple(rules),
     )
+    return policy, who(*(f"x@{name}.at" for name in involved))
 
 
 @given(
     circle_rules=st.lists(_RULE_VALUES, max_size=3),
     bare=st.booleans(),
+    kind=st.sampled_from(["source", "uninvolved", "further"]),
     extra=_RULE_VALUES,
 )
+@example(  # a rule {eu,us} lets mistral and local out; a source rule {us} must not add anthropic
+    circle_rules=[(frozenset({"eu", "us"}), None, frozenset())],
+    bare=False,
+    kind="source",
+    extra=(frozenset({"us"}), None, frozenset()),
+)
 def test_adding_a_rule_never_widens_the_passing_candidates(
-    circle_rules: list[tuple[frozenset[str], int | None, frozenset[str]]],
-    bare: bool,
-    extra: tuple[frozenset[str], int | None, frozenset[str]],
+    circle_rules: list[_Values], bare: bool, kind: str, extra: _Values
 ) -> None:
-    """The extra rule is a source rule that the baseline lacks, so it adds
-    to the merge instead of replacing a rule. A baseline that fell back
-    because no rule applied at all is left out: the first rule there lifts
-    the built-in restriction, which is the point of writing one."""
-    before = _policy_of(circle_rules, bare, None)
-    after = _policy_of(circle_rules, bare, extra)
-    identities = who(
-        *(f"x@c{i}.at" for i in range(len(circle_rules))), *(["x@bare.at"] if bare else [])
+    """Pilot assertion 3 (point 3 of the specification's assertions, "adding a rule").
+
+    Three ways to add a rule for a scope that has none yet: a source rule
+    beside rules that already apply, a rule for a circle nobody involved
+    belongs to, and a further involved circle together with its membership
+    and rule. Two cases are left out on purpose, because they lift the
+    built-in `local_only` and loosen the decision as designed: the first
+    rule of an involved circle (that is `bare` here, which never gets one),
+    and the first rule that applies at all. Replacing a rule is no addition
+    and may loosen.
+    """
+    before, ids_before = _policy_of(
+        circle_rules, bare, far="bare" if kind == "uninvolved" else None
     )
-    baseline = decide(before, identities=identities, source="email", candidates=CANDIDATES)
+    baseline = decide(before, identities=ids_before, source="email", candidates=CANDIDATES)
     if baseline.fallback is not None and baseline.fallback.circles == ():
-        return
-    assert passing(after, identities, "email") <= passing(before, identities, "email")
+        return  # the first rule that applies at all
+    if kind == "source":
+        after, ids_after = _policy_of(circle_rules, bare, source=extra)
+    elif kind == "uninvolved":
+        after, ids_after = _policy_of(circle_rules, bare, far=extra)
+    else:
+        after, ids_after = _policy_of(circle_rules, bare, more=extra)
+    assert passing(after, ids_after, "email") <= passing(before, ids_before, "email")
 
 
 # --- Pilot assertion 4: own identities do not count ---
 
 
 def test_own_identities_are_removed_before_the_circles_resolve() -> None:
-    kwargs = {"circles": ("klein",), "memberships": (("klein", "@klein.at"),)}
-    with_own = build(own=("jens@klein.at",), **kwargs)  # pyright: ignore[reportArgumentType]
-    without = build(**kwargs)  # pyright: ignore[reportArgumentType]
+    circles = ("klein",)
+    memberships = (("klein", "@klein.at"),)
+    with_own = build(circles=circles, memberships=memberships, own=("jens@klein.at",))
+    without = build(circles=circles, memberships=memberships)
     assert circles_of(with_own, who("jens@klein.at")) == ()
     assert circles_of(without, who("jens@klein.at")) == ("klein",)
 
@@ -279,11 +321,12 @@ def test_us_leads_to_anthropic_with_us() -> None:
     assert decision.inference_geo == "us"
 
 
-def test_eu_and_us_together_set_no_narrower_space_than_demanded() -> None:
-    # `global` lies outside {eu, us}, and `us` alone would be narrower than the
-    # rule demands, so Anthropic fails and Mistral (eu) is next.
+def test_eu_and_us_together_let_anthropic_pass_with_the_widest_fitting_space() -> None:
+    # `global` lies outside {eu, us}; `us` is the widest space that lies within.
     policy = build(rules=(rule("source:email", {"eu", "us"}),))
-    assert passing(policy, [], "email") == {"mistral", "local"}
+    assert passing(policy, [], "email") == {"anthropic", "mistral", "local"}
+    decision = decide(policy, identities=[], source="email", candidates=[CANDIDATES[0]])
+    assert decision.inference_geo == "us"
 
 
 def test_disjoint_regions_pass_only_what_stores_nothing_and_fits_no_space() -> None:
@@ -356,7 +399,7 @@ def test_a_known_retention_above_the_limit_fails() -> None:
     }
 
 
-# --- Assertion 7 of the pilot specification: the fallback is marked, a real rule carr
+# --- Pilot assertion 7: the fallback is marked, a real rule carries none ---
 
 
 def test_a_real_rule_carries_no_fallback() -> None:
@@ -395,7 +438,7 @@ def test_an_involved_without_an_address_is_skipped() -> None:
     assert circles_of(policy, identities) == ()
 
 
-# --- Ruling R-5: only a circle that exists has members ------------------------------------
+# --- Ruling R-5 of the 2026-10-09 gate plan: only a circle that exists has members ---
 
 
 def test_a_membership_in_a_circle_that_does_not_exist_counts_for_nothing() -> None:

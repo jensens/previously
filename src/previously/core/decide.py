@@ -13,12 +13,10 @@ errs towards "not allowed".
 
 from dataclasses import dataclass
 from previously.core.policy import ANY
-from previously.core.policy import Inference
 from previously.core.policy import LOCAL_ONLY
 from previously.core.policy import normalize_member
 from previously.core.policy import Policy
 from previously.core.policy import Provider
-from previously.core.policy import Region
 from previously.core.policy import Rule
 from typing import Final
 from typing import TYPE_CHECKING
@@ -67,7 +65,7 @@ def _matches(member: str, address: str) -> bool:
     member = normalize_member(member)
     address = normalize_member(address)
     if member.startswith("@"):
-        return address.endswith(member) and "@" in address
+        return address.endswith(member)
     return member == address
 
 
@@ -114,20 +112,19 @@ def _merge_regions(rules: Sequence[Rule]) -> frozenset[str]:
 def _space(provider: Provider, regions: frozenset[str]) -> tuple[bool, str | None]:
     """Whether some inference space fits, and the one to set.
 
-    The gate sets the region the rules demand and no narrower one: `us` only
-    if the regions are exactly `us`, otherwise a space that is not `us`
-    alone. There is no ranking between regions. A provider with a single
-    space has nothing to select, so none is set.
+    A space fits if its meaning lies wholly in `regions`. Of the spaces that
+    fit, the widest is set: one that means `any` first, then the larger
+    meaning, then the name. The rules allow everything that fits, so the
+    widest is the space they demand, and a narrower one would only cost more.
+    A smaller `regions` can only shrink what fits, so a stricter rule never
+    lets a provider through that a looser one stopped. A provider with a
+    single space has nothing to select, so none is set.
     """
     fitting = [space for space in provider.inference if _inside(space.regions, regions)]
     if len(provider.inference) <= 1:
         return bool(fitting), None
-    us = frozenset({Region.US.value})
-    wanted: list[Inference] = [
-        space for space in fitting if (space.regions == us) == (regions == us)
-    ]
-    wanted.sort(key=lambda space: (ANY not in space.regions, space.name))
-    return (True, wanted[0].name) if wanted else (False, None)
+    fitting.sort(key=lambda space: (ANY not in space.regions, -len(space.regions), space.name))
+    return (True, fitting[0].name) if fitting else (False, None)
 
 
 def _rejection(
