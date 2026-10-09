@@ -593,8 +593,9 @@ umgelenkte Basis-URL mit ihm. Ein echter Aufruf ist Sache der Abnahme (§10).
    anderen beteiligten Kreis „überall" gilt.
 3. **Die strengste gewinnt:** eine zusätzliche Regel macht eine Entscheidung
    nie lockerer (Hypothesis) — außer sie gibt einem beteiligten Kreis seine
-   erste Regel: die hebt die eingebaute `local_only` auf, und das ist ihr
-   Zweck.
+   erste Regel, oder sie ist die erste Regel, die überhaupt gilt: beide heben
+   die eingebaute `local_only` auf, und das ist ihr Zweck. Eine bestehende
+   Regel zu ersetzen ist kein Hinzufügen und darf lockern.
 4. **Eigene Identitäten zählen nicht.**
 5. **„EU" führt zu Mistral, „überall" zu Anthropic mit `global`, „us" zu
    Anthropic mit `us`.**
