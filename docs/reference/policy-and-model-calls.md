@@ -144,7 +144,7 @@ The entry of `response`:
 
 | Key | Value |
 |---|---|
-| `request_id` | The id the provider gave the request, or `null`. |
+| `request_id` | The id the provider gave the request, or `null`: for Anthropic its `request-id` header (`req_…`); for an OpenAI-compatible provider the completion's `id`, because Mistral and Ollama send no request id that the client reads. |
 | `model` | The model the provider names in its answer. |
 | `inference_geo` | The region the provider reports, or `null` where it reports none. |
 | `stop_reason` | The reason the provider gives for stopping, or `null`. |
