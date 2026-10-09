@@ -6,7 +6,11 @@ This guide shows you how to declare what your model providers promise, put the p
 It runs the first call against a local model, with Ollama and `qwen3:4b`, so that it needs no key and sends nothing out of your machine.
 For why a policy is built from circles and rules, see {ref}`processing-policy`, and for every option, {ref}`cli-reference`.
 
-You need a database that `previously migrate` has brought up to date, with a mail in it that `previously ingest imap` took in ({ref}`ingest-a-mail-folder`), and `PREVIOUSLY_DSN` exported.
+You need three things before you start.
+
+- The `previously` command, from the first release after `0.1.0a2`, the first one with the gate, or from a checkout, where `uv run previously …` runs it without activating anything.
+- A database that `previously migrate` has brought up to date, with `PREVIOUSLY_DSN` exported, and a blob store with a key, with its settings exported too ({ref}`run-a-blob-store-on-your-machine`, {ref}`keep-the-blob-key-safe`).
+- At least one mail in the log that `previously ingest imap` took in ({ref}`ingest-a-mail-folder`), and in it somebody from the customer you want to put into a circle.
 
 ## Start the local model
 
@@ -16,6 +20,9 @@ Install [Ollama](https://ollama.com), pull the model, and let the server run:
 ollama pull qwen3:4b
 ollama serve
 ```
+
+On Linux, the install script of Ollama runs the server as a system service called `ollama`.
+Then `ollama serve` stops with `address already in use`, because the service already listens, and you skip it.
 
 Tell Previously where the server listens:
 
@@ -35,7 +42,12 @@ previously project
 previously chronicle
 ```
 
-Use that `id` where the commands below say `1`.
+A circle only applies to a mail in which one of its members takes part.
+`previously show` prints the addresses of a mail under `channel_identities`; pick a mail with an address of the customer whose circle you create below, and use its `id` where the commands below say `1`.
+
+```shell
+previously show 1
+```
 
 ## Declare what the providers promise
 
@@ -108,7 +120,7 @@ model_call: event 8
 The last line is the `id` of the `model_call`, the event that records the call whatever became of it.
 `previously show 8` prints its payload, and {ref}`policy-and-model-calls` lists every key.
 
-If the command returns 2 with a sentence about the local server, start `ollama serve` and check `PREVIOUSLY_LOCAL_MODEL_URL`.
+If the command returns 2 with a sentence about the local server, start the server, with `ollama serve` or the `ollama` service, and check `PREVIOUSLY_LOCAL_MODEL_URL`.
 The call is recorded even then, with the outcome `error`.
 
 ## List where the policy fell back

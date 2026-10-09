@@ -29,14 +29,14 @@ mergt, und dieser Zweig ist es noch nicht:
 
 | Einheit | Inhalt | Spec | Abnahme |
 |---|---|---|---|
-| 3 | Gate und Policy: Kreise, Mitgliedschaften, eigene Identitäten, Regeln und die Zusagen der Anbieter als Handlungen im Log (`policy`); die Entscheidung als reine Funktion in `core/decide.py`, die strengste Regel gewinnt, ohne Regel nur lokal, und der Rückfall wird sichtbar (`policy gaps`); `gate` mit den Adaptern für Anthropic, Mistral und ein lokales Modell, der Aufgabe `mail_overview`, einer Preisdatei und dem Audit als `model_call` mit der Kaskade der Tilgung und den Prüfungen in `verify`; die Chronik zeigt nur Wahrnehmungen; die Seiten `trust-boundaries.md`, `processing-policy.md`, `policy-and-model-calls.md` und die Anleitung; der Handoff `handoffs/2026-10-09-kup6s-gate.md` | `specs/2026-10-09-pilot-gate-und-policy.md` | PR #9, `d75c4b3`; Bedingung 10, der Lauf des Betreuers gegen die echten APIs, folgt ihm |
+| 3 | Gate und Policy: Kreise, Mitgliedschaften, eigene Identitäten, Regeln und die Zusagen der Anbieter als Handlungen im Log (`policy`); die Entscheidung als reine Funktion in `core/decide.py`, die strengste Regel gewinnt, ohne Regel nur lokal, und der Rückfall wird sichtbar (`policy gaps`); `gate` mit den Adaptern für Anthropic, Mistral und ein lokales Modell, der Aufgabe `mail_overview`, einer Preisdatei und dem Audit als `model_call` mit der Kaskade der Tilgung und den Prüfungen in `verify`; die Chronik zeigt nur Wahrnehmungen; die Seiten `trust-boundaries.md`, `processing-policy.md`, `policy-and-model-calls.md` und die Anleitung; der Handoff `handoffs/2026-10-09-kup6s-gate.md` | `specs/2026-10-09-pilot-gate-und-policy.md` | PR #9, `d75c4b3`; Bedingung 10, der Lauf des Betreuers gegen die echten APIs, bestanden am 2026-10-09 |
 
 Mit Stufe 1c ist Teilprojekt 1 gebaut und abgeschlossen, wie die Architektur
 es in §12.1 zuschneidet: Log, Projektionen, Blobs. Die Auslieferung und die
 Aufnahme sind die Einheiten 0 und 1 des Piloten (unten).
 
-Das Gate ist gebaut (Einheit 3, oben), aber noch gegen keinen gehosteten
-Anbieter gelaufen — das ist Bedingung 10 — und noch in keinem Betrieb.
+Das Gate ist gebaut (Einheit 3, oben) und am 2026-10-09 gegen alle drei
+Anbieter gelaufen (Bedingung 10), aber noch in keinem Betrieb.
 
 Nicht gebaut: die Suche, jede
 Feststellung und jede Entität, MCP-Server, KI-Schicht, jeder Konnektor
@@ -65,8 +65,9 @@ Die Aufnahme ist abgenommen, und Bedingung 11 ist bestanden (oben); das
 Alpha-Release mit `ingest imap`, `v0.1.0a2`, ist am 2026-10-09 veröffentlicht,
 und der Handoff der Aufnahme ist am selben Tag an den Agenten in kup6s
 übergeben. Einheit 3, Gate und Policy, ist abgenommen (PR #9, `d75c4b3`).
-Was jetzt kommt, in dieser Reihenfolge: Bedingung 10, der Lauf des Betreuers
-gegen die echten APIs; das Alpha-Release mit dem Gate und
+Bedingung 10, der Lauf des Betreuers gegen die echten APIs, ist bestanden
+(unten unter *Erledigt*). Was jetzt kommt, in dieser Reihenfolge: das
+Alpha-Release mit dem Gate und
 sein Handoff `handoffs/2026-10-09-kup6s-gate.md`; in kup6s Einheit 2 nach den
 Handoffs — die erste Aufnahme des echten Ordners geschieht dort; und als
 nächste Einheit mit Spec Einheit 4, der MCP-Lesezugang. Was
@@ -504,6 +505,15 @@ Weg per Prompt steht unter *Spätere Teilprojekte*, Projekte als Geltungsbereich
 unter *Feststellungen und Entitäten*, die Batch API bei der KI-Schicht), und
 was die Ausführung offen ließ (P-PG).
 
+- Die Prompt-Vorlage von `mail_overview` legt die Sprache von `topic` nicht
+  fest: im Lauf der Bedingung 10 antwortete Anthropic auf eine deutsche Mail
+  englisch, Mistral deutsch, beide mit `language: de`. Für die Probe
+  unerheblich; die erste Aufgabe der KI-Schicht (Einheit 6) sollte es
+  festlegen.
+- Die Testmails des Laufs der Bedingungen 10 und 11 liegen noch im Ordner
+  `previously-pilot`; sie müssen heraus, bevor kup6s die erste echte Aufnahme
+  startet, sonst stehen sie im dauerhaften Log.
+
 - Die Prüfung vor dem Schreiben nach außen — darf dieser Inhalt in ein fremdes
   oder öffentliches System, ein GitLab, GitHub, das Jira eines Kunden,
   OpenProject? — ist eine andere Prüfung an einer anderen Stelle als die
@@ -938,6 +948,19 @@ was die Ausführung offen ließ (P-PG).
 
 ## Erledigt, seit es auf einer Liste stand
 
+- ~~Bedingung 10 der Abnahme von Gate und Policy~~ (PG §10) — der Lauf des
+  Betreuers am 2026-10-09, lokal, aus `main` nach PR #9, gegen die echten APIs
+  und Ollama mit `qwen3:4b`, in einer Probe mit zehn Mails aus dem Ordner
+  `previously-pilot`: ohne Regel lokal, mit der Warnung und in `policy gaps`;
+  „überall" → Anthropic, `inference_geo` verlangt und gemeldet `global`, die
+  geschätzten Kosten $0.0001095 für 790 und 61 Tokens; „EU" → Mistral, ohne
+  gemeldeten Raum; die Quelle getilgt → drei `model_call` mitgetilgt
+  (`cascaded`), `verify` intakt. Dabei gefunden und mit dieser Nachlese
+  behoben: das Feld `request_id` trug bei Anthropic die Id der Nachricht
+  (`msg_…`) statt der Anfrage (`req_…`, Kopfzeile `request-id`); die
+  Anleitung nannte drei Voraussetzungen nur in einem Satz, setzte
+  `ollama serve` voraus, wo Ollama als Dienst läuft, und sagte nicht, wie man
+  eine Mail mit einem Mitglied des Kreises findet.
 - ~~Ein `model_call`, der zwischen dem Lesen und dem Sperren der Kaskade
   entsteht, wird nicht mitgetilgt~~ (P-PG, Aufgabe 6) — Commit `89a79f0`. Der
   Eintrag beschrieb das Fenster von `redact` aus, als den Augenblick zwischen
