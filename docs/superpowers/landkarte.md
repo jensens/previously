@@ -29,7 +29,7 @@ mergt, und dieser Zweig ist es noch nicht:
 
 | Einheit | Inhalt | Spec | Abnahme |
 |---|---|---|---|
-| 3 | Gate und Policy: Kreise, Mitgliedschaften, eigene Identitäten, Regeln und die Zusagen der Anbieter als Handlungen im Log (`policy`); die Entscheidung als reine Funktion in `core/decide.py`, die strengste Regel gewinnt, ohne Regel nur lokal, und der Rückfall wird sichtbar (`policy gaps`); `gate` mit den Adaptern für Anthropic, Mistral und ein lokales Modell, der Aufgabe `mail_overview`, einer Preisdatei und dem Audit als `model_call` mit der Kaskade der Tilgung und den Prüfungen in `verify`; die Chronik zeigt nur Wahrnehmungen; die Seiten `trust-boundaries.md`, `processing-policy.md`, `policy-and-model-calls.md` und die Anleitung; der Handoff `handoffs/2026-10-09-kup6s-gate.md` | `specs/2026-10-09-pilot-gate-und-policy.md` | Merge nach `main` steht aus (Zweig `worktree-pilot-gate`); Bedingung 10, der Lauf des Betreuers gegen die echten APIs, folgt dem Merge |
+| 3 | Gate und Policy: Kreise, Mitgliedschaften, eigene Identitäten, Regeln und die Zusagen der Anbieter als Handlungen im Log (`policy`); die Entscheidung als reine Funktion in `core/decide.py`, die strengste Regel gewinnt, ohne Regel nur lokal, und der Rückfall wird sichtbar (`policy gaps`); `gate` mit den Adaptern für Anthropic, Mistral und ein lokales Modell, der Aufgabe `mail_overview`, einer Preisdatei und dem Audit als `model_call` mit der Kaskade der Tilgung und den Prüfungen in `verify`; die Chronik zeigt nur Wahrnehmungen; die Seiten `trust-boundaries.md`, `processing-policy.md`, `policy-and-model-calls.md` und die Anleitung; der Handoff `handoffs/2026-10-09-kup6s-gate.md` | `specs/2026-10-09-pilot-gate-und-policy.md` | PR #9, `d75c4b3`; Bedingung 10, der Lauf des Betreuers gegen die echten APIs, folgt ihm |
 
 Mit Stufe 1c ist Teilprojekt 1 gebaut und abgeschlossen, wie die Architektur
 es in §12.1 zuschneidet: Log, Projektionen, Blobs. Die Auslieferung und die
@@ -64,9 +64,9 @@ Alpha-Release. Was die Auslieferung offen lässt, steht unten unter
 Die Aufnahme ist abgenommen, und Bedingung 11 ist bestanden (oben); das
 Alpha-Release mit `ingest imap`, `v0.1.0a2`, ist am 2026-10-09 veröffentlicht,
 und der Handoff der Aufnahme ist am selben Tag an den Agenten in kup6s
-übergeben. Einheit 3, Gate und Policy, ist gebaut und wartet auf den Merge.
-Was jetzt kommt, in dieser Reihenfolge: der Merge und danach Bedingung 10, der
-Lauf des Betreuers gegen die echten APIs; das Alpha-Release mit dem Gate und
+übergeben. Einheit 3, Gate und Policy, ist abgenommen (PR #9, `d75c4b3`).
+Was jetzt kommt, in dieser Reihenfolge: Bedingung 10, der Lauf des Betreuers
+gegen die echten APIs; das Alpha-Release mit dem Gate und
 sein Handoff `handoffs/2026-10-09-kup6s-gate.md`; in kup6s Einheit 2 nach den
 Handoffs — die erste Aufnahme des echten Ordners geschieht dort; und als
 nächste Einheit mit Spec Einheit 4, der MCP-Lesezugang. Was
@@ -104,7 +104,7 @@ Spec:
 | 0 | Auslieferung: Migrationen im Paket, `previously migrate`, Image, Release-Weg, Handoff an kup6s | ein Image, aus dem kup6s alles startet | `specs/2026-10-05-auslieferung.md`, eingefroren am 2026-10-05; abgenommen mit PR #6 (oben) |
 | 1 | Aufnahme aus dem IMAP-Ordner, mit dem Einwurf- und dem Konnektor-Vertrag | Chronik des Kunden; echte Post im Log | `specs/2026-10-06-pilot-imap-aufnahme.md`, eingefroren am 2026-10-06; abgenommen mit PR #7 (oben). Er ersetzt den Entwurf vom 2026-10-04 auf dem Zweig `worktree-pilot-imap-aufnahme` (`9b493f0`) |
 | 2 | Betrieb in kup6s: Datenbank mit Sicherung, Restore-Probe, Bucket, Werkzeug-Pod, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | beginnt beim Image aus Einheit 0; gebaut wird er vom Agenten in kup6s, nie von hier. Was er braucht, sagen die Handoffs `handoffs/2026-10-05-kup6s-delivery.md` und, für die Aufnahme, `handoffs/2026-10-06-kup6s-ingest.md` und, für das Gate, `handoffs/2026-10-09-kup6s-gate.md`, englisch; die ersten beiden liegen dort, das dritte folgt mit dem Merge |
-| 3 | Gate und Policy: Kreise statt Organisationsprofil, drei Anbieter-Adapter, Audit, die Verarbeitungsprüfung (nicht mehr „Offenlegungsprüfung“: PG §1.2) | die Grenze, hinter der ein Modell Inhalt sieht | `specs/2026-10-09-pilot-gate-und-policy.md`, eingefroren am 2026-10-09; gebaut, der Merge steht aus (oben) |
+| 3 | Gate und Policy: Kreise statt Organisationsprofil, drei Anbieter-Adapter, Audit, die Verarbeitungsprüfung (nicht mehr „Offenlegungsprüfung“: PG §1.2) | die Grenze, hinter der ein Modell Inhalt sieht | `specs/2026-10-09-pilot-gate-und-policy.md`, eingefroren am 2026-10-09; abgenommen mit PR #9 (oben) |
 | 4 | MCP-Lesezugang, mit der Verarbeitungsprüfung davor (die Entscheidung aus Einheit 3, wiederverwendet) | Claude Code fragt das Log | — |
 | 5 | Feststellungen: Schreibweg, Verpflichtung und Entscheidung, Projektionen, Freigabe | was festgestellt ist, mit Quelle und Verantwortung | — |
 | 6 | KI-Schicht: Vorschläge hinter dem Gate | Protokoll und offene Punkte | — |
