@@ -1,7 +1,8 @@
 # Previously — Pilot, Einheit 3: Gate und Policy
 
 **Datum:** 2026-10-09
-**Status:** Entwurf, zur Durchsicht durch den Betreuer
+**Status:** Entwurf, vom Betreuer am 2026-10-09 durchgesehen („spec passt"),
+Grundlage des Plans
 
 Detail-Spec für die dritte Einheit des Piloten an einem echten Kunden. Setzt
 die Stufen 1a, 1b, den äußeren Anker, Stufe 1c, die Auslieferung und die
@@ -251,9 +252,12 @@ gelesen. Es sind wenige Events.
    `local_only` `local` ist, sein `storage` in `regions` liegt oder er
    nichts speichert, `retention_days` bekannt und höchstens
    `max_retention_days` ist (sofern eine Grenze gilt), und eine wählbare
-   `inference` ganz in `regions` liegt. Von mehreren wählbaren Räumen nimmt
-   das Gate den weitesten, der passt: `global` vor `us`, weil `us` bei
-   Anthropic das 1,1-Fache kostet.
+   `inference` ganz in `regions` liegt. **Das Gate setzt den Raum, den die
+   Regeln verlangen, und keinen engeren:** `us` nur, wenn `regions` auf
+   `us` beschränkt ist, sonst `global`. Eine Rangfolge zwischen Räumen gibt
+   es nicht — aus Sicht der EU liegen `global` und `us` beide außerhalb
+   (Betreuer, 2026-10-09); `us` ohne Not zu setzen kostete bei Anthropic nur
+   das 1,1-Fache.
 6. **Der erste Kandidat gewinnt.** Besteht keiner: ablehnen, mit dem Grund
    je Kandidat — unter `local_only` ohne deklarierten lokalen Anbieter heißt
    der Grund „kein lokaler Anbieter".
