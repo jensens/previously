@@ -35,8 +35,8 @@ Mit Stufe 1c ist Teilprojekt 1 gebaut und abgeschlossen, wie die Architektur
 es in §12.1 zuschneidet: Log, Projektionen, Blobs. Die Auslieferung und die
 Aufnahme sind die Einheiten 0 und 1 des Piloten (unten).
 
-Das Gate ist gebaut (Einheit 3, oben), aber noch gegen keine echte API
-gelaufen — das ist Bedingung 10 — und noch in keinem Betrieb.
+Das Gate ist gebaut (Einheit 3, oben), aber noch gegen keinen gehosteten
+Anbieter gelaufen — das ist Bedingung 10 — und noch in keinem Betrieb.
 
 Nicht gebaut: die Suche, jede
 Feststellung und jede Entität, MCP-Server, KI-Schicht, jeder Konnektor
@@ -522,10 +522,12 @@ was die Ausführung offen ließ (P-PG).
   „nur lokal“ greift (PG §6, §11 Punkt 6).
 - Die Güte des lokalen Modells auf CPU: `qwen3:4b` antwortet nur mit
   `reasoning_effort: none` (ohne brauchte ein Aufruf über 600 s), braucht 7 bis
-  15 s je Mail und liefert Schwaches (das Thema „Email Response“, die Richtung
-  einer Terminverschiebung falsch). Der sichtbare Rückfall (`policy gaps`)
-  macht das erkennbar, er bessert es nicht (Messung vom 2026-10-09,
-  `processing-policy.md`).
+  15 s je Mail und liefert Schwaches (das Thema „Email Response“; eine
+  erfundene „Budgetfunktionalität“, wo die Mail sagt, das Budget bleibe wie
+  besprochen). Der sichtbare Rückfall (`policy gaps`) macht das erkennbar, er
+  bessert es nicht (Messung vom 2026-10-09; die Sekunden im Handoff
+  `handoffs/2026-10-09-kup6s-gate.md`, *The model server*, die Antwort in
+  `set-a-policy-and-try-a-call.md`, das Thema auf `processing-policy.md`).
 - Ein Aufruf ohne Audit, wenn der Prozess zwischen Antwort und Schreiben
   abbricht; ein Event vor dem Aufruf würde die Lücke schließen und kostet ein
   zweites Event je Aufruf. Steht auf `trust-boundaries.md` (PG §3.2, §11
@@ -549,9 +551,6 @@ was die Ausführung offen ließ (P-PG).
 - Die `model_call`-Events, die eine Quelle lasen, findet die Kaskade durch
   Lesen aller Handlungen; für den Piloten genügt das, ein Index wäre die erste
   Verbesserung (PG-Plan, Entscheidung 6; `erasure.md`).
-- Ein `model_call`, der zwischen dem Lesen und dem Sperren der Kaskade entsteht,
-  wird nicht mitgetilgt; `verify` meldet ihn, und eine spätere Tilgung findet
-  ihn (Docstring von `core/redact.py`; P-PG, Aufgabe 6).
 - Die Kaskade ist nicht transitiv: ein Aufruf, der das Ergebnis eines anderen
   las, wird nicht mitgetilgt. Das Gate nimmt deshalb nur Events der Art
   `observation` als Eingabe (ruling R-11 der Einheit 3, P-PG); eine Aufgabe,
@@ -565,13 +564,39 @@ was die Ausführung offen ließ (P-PG).
 - Auf dem Pfad „unfinished“ von `redact` fehlen die Zeilen `cascaded:`; der
   wiederholte Lauf findet die Kaskade bedeckt und schreibt sie nicht noch
   einmal (P-PG, Aufgabe 6).
-- Die Zeile `processed locally: …` erscheint auch bei einer Ablehnung und bei
-  einem lokalen Server, der nicht antwortet (P-PG, Aufgabe 5).
 - Ohne Quelle schlägt die Zeile des Rückfalls `policy rule event:<id>` vor, das
   `policy rule` abweist; Fehlbedienung, benannt (P-PG, Aufgabe 5).
 - `policy rule --revoke` verlangt `--regions`, dessen Wert nichts bewirkt, weil
   die Aussage wohlgeformt sein muss; benannt in
   `set-a-policy-and-try-a-call.md` (Aufgabe 7).
+- `policy provider --revoke` verlangt ebenso `--storage` und
+  `--retention-days`, deren Werte nichts bewirken; benannt in
+  `set-a-policy-and-try-a-call.md` (Endprüfung Doku, P-PG).
+- Bis zu 200 Zeichen der Fehlermeldung eines Anbieters gehen bei `gate try`
+  auf stderr (`gate/adapters/__init__.py`), und die Meldung kann den Prompt
+  zurückgeben. Von Hand ist das harmlos; sobald ein Job das Gate aufruft
+  (Einheit 6), wird es Kundeninhalt im Log des Containers (Endprüfung Doku,
+  P-PG).
+- Ein CronJob, der `policy gaps` meldet, damit ein Rückfall auch ohne
+  jemanden am Terminal gesehen wird (PG §2.6 Punkt 3; der Handoff nennt ihn
+  „a later idea“).
+- Offene Frage zu ruling R-5 der Einheit 3 (P-PG): ein widerrufener Kreis hat
+  keine Mitglieder, sein Inhalt geht dann nach den übrigen Regeln, etwa der
+  der Quelle, auch `any`, und nicht nach `local_only`. Ob ein Widerruf den
+  Inhalt stattdessen lokal halten soll, ist offen; heute hält ihn lokal, wer
+  die Regel des Kreises widerruft und den Kreis stehen lässt
+  (`processing-policy.md`).
+- `gate try` auf ein getilgtes Event oder eines, das keine Wahrnehmung ist,
+  nennt unter `policy.providers` jede Zusage, obwohl kein Kandidat gewogen
+  wurde; ein Prüfer liest „diese Zusagen wurden herangezogen“ (Endprüfung
+  Code M-7, P-PG).
+- Eine fehlerhafte `PREVIOUSLY_LOCAL_MODEL_URL` (etwa `http://[::1`) lässt
+  jeden `gate try` mit einem Traceback scheitern, schon beim Bauen der
+  Adapter und vor der Entscheidung, auch wenn der Aufruf zu Anthropic ginge;
+  Fehlkonfiguration, benannt (Endprüfung Code M-8, P-PG).
+- Das Zählkommando für Ruling-Zitate in `CLAUDE.md` sucht nur
+  `ruling (P|T[0-9]+)-…` und findet die Labels `R-…` dieser Einheit nicht
+  (Endprüfung Code M-6, P-PG).
 - Der Schlüssel wird aus einer Meldung eines Anbieters mit `str.replace`
   entfernt und also nur in der Schreibung, in der er gesendet wurde; eine
   maskierte Form würde nicht erfasst. Echte Schlüssel sind URL-sicher (P-PG,
@@ -912,6 +937,20 @@ was die Ausführung offen ließ (P-PG).
   Nachtrag).
 
 ## Erledigt, seit es auf einer Liste stand
+
+- ~~Ein `model_call`, der zwischen dem Lesen und dem Sperren der Kaskade
+  entsteht, wird nicht mitgetilgt~~ (P-PG, Aufgabe 6) — Commit `89a79f0`. Der
+  Eintrag beschrieb das Fenster von `redact` aus, als den Augenblick zwischen
+  Lesen und Sperren; vom Gate aus dauerte es den ganzen Aufruf beim Anbieter,
+  Sekunden bis zum Timeout, und `verify` wurde mit zwei legitimen Kommandos
+  rot (Endprüfung Code I-1). Nach ruling R-14 der Einheit 3 schreibt das Gate
+  den Aufruf unter der Zeilensperre seiner Eingabe und tilgt seine Antwort
+  selbst, wenn die Eingabe inzwischen getilgt wurde; eine Tilgung, die an der
+  Sperre wartete, liest die Aufrufe danach noch einmal. Steht auf
+  `erasure.md`.
+- ~~Die Zeile `processed locally: …` erscheint auch bei einer Ablehnung und
+  bei einem lokalen Server, der nicht antwortet~~ (P-PG, Aufgabe 5) — Commit
+  `89a79f0`: sie erscheint nur noch, wo das lokale Modell geantwortet hat.
 
 - ~~Teilprojekt 4, Gate: Verarbeitungsräume der Anbieter~~ (E §16) — Einheit 3
   des Piloten, Commits `5cbdf9d` und `26f4cb4`: was ein Anbieter zusagt
