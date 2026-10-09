@@ -22,14 +22,24 @@ Gebaut und abgenommen, auf `main`:
 | — | Der äußere Anker: `anchor`, `verify --anchors [--exact]`, `examine` in einem Schnappschuss | `specs/2026-10-04-aeusserer-anker.md` | PR #2, `2bc42d4` |
 | 1c | Hash-Format v=2 mit Salz; Tilgung von Event, Einheiten und Blob als Event der Art `action`, mit Anordnung und Vollzug in `verify`; Projektionen folgen einer Tilgung; Blobs im Format `age` auf S3, `append --attach`, `blob get`, `verify --blobs`; `redact` | `specs/2026-10-04-stufe-1c-blobs-und-tilgung.md` | PR #5, `d16f3fc` |
 | Auslieferung | Die Migrationen im Paket und `previously migrate` unter einer Advisory-Sperre; `PREVIOUSLY_DSN` nach einer eigenen Grammatik gelesen; ein Image aus dem Paket auf PyPI, mit Smoke-Test; `release.yml`: Test-PyPI bei jedem Push auf `main`, PyPI und Image für zwei Plattformen bei einem veröffentlichten Release; der Handoff an kup6s | `specs/2026-10-05-auslieferung.md` | PR #6, `fd3e17f`; veröffentlicht als `0.1.0a1`, wie der Spec der Aufnahme festhält |
-| Aufnahme | `RawEvent` trägt `artifact_hash` und `channel_identities`, `append` vergleicht die Inhaltsidentität und weist Abweichendes mit `ArtifactChanged` ab; eine Mail als Event (`core/mail.py`), mit Rohmail und Anhängen als Blobs und einer Mail im Anhang als eigenem Event; `Connector`, `Fetched`, `Watermark`, `WatermarkStore` in `contract`, die Tabelle `watermark` (Migration `0005_watermark`); der Lauf (`core/ingest.py`), der das Wasserzeichen erst nach dem Anfügen schreibt; `connectors/imap.py` und `previously ingest imap`; der Handoff `handoffs/2026-10-06-kup6s-ingest.md` | `specs/2026-10-06-pilot-imap-aufnahme.md` | PR #7, `009c669`; Bedingung 11, der Lauf des Betreuers gegen seinen echten Mailu-Ordner, bestanden am 2026-10-09 |
+| Aufnahme | `RawEvent` trägt `artifact_hash` und `channel_identities`, `append` vergleicht die Inhaltsidentität und weist Abweichendes mit `ArtifactChanged` ab; eine Mail als Event (`core/mail.py`), mit Rohmail und Anhängen als Blobs und einer Mail im Anhang als eigenem Event; `Connector`, `Fetched`, `Watermark`, `WatermarkStore` in `contract`, die Tabelle `watermark` (Migration `0005_watermark`); der Lauf (`core/ingest.py`), der das Wasserzeichen erst nach dem Anfügen schreibt; `connectors/imap.py` und `previously ingest imap`; der Handoff `handoffs/2026-10-06-kup6s-ingest.md` | `specs/2026-10-06-pilot-imap-aufnahme.md` | PR #7, `009c669`; Bedingung 11, der Lauf des Betreuers gegen seinen echten Mailu-Ordner, bestanden am 2026-10-09; veröffentlicht als `v0.1.0a2` am 2026-10-09, der Handoff `handoffs/2026-10-06-kup6s-ingest.md` am selben Tag an den Agenten in kup6s übergeben |
+
+Gebaut, aber nicht abgenommen — abgenommen ist, was der Betreuer nach `main`
+mergt, und dieser Zweig ist es noch nicht:
+
+| Einheit | Inhalt | Spec | Abnahme |
+|---|---|---|---|
+| 3 | Gate und Policy: Kreise, Mitgliedschaften, eigene Identitäten, Regeln und die Zusagen der Anbieter als Handlungen im Log (`policy`); die Entscheidung als reine Funktion in `core/decide.py`, die strengste Regel gewinnt, ohne Regel nur lokal, und der Rückfall wird sichtbar (`policy gaps`); `gate` mit den Adaptern für Anthropic, Mistral und ein lokales Modell, der Aufgabe `mail_overview`, einer Preisdatei und dem Audit als `model_call` mit der Kaskade der Tilgung und den Prüfungen in `verify`; die Chronik zeigt nur Wahrnehmungen; die Seiten `trust-boundaries.md`, `processing-policy.md`, `policy-and-model-calls.md` und die Anleitung; der Handoff `handoffs/2026-10-09-kup6s-gate.md` | `specs/2026-10-09-pilot-gate-und-policy.md` | Merge nach `main` steht aus (Zweig `worktree-pilot-gate`); Bedingung 10, der Lauf des Betreuers gegen die echten APIs, folgt dem Merge |
 
 Mit Stufe 1c ist Teilprojekt 1 gebaut und abgeschlossen, wie die Architektur
 es in §12.1 zuschneidet: Log, Projektionen, Blobs. Die Auslieferung und die
 Aufnahme sind die Einheiten 0 und 1 des Piloten (unten).
 
+Das Gate ist gebaut (Einheit 3, oben), aber noch gegen keine echte API
+gelaufen — das ist Bedingung 10 — und noch in keinem Betrieb.
+
 Nicht gebaut: die Suche, jede
-Feststellung und jede Entität, MCP-Server, Gate, KI-Schicht, jeder Konnektor
+Feststellung und jede Entität, MCP-Server, KI-Schicht, jeder Konnektor
 außer dem für IMAP — und kein Betrieb: es gibt ein Paket und ein Image,
 betrieben wird es noch nirgends; das System hat **noch kein einziges echtes
 Event** gehalten, das bleibt. Die Probe der Bedingung 11 wird verworfen, das
@@ -51,10 +61,15 @@ die Aufnahme entsteht. Die Aufnahme kommt dann mit dem nächsten
 Alpha-Release. Was die Auslieferung offen lässt, steht unten unter
 *Auslieferung*.
 
-Die Aufnahme ist abgenommen, und Bedingung 11 ist bestanden (oben). Was
-jetzt kommt, in dieser Reihenfolge: das nächste Alpha-Release mit
-`ingest imap`, und in kup6s Einheit 2 nach den beiden Handoffs — die erste
-Aufnahme des echten Ordners geschieht dort. Was
+Die Aufnahme ist abgenommen, und Bedingung 11 ist bestanden (oben); das
+Alpha-Release mit `ingest imap`, `v0.1.0a2`, ist am 2026-10-09 veröffentlicht,
+und der Handoff der Aufnahme ist am selben Tag an den Agenten in kup6s
+übergeben. Einheit 3, Gate und Policy, ist gebaut und wartet auf den Merge.
+Was jetzt kommt, in dieser Reihenfolge: der Merge und danach Bedingung 10, der
+Lauf des Betreuers gegen die echten APIs; das Alpha-Release mit dem Gate und
+sein Handoff `handoffs/2026-10-09-kup6s-gate.md`; in kup6s Einheit 2 nach den
+Handoffs — die erste Aufnahme des echten Ordners geschieht dort; und als
+nächste Einheit mit Spec Einheit 4, der MCP-Lesezugang. Was
 die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an den
 Einheiten, zu denen es gehört.
 
@@ -88,9 +103,9 @@ Spec:
 |---|---|---|---|
 | 0 | Auslieferung: Migrationen im Paket, `previously migrate`, Image, Release-Weg, Handoff an kup6s | ein Image, aus dem kup6s alles startet | `specs/2026-10-05-auslieferung.md`, eingefroren am 2026-10-05; abgenommen mit PR #6 (oben) |
 | 1 | Aufnahme aus dem IMAP-Ordner, mit dem Einwurf- und dem Konnektor-Vertrag | Chronik des Kunden; echte Post im Log | `specs/2026-10-06-pilot-imap-aufnahme.md`, eingefroren am 2026-10-06; abgenommen mit PR #7 (oben). Er ersetzt den Entwurf vom 2026-10-04 auf dem Zweig `worktree-pilot-imap-aufnahme` (`9b493f0`) |
-| 2 | Betrieb in kup6s: Datenbank mit Sicherung, Restore-Probe, Bucket, Werkzeug-Pod, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | beginnt beim Image aus Einheit 0; gebaut wird er vom Agenten in kup6s, nie von hier. Was er braucht, sagen die Handoffs `handoffs/2026-10-05-kup6s-delivery.md` und, für die Aufnahme, `handoffs/2026-10-06-kup6s-ingest.md`, englisch; sie liegen |
-| 3 | Gate und Policy: Organisationsprofil des Pilotkunden, ein Anbieter-Adapter, Audit, Offenlegungsprüfung | die Grenze, hinter der ein Modell Inhalt sieht | — |
-| 4 | MCP-Lesezugang, mit der Offenlegungsprüfung davor | Claude Code fragt das Log | — |
+| 2 | Betrieb in kup6s: Datenbank mit Sicherung, Restore-Probe, Bucket, Werkzeug-Pod, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | beginnt beim Image aus Einheit 0; gebaut wird er vom Agenten in kup6s, nie von hier. Was er braucht, sagen die Handoffs `handoffs/2026-10-05-kup6s-delivery.md` und, für die Aufnahme, `handoffs/2026-10-06-kup6s-ingest.md` und, für das Gate, `handoffs/2026-10-09-kup6s-gate.md`, englisch; die ersten beiden liegen dort, das dritte folgt mit dem Merge |
+| 3 | Gate und Policy: Kreise statt Organisationsprofil, drei Anbieter-Adapter, Audit, die Verarbeitungsprüfung (nicht mehr „Offenlegungsprüfung“: PG §1.2) | die Grenze, hinter der ein Modell Inhalt sieht | `specs/2026-10-09-pilot-gate-und-policy.md`, eingefroren am 2026-10-09; gebaut, der Merge steht aus (oben) |
+| 4 | MCP-Lesezugang, mit der Verarbeitungsprüfung davor (die Entscheidung aus Einheit 3, wiederverwendet) | Claude Code fragt das Log | — |
 | 5 | Feststellungen: Schreibweg, Verpflichtung und Entscheidung, Projektionen, Freigabe | was festgestellt ist, mit Quelle und Verantwortung | — |
 | 6 | KI-Schicht: Vorschläge hinter dem Gate | Protokoll und offene Punkte | — |
 | 7 | Nextcloud-Ordner mit Textextraktion | Dokumente | — |
@@ -117,7 +132,8 @@ ihren Beleg im Prüfpunkt.
 | Ein Betrieb mit Sicherung, Restore-Probe und Anker-Routine — das Image **gebaut mit der Auslieferung**, der Rest beim Agenten in kup6s | Daten, deren Verlust weh tut | bisher gibt es nur Wegwerf-Datenbanken |
 | Echte, gemischtsprachige Einheiten im Log | die Messung zur Textsuche und die Wahl des Embedding-Modells | beide verlangen einen Testsatz aus echten gemischten Einheiten (Architektur §11, Nachtrag) |
 | Warteschlange (die Sperre auf der Zustandszeile ist gebaut, Commit `3ae7038`) | der erste asynchrone Produzent | ein asynchroner Produzent braucht Entprellung und Wiederholung |
-| Das Gate | jeder Modellaufruf | Regel 2 der Architektur: nur `gate` ruft Modelle |
+| Das Gate — **gebaut mit Einheit 3**, nur `gate` importiert die Clients der Anbieter | jeder Modellaufruf | Regel 2 der Architektur: nur `gate` ruft Modelle |
+| Die Prüfung vor dem Schreiben nach außen (PG §1.2) | die erste Aktion, die in ein fremdes oder öffentliches System schreibt | eine andere Prüfung an einer anderen Stelle als die Verarbeitungsprüfung des Gates: wer sieht es dort? |
 | Prüfung, ob Claude Code MRTR und die Tasks-Erweiterung kann | blockierende Rückfragen und lange Läufe über MCP | Architektur §13 |
 | Die Rechtsfrage zur Gesprächsaufzeichnung | Teil 2, Voice | Entwurf §16 |
 
@@ -149,6 +165,9 @@ Auslieferung mit Abschnitt, **P-AL** das Ausführungsprotokoll der Auslieferung
 (`sdd/2026-10-05-auslieferung/`) mit dem Ruling oder der Aufgabe, **PI** der
 Spec der Pilot-Einheit 1 mit Abschnitt, **P-PI** ihr Ausführungsprotokoll
 (`sdd/2026-10-06-pilot-imap-aufnahme/`) mit dem Ruling oder der Aufgabe,
+**PG** der Spec der Pilot-Einheit 3 mit Abschnitt, **P-PG** ihr
+Ausführungsprotokoll (`sdd/2026-10-09-pilot-gate-und-policy/`, folgt mit der
+Endprüfung) mit dem Ruling oder der Aufgabe,
 **PP** der Prüfpunkt vom 2026-10-04 mit der Zeile seines Belegberichts.
 
 ### Einwurf-Vertrag (`contract`, Teilprojekt 2)
@@ -199,6 +218,9 @@ Spec der Pilot-Einheit 1 mit Abschnitt, **P-PI** ihr Ausführungsprotokoll
 
 ### Feststellungen und Entitäten (ohne Teilprojekt)
 
+- Projekt als Geltungsbereich einer Regel: `project:<name>` ist vorgesehen,
+  und der Schreibweg weist es ab, bis es eine Zuordnung von Events zu
+  Projekten gibt (PG §2.3, §11 Punkt 3; Einheit 5).
 - Ein zweiter Schreibweg neben `append` für `assertion` und `action`; ihre
   Idempotenz ist heute „Sache des Aufrufers" (PP, A1 S1 und Zeile 19).
 - `verify` prüft Regeln je Art erst für `action` (eine Handlung braucht eine
@@ -474,6 +496,102 @@ Spec der Pilot-Einheit 1 mit Abschnitt, **P-PI** ihr Ausführungsprotokoll
   `.org` und die Endung `.example`), und `example.de` ist vergeben. Es wird
   nichts gesendet; sie zu ändern änderte die Bytes der Testmails und jeden
   Hash, der an ihnen hängt (Endprüfung Code, Befund M-5, P-PI).
+
+### Gate und Policy (Pilot, Einheit 3)
+
+Die Punkte aus PG §11, soweit sie nicht zu einer anderen Einheit gehören (der
+Weg per Prompt steht unter *Spätere Teilprojekte*, Projekte als Geltungsbereich
+unter *Feststellungen und Entitäten*, die Batch API bei der KI-Schicht), und
+was die Ausführung offen ließ (P-PG).
+
+- Die Prüfung vor dem Schreiben nach außen — darf dieser Inhalt in ein fremdes
+  oder öffentliches System, ein GitLab, GitHub, das Jira eines Kunden,
+  OpenProject? — ist eine andere Prüfung an einer anderen Stelle als die
+  Verarbeitungsprüfung des Gates und kommt mit der ersten Aktion, die nach
+  außen schreibt. Bis dahin schreibt nichts nach außen (PG §1.2, §11 Punkt 1).
+- Die Reihenfolge der Modelle einer Aufgabe ist eine Behauptung des Plans, keine
+  Messung; sie durch Vergleiche an echten Fällen zu begründen, etwa über
+  OpenRouter, ist offen (PG §3.1, §11 Punkt 4).
+- Unbekannte Beteiligte binden keine Regel. Gilt für einen Inhalt eine Regel
+  der Quelle, geht er nach ihr hinaus, gleich wie viele Beteiligte keinem Kreis
+  angehören; ob er dann strenger behandelt werden soll, ist offen. Steht auf
+  `trust-boundaries.md` (PG §2.2, §11 Punkt 5).
+- Der Modellserver in kup6s und welches lokale Modell dort reicht: der eigene
+  Abschnitt des Handoffs `handoffs/2026-10-09-kup6s-gate.md`. Speicher und CPU
+  sind ungemessen; bis er steht, lehnt das Gate im Cluster ab, wo die Vorgabe
+  „nur lokal“ greift (PG §6, §11 Punkt 6).
+- Die Güte des lokalen Modells auf CPU: `qwen3:4b` antwortet nur mit
+  `reasoning_effort: none` (ohne brauchte ein Aufruf über 600 s), braucht 7 bis
+  15 s je Mail und liefert Schwaches (das Thema „Email Response“, die Richtung
+  einer Terminverschiebung falsch). Der sichtbare Rückfall (`policy gaps`)
+  macht das erkennbar, er bessert es nicht (Messung vom 2026-10-09,
+  `processing-policy.md`).
+- Ein Aufruf ohne Audit, wenn der Prozess zwischen Antwort und Schreiben
+  abbricht; ein Event vor dem Aufruf würde die Lücke schließen und kostet ein
+  zweites Event je Aufruf. Steht auf `trust-boundaries.md` (PG §3.2, §11
+  Punkt 7).
+- Ein NUL oder ein einsames Surrogat in `model`, `request_id` oder
+  `stop_reason` der Antwort eines Anbieters lässt das Schreiben des
+  `model_call` nach einem bezahlten Aufruf scheitern; für das Ergebnis selbst
+  gilt das nicht, es wird `schema_invalid` (P-PG, Aufgabe 5).
+- Eine Ablehnung im Format der OpenAI-Schnittstelle (`message.refusal`) endet
+  als `schema_invalid`, nicht als `refused`; der Zweig `stop_reason == refusal`
+  kennt nur Anthropic (P-PG, Aufgabe 5).
+- Zero Retention bei Anthropic und Mistral: beantragen, dann als Zusage
+  deklarieren (PG §2.4, §11 Punkt 8).
+- Die Aufbewahrung bei Mistral nachsehen und deklarieren; bis dahin steht dort
+  „unbekannt“, und eine Regel mit Grenze lässt Mistral nicht durch (PG §2.4,
+  §11 Punkt 9).
+- Die Preisdatei pflegt sich nicht selbst; ein veralteter Preis macht nur die
+  Schätzung falsch. Sie bildet auch den Aufschlag für Prompts über 100.000
+  Tokens bei Haiku 5.5 nicht ab (PG §3.4, §11 Punkt 11; Kopf von
+  `prices.toml`).
+- Die `model_call`-Events, die eine Quelle lasen, findet die Kaskade durch
+  Lesen aller Handlungen; für den Piloten genügt das, ein Index wäre die erste
+  Verbesserung (PG-Plan, Entscheidung 6; `erasure.md`).
+- Ein `model_call`, der zwischen dem Lesen und dem Sperren der Kaskade entsteht,
+  wird nicht mitgetilgt; `verify` meldet ihn, und eine spätere Tilgung findet
+  ihn (Docstring von `core/redact.py`; P-PG, Aufgabe 6).
+- Die Kaskade ist nicht transitiv: ein Aufruf, der das Ergebnis eines anderen
+  las, wird nicht mitgetilgt. Das Gate nimmt deshalb nur Events der Art
+  `observation` als Eingabe (ruling R-11 der Einheit 3, P-PG); eine Aufgabe,
+  die auf Ergebnissen aufbaut, braucht die transitive Kaskade zuerst.
+- Die Sperrreihenfolge der Kaskade (Ziele und Aufrufe in einer aufsteigenden
+  Runde, ruling R-12 der Einheit 3, P-PG) ist für ein Paar gemessen, nicht
+  unter Last mit mehreren gleichzeitigen Tilgungen.
+- Der Blob-Pfad der Kaskade findet Aufrufe über die Adresse in
+  `inputs[].blobs`, ohne zu prüfen, ob das Event der Tilgung dazugehört;
+  Übertilgen ist die sichere Richtung (P-PG, Aufgabe 6).
+- Auf dem Pfad „unfinished“ von `redact` fehlen die Zeilen `cascaded:`; der
+  wiederholte Lauf findet die Kaskade bedeckt und schreibt sie nicht noch
+  einmal (P-PG, Aufgabe 6).
+- Die Zeile `processed locally: …` erscheint auch bei einer Ablehnung und bei
+  einem lokalen Server, der nicht antwortet (P-PG, Aufgabe 5).
+- Ohne Quelle schlägt die Zeile des Rückfalls `policy rule event:<id>` vor, das
+  `policy rule` abweist; Fehlbedienung, benannt (P-PG, Aufgabe 5).
+- `policy rule --revoke` verlangt `--regions`, dessen Wert nichts bewirkt, weil
+  die Aussage wohlgeformt sein muss; benannt in
+  `set-a-policy-and-try-a-call.md` (Aufgabe 7).
+- Der Schlüssel wird aus einer Meldung eines Anbieters mit `str.replace`
+  entfernt und also nur in der Schreibung, in der er gesendet wurde; eine
+  maskierte Form würde nicht erfasst. Echte Schlüssel sind URL-sicher (P-PG,
+  Aufgabe 4).
+- Ein Anbieter mit leerer `inference`-Liste besteht nie, und der Grund liest
+  sich seltsam; das tritt nur bei einer Fehldeklaration auf (P-PG, Aufgabe 3).
+- `gate explain` liest die Policy in zwei Transaktionen, einmal für die
+  Entscheidung und einmal für die Zeilen des Rückfalls; zwischen beiden kann
+  eine Aussage dazukommen (P-PG, Aufgabe 5).
+- Der Test, dass die Nutzlast keinen Inhalt trägt, läuft über `ok`;
+  `denied`, `refused` und `schema_invalid` werden nicht durchsucht, `error`
+  hat einen eigenen Test (ruling R-9, P-PG, Aufgabe 5).
+- Kleinkram der Ausführung, benannt und nicht verfolgt (P-PG): die
+  Untergrenzen `anthropic>=1.13.0` und `openai>=3.27.0` sind ungemessen; `__all__`
+  steht nur in `gate/adapters/anthropic.py`; die Kommandozeile benutzt Zeichenketten
+  statt der Konstanten aus `core.action` und `RULE`; `cli.md` nennt `--regions`
+  ohne Raum als abgewiesen, und argparse weist es ab; einige Tests importieren in
+  der Funktion; `tests/test_chronicle.py` liest Spalten über den Index; für den
+  Neuversuch von `append_action` gibt es keinen eigenen Test, er ist über
+  `redact` abgedeckt.
 
 ### Nextcloud-Ordner (Pilot, Einheit 7)
 
@@ -772,12 +890,17 @@ Spec der Pilot-Einheit 1 mit Abschnitt, **P-PI** ihr Ausführungsprotokoll
 ### Spätere Teilprojekte, unverändert offen
 
 - Teilprojekt 3, MCP-Server: MRTR und Tasks in Claude Code prüfen (A §13);
-  Pydantic kommt mit dem Schemaexport (`DEPENDENCIES.md`). Mit ihm kommt der
+  Pydantic kam am 2026-10-09 mit dem Gate (Ausgabeschema von `mail_overview`,
+  `DEPENDENCIES.md`). Mit dem MCP-Server kommt der
   Zugang ohne `kubectl exec`; bis dahin ist der Werkzeug-Pod der Zugang (AL
-  §12 Punkt 5).
-- Teilprojekt 4, Gate: Verarbeitungsräume der Anbieter (E §16);
-  Trace-Verknüpfung über OpenTelemetry (A §13).
-- Teilprojekt 5, KI-Schicht und Triage: Prompt- und Templatetexte;
+  §12 Punkt 5). Der Weg per Prompt zu einer Regel gehört dazu: der Betreuer
+  sagt es Claude Code, Claude Code ruft über MCP ein Werkzeug mit festem
+  Schema, `previously` zeigt die Struktur, der Betreuer bestätigt; Einheit 3
+  baut den strukturierten Schreibweg, auf den er aufsetzt (PG §11 Punkt 2).
+- Teilprojekt 4, Gate: Trace-Verknüpfung über OpenTelemetry (A §13). Die
+  Verarbeitungsräume der Anbieter (E §16) stehen unten unter *Erledigt*.
+- Teilprojekt 5, KI-Schicht und Triage: die Batch API für Masse, mit der
+  KI-Schicht (PG §11 Punkt 10); Prompt- und Templatetexte;
   Rangfunktion der Triage (A §11).
 - Teilprojekt 8, Bestandsimport: Pilotkunde (E §16). Gemessen lädt `append`
   rund 700 Events in der Sekunde; fünf Millionen Events sind zwei Stunden
@@ -790,6 +913,16 @@ Spec der Pilot-Einheit 1 mit Abschnitt, **P-PI** ihr Ausführungsprotokoll
 
 ## Erledigt, seit es auf einer Liste stand
 
+- ~~Teilprojekt 4, Gate: Verarbeitungsräume der Anbieter~~ (E §16) — Einheit 3
+  des Piloten, Commits `5cbdf9d` und `26f4cb4`: was ein Anbieter zusagt
+  (Räume der Rechnung, Speicherort, Aufbewahrung, ob er den Raum meldet) steht
+  als Aussage `provider` im Log, und die Entscheidung setzt den Raum, den die
+  Regeln verlangen. Gemessen am 2026-10-09: Anthropic meldet bei `global`
+  `global` zurück. Steht auf `processing-policy.md`. Die Aufbewahrung bei
+  Mistral bleibt offen (oben unter *Gate und Policy*).
+- ~~Das nächste Alpha-Release mit `ingest imap`~~ — `v0.1.0a2`, veröffentlicht
+  am 2026-10-09; der Handoff der Aufnahme, `handoffs/2026-10-06-kup6s-ingest.md`,
+  ist am selben Tag an den Agenten in kup6s übergeben.
 - ~~Bedingung 11 der Abnahme der Aufnahme~~ (PI §10 Punkt 11) — der Lauf des
   Betreuers am 2026-10-09, lokal, aus `main` nach PR #7 (`009c669`), gegen
   einen eigenen, bis dahin ungenutzten Mailu-Benutzer in kup6s und dessen
