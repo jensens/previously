@@ -129,6 +129,58 @@ def _space(provider: Provider, regions: frozenset[str]) -> tuple[bool, str | Non
     return (True, fitting[0].name) if fitting else (False, None)
 
 
+@dataclass(frozen=True)
+class _Chain:
+    """The merged restrictions on the processing chain. A candidate passes
+    one only with a known value that satisfies it."""
+
+    no_training: bool = False
+    no_subprocessors: bool = False
+    excluded_operators: frozenset[str] = frozenset()
+    excluded_model_origins: frozenset[str] = frozenset()
+
+
+_NO_CHAIN: Final = _Chain()
+
+
+def _merge_chain(rules: Sequence[Rule]) -> _Chain:
+    """The strictest of the rules: a flag holds if one rule demands it, a set
+    is the union."""
+    return _Chain(
+        no_training=any(r.no_training for r in rules),
+        no_subprocessors=any(r.no_subprocessors for r in rules),
+        excluded_operators=frozenset(n for r in rules for n in r.excluded_operators),
+        excluded_model_origins=frozenset(n for r in rules for n in r.excluded_model_origins),
+    )
+
+
+def _chain_rejection(provider: Provider, name: str, chain: _Chain) -> str | None:
+    """The sentence that says which property of the processing chain fails a
+    restriction, or `None`."""
+    if chain.no_training and provider.training is not False:
+        known = "trains on input" if provider.training else "has not declared whether it trains"
+        return f"{name}: the provider {provider.name} {known}, and no training is allowed"
+    if chain.no_subprocessors and provider.subprocessors != frozenset():
+        known = (
+            "are not declared"
+            if provider.subprocessors is None
+            else f"are {sorted(provider.subprocessors)}"
+        )
+        return f"{name}: the subprocessors of {provider.name} {known}, and none are allowed"
+    for what, value, excluded in (
+        ("operator", provider.operator, chain.excluded_operators),
+        ("model origin", provider.model_origin, chain.excluded_model_origins),
+    ):
+        if value is None and excluded:
+            return (
+                f"{name}: the {what} of {provider.name} is unknown, "
+                f"and {sorted(excluded)} are excluded"
+            )
+        if value in excluded:
+            return f"{name}: the {what} of {provider.name} is {value}, excluded by a rule"
+    return None
+
+
 def _rejection(
     provider: Provider | None,
     candidate: Candidate,
@@ -137,6 +189,7 @@ def _rejection(
     max_retention_days: int | None,
     excluded: frozenset[str],
     local_only: bool,
+    chain: _Chain = _NO_CHAIN,
 ) -> tuple[str | None, str | None]:
     """The sentence that says why a candidate fails, or `None`; and the space
     to set when it passes."""
@@ -166,6 +219,8 @@ def _rejection(
                 f"above the allowed {max_retention_days}",
                 None,
             )
+    if (sentence := _chain_rejection(provider, name, chain)) is not None:
+        return sentence, None
     fits, geo = _space(provider, regions)
     if not fits:
         return (
@@ -196,6 +251,7 @@ def decide(
     limits = [r.max_retention_days for r in rules if r.max_retention_days is not None]
     max_retention_days = min(limits) if limits else None
     excluded: frozenset[str] = frozenset(name for r in rules for name in r.excluded_providers)
+    chain = _merge_chain(rules)
     rule_keys = tuple(rule.scope for rule in rules) + ((LOCAL_ONLY,) if local_only else ())
 
     reasons: list[str] = []
@@ -211,6 +267,7 @@ def decide(
             max_retention_days=max_retention_days,
             excluded=excluded,
             local_only=local_only,
+            chain=chain,
         )
         if sentence is not None:
             reasons.append(sentence)

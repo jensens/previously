@@ -1099,6 +1099,10 @@ def test_the_policy_reference_example_is_what_the_code_writes() -> None:
             frozenset(example["regions"]),
             None,
             frozenset(example["excluded_providers"]),
+            example["no_training"],
+            example["no_subprocessors"],
+            frozenset(example["excluded_operators"]),
+            frozenset(example["excluded_model_origins"]),
         ),
         statement=example["statement"],
     )

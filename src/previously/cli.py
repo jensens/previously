@@ -1293,6 +1293,20 @@ def _policy_arguments(parser: argparse.ArgumentParser) -> None:
     rule.add_argument(
         "--exclude-provider", action="append", default=[], metavar="NAME", help="may repeat"
     )
+    rule.add_argument(
+        "--no-training", action="store_true", help="only providers declared not to train on input"
+    )
+    rule.add_argument(
+        "--no-subprocessors",
+        action="store_true",
+        help="only providers declared to have no subprocessors",
+    )
+    rule.add_argument(
+        "--exclude-operator", action="append", default=[], metavar="NAME", help="may repeat"
+    )
+    rule.add_argument(
+        "--exclude-model-origin", action="append", default=[], metavar="NAME", help="may repeat"
+    )
     provider = writing("provider", "declare what a provider account promises")
     provider.add_argument("name")
     provider.add_argument(
@@ -1314,6 +1328,27 @@ def _policy_arguments(parser: argparse.ArgumentParser) -> None:
     )
     provider.add_argument(
         "--retention-days", required=True, metavar="N|unknown", help="how long the provider keeps"
+    )
+    # Required like `--storage`: an unknown chain passes no restriction that
+    # concerns it, so it has to be said and never fall out of a forgotten option.
+    provider.add_argument(
+        "--operator", required=True, metavar="NAME|unknown", help="who runs the service"
+    )
+    provider.add_argument(
+        "--training",
+        required=True,
+        choices=["yes", "no", "unknown"],
+        help="whether the provider trains on input",
+    )
+    provider.add_argument(
+        "--subprocessors",
+        nargs="+",
+        required=True,
+        metavar="NAME|none|unknown",
+        help="who else handles the input: names, none or unknown",
+    )
+    provider.add_argument(
+        "--model-origin", metavar="NAME", help="where the model comes from; unknown if omitted"
     )
     provider.add_argument("--reports-geo", action="store_true", help="the answer names the region")
     provider.add_argument("--local", action="store_true", help="runs on hardware the operator runs")
@@ -1340,6 +1375,20 @@ def _retention_of(text: str) -> int | None:
         raise InvalidPayload(f"{text!r} is not a number of days or unknown") from error
 
 
+def _training_of(text: str) -> bool | None:
+    return {"yes": True, "no": False}.get(text)
+
+
+def _subprocessors_of(names: list[str]) -> frozenset[str] | None:
+    if names == ["unknown"]:
+        return None
+    if names == ["none"]:
+        return frozenset()
+    if "none" in names or "unknown" in names:
+        raise InvalidPayload('"none" and "unknown" stand alone, without a name beside them')
+    return frozenset(names)
+
+
 def _policy_statement(args: argparse.Namespace) -> Statement:
     """The statement the arguments of a writing form describe."""
     if args.what == "circle":
@@ -1354,6 +1403,10 @@ def _policy_statement(args: argparse.Namespace) -> Statement:
             frozenset(args.regions),
             args.max_retention_days,
             frozenset(args.exclude_provider),
+            args.no_training,
+            args.no_subprocessors,
+            frozenset(args.exclude_operator),
+            frozenset(args.exclude_model_origin),
         )
     return Provider(
         args.name,
@@ -1362,6 +1415,10 @@ def _policy_statement(args: argparse.Namespace) -> Statement:
         _retention_of(args.retention_days),
         args.reports_geo,
         args.local,
+        None if args.operator == "unknown" else args.operator,
+        _training_of(args.training),
+        _subprocessors_of(args.subprocessors),
+        args.model_origin,
     )
 
 
@@ -1431,7 +1488,12 @@ def _policy_lines(policy: Policy) -> list[str]:
         days = "-" if rule.max_retention_days is None else str(rule.max_retention_days)
         lines.append(
             f"  {escape_field(scope)}\tregions {_list(rule.regions)}\tmax retention days {days}"
-            f"\texcluded {_list(rule.excluded_providers)}\t{event('rule', scope)}"
+            f"\texcluded {_list(rule.excluded_providers)}"
+            f"\tno training {'yes' if rule.no_training else 'no'}"
+            f"\tno subprocessors {'yes' if rule.no_subprocessors else 'no'}"
+            f"\texcluded operators {_list(rule.excluded_operators)}"
+            f"\texcluded model origins {_list(rule.excluded_model_origins)}"
+            f"\t{event('rule', scope)}"
         )
     lines += ["providers"]
     for name, provider in sorted(policy.providers.items()):
@@ -1442,10 +1504,18 @@ def _policy_lines(policy: Policy) -> list[str]:
         )
         reports = "yes" if provider.reports_inference_geo else "no"
         local = "yes" if provider.local else "no"
+        training = "unknown" if provider.training is None else "yes" if provider.training else "no"
+        subprocessors = (
+            "unknown" if provider.subprocessors is None else _list(provider.subprocessors)
+        )
         lines.append(
             f"  {escape_field(name)}\tinference {inference or '-'}"
             f"\tstorage {_list(provider.storage)}\tretention days {days}"
-            f"\treports geo {reports}\tlocal {local}\t{event('provider', name)}"
+            f"\treports geo {reports}\tlocal {local}"
+            f"\toperator {escape_field(provider.operator or 'unknown')}\ttraining {training}"
+            f"\tsubprocessors {escape_field(subprocessors)}"
+            f"\tmodel origin {escape_field(provider.model_origin or 'unknown')}"
+            f"\t{event('provider', name)}"
         )
     return lines
 

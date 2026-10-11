@@ -32,8 +32,8 @@ Each kind has a replacement key and keys of its own, beside the four common ones
 | `circle` | `name` | `name` |
 | `membership` | `circle` and `member` | `circle`, `member` |
 | `own_identity` | `member` | `member` |
-| `rule` | `scope` | `scope`, `regions`, `max_retention_days`, `excluded_providers` |
-| `provider` | `provider` | `provider`, `inference`, `storage`, `retention_days`, `reports_inference_geo`, `local` |
+| `rule` | `scope` | `scope`, `regions`, `max_retention_days`, `excluded_providers`, `no_training`, `no_subprocessors`, `excluded_operators`, `excluded_model_origins` |
+| `provider` | `provider` | `provider`, `inference`, `storage`, `retention_days`, `reports_inference_geo`, `local`, `operator`, `training`, `subprocessors`, `model_origin` |
 
 Every set is written as a sorted list, so the same statement has the same payload whatever order it was typed in.
 
@@ -50,20 +50,38 @@ The keys of a `rule` and a `provider`, with their values:
 | `regions` | A list of `eu` and `us`, or the list `any`. |
 | `max_retention_days` | A whole number of days, `0` for zero retention, or `null` for no limit. |
 | `excluded_providers` | A list of provider names. |
+| `no_training` | Whether only a provider declared not to train on its input may be used. |
+| `no_subprocessors` | Whether only a provider declared to have no subprocessors may be used. |
+| `excluded_operators` | A list of operator names. A provider whose operator is unknown fails the restriction too. |
+| `excluded_model_origins` | A list of model origins, with the same treatment of an unknown one. |
 | `provider` | The name of the provider. |
 | `inference` | A list of the spaces of inference the provider lets a caller choose, each as `name` and `regions`. |
 | `storage` | A list of places where the provider stores, or an empty list for a provider that stores nothing. |
 | `retention_days` | How long the provider keeps what it receives, in whole days, or `null` for unknown. |
 | `reports_inference_geo` | Whether a response names the region. |
 | `local` | Whether the provider runs on hardware the operator runs. |
+| `operator` | Who runs the service, or `null` for unknown. |
+| `training` | `true` or `false` for whether the provider trains on its input, or `null` for unknown. |
+| `subprocessors` | A list of the others who handle the input, an empty list for none, or `null` for unknown. |
+| `model_origin` | Where the model comes from, or `null` for unknown. |
+
+The four keys of the processing chain, and the four restrictions of a rule, are absent from an event written before they existed.
+Such an event reads with the defaults: every value of the chain unknown, and no restriction.
+Stored events aren't migrated, since they're hash-chained.
+A candidate passes a restriction only with a known value that satisfies it, the way an unknown retention fails a retention limit.
+Where several rules apply, a flag holds if one of them sets it, and the excluded names are the union.
 
 A rule written like this holds for content of the circle `xz`:
 
 ```json
 {
   "action": "policy",
+  "excluded_model_origins": [],
+  "excluded_operators": [],
   "excluded_providers": [],
   "max_retention_days": null,
+  "no_subprocessors": false,
+  "no_training": false,
   "policy": "rule",
   "regions": ["eu"],
   "revoked": false,

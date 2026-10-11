@@ -759,7 +759,7 @@ previously policy circle NAME --statement TEXT
 previously policy member CIRCLE ADDRESS-OR-@DOMAIN --statement TEXT
 previously policy own ADDRESS-OR-@DOMAIN --statement TEXT
 previously policy rule SCOPE --regions REGION [REGION ...] --statement TEXT
-previously policy provider NAME --storage [REGION ...] --retention-days N|unknown --statement TEXT
+previously policy provider NAME --storage [REGION ...] --retention-days N|unknown --operator NAME|unknown --training yes|no|unknown --subprocessors NAME [NAME ...]|none|unknown --statement TEXT
 previously policy show [--at TIME]
 previously policy gaps [--since TIME]
 ```
@@ -785,6 +785,10 @@ previously policy gaps [--since TIME]
 | `--regions REGION ...` | Yes | — | `eu`, `us`, both, or `any`. `any` can't stand beside another region. |
 | `--max-retention-days N` | No | no limit | A whole number of days. `0` means zero retention. |
 | `--exclude-provider NAME` | No | none | A provider the scope never uses. May repeat. |
+| `--no-training` | No | off | Only a provider declared not to train on its input passes. One that trains, or that says nothing about it, fails. |
+| `--no-subprocessors` | No | off | Only a provider declared to have no subprocessors passes. |
+| `--exclude-operator NAME` | No | none | An operator the scope never uses. A provider whose operator is unknown fails too. May repeat. |
+| `--exclude-model-origin NAME` | No | none | A model origin the scope never uses. A provider whose origin is unknown fails too. May repeat. |
 
 `provider` takes these further options:
 
@@ -793,6 +797,10 @@ previously policy gaps [--since TIME]
 | `--inference NAME=REGIONS` | No | none | A space of inference and what it means, such as `global=any` or `us=us`. May repeat. |
 | `--storage [REGION ...]` | Yes | — | Where the provider stores. Given with no region, the provider stores nothing, as a local one does. |
 | `--retention-days N\|unknown` | Yes | — | How long the provider keeps what it receives. |
+| `--operator NAME\|unknown` | Yes | — | Who runs the service. |
+| `--training yes\|no\|unknown` | Yes | — | Whether the provider trains on what it receives. |
+| `--subprocessors NAME ...\|none\|unknown` | Yes | — | The others who handle the input. `none` and `unknown` stand alone, without a name beside them. |
+| `--model-origin NAME` | No | unknown | Where the model comes from. |
 | `--reports-geo` | No | off | The answer of the provider names the region. |
 | `--local` | No | off | The provider runs on hardware the operator runs. |
 
@@ -813,6 +821,7 @@ These are refused:
 - an empty statement.
 
 `policy show` prints one table per kind, with a row ending in the id of the event that set it.
+The rule rows end with the four restrictions on the processing chain, and the provider rows with the operator, the training, the subprocessors and the model origin, each `unknown` where nothing was declared.
 The rules table starts with the built-in rule `local_only`, which isn't an event and can't be revoked: where no other rule applies, only a provider declared `local` is used.
 `--at TIME` prints the policy as it stood at that moment, which is the log read up to it; the time needs a zone, as for `--occurred-at`.
 A newer event with the same key replaces the older one, a revocation lifts the statement, and an event whose payload was erased counts for nothing.

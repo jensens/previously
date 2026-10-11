@@ -92,6 +92,13 @@ class Rule:
     regions: frozenset[str]  # {"eu"}, {"us"}, {"eu", "us"} or {"any"}
     max_retention_days: int | None
     excluded_providers: frozenset[str]
+    # Restrictions on the processing chain behind a provider. A flag is off
+    # by default; a candidate passes a restriction only with a known value
+    # that satisfies it.
+    no_training: bool = False
+    no_subprocessors: bool = False
+    excluded_operators: frozenset[str] = frozenset()
+    excluded_model_origins: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -108,6 +115,13 @@ class Provider:
     retention_days: int | None  # None: unknown
     reports_inference_geo: bool
     local: bool
+    # The processing chain. `None` means unknown, which is what a declaration
+    # written before these fields existed reads as; for the subprocessors,
+    # `frozenset()` is the statement that there are none.
+    operator: str | None = None
+    training: bool | None = None
+    subprocessors: frozenset[str] | None = None
+    model_origin: str | None = None
 
 
 type Statement = Circle | Membership | OwnIdentity | Rule | Provider
@@ -177,6 +191,10 @@ def to_payload(item: Statement, *, statement: str, revoked: bool = False) -> dic
             payload["regions"] = sorted(item.regions)
             payload["max_retention_days"] = item.max_retention_days
             payload["excluded_providers"] = sorted(item.excluded_providers)
+            payload["no_training"] = item.no_training
+            payload["no_subprocessors"] = item.no_subprocessors
+            payload["excluded_operators"] = sorted(item.excluded_operators)
+            payload["excluded_model_origins"] = sorted(item.excluded_model_origins)
         case Provider():
             payload["provider"] = item.name
             payload["inference"] = [
@@ -187,6 +205,12 @@ def to_payload(item: Statement, *, statement: str, revoked: bool = False) -> dic
             payload["retention_days"] = item.retention_days
             payload["reports_inference_geo"] = item.reports_inference_geo
             payload["local"] = item.local
+            payload["operator"] = item.operator
+            payload["training"] = item.training
+            payload["subprocessors"] = (
+                None if item.subprocessors is None else sorted(item.subprocessors)
+            )
+            payload["model_origin"] = item.model_origin
     payload["statement"] = statement
     payload["revoked"] = revoked
     return payload
@@ -247,6 +271,18 @@ def _check_scope(scope: str) -> None:
         raise _FormError(f'scope "{scope}" is not circle:<name> or source:<source>')
 
 
+def _check_names(names: frozenset[str], what: str) -> None:
+    for name in names:
+        _check_text(name, f"{what} name")
+
+
+def _check_chain(provider: Provider) -> None:
+    for what, value in (("operator", provider.operator), ("model origin", provider.model_origin)):
+        if value is not None:
+            _check_text(value, f"the {what}")
+    _check_names(provider.subprocessors or frozenset(), "a subprocessor")
+
+
 def _check(item: Statement, statement: str) -> None:
     """Everything that can be said about a statement without the policy."""
     _check_text(statement, "the statement")
@@ -262,9 +298,11 @@ def _check(item: Statement, statement: str) -> None:
             _check_scope(item.scope)
             _check_regions(item.regions, _REGIONS, "a rule")
             _check_days(item.max_retention_days, "the retention limit")
+            _check_names(item.excluded_operators | item.excluded_model_origins, "an exclusion")
         case Provider():
             _check_text(item.name, "the provider name")
             _check_days(item.retention_days, "the retention")
+            _check_chain(item)
             for spaces in item.inference:
                 _check_text(spaces.name, "an inference space name")
                 _check_regions(spaces.regions, _REGIONS, f'inference "{spaces.name}"')
@@ -368,6 +406,42 @@ def _flag(payload: Mapping[str, object], key: str) -> bool:
     return value
 
 
+def _optional_text(payload: Mapping[str, object], key: str) -> str | None:
+    """Text, or `None` for `null` and for a key a declaration written before
+    the key existed does not have."""
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _FormError(f'has a "{key}" that is not text or null')
+    return value
+
+
+def _optional_flag(payload: Mapping[str, object], key: str) -> bool | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise _FormError(f'has a "{key}" that is not true, false or null')
+    return value
+
+
+def _optional_names(payload: Mapping[str, object], key: str) -> frozenset[str] | None:
+    if payload.get(key) is None:
+        return None
+    return _names(payload, key)
+
+
+def _flag_or_off(payload: Mapping[str, object], key: str) -> bool:
+    """A flag that an older rule does not have is off."""
+    return _flag(payload, key) if key in payload else False
+
+
+def _names_or_empty(payload: Mapping[str, object], key: str) -> frozenset[str]:
+    """A set that an older rule does not have is empty."""
+    return _names(payload, key) if key in payload else frozenset()
+
+
 def _inference(payload: Mapping[str, object]) -> tuple[Inference, ...]:
     value = payload.get("inference")
     if not isinstance(value, list):
@@ -399,6 +473,10 @@ def _parse(payload: Mapping[str, object]) -> tuple[Statement, str, bool]:
                 _names(payload, "regions"),
                 _days(payload, "max_retention_days"),
                 _names(payload, "excluded_providers"),
+                _flag_or_off(payload, "no_training"),
+                _flag_or_off(payload, "no_subprocessors"),
+                _names_or_empty(payload, "excluded_operators"),
+                _names_or_empty(payload, "excluded_model_origins"),
             )
         case "provider":
             item = Provider(
@@ -408,6 +486,10 @@ def _parse(payload: Mapping[str, object]) -> tuple[Statement, str, bool]:
                 _days(payload, "retention_days"),
                 _flag(payload, "reports_inference_geo"),
                 _flag(payload, "local"),
+                _optional_text(payload, "operator"),
+                _optional_flag(payload, "training"),
+                _optional_names(payload, "subprocessors"),
+                _optional_text(payload, "model_origin"),
             )
         case str():
             raise _FormError(f'is of the unknown kind "{kind}"')

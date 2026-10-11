@@ -4101,11 +4101,15 @@ def test_policy_rule_provider_member_own_and_revoke_round_trip_through_show(
         ["own", "me@mine.example", "--statement", "s"],
         [
             *("rule", "circle:xz", "--regions", "eu", "--max-retention-days", "0"),
-            *("--exclude-provider", "anthropic", "--statement", "s"),
+            *("--exclude-provider", "anthropic", "--no-training", "--no-subprocessors"),
+            *("--exclude-operator", "zeta", "--exclude-operator", "alpha"),
+            *("--exclude-model-origin", "cn", "--statement", "s"),
         ],
         [
             *("provider", "anthropic", "--inference", "global=any", "--inference", "us=us"),
             *("--storage", "us", "--retention-days", "30", "--reports-geo", "--statement", "s"),
+            *("--operator", "Anthropic PBC", "--training", "no", "--subprocessors", "aws", "gcp"),
+            *("--model-origin", "us"),
         ],
     ]
     for step in steps:
@@ -4115,10 +4119,15 @@ def test_policy_rule_provider_member_own_and_revoke_round_trip_through_show(
     shown = capsys.readouterr().out
     assert "  xz\t@kunde-xz.at\t(event 2)" in shown
     assert "  me@mine.example\t(event 3)" in shown
-    assert "  circle:xz\tregions eu\tmax retention days 0\texcluded anthropic\t(event 4)" in shown
+    assert (
+        "  circle:xz\tregions eu\tmax retention days 0\texcluded anthropic"
+        "\tno training yes\tno subprocessors yes\texcluded operators alpha,zeta"
+        "\texcluded model origins cn\t(event 4)" in shown
+    )
     assert (
         "  anthropic\tinference global=any,us=us\tstorage us\tretention days 30"
-        "\treports geo yes\tlocal no\t(event 5)" in shown
+        "\treports geo yes\tlocal no\toperator Anthropic PBC\ttraining no"
+        "\tsubprocessors aws,gcp\tmodel origin us\t(event 5)" in shown
     )
 
     revoke = ["policy", "member", "xz", "@kunde-xz.at", "--statement", "gone", "--revoke", "--yes"]
@@ -4142,6 +4151,7 @@ def test_policy_provider_requires_storage(
     written as `storage: []`, the way a local provider is declared."""
     _setup(db, monkeypatch)
     argv = ["policy", "provider", "local", "--inference", "eu=eu", "--retention-days", "0"]
+    argv += [*("--operator", "me", "--training", "no", "--subprocessors", "none")]
     argv += [] if storage is None else ["--storage", *storage]
     argv += ["--statement", "s", "--yes"]
     if storage is None:
@@ -4183,3 +4193,85 @@ def test_the_help_names_gate_with_its_sentence(capsys: pytest.CaptureFixture[str
     with pytest.raises(SystemExit):
         main(["--help"])
     assert re.search(r"^\s+gate\s+explain or try a model call$", capsys.readouterr().out, re.M)
+
+
+_CHAIN_ARGUMENTS = {
+    "--operator": "acme",
+    "--training": "no",
+    "--subprocessors": "none",
+}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("omitted", [None, "--operator", "--training", "--subprocessors"])
+def test_policy_provider_requires_the_processing_chain(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    omitted: str | None,
+) -> None:
+    """An unknown chain passes no restriction, so a forgotten option would
+    declare a provider that no rule can use, and silently: argparse refuses
+    the omission and writes nothing. `omitted=None` is the control that
+    writes."""
+    _setup(db, monkeypatch)
+    argv = ["policy", "provider", "p", "--inference", "eu=eu", "--storage", "eu"]
+    argv += ["--retention-days", "0", "--statement", "s", "--yes"]
+    for option, value in _CHAIN_ARGUMENTS.items():
+        if option != omitted:
+            argv += [option, value]
+    if omitted is None:
+        assert main(argv) == 0
+        assert _action_count(db) == 1
+        return
+    with pytest.raises(SystemExit) as raised:
+        main(argv)
+    assert raised.value.code == 2
+    assert f"the following arguments are required: {omitted}" in capsys.readouterr().err
+    assert _action_count(db) == 0
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("training", "subprocessors", "expected_training", "expected_subprocessors"),
+    [
+        ("yes", ["none"], True, []),
+        ("no", ["unknown"], False, None),
+        ("unknown", ["b", "a"], None, ["a", "b"]),
+    ],
+)
+def test_policy_provider_writes_the_chain_in_the_payload(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    training: str,
+    subprocessors: list[str],
+    expected_training: bool | None,
+    expected_subprocessors: list[str] | None,
+) -> None:
+    _setup(db, monkeypatch)
+    argv = ["policy", "provider", "p", "--inference", "eu=eu", "--storage", "eu"]
+    argv += ["--retention-days", "0", "--operator", "unknown", "--training", training]
+    argv += ["--subprocessors", *subprocessors, "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    statement, _ = capsys.readouterr().out.rsplit("policy event ", 1)
+    payload = json.loads(statement)
+    assert payload["training"] is expected_training
+    assert payload["subprocessors"] == expected_subprocessors
+    assert payload["operator"] is None
+    assert payload["model_origin"] is None
+
+
+@pytest.mark.db
+def test_policy_provider_refuses_none_beside_a_name(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    argv = ["policy", "provider", "p", "--inference", "eu=eu", "--storage", "eu"]
+    argv += ["--retention-days", "0", "--operator", "x", "--training", "no"]
+    argv += ["--subprocessors", "none", "aws", "--statement", "s", "--yes"]
+    assert main(argv) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.count("\n") == 1
+    assert _action_count(db) == 0
