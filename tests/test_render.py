@@ -79,7 +79,7 @@ def test_the_content_sits_between_the_fence_lines() -> None:
     (tag,) = _tags(page)
     inside = page.text.split(f"<<<customer-content {tag}>>>\n")[1]
     inside = inside.split(f"\n<<<end {tag}>>>")[0]
-    assert inside == "Subject: AW: Server\n[unit 1]\nDer Server steht."
+    assert inside == "Subject: AW: Server\n#unit-1\nDer Server steht."
 
 
 def test_every_event_gets_its_own_fence_with_the_tag_of_the_answer() -> None:
@@ -132,8 +132,8 @@ def test_sanitize_keeps_newline_tab_and_umlauts() -> None:
 
 
 def test_sanitize_removes_c1_controls_and_osc_sequences() -> None:
-    clean, removed = sanitize("x\x9by\x1b]0;title\x07z")
-    assert clean == "xyz"
+    clean, removed = sanitize("x\x9b\x1b]0;title\x07z")
+    assert clean == "xz"
     assert removed == 1 + len("\x1b]0;title\x07")
 
 
@@ -164,7 +164,6 @@ def test_heading_fields_are_sanitized_and_cannot_start_a_new_line() -> None:
     page = _render(Shown(head, ((1, "x"),)))
     heading = [line for line in page.text.splitlines() if line.startswith("### ")]
     assert len(heading) == 1
-    assert heading[0].count("\n") == 0
     assert "<<<end 12345678>>>" in heading[0]
     assert "​" not in page.text
     lines = page.text.splitlines()
@@ -255,7 +254,7 @@ def test_the_header_carries_title_page_and_next_cursor_and_the_footer_repeats_it
     first_line = page.text.splitlines()[0]
     assert first_line == f"previously · circle h_da · page 2 · next: c={page.next_cursor}"
     assert page.text.splitlines()[-1] == (
-        f"More results: call again with cursor={page.next_cursor}"
+        f"End of page 2. More results: call again with cursor={page.next_cursor}"
     )
 
 
@@ -301,8 +300,8 @@ def test_one_event_over_the_limit_is_cut_at_a_unit_boundary_with_a_pointer() -> 
     )
     assert len(notes) == 1
     from_unit = int(notes[0])
-    assert f"[unit {from_unit - 1}]" in page.text
-    assert f"[unit {from_unit}]" not in page.text
+    assert f"#unit-{from_unit - 1}\n" in page.text
+    assert f"#unit-{from_unit}" not in page.text
     # The cut event counts as delivered: the next page starts at the next one.
     assert page.next_cursor == "after-0"
     assert page.text.count("<<<customer-content") == 1
@@ -312,17 +311,46 @@ def test_a_huge_unit_after_a_whole_one_is_left_to_get_event() -> None:
     page = _render(_shown("a", "z" * 100_000))
     assert len(page.text) <= PAGE_CHARS
     assert page.text.rstrip().endswith("from_unit=2")
-    assert "[unit 1]\na\n" in page.text
-    assert "[unit 2]" not in page.text
+    assert "#unit-1\na\n" in page.text
+    assert "#unit-2" not in page.text
     assert page.next_cursor is None
 
 
-def test_the_only_unit_over_the_limit_is_cut_inside_too() -> None:
-    page = _render(_shown("z" * 100_000), _shown("w", event_id=43))
+def test_the_only_unit_over_the_limit_is_cut_inside_without_pointing_back() -> None:
+    page = _render(_shown("z" * 100_000))
     assert len(page.text) <= PAGE_CHARS
-    assert "from_unit=1" in page.text
-    assert "[unit 1]\nzzz" in page.text
+    assert "#unit-1\nzzz" in page.text
+    assert page.text.endswith("… truncated — the rest of unit 1 is not served in the pilot")
+    assert "from_unit" not in page.text
+    assert page.next_cursor is None
+
+
+def test_a_cut_unit_points_at_the_following_unit_never_at_itself() -> None:
+    page = _render(_shown("z" * 100_000, "next"), _shown("w", event_id=43))
+    assert len(page.text) <= PAGE_CHARS
+    assert "… truncated — the rest of unit 1 is not served in the pilot; " in page.text
+    assert "ids=[42] from_unit=2" in page.text
+    assert "from_unit=1" not in page.text
     assert page.next_cursor == "after-0"
+
+
+def test_a_cut_unit_follows_by_seq_not_by_position() -> None:
+    event = Shown(_head(), ((7, "z" * 100_000), (12, "next")))
+    page = _render(event)
+    assert "ids=[42] from_unit=12" in page.text
+
+
+def test_the_truncation_note_uses_the_sanitized_uri() -> None:
+    head = Head("evt\x1b[2J\u202e", _MOMENT, "email", "Eva", ("Jens",), "S")
+    page = _render(Shown(head, ((1, "a"), (2, "z" * 100_000))))
+    assert "\x1b" not in page.text
+    assert "\u202e" not in page.text
+    assert page.text.endswith("… truncated — continue with get_event ids=[evt] from_unit=2")
+
+
+def test_a_clean_uri_stays_as_it_is_in_the_truncation_note() -> None:
+    page = _render(_shown("a", "z" * 100_000))
+    assert page.text.endswith("ids=[42] from_unit=2")
 
 
 def test_a_cut_page_still_closes_its_fence() -> None:
@@ -349,9 +377,9 @@ def test_a_cursor_comes_back_as_it_went_in() -> None:
 
 def test_a_cursor_with_other_filters_is_refused() -> None:
     cursor = encode_cursor((_MOMENT, 42), {"circle": "h_da"})
-    with pytest.raises(ValueError, match="different query"):
+    with pytest.raises(ValueError, match="cursor is not valid for these filters"):
         decode_cursor(cursor, {"circle": "other"})
-    with pytest.raises(ValueError, match="different query"):
+    with pytest.raises(ValueError, match="cursor is not valid for these filters"):
         decode_cursor(cursor, {})
 
 
@@ -359,3 +387,131 @@ def test_a_cursor_with_other_filters_is_refused() -> None:
 def test_a_malformed_cursor_is_refused(junk: str) -> None:
     with pytest.raises(ValueError):
         decode_cursor(junk, {})
+
+
+# --- the redraw inside render_page --------------------------------------------
+
+
+def test_render_page_skips_a_candidate_tag_that_occurs_in_a_unit() -> None:
+    page = render_page(
+        "t",
+        [_shown("see deadbeef here")],
+        cursor_for=_cursor_for,
+        candidates=iter(["deadbeef", "c0ffee11"]),
+    )
+    assert _tags(page) == ["c0ffee11"]
+
+
+def test_render_page_skips_a_candidate_tag_that_occurs_in_the_sender() -> None:
+    item = Shown(_head(sender="Dead DEADBEEF Beef"), ((1, "x"),))
+    page = render_page(
+        "t",
+        [item],
+        cursor_for=_cursor_for,
+        candidates=iter(["deadbeef", "c0ffee11"]),
+    )
+    assert _tags(page) == ["c0ffee11"]
+
+
+def test_render_page_keeps_a_candidate_tag_that_occurs_nowhere() -> None:
+    page = render_page(
+        "t",
+        [_shown("x")],
+        cursor_for=_cursor_for,
+        candidates=iter(["deadbeef", "c0ffee11"]),
+    )
+    assert _tags(page) == ["deadbeef"]
+
+
+# --- the heading caps ---------------------------------------------------------
+
+
+def test_a_mail_to_400_recipients_stays_within_the_page_and_shows_the_cap() -> None:
+    names = tuple(f"{n:03d}" + "n" * 297 for n in range(400))
+    head = Head("previously://event/42", _MOMENT, "email", "s" * 300, names, "S")
+    page = _render(Shown(head, ((1, "z" * 100_000),)))
+    assert len(page.text) <= PAGE_CHARS
+    heading = next(line for line in page.text.splitlines() if line.startswith("### "))
+    assert heading.endswith("+390 more")
+    assert "010nnn" not in heading
+    assert "009n" in heading
+
+
+def test_a_long_heading_field_is_cut_with_an_ellipsis() -> None:
+    page = _render(Shown(_head(sender="s" * 1_000), ((1, "x"),)))
+    heading = next(line for line in page.text.splitlines() if line.startswith("### "))
+    assert "s" * 199 + "…" in heading
+    assert "s" * 200 not in heading
+
+
+# --- what the page does not carry -------------------------------------------
+
+
+def test_lone_surrogates_are_removed_and_counted() -> None:
+    assert sanitize("a\ud800b") == ("ab", 1)
+
+
+def test_line_and_paragraph_separators_do_not_split_a_heading_line() -> None:
+    page = _render(Shown(_head(sender="Eva\u2028Huber\u2029X"), ((1, "x"),)))
+    heading = next(line for line in page.text.splitlines() if line.startswith("### "))
+    assert "Eva Huber X" in heading
+    assert "\u2028" not in page.text
+    assert "\u2029" not in page.text
+
+
+def test_line_separators_inside_a_unit_are_kept() -> None:
+    assert sanitize("a\u2028b") == ("a\u2028b", 0)
+
+
+def test_an_8_bit_csi_goes_with_its_parameters() -> None:
+    assert sanitize("\x9b31mred\x9b0m") == ("red", 4 + 3)
+    assert sanitize("a\x9dtitle\x07b") == ("ab", 7)
+
+
+def test_a_bare_c1_control_goes_alone() -> None:
+    assert sanitize("a\x85b") == ("ab", 1)
+
+
+@pytest.mark.parametrize(
+    "char",
+    [
+        "\ufe00",
+        "\ufe0f",
+        "\U000e0100",
+        "\U000e01ef",
+        "\u034f",
+        "\u115f",
+        "\u1160",
+        "\u3164",
+        "\uffa0",
+    ],
+)
+def test_invisible_characters_outside_cf_are_removed_and_counted(char: str) -> None:
+    assert sanitize(f"a{char}b") == ("ab", 1)
+
+
+@pytest.mark.parametrize(
+    "char", ["\ufdff", "\ufe10", "\U000e00ff", "\U000e01f0", "\u034e", "\u2800"]
+)
+def test_neighbours_of_the_invisible_ranges_stay(char: str) -> None:
+    assert sanitize(f"a{char}b") == (f"a{char}b", 0)
+
+
+@given(
+    st.text(
+        alphabet=st.sampled_from(
+            ["\ufe00", "\U000e0100", "\u034f", "\u115f", "\u3164", "\uffa0", "\x9b", "\ud800", "a"]
+        )
+    )
+)
+def test_the_invisible_groups_never_reach_the_page(content: str) -> None:
+    page = _render(_shown(content), WithheldMark("previously://event/2", content))
+    for char in page.text:
+        assert ord(char) not in {0xFE00, 0xE0100, 0x34F, 0x115F, 0x3164, 0xFFA0, 0x9B, 0xD800}
+
+
+def test_a_cursor_error_does_not_carry_the_parser_message() -> None:
+    for junk in ["", "@@@@", "A", "bnVsbA"]:
+        with pytest.raises(ValueError) as caught:
+            decode_cursor(junk, {})
+        assert str(caught.value) == "cursor is not valid for these filters"

@@ -29,7 +29,6 @@ from typing import Final
 from typing import TYPE_CHECKING
 
 import base64
-import binascii
 import json
 import re
 import secrets
@@ -46,9 +45,11 @@ if TYPE_CHECKING:
 # language, under the 25,000-token cap that Claude Code puts on the output of
 # one tool call.
 # The figure comes from the unit specification (section 5.1).
-# It has NOT been measured against real mails yet: that measurement belongs to
-# the acceptance run (section 12, item 2 of the unit specification), and until
-# it is done this number is an estimate.
+# It has NOT been measured against real mails yet.
+# That measurement is open point 2 of section 13 of the unit specification, and
+# decision 4 of the plan has it done during the build, once the server runs
+# against real mail (Task 5 or the acceptance run).
+# Until then this number is an estimate.
 PAGE_CHARS: Final = 60_000
 
 # A heading field longer than this is cut, so that a page can always hold the
@@ -62,15 +63,35 @@ _ERROR_CHARS: Final = 2_000
 # character), so a page is laid out first and the tag is swapped in afterwards.
 _TAG_SENTINEL: Final = "\0" * 8
 
+# The 8-bit forms (U+009B CSI, U+009D OSC, U+0090, U+0098, U+009E, U+009F) go
+# with their sequence, like the ESC forms; a bare C1 control goes in `sanitize`.
 _ESCAPE_SEQUENCE = re.compile(
-    r"\x1b\[[0-?]*[ -/]*[@-~]"  # CSI
-    r"|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC, ended by BEL or ST
-    r"|\x1b[PX^_][^\x1b]*\x1b\\"  # DCS, SOS, PM, APC
+    r"(?:\x1b\[|\x9b)[0-?]*[ -/]*[@-~]"  # CSI
+    r"|(?:\x1b\]|\x9d)[^\x07\x1b]*(?:\x07|\x1b\\)"  # OSC, ended by BEL or ST
+    r"|(?:\x1b[PX^_]|[\x90\x98\x9e\x9f])[^\x1b]*\x1b\\"  # DCS, SOS, PM, APC
     r"|\x1b[ -/]*[0-~]"  # two-character sequences
 )
 _LINE_BREAKS = str.maketrans(dict.fromkeys("\n\t\r  ", " "))
+_CURSOR_REFUSED: Final = "cursor is not valid for these filters"
 _EVENT_ID = re.compile(r"(\d+)$")
 _TAG_BLOCK = range(0xE0000, 0xE0080)
+# Invisible characters outside the category `Cf`, removed by ruling R-6 of the
+# 2026-10-11 pilot plan.
+_INVISIBLE: Final = frozenset(
+    [
+        # Variation selectors: 16 + 240 = 256 values, a smuggling channel
+        # (one byte per invisible character).
+        *range(0xFE00, 0xFE10),
+        *range(0xE0100, 0xE01F0),
+        # Combining grapheme joiner: invisible, changes nothing visible.
+        0x034F,
+        # Hangul fillers: render as blank but are letters.
+        0x115F,
+        0x1160,
+        0x3164,
+        0xFFA0,
+    ]
+)
 
 
 @dataclass(frozen=True)
@@ -113,16 +134,22 @@ class Page:
 def _removable(char: str) -> bool:
     if char in "\n\t":
         return False
-    return unicodedata.category(char) in {"Cc", "Cf", "Cs"} or ord(char) in _TAG_BLOCK
+    if ord(char) in _TAG_BLOCK or ord(char) in _INVISIBLE:
+        return True
+    return unicodedata.category(char) in {"Cc", "Cf", "Cs"}
 
 
 def sanitize(text: str) -> tuple[str, int]:
     """Remove control and invisible characters; return the text and a count.
 
-    Removed: escape sequences (counted by their length), the C0 and C1 control
-    characters except newline and tab, everything in the Unicode category `Cf`
-    (zero-width characters, bidirectional controls), and the tag block
-    U+E0000–U+E007F.
+    Removed:
+
+    - escape sequences, counted by their length;
+    - the C0 and C1 control characters except newline and tab, and lone
+      surrogates;
+    - everything in the Unicode category `Cf` (zero-width characters,
+      bidirectional controls) and the tag block U+E0000–U+E007F;
+    - the invisible characters of `_INVISIBLE`.
     """
     removed = 0
 
@@ -187,9 +214,9 @@ def _time(moment: datetime) -> str:
     return moment.strftime("%Y-%m-%d %H:%M")
 
 
-def _heading(head: Head, counter: _Counter) -> str:
+def _heading(head: Head, uri: str, counter: _Counter) -> str:
     parts = [
-        counter.line(head.uri),
+        uri,
         _time(head.occurred_at),
         counter.line(head.source),
     ]
@@ -210,8 +237,20 @@ def _event_id(uri: str) -> str:
     return match.group(1) if match else uri
 
 
-def _truncation_note(uri: str, from_unit: int) -> str:
+def _pointer_note(uri: str, from_unit: int) -> str:
     return f"… truncated — continue with get_event ids=[{_event_id(uri)}] from_unit={from_unit}"
+
+
+def _cut_unit_note(uri: str, unit: int, following: int | None) -> str:
+    """Note for a unit cut inside; it never points back at that unit.
+
+    `get_event` would serve the same cut again, so the pilot serves no more of
+    such a unit (ruling R-5 of the 2026-10-11 pilot plan).
+    """
+    note = f"… truncated — the rest of unit {unit} is not served in the pilot"
+    if following is None:
+        return note
+    return f"{note}; continue with get_event ids=[{_event_id(uri)}] from_unit={following}"
 
 
 def _fence_open() -> str:
@@ -228,35 +267,43 @@ def _shown_block(item: Shown, counter: _Counter, budget: int | None) -> tuple[st
     The caller passes `None` first, to learn the full size, and only passes a
     budget for an event that stands alone on its page.
     """
-    heading = _heading(item.head, counter)
-    prefix = [heading, _fence_open()]
+    uri = counter.line(item.head.uri)
+    prefix = [_heading(item.head, uri, counter), _fence_open()]
     if item.head.subject is not None:
         prefix.append("Subject: " + counter.line(item.head.subject, 300))
     units = [(seq, counter.text(text)) for seq, text in item.units]
-    marked = [f"[unit {seq}]\n{text}" for seq, text in units]
+    marked = [f"#unit-{seq}\n{text}" for seq, text in units]
     closing = _fence_close()
     full = "\n".join([*prefix, *marked, closing])
     if budget is None or len(full) <= budget:
         return full, False
 
-    seq_width = max((len(str(seq)) for seq, _ in units), default=1)
-    note_length = len(_truncation_note(item.head.uri, 0)) + seq_width
+    # Reserve room for the longer of the two notes, with one digit to spare
+    # for `seq + 1`.
+    width = max((len(str(seq)) for seq, _ in units), default=1) + 1
+    wide = int("9" * width)
+    note_length = max(
+        len(_pointer_note(uri, wide)),
+        len(_cut_unit_note(uri, wide, wide)),
+    )
     room = budget - len("\n".join([*prefix, closing])) - 1 - note_length - 1
     shown: list[str] = []
-    from_unit = units[0][0] if units else 0
-    for (seq, text), block in zip(units, marked, strict=True):
+    note = _pointer_note(uri, units[0][0] if units else 0)
+    for index, ((seq, text), block) in enumerate(zip(units, marked, strict=True)):
         if len(block) + 1 <= room:
             shown.append(block)
             room -= len(block) + 1
             continue
-        from_unit = seq
-        if not shown:
-            marker = f"[unit {seq}]\n"
+        if shown:
+            note = _pointer_note(uri, seq)
+        else:
+            marker = f"#unit-{seq}\n"
             shown.append(marker + text[: max(room - len(marker) - 1, 0)])
+            following = units[index + 1][0] if index + 1 < len(units) else None
+            note = _cut_unit_note(uri, seq, following)
         break
     else:
-        from_unit = units[-1][0] + 1 if units else 0
-    note = _truncation_note(item.head.uri, from_unit)
+        note = _pointer_note(uri, units[-1][0] + 1 if units else 0)
     return "\n".join([*prefix, *shown, closing, note]), True
 
 
@@ -281,8 +328,8 @@ def _header(title: str, page: int, cursor: str | None, removed: int) -> str:
     return text + _removed_note(removed)
 
 
-def _footer(cursor: str) -> str:
-    return f"More results: call again with cursor={cursor}"
+def _footer(page: int, cursor: str) -> str:
+    return f"End of page {page}. More results: call again with cursor={cursor}"
 
 
 def _length(title: str, page: int, cursor: str | None, removed: int, blocks: list[str]) -> int:
@@ -290,7 +337,7 @@ def _length(title: str, page: int, cursor: str | None, removed: int, blocks: lis
     parts = [len(_header(title, page, cursor, removed))]
     parts.extend(len(block) for block in blocks)
     if cursor is not None:
-        parts.append(len(_footer(cursor)))
+        parts.append(len(_footer(page, cursor)))
     total = sum(parts) + 2 * (len(parts) - 1)
     return total
 
@@ -301,10 +348,11 @@ def render_page(
     *,
     cursor_for: Callable[[int], str],
     page: int = 1,
+    candidates: Iterator[str] | None = None,
 ) -> Page:
     """Lay out as many `items` as fit in `PAGE_CHARS`.
 
-    `cursor_for(i)` returns the cursor that resumes **after** the item at
+    `cursor_for(i)` returns an `encode_cursor` value, the cursor that resumes **after** the item at
     index `i`; it is called with the index of the last item delivered.
     `page` is the number of this page, which the caller knows from the cursor
     chain; the total is unknown here, so the indicator reads `page N` and not
@@ -355,8 +403,8 @@ def render_page(
     body = "\n\n".join(blocks) if blocks else "No results."
     text = _header(clean_title, page, cursor, counter.removed) + "\n\n" + body
     if cursor is not None:
-        text += "\n\n" + _footer(cursor)
-    tag = draw_tag("\n".join(counter.content))
+        text += "\n\n" + _footer(page, cursor)
+    tag = draw_tag("\n".join(counter.content), candidates=candidates)
     return Page(
         text=text.replace(_TAG_SENTINEL, tag),
         next_cursor=cursor,
@@ -396,10 +444,12 @@ def decode_cursor(cursor: str, filters: Mapping[str, str]) -> tuple[datetime, in
             or not isinstance(event_id, int)
             or isinstance(event_id, bool)
         ):
-            raise ValueError("malformed cursor")
+            raise ValueError("unexpected types")
         after = (datetime.fromisoformat(moment), event_id)
-    except (KeyError, TypeError, binascii.Error) as error:
-        raise ValueError("malformed cursor") from error
+    except (ValueError, KeyError, TypeError) as error:
+        # One fixed message: the parser's own wording would leak internals to
+        # whoever echoes it.
+        raise ValueError(_CURSOR_REFUSED) from error
     if recorded != dict(filters):
-        raise ValueError("cursor belongs to a different query")
+        raise ValueError(_CURSOR_REFUSED)
     return after
