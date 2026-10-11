@@ -1,0 +1,344 @@
+# Previously — an append-only knowledge store for project histories
+# Copyright (C) 2026 Jens W. Klein
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""The access log: `mcp_access` written, read, form-checked and counted."""
+
+from datetime import datetime
+from datetime import timedelta
+from datetime import UTC
+from previously.cli import main
+from previously.contract.types import Evidence
+from previously.contract.types import RawEvent
+from previously.contract.types import RawUnit
+from previously.core.access import Access
+from previously.core.access import Delivered
+from previously.core.access import read_access
+from previously.core.access import record_access
+from previously.core.access import Withheld
+from previously.core.action import append_action
+from previously.core.action import KNOWN_ACTIONS
+from previously.core.append import append
+from previously.core.gaps import gaps
+from previously.core.projection.chronicle import CHRONICLE
+from previously.core.projection.worker import catch_up
+from previously.core.units import split_plaintext
+from previously.core.verify import verify
+from previously.storage.postgres import PostgresStorage
+from sqlalchemy import Engine
+from sqlalchemy import text
+from typing import cast
+
+import pytest
+
+
+T0 = datetime(2026, 10, 11, 12, 0, 0, tzinfo=UTC)
+T1 = T0 + timedelta(hours=1)
+T2 = T0 + timedelta(hours=2)
+
+MAIL_TEXT = "Dear Mr Hofer,\n\nthe invoice 4711 of the Danube project is overdue."
+
+
+def _mail(storage: PostgresStorage) -> int:
+    (event_id,) = append(
+        storage,
+        [
+            RawEvent(
+                source="email",
+                external_id="m-1",
+                occurred_at=T0,
+                evidence=Evidence.VERBATIM,
+                units=split_plaintext(MAIL_TEXT),
+                payload={"text": MAIL_TEXT},
+            )
+        ],
+        recorded_at=T0,
+    )
+    return event_id
+
+
+def _access(
+    *,
+    client: str = "claude-code",
+    name: str = "previously",
+    arguments: dict[str, object] | None = None,
+    delivered: tuple[Delivered, ...] = (),
+    withheld: tuple[Withheld, ...] = (),
+    outcome: str = "ok",
+) -> Access:
+    return Access(
+        client=client,
+        policy_ids={"client": 31, "processor": 12, "rules": [19]},
+        kind="tool",
+        name=name,
+        arguments=arguments if arguments is not None else {"circle": "h_da"},
+        delivered=delivered,
+        withheld=withheld,
+        outcome=outcome,
+        era="2026-07-28",
+    )
+
+
+def _no_rule(event: int, *circles: str) -> Withheld:
+    return Withheld(event, "no_rule", circles, f"circle {circles[0]} has no rule for this client")
+
+
+def _strings(value: object) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        entries = cast("dict[str, object]", value)
+        return [s for key, item in entries.items() for s in (key, *_strings(item))]
+    if isinstance(value, list):
+        return [s for item in cast("list[object]", value) for s in _strings(item)]
+    return []
+
+
+def _payloads(db: Engine) -> list[dict[str, object]]:
+    with db.begin() as conn:
+        rows = conn.execute(
+            text("SELECT payload FROM event WHERE kind = 'action' ORDER BY id")
+        ).scalars()
+        return [cast("dict[str, object]", row) for row in rows]
+
+
+def test_mcp_access_is_a_known_action() -> None:
+    assert "mcp_access" in KNOWN_ACTIONS
+
+
+@pytest.mark.db
+def test_an_access_is_written_and_read_back(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    written = _access(
+        delivered=(Delivered(42, (1, 2)),),
+        withheld=(_no_rule(43, "h_da"),),
+    )
+    event_id = record_access(storage, written, recorded_at=T1)
+    with storage.begin() as conn:
+        (row,) = read_access(storage, conn, client=None, circle=None, since=None)
+    assert (row.id, row.recorded_at, row.access) == (event_id, T1, written)
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_reading_narrows_by_client_circle_and_time(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    record_access(storage, _access(client="a", arguments={"circle": "h_da"}), recorded_at=T0)
+    record_access(storage, _access(client="b", arguments={"circle": "xz"}), recorded_at=T1)
+    record_access(
+        storage,
+        _access(client="b", arguments={"ids": [5]}, withheld=(_no_rule(5, "h_da", "xz"),)),
+        recorded_at=T2,
+    )
+
+    def ids(
+        client: str | None = None, circle: str | None = None, since: datetime | None = None
+    ) -> list[int]:
+        with storage.begin() as conn:
+            rows = read_access(storage, conn, client=client, circle=circle, since=since)
+        return [row.id for row in rows]
+
+    assert ids() == [1, 2, 3]
+    assert ids(client="b") == [2, 3]
+    assert ids(circle="h_da") == [1, 3]  # named in the arguments, and withheld
+    assert ids(circle="xz") == [2, 3]
+    assert ids(since=T1) == [2, 3]
+    assert ids(client="b", circle="h_da", since=T1) == [3]
+    assert ids(client="nobody") == []
+
+
+@pytest.mark.db
+def test_the_payload_of_an_access_holds_no_content(db: Engine) -> None:
+    """Not the text of a unit, not a line of it, not a name in it — searched in
+    every string of the payload, keys included. The arguments are the client's
+    input and stay."""
+    storage = PostgresStorage(db)
+    event_id = _mail(storage)
+    record_access(
+        storage,
+        _access(
+            arguments={"circle": "h_da", "since": "2026-09-01", "ids": [event_id]},
+            delivered=(Delivered(event_id, (1, 2)),),
+            withheld=(_no_rule(event_id + 1, "h_da"),),
+        ),
+        recorded_at=T1,
+    )
+    wordings = [
+        MAIL_TEXT,
+        *(line.strip() for line in MAIL_TEXT.splitlines() if len(line.strip()) >= 8),
+        "Hofer",
+        "4711",
+    ]
+    payload = _payloads(db)[-1]
+    assert payload["action"] == "mcp_access"
+    assert [(w, s) for s in _strings(payload) for w in wordings if w in s] == []
+    # The control: the same search finds the wording where it is.
+    assert any(w in s for s in _strings({"units": [MAIL_TEXT]}) for w in wordings)
+
+
+@pytest.mark.db
+def test_an_access_has_no_units_and_does_not_enter_the_chronicle(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    _mail(storage)
+    record_access(storage, _access(delivered=(Delivered(1, (1, 2)),)), recorded_at=T1)
+    catch_up(storage, storage, CHRONICLE)
+    with storage.begin() as conn:
+        assert storage.units_by_event(conn, [2]).get(2, []) == []
+    with db.begin() as conn:
+        shown = {r[0] for r in conn.execute(text("SELECT event_id FROM p_chronicle"))}
+    assert shown == {1}
+
+
+@pytest.mark.db
+def test_verify_finds_a_broken_form(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    good = _access(delivered=(Delivered(1, (1,)),), withheld=(_no_rule(2, "h_da"),))
+    record_access(storage, good, recorded_at=T0)
+    assert verify(storage) == []  # the control
+
+    base = _payloads(db)[0]
+    broken: list[dict[str, object]] = [
+        {**base, "outcome": "denied"},
+        {k: v for k, v in base.items() if k != "outcome"},
+        {**base, "surprise": 1},
+        {**base, "delivered": "42"},
+        {**base, "delivered": [{"units": [1]}]},
+        {**base, "withheld": [{"event": 2, "reason_code": "because"}]},
+        {**base, "call": {"kind": "tool", "name": "x"}},
+    ]
+    for payload in broken:
+        append_action(storage, payload, (), recorded_at=T1)
+    findings = verify(storage)
+    assert [f.event_id for f in findings] == list(range(2, 2 + len(broken)))
+    assert all(f.reason.startswith("mcp_access has no valid form: ") for f in findings)
+
+
+@pytest.mark.db
+def test_verify_finds_an_access_with_units(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    record_access(storage, _access(), recorded_at=T0)
+    base = _payloads(db)[0]
+    append_action(storage, base, (RawUnit(seq=1, content="smuggled"),), recorded_at=T1)
+    assert [(f.event_id, f.reason) for f in verify(storage)] == [(2, "mcp_access has units")]
+
+
+@pytest.mark.db
+def test_gaps_count_what_mcp_withheld_for_lack_of_a_rule_apart_from_the_gate(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    record_access(storage, _access(withheld=(_no_rule(5, "xz"),)), recorded_at=T0)
+    record_access(
+        storage,
+        _access(
+            withheld=(
+                _no_rule(6, "xz"),
+                Withheld(7, "rule", ("xz",), "circle xz requires eu"),
+                _no_rule(8, "h_da"),
+            )
+        ),
+        recorded_at=T2,
+    )
+    with storage.begin() as conn:
+        found = gaps(storage, conn, since=None)
+        recent = gaps(storage, conn, since=T1)
+        none = gaps(storage, conn, since=T2 + timedelta(hours=1))
+    assert [(g.origin, g.what, g.count, g.last) for g in found] == [
+        ("mcp", "circle:h_da", 1, T2),
+        ("mcp", "circle:xz", 2, T2),
+    ]
+    assert [(g.what, g.count) for g in recent] == [("circle:h_da", 1), ("circle:xz", 1)]
+    assert none == []
+
+
+@pytest.mark.db
+def test_gaps_ignore_a_withholding_that_a_rule_caused(db: Engine) -> None:
+    """The control of the test above: `rule` is no gap."""
+    storage = PostgresStorage(db)
+    record_access(
+        storage,
+        _access(withheld=(Withheld(7, "rule", ("xz",), "circle xz requires eu"),)),
+        recorded_at=T0,
+    )
+    with storage.begin() as conn:
+        assert gaps(storage, conn, since=None) == []
+
+
+@pytest.mark.db
+def test_the_command_access_prints_one_line_per_call(
+    db: Engine, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
+    storage = PostgresStorage(db)
+    record_access(
+        storage,
+        _access(
+            delivered=(Delivered(42, (1, 2)), Delivered(44, ())), withheld=(_no_rule(43, "h_da"),)
+        ),
+        recorded_at=T0,
+    )
+    record_access(storage, _access(client="other", arguments={"circle": "xz"}), recorded_at=T1)
+
+    assert main(["access", "--client", "claude-code"]) == 0
+    out, err = capsys.readouterr()
+    assert err == ""
+    assert out == (
+        "2026-10-11T12:00:00.000000Z\tclaude-code\ttool:previously\tok"
+        "\tdelivered 42,44\twithheld 43:no_rule:circle h_da has no rule for this client\n"
+    )
+
+    assert main(["access", "--circle", "xz", "--since", "2026-10-11T12:30:00Z"]) == 0
+    out, _ = capsys.readouterr()
+    assert out == (
+        "2026-10-11T13:00:00.000000Z\tother\ttool:previously\tok\tdelivered -\twithheld -\n"
+    )
+
+    assert main(["access", "--client", "nobody"]) == 0
+    assert capsys.readouterr() == ("", "no access matches\n")
+
+
+@pytest.mark.db
+def test_policy_gaps_prints_the_mcp_withholdings_with_their_origin(
+    db: Engine, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
+    storage = PostgresStorage(db)
+    record_access(storage, _access(withheld=(_no_rule(5, "xz"),)), recorded_at=T0)
+    assert main(["policy", "gaps"]) == 0
+    assert capsys.readouterr() == ("mcp:circle:xz\t1\t2026-10-11T12:00:00.000000Z\n", "")
+
+
+@pytest.mark.db
+def test_the_stored_payload_is_the_sketch_of_the_concept(db: Engine) -> None:
+    """The sketch field for field, plus the `reason_code` and `circles` of a
+    withheld entry."""
+    storage = PostgresStorage(db)
+    record_access(
+        storage,
+        _access(
+            arguments={"circle": "h_da", "since": "2026-09-01"},
+            delivered=(Delivered(42, (1, 2, 3)),),
+            withheld=(_no_rule(43, "h_da"),),
+        ),
+        recorded_at=T0,
+    )
+    assert _payloads(db) == [
+        {
+            "action": "mcp_access",
+            "client": "claude-code",
+            "policy": {"client": 31, "processor": 12, "rules": [19]},
+            "call": {
+                "kind": "tool",
+                "name": "previously",
+                "arguments": {"circle": "h_da", "since": "2026-09-01"},
+            },
+            "delivered": [{"event": 42, "units": [1, 2, 3]}],
+            "withheld": [
+                {
+                    "event": 43,
+                    "reason_code": "no_rule",
+                    "circles": ["h_da"],
+                    "reason": "circle h_da has no rule for this client",
+                }
+            ],
+            "outcome": "ok",
+            "era": "2026-07-28",
+        }
+    ]

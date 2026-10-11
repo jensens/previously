@@ -3,7 +3,7 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has fifteen subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, `gate`, and `client`.
+It has sixteen subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, `gate`, `client`, and `access`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
 `append --attach`, `ingest imap`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
 `ingest imap` alone reads the five `PREVIOUSLY_IMAP_*` settings, and `gate try` alone reads `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `PREVIOUSLY_LOCAL_MODEL_URL` and `PREVIOUSLY_PRICES`.
@@ -66,6 +66,7 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
 | `policy` | The statement was written, `show` printed the policy, or `gaps` printed what fell back, even when nothing did. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the statement was refused, or storage raised an error. |
 | `client` | The client was added and its token printed, revoked, or listed, even when none exists. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the processor isn't declared, no such client exists to revoke, or storage raised an error. |
+| `access` | The access log was printed, even when no call matches. | Not used. | The input was invalid, or storage raised an error. |
 | `gate` | `explain` printed the decision, whether it allows a call or denies it; `try` made the call, got an answer that matches the schema, and recorded it. | Not used. | The event doesn't exist, the price file can't be read, storage raised an error, or `try` recorded a call that was denied, failed, refused by the model, or answered against the schema. |
 
 `gate try` returns 3 when the call was made and recorded with an answer that matches the schema, and the provider reported another inference region than the one requested; the code differs from 0 so that a script doesn't read past the alarm.
@@ -514,7 +515,7 @@ FINDING 9: unknown action "teleport"
 | `redaction names a target that does not exist` | The event a redaction names doesn't stand before the redaction in the chain, or doesn't have a unit it names; for a redaction of a blob, an event it names doesn't stand before it or doesn't name the blob in the blob register. | The redaction. |
 | `units are erased in part, which version 1 cannot attest` | An event in hash format 1 has some units without content, and others with it. | The event. |
 | `action has no valid form` | An event of kind `action` carries no `action` name in its payload, or a redaction's payload doesn't have exactly the form `redact` writes. | The action. |
-| `unknown action "<name>"` | An event of kind `action` carries an `action` name that isn't `redaction`, `policy` or `model_call`. | The action. |
+| `unknown action "<name>"` | An event of kind `action` carries an `action` name that isn't `redaction`, `policy`, `model_call` or `mcp_access`. | The action. |
 
 One finding comes from the blob register:
 
@@ -840,6 +841,15 @@ source:email	1	2026-10-09T12:00:00.000000Z
 It reads the `model_call` events, and the source of each event that a call read where the fallback named no circle, and counts a call whether the local model answered it or not.
 `--since TIME` counts only the calls recorded from that moment on; the time needs a zone.
 A call over an event that has no source and no circle stands under `event:<id>`.
+It also counts what the MCP server withheld for lack of a rule, from the `mcp_access` events ({ref}`cli-access`): each entry of `withheld` with the reason code `no_rule` counts once for each circle it names, or under `event:<id>` when it names none.
+Those lines start with `mcp:`, so that every line keeps its three fields and the gate's lines stay as they were:
+
+```text
+circle:xz	3	2026-10-09T14:02:11.482113Z
+mcp:circle:h_da	2	2026-10-11T09:30:00.000000Z
+source:email	1	2026-10-09T12:00:00.000000Z
+```
+
 When no call fell back, standard output stays empty, and one notice goes to standard error:
 
 ```text
@@ -997,3 +1007,40 @@ With no client it prints `no client exists` to standard error.
 
 An undeclared processor is refused before the question, as `Error: the processor "NAME" is not declared — declare it first with previously policy provider NAME`.
 Revoking a client that doesn't exist is refused as `Error: no client "NAME" exists`.
+
+(cli-access)=
+
+## `access`
+
+Shows what the MCP clients saw.
+Every call of a client, whether a tool, a resource or a prompt, is written to the log as an action `mcp_access`, with no source key and no units.
+Its payload holds ids, names, reason codes, the sentences that say why something was withheld, and the arguments of the call, which are the client's input; it holds nothing of any event.
+`access` reads those events:
+
+```text
+previously access [--client NAME] [--circle NAME] [--since TIME]
+```
+
+| Option | Required | Default | Description |
+|---|---|---|---|
+| `--client NAME` | No | all clients | Only the calls of this client. |
+| `--circle NAME` | No | all circles | Only the calls that named this circle in their arguments, or had an event of it withheld. |
+| `--since TIME` | No | all time | Only the calls recorded from that moment on (ISO 8601, with a zone). |
+
+It prints one line per call, in the order of the chain, the six fields separated by a tab: the time, the client, the kind and the name of the call joined by a colon, the outcome (`ok` or `error`), the delivered events, and the withheld ones.
+The delivered events are ids separated by commas, the withheld ones `ID:REASON_CODE:REASON` separated by spaces, and a dash stands for none:
+
+```text
+2026-10-11T12:00:00.000000Z	claude-code	tool:previously	ok	delivered 42,44	withheld 43:no_rule:circle h_da has no rule for this client
+```
+
+The reason code is `no_rule` where a circle of the event had no rule for the client, and `rule` where a rule said no.
+An entry that was erased, or whose form `verify` reports, is left out.
+When no call matches, standard output stays empty, and one notice goes to standard error:
+
+```text
+no access matches
+```
+
+`verify` holds every `mcp_access` to its form: known fields only, a client, a policy, a call with a known kind (`tool`, `resource` or `prompt`), a name and arguments, lists `delivered` and `withheld` whose every entry names an event, a known reason code on every withheld entry, an outcome of `ok` or `error`, and no units.
+A break of that form is a finding of the form `FINDING 12: mcp_access has no valid form: it has no outcome`, and an `mcp_access` with units is `FINDING 12: mcp_access has units`.

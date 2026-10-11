@@ -21,6 +21,7 @@ from previously.connectors.imap import PORT as IMAP_PORT
 from previously.contract.types import BlobRef
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
+from previously.core.access import read_access
 from previously.core.anchor import format_anchor
 from previously.core.anchor import parse_anchors
 from previously.core.append import append
@@ -1536,7 +1537,10 @@ def _cmd_policy_gaps(args: argparse.Namespace) -> int:
     if not found:
         print("no call fell back to local only", file=sys.stderr)
     for gap in found:
-        print(f"{escape_field(gap.what)}\t{gap.count}\t{iso_utc(gap.last)}")
+        # A withholding of the MCP server is told from a model call by the
+        # prefix, so that every line keeps its three fields.
+        scope = gap.what if gap.origin == "gate" else f"{gap.origin}:{gap.what}"
+        print(f"{escape_field(scope)}\t{gap.count}\t{iso_utc(gap.last)}")
     return 0
 
 
@@ -1752,6 +1756,49 @@ def _cmd_gate(args: argparse.Namespace) -> int:
     return _cmd_gate_try(args)
 
 
+def _access_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--client", metavar="NAME", help="only calls of this client")
+    parser.add_argument(
+        "--circle",
+        metavar="NAME",
+        help="only calls that named this circle or had something of it withheld",
+    )
+    parser.add_argument(
+        "--since", metavar="TIME", help="only calls from then on (ISO 8601, a zone)"
+    )
+
+
+def _ids(values: tuple[int, ...]) -> str:
+    return ",".join(str(value) for value in values) or "-"
+
+
+def _cmd_access(args: argparse.Namespace) -> int:
+    """Prints one line per call: the time, the client, the kind and name of
+    the call, the delivered events, and the withheld ones with the reason
+    ({ref}`cli-reference`)."""
+    since = parse_moment(args.since) if args.since else None
+    with _storage() as storage, storage.begin() as conn:
+        rows = read_access(storage, conn, client=args.client, circle=args.circle, since=since)
+    if not rows:
+        print("no access matches", file=sys.stderr)
+    for row in rows:
+        access = row.access
+        delivered = _ids(tuple(item.event for item in access.delivered))
+        withheld = (
+            " ".join(
+                f"{item.event}:{item.reason_code}:{escape_field(item.reason)}"
+                for item in access.withheld
+            )
+            or "-"
+        )
+        print(
+            f"{iso_utc(row.recorded_at)}\t{escape_field(access.client)}"
+            f"\t{access.kind}:{escape_field(access.name)}\t{access.outcome}"
+            f"\tdelivered {delivered}\twithheld {withheld}"
+        )
+    return 0
+
+
 def _no_arguments(_parser: argparse.ArgumentParser) -> None:
     """For a command that takes no arguments."""
 
@@ -1892,6 +1939,7 @@ COMMANDS: tuple[Command, ...] = (
     Command("policy", "set and show the processing policy", _cmd_policy, _policy_arguments),
     Command("gate", "explain or try a model call", _cmd_gate, _gate_arguments),
     Command("client", "add, revoke and list MCP clients", _cmd_client, _client_arguments),
+    Command("access", "show what MCP clients saw", _cmd_access, _access_arguments),
 )
 
 
