@@ -1015,6 +1015,7 @@ def test_the_policy_reference_names_the_keys_of_every_statement() -> None:
     """The four common keys, the replacement key of each kind and the keys of
     a rule and of a provider, each held against what `to_payload` writes."""
     from previously.core.policy import Circle
+    from previously.core.policy import Client
     from previously.core.policy import Inference
     from previously.core.policy import key_of
     from previously.core.policy import KINDS
@@ -1030,11 +1031,12 @@ def test_the_policy_reference_names_the_keys_of_every_statement() -> None:
         OwnIdentity("@example.org"),
         Rule("circle:xz", frozenset({"eu"}), None, frozenset()),
         Provider("p", (Inference("eu", frozenset({"eu"})),), frozenset({"eu"}), None, False, True),
+        Client("c", "p", "0" * 64),
     ]
     payloads = [to_payload(item, statement="s") for item in statements]
     common: set[str] = set(payloads[0]).intersection(*(set(payload) for payload in payloads[1:]))
-    assert _policy_cells("## Policy events", "Four keys are common to all five kinds.") == common
-    assert _policy_cells("### The five kinds", "beside the four common ones:") == set(KINDS)
+    assert _policy_cells("## Policy events", "Four keys are common to all six kinds.") == common
+    assert _policy_cells("### The six kinds", "beside the four common ones:") == set(KINDS)
     assert [payload["policy"] for payload in payloads] == list(KINDS)
     page = POLICY_PAGE.read_text(encoding="utf-8")
     for item, payload in zip(statements, payloads, strict=True):
@@ -1049,9 +1051,13 @@ def test_the_policy_reference_names_the_keys_of_every_statement() -> None:
     rule_and_provider = (set(payloads[3]) | set(payloads[4])) - common
     assert (
         _policy_cells(
-            "### The five kinds", "The keys of a `rule` and a `provider`, with their values:"
+            "### The six kinds", "The keys of a `rule` and a `provider`, with their values:"
         )
         == rule_and_provider
+    )
+    assert (
+        _policy_cells("### The six kinds", "The keys of a `client`, with their values:")
+        == set(payloads[5]) - common
     )
 
 

@@ -11,19 +11,19 @@ Both are events of the kind `action`, written with no source key, and `payload.a
 ## Policy events
 
 A policy event has no units.
-Four keys are common to all five kinds.
+Four keys are common to all six kinds.
 
 | Key | Value |
 |---|---|
 | `action` | `policy` |
-| `policy` | The kind of statement, one of the five below. |
+| `policy` | The kind of statement, one of the six below. |
 | `statement` | The sentence the statement was set with. Nothing evaluates it. |
 | `revoked` | `true` where the event lifts the statement, otherwise `false`. |
 
 A newer event with the same key replaces the older one, and an event with `revoked` set lifts the statement.
 The key is what the table calls the replacement key, and the older event stays in the chain.
 
-### The five kinds
+### The six kinds
 
 Each kind has a replacement key and keys of its own, beside the four common ones:
 
@@ -34,6 +34,7 @@ Each kind has a replacement key and keys of its own, beside the four common ones
 | `own_identity` | `member` | `member` |
 | `rule` | `scope` | `scope`, `regions`, `max_retention_days`, `excluded_providers`, `no_training`, `no_subprocessors`, `excluded_operators`, `excluded_model_origins` |
 | `provider` | `provider` | `provider`, `inference`, `storage`, `retention_days`, `reports_inference_geo`, `local`, `operator`, `training`, `subprocessors`, `model_origin` |
+| `client` | `name` | `name`, `processor`, `token_sha256` |
 
 Every set is written as a sorted list, so the same statement has the same payload whatever order it was typed in.
 
@@ -70,6 +71,17 @@ Such an event reads with the defaults: every value of the chain unknown, and no 
 Stored events aren't migrated, since they're hash-chained.
 A candidate passes a restriction only with a known value that satisfies it, the way an unknown retention fails a retention limit.
 Where several rules apply, a flag holds if one of them sets it, and the excluded names are the union.
+
+The keys of a `client`, with their values:
+
+| Key | Value |
+|---|---|
+| `name` | The name of the client. |
+| `processor` | The name of a declared provider, whose promise the client's reading is processed under. |
+| `token_sha256` | The SHA-256 of the token as 64 lower-case hexadecimal digits. The token itself is never stored. |
+
+A `client` is refused while its `processor` isn't a declared provider.
+Its revocation isn't, so a client can still be lifted after its provider was.
 
 A rule written like this holds for content of the circle `xz`:
 

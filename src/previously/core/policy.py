@@ -6,10 +6,11 @@
 The policy is not a file or a table. It is a sequence of events of the kind
 `action` with `payload.action = "policy"`, set by the keeper, with no source
 key and no units, so it sits in the chain and `verify` covers it like any
-other action. Five statements exist (`payload.policy`): a circle, the
+other action. Six statements exist (`payload.policy`): a circle, the
 membership of an address or a domain in a circle, an own identity of the
-operator, a rule that gives a scope its conditions, and what a provider
-account promises. Every one carries the sentence it was set with under
+operator, a rule that gives a scope its conditions, what a provider account
+promises, and an MCP client with the promise it is processed under and the
+SHA-256 of its token. Every one carries the sentence it was set with under
 `statement`; the gate never reads it.
 
 A newer event with the same key replaces the older one, and a revocation is
@@ -25,6 +26,7 @@ payload whatever order it was typed in.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field
 from enum import StrEnum
 from previously.core.action import POLICY
 from previously.core.action import retrying
@@ -65,7 +67,12 @@ MEMBERSHIP: Final = "membership"
 OWN_IDENTITY: Final = "own_identity"
 RULE: Final = "rule"
 PROVIDER: Final = "provider"
-KINDS: Final = (CIRCLE, MEMBERSHIP, OWN_IDENTITY, RULE, PROVIDER)
+CLIENT: Final = "client"
+KINDS: Final = (CIRCLE, MEMBERSHIP, OWN_IDENTITY, RULE, PROVIDER, CLIENT)
+
+# A SHA-256 as hex: 64 digits. The payload never holds the token itself.
+_TOKEN_HASH_LENGTH: Final = 64
+_HEX_DIGITS: Final = frozenset("0123456789abcdef")
 
 _KEY_SEPARATOR: Final = "\t"
 
@@ -124,7 +131,17 @@ class Provider:
     model_origin: str | None = None
 
 
-type Statement = Circle | Membership | OwnIdentity | Rule | Provider
+@dataclass(frozen=True)
+class Client:
+    """An MCP client as a principal: a name, the declared provider whose
+    promise its reading is processed under, and the hash of its token."""
+
+    name: str
+    processor: str  # the name of a declared provider
+    token_sha256: str  # hex; the token itself is never stored
+
+
+type Statement = Circle | Membership | OwnIdentity | Rule | Provider | Client
 
 
 @dataclass(frozen=True)
@@ -136,6 +153,7 @@ class Policy:
     providers: Mapping[str, Provider]
     # (kind, key) → the id of the event that set it, for the audit of a call.
     ids: Mapping[tuple[str, str], int]
+    clients: Mapping[str, Client] = field(default_factory=dict[str, Client])
 
 
 class PolicyRefused(PreviouslyError):
@@ -158,6 +176,8 @@ def _kind_of(item: Statement) -> str:
             return RULE
         case Provider():
             return PROVIDER
+        case Client():
+            return CLIENT
 
 
 def key_of(item: Statement) -> tuple[str, str]:
@@ -173,6 +193,8 @@ def key_of(item: Statement) -> tuple[str, str]:
             return RULE, scope
         case Provider(name=name):
             return PROVIDER, name
+        case Client(name=name):
+            return CLIENT, name
 
 
 def to_payload(item: Statement, *, statement: str, revoked: bool = False) -> dict[str, object]:
@@ -211,6 +233,10 @@ def to_payload(item: Statement, *, statement: str, revoked: bool = False) -> dic
                 None if item.subprocessors is None else sorted(item.subprocessors)
             )
             payload["model_origin"] = item.model_origin
+        case Client():
+            payload["name"] = item.name
+            payload["processor"] = item.processor
+            payload["token_sha256"] = item.token_sha256
     payload["statement"] = statement
     payload["revoked"] = revoked
     return payload
@@ -283,6 +309,14 @@ def _check_chain(provider: Provider) -> None:
     _check_names(provider.subprocessors or frozenset(), "a subprocessor")
 
 
+def _check_client(client: Client) -> None:
+    _check_text(client.name, "the client name")
+    _check_text(client.processor, "the processor")
+    digits = set(client.token_sha256)
+    if len(client.token_sha256) != _TOKEN_HASH_LENGTH or not digits <= _HEX_DIGITS:
+        raise _FormError("the token hash is not a SHA-256 in lower-case hex")
+
+
 def _check(item: Statement, statement: str) -> None:
     """Everything that can be said about a statement without the policy."""
     _check_text(statement, "the statement")
@@ -308,6 +342,8 @@ def _check(item: Statement, statement: str) -> None:
                 _check_regions(spaces.regions, _REGIONS, f'inference "{spaces.name}"')
             if item.storage:
                 _check_regions(item.storage, _STORAGE_PLACES, "storage")
+        case Client():
+            _check_client(item)
 
 
 def refusal(item: Statement, *, statement: str, revoked: bool, current: Policy) -> str | None:
@@ -321,6 +357,11 @@ def refusal(item: Statement, *, statement: str, revoked: bool, current: Policy) 
         return (
             f'no circle "{item.circle}" exists — create it first with '
             f"previously policy circle {item.circle}"
+        )
+    if isinstance(item, Client) and not revoked and item.processor not in current.providers:
+        return (
+            f'the processor "{item.processor}" is not declared — declare it first with '
+            f"previously policy provider {item.processor}"
         )
     return None
 
@@ -478,6 +519,10 @@ def _parse(payload: Mapping[str, object]) -> tuple[Statement, str, bool]:
                 _names_or_empty(payload, "excluded_operators"),
                 _names_or_empty(payload, "excluded_model_origins"),
             )
+        case "client":
+            item = Client(
+                _text(payload, "name"), _text(payload, "processor"), _text(payload, "token_sha256")
+            )
         case "provider":
             item = Provider(
                 _text(payload, "provider"),
@@ -544,6 +589,7 @@ def _assemble(current: Mapping[tuple[str, str], tuple[Statement, int] | None]) -
     own: list[OwnIdentity] = []
     rules: dict[str, Rule] = {}
     providers: dict[str, Provider] = {}
+    clients: dict[str, Client] = {}
     ids: dict[tuple[str, str], int] = {}
     for key in sorted(current):
         entry = current[key]
@@ -562,4 +608,6 @@ def _assemble(current: Mapping[tuple[str, str], tuple[Statement, int] | None]) -
                 rules[scope] = item
             case Provider(name=name):
                 providers[name] = item
-    return Policy(circles, tuple(memberships), tuple(own), rules, providers, ids)
+            case Client(name=name):
+                clients[name] = item
+    return Policy(circles, tuple(memberships), tuple(own), rules, providers, ids, clients)

@@ -28,6 +28,10 @@ from previously.core.append import check_units
 from previously.core.blob import fetch_blob
 from previously.core.blob import store_blob
 from previously.core.chain import read_references
+from previously.core.clients import add_client
+from previously.core.clients import client_rows
+from previously.core.clients import revoke_client
+from previously.core.clients import token_hash
 from previously.core.errors import AddressMismatch
 from previously.core.errors import CannotOpen
 from previously.core.errors import InvalidPayload
@@ -42,6 +46,7 @@ from previously.core.hashing import iso_utc
 from previously.core.identity import artifact_hash_of
 from previously.core.ingest import ingest
 from previously.core.policy import Circle
+from previously.core.policy import Client
 from previously.core.policy import Inference
 from previously.core.policy import key_of
 from previously.core.policy import LOCAL_ONLY
@@ -1348,7 +1353,9 @@ def _policy_arguments(parser: argparse.ArgumentParser) -> None:
         help="who else handles the input: names, none or unknown",
     )
     provider.add_argument(
-        "--model-origin", metavar="NAME", help="where the model comes from; unknown if omitted"
+        "--model-origin",
+        metavar="NAME",
+        help="where the model comes from; unknown, or unknown if omitted",
     )
     provider.add_argument("--reports-geo", action="store_true", help="the answer names the region")
     provider.add_argument("--local", action="store_true", help="runs on hardware the operator runs")
@@ -1418,7 +1425,7 @@ def _policy_statement(args: argparse.Namespace) -> Statement:
         None if args.operator == "unknown" else args.operator,
         _training_of(args.training),
         _subprocessors_of(args.subprocessors),
-        args.model_origin,
+        None if args.model_origin == "unknown" else args.model_origin,
     )
 
 
@@ -1759,6 +1766,103 @@ class Command:
     arguments: Callable[[argparse.ArgumentParser], None] = _no_arguments
 
 
+# --- MCP clients ---------------------------------------------------------------
+
+
+def _client_arguments(parser: argparse.ArgumentParser) -> None:
+    what = parser.add_subparsers(dest="what", required=True)
+
+    def writing(name: str, sentence: str) -> argparse.ArgumentParser:
+        form = what.add_parser(name, help=sentence, description=sentence)
+        form.add_argument("name")
+        form.add_argument(
+            "--statement", required=True, help="the sentence it was set with; it stays in the log"
+        )
+        form.add_argument("--yes", action="store_true", help="write without asking")
+        return form
+
+    add = writing("add", "create a client and print its token once")
+    add.add_argument(
+        "--processor", required=True, metavar="PROVIDER", help="a declared provider's promise"
+    )
+    writing("revoke", "lift a client; its token stops matching")
+    sentence = "list the clients in force"
+    what.add_parser("list", help=sentence, description=sentence)
+
+
+def _cmd_client_add(args: argparse.Namespace) -> int:
+    """Asks, writes the client and prints its token: the only place the
+    token ever appears. A refusal and the replacement of a client come
+    before the question, so nobody confirms what cannot be written or what
+    they did not know they were replacing."""
+    with _storage() as storage:
+        with storage.begin() as conn:
+            current = read_policy(storage, conn)
+        # Only the form and the processor are checked here, and neither
+        # depends on the hash: a placeholder of the right length stands in
+        # for a hash that does not exist before the token does.
+        placeholder = Client(args.name, args.processor, token_hash(""))
+        sentence = refusal(placeholder, statement=args.statement, revoked=False, current=current)
+        if sentence is not None:
+            raise PolicyRefused(sentence)
+        replaced = args.name in current.clients
+        if replaced:
+            print(
+                f"client {escape_field(args.name)} exists: this replaces it, "
+                "and its token stops working",
+                file=sys.stderr,
+            )
+        print(f"client {escape_field(args.name)}\tprocessor {escape_field(args.processor)}")
+        if not _confirmed(args):
+            print("nothing written", file=sys.stderr)
+            return 1
+        _event_id, token = add_client(
+            storage,
+            args.name,
+            processor=args.processor,
+            statement=args.statement,
+            recorded_at=datetime.now(UTC),
+        )
+    print(f"client {args.name}: token {token}")
+    print("shown once; store it now")
+    return 0
+
+
+def _cmd_client_revoke(args: argparse.Namespace) -> int:
+    with _storage() as storage:
+        with storage.begin() as conn:
+            if args.name not in read_policy(storage, conn).clients:
+                raise PolicyRefused(f'no client "{args.name}" exists')
+        print(f"revoke client {escape_field(args.name)}")
+        if not _confirmed(args):
+            print("nothing written", file=sys.stderr)
+            return 1
+        event_id = revoke_client(
+            storage, args.name, statement=args.statement, recorded_at=datetime.now(UTC)
+        )
+    print(f"policy event {event_id}")
+    return 0
+
+
+def _cmd_client(args: argparse.Namespace) -> int:
+    """Adds, revokes or lists the MCP clients. The list shows the name, the
+    processor and the date of the event, never the hash."""
+    if args.what == "add":
+        return _cmd_client_add(args)
+    if args.what == "revoke":
+        return _cmd_client_revoke(args)
+    with _storage() as storage, storage.begin() as conn:
+        rows = client_rows(storage, conn)
+    if not rows:
+        print("no client exists", file=sys.stderr)
+    for row in rows:
+        print(
+            f"{escape_field(row.client.name)}\t{escape_field(row.client.processor)}"
+            f"\t{iso_utc(row.recorded_at)}"
+        )
+    return 0
+
+
 # The one place a command is declared. `main` builds the subparsers and the
 # dispatch from this sequence, so a command cannot have a subparser and no
 # body, or a body nobody can call: until 2026-10-04 the two were written out
@@ -1787,6 +1891,7 @@ COMMANDS: tuple[Command, ...] = (
     Command("stats", "print the per-source statistics", _cmd_stats),
     Command("policy", "set and show the processing policy", _cmd_policy, _policy_arguments),
     Command("gate", "explain or try a model call", _cmd_gate, _gate_arguments),
+    Command("client", "add, revoke and list MCP clients", _cmd_client, _client_arguments),
 )
 
 

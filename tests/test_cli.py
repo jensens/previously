@@ -4275,3 +4275,172 @@ def test_policy_provider_refuses_none_beside_a_name(
     assert out == ""
     assert err.count("\n") == 1
     assert _action_count(db) == 0
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(("given", "expected"), [("unknown", None), ("us", "us")])
+def test_policy_provider_reads_model_origin_unknown_as_unknown(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    given: str,
+    expected: str | None,
+) -> None:
+    _setup(db, monkeypatch)
+    argv = ["policy", "provider", "p", "--inference", "eu=eu", "--storage", "eu"]
+    argv += ["--retention-days", "0", "--operator", "x", "--training", "no"]
+    argv += ["--subprocessors", "none", "--model-origin", given, "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    statement, _ = capsys.readouterr().out.rsplit("policy event ", 1)
+    assert json.loads(statement)["model_origin"] == expected
+
+
+def _declare_local(db: object, capsys: pytest.CaptureFixture[str]) -> None:
+    argv = ["policy", "provider", "local", "--storage", "--retention-days", "0"]
+    argv += ["--operator", "me", "--training", "no", "--subprocessors", "none"]
+    argv += ["--local", "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    capsys.readouterr()
+
+
+def _all_actions(db: object) -> str:
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    with db.begin() as c:
+        rows = c.execute(text("SELECT payload::text FROM event WHERE kind = 'action'")).scalars()
+        return "\n".join(rows)
+
+
+def _token_of(out: str) -> str:
+    """The token of the one line that carries it; a prompt without a newline
+    may stand in front of that line."""
+    assert out.endswith("\nshown once; store it now\n")
+    prefix = "client claude-code: token "
+    (line,) = (line for line in out.splitlines() if prefix in line)
+    return line.split(prefix, 1)[1]
+
+
+@pytest.mark.db
+def test_client_add_prints_the_token_once_and_stores_only_its_hash(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from previously.core.clients import token_hash
+
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    out, err = capsys.readouterr()
+    token = _token_of(out)
+    assert len(token) == 43
+    assert token not in err
+    assert out.count(token) == 1
+    stored = _all_actions(db)
+    assert token not in stored
+    assert token_hash(token) in stored
+    # The list shows the name, the processor and a date; never the hash, never the token.
+    assert main(["client", "list"]) == 0
+    listed = capsys.readouterr().out
+    assert listed.startswith("claude-code\tlocal\t20")
+    assert token_hash(token) not in listed
+    assert token not in listed
+    assert main(["policy", "show"]) == 0
+    shown = capsys.readouterr().out
+    assert token not in shown
+    assert token_hash(token) not in shown
+
+
+@pytest.mark.db
+def test_client_add_for_an_existing_name_says_so_before_it_asks(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s"]
+    _answer(monkeypatch, "y\n")
+    assert main(argv) == 0
+    old = _token_of(capsys.readouterr().out)
+    # The control: a first add says nothing about replacing.
+    # An n replaces nothing.
+    _answer(monkeypatch, "n\n")
+    assert main(argv) == 1
+    out, err = capsys.readouterr()
+    assert "exists: this replaces it, and its token stops working" in err
+    assert "nothing written" in err
+    assert "token" not in out
+    _answer(monkeypatch, "y\n")
+    assert main(argv) == 0
+    out, err = capsys.readouterr()
+    assert "exists: this replaces it" in err
+    assert _token_of(out) != old
+
+
+@pytest.mark.db
+def test_client_add_for_a_new_name_does_not_claim_a_replacement(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    assert "replaces" not in capsys.readouterr().err
+
+
+@pytest.mark.db
+def test_client_add_without_an_answer_writes_nothing(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    before = _action_count(db)
+    _answer(monkeypatch, "")
+    argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s"]
+    assert main(argv) == 1
+    out, err = capsys.readouterr()
+    assert "token" not in out
+    assert "nothing written" in err
+    assert _action_count(db) == before
+
+
+@pytest.mark.db
+def test_client_add_for_an_undeclared_processor_is_refused_before_the_question(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    argv = ["client", "add", "claude-code", "--processor", "nowhere", "--statement", "s"]
+    assert main(argv) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.startswith('Error: the processor "nowhere" is not declared')
+    assert _action_count(db) == 0
+
+
+@pytest.mark.db
+def test_client_revoke_lifts_the_client_and_list_is_empty_again(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    add = ["client", "add", "claude-code", "--processor", "local", "--statement", "s", "--yes"]
+    assert main(add) == 0
+    capsys.readouterr()
+    assert main(["client", "revoke", "claude-code", "--statement", "left", "--yes"]) == 0
+    assert capsys.readouterr().out.endswith("policy event 3\n")
+    assert main(["client", "list"]) == 0
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == "no client exists\n"
+    assert main(["client", "revoke", "claude-code", "--statement", "again", "--yes"]) == 2
+    assert 'Error: no client "claude-code" exists' in capsys.readouterr().err
+
+
+def test_the_help_of_client_names_what_it_does(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    assert "add, revoke and list MCP clients" in " ".join(capsys.readouterr().out.split())
+    with pytest.raises(SystemExit):
+        main(["client", "--help"])
+    out = capsys.readouterr().out
+    assert "add" in out and "revoke" in out and "list" in out

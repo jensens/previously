@@ -3,7 +3,7 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has fourteen subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, and `gate`.
+It has fifteen subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, `gate`, and `client`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
 `append --attach`, `ingest imap`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
 `ingest imap` alone reads the five `PREVIOUSLY_IMAP_*` settings, and `gate try` alone reads `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `PREVIOUSLY_LOCAL_MODEL_URL` and `PREVIOUSLY_PRICES`.
@@ -65,6 +65,7 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `chronicle` | The chronicle was printed, even when the window holds no row. | Not used. | The input was invalid, or storage raised an error. |
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
 | `policy` | The statement was written, `show` printed the policy, or `gaps` printed what fell back, even when nothing did. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the statement was refused, or storage raised an error. |
+| `client` | The client was added and its token printed, revoked, or listed, even when none exists. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the processor isn't declared, no such client exists to revoke, or storage raised an error. |
 | `gate` | `explain` printed the decision, whether it allows a call or denies it; `try` made the call, got an answer that matches the schema, and recorded it. | Not used. | The event doesn't exist, the price file can't be read, storage raised an error, or `try` recorded a call that was denied, failed, refused by the model, or answered against the schema. |
 
 `gate try` returns 3 when the call was made and recorded with an answer that matches the schema, and the provider reported another inference region than the one requested; the code differs from 0 so that a script doesn't read past the alarm.
@@ -800,7 +801,7 @@ previously policy gaps [--since TIME]
 | `--operator NAME\|unknown` | Yes | — | Who runs the service. |
 | `--training yes\|no\|unknown` | Yes | — | Whether the provider trains on what it receives. |
 | `--subprocessors NAME ...\|none\|unknown` | Yes | — | The others who handle the input. `none` and `unknown` stand alone, without a name beside them. |
-| `--model-origin NAME` | No | unknown | Where the model comes from. |
+| `--model-origin NAME\|unknown` | No | unknown | Where the model comes from. `unknown` is the same as leaving it out. |
 | `--reports-geo` | No | off | The answer of the provider names the region. |
 | `--local` | No | off | The provider runs on hardware the operator runs. |
 
@@ -954,3 +955,44 @@ FINDING 12: model_call has no valid form: it is denied and has units
 FINDING 12: model_call has no valid form: it has no list "inputs"
 FINDING 12: model_call has no valid form: it has an "inputs" entry without an event
 ```
+
+## `client`
+
+Adds, revokes or lists the MCP clients.
+A client is a name, a declared provider whose promise its reading is processed under, and a token.
+It's stored as a policy event of the kind `client` ({ref}`policy-and-model-calls`), and holds only the SHA-256 of the token.
+
+```text
+previously client add NAME --processor PROVIDER --statement TEXT [--yes]
+previously client revoke NAME --statement TEXT [--yes]
+previously client list
+```
+
+| Option | Required | Default | Description |
+|---|---|---|---|
+| `--processor PROVIDER` | Yes, for `add` | — | The name of a provider declared with `policy provider`. |
+| `--statement TEXT` | Yes, for `add` and `revoke` | — | The sentence the statement was set with. It stays in the log. |
+| `--yes` | No | off | Write without asking. |
+
+`add` asks `write? [y/N]` first, the way `policy` does, and then prints the token on standard output in two lines:
+
+```text
+client NAME: token TOKEN
+shown once; store it now
+```
+
+The token is 32 random bytes, encoded as base64url.
+Those two lines are the only place it ever appears: not in the log, not in `client list`, not in an error, not in `policy show`.
+Nothing can bring it back, so a lost token means adding the client again.
+
+`add` for a name that already belongs to a client replaces it: a new token is made, and the old one stops matching from the next lookup.
+It says `client NAME exists: this replaces it, and its token stops working` on standard error before the question.
+`revoke` lifts the client, and its token matches nothing from then on.
+`revoke` prints `policy event ID`, and `add` prints nothing but the two lines.
+
+`list` prints one line per client in force, sorted by name, the three fields separated by a tab: the name, the processor and the time of the event that set it.
+It never prints the hash.
+With no client it prints `no client exists` to standard error.
+
+An undeclared processor is refused before the question, as `Error: the processor "NAME" is not declared — declare it first with previously policy provider NAME`.
+Revoking a client that doesn't exist is refused as `Error: no client "NAME" exists`.

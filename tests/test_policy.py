@@ -471,3 +471,59 @@ def test_check_payload_names_a_chain_field_of_the_wrong_kind(
     found = check_payload(payload)
     assert found is not None
     assert sentence in found
+
+
+@pytest.mark.db
+def test_a_client_is_a_statement_of_its_own_kind(db: Engine) -> None:
+    from previously.core.policy import Client
+
+    storage = PostgresStorage(db)
+    set_policy(storage, ANTHROPIC, statement="declared", recorded_at=T0)
+    client = Client("claude-code", "anthropic", "0" * 64)
+    event_id = set_policy(storage, client, statement="s", recorded_at=T1)
+    policy = _read(storage)
+    assert policy.clients == {"claude-code": client}
+    assert policy.ids[("client", "claude-code")] == event_id
+    assert to_payload(client, statement="s")["policy"] == "client"
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("name", "processor", "token_sha256"),
+    [
+        ("", "anthropic", "0" * 64),
+        ("c", "", "0" * 64),
+        ("c", "anthropic", "0" * 63),
+        ("c", "anthropic", "G" * 64),
+    ],
+)
+def test_a_client_of_a_wrong_form_is_refused(
+    db: Engine, name: str, processor: str, token_sha256: str
+) -> None:
+    from previously.core.policy import Client
+
+    storage = PostgresStorage(db)
+    set_policy(storage, ANTHROPIC, statement="declared", recorded_at=T0)
+    before = _count(storage)
+    with pytest.raises(PolicyRefused):
+        set_policy(storage, Client(name, processor, token_sha256), statement="s", recorded_at=T1)
+    assert _count(storage) == before
+
+
+@pytest.mark.db
+def test_a_client_with_an_undeclared_processor_is_refused_but_its_revocation_is_not(
+    db: Engine,
+) -> None:
+    from previously.core.policy import Client
+
+    storage = PostgresStorage(db)
+    client = Client("c", "anthropic", "0" * 64)
+    with pytest.raises(PolicyRefused, match="is not declared"):
+        set_policy(storage, client, statement="s", recorded_at=T0)
+    set_policy(storage, ANTHROPIC, statement="declared", recorded_at=T0)
+    set_policy(storage, client, statement="s", recorded_at=T1)
+    # The provider goes; lifting the client still has to work.
+    set_policy(storage, ANTHROPIC, statement="gone", revoked=True, recorded_at=T2)
+    set_policy(storage, client, statement="gone", revoked=True, recorded_at=T2)
+    assert _read(storage).clients == {}
