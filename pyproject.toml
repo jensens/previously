@@ -19,6 +19,8 @@ dependencies = [
     "anthropic>=1.13.0",
     "openai>=3.27.0",
     "pydantic>=2.14",
+    "mcp>=2.3",
+    "uvicorn>=0.31",
 ]
 
 [project.scripts]
@@ -103,8 +105,8 @@ ban-relative-imports = "all"
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "T201"]
 # Printing to stdout is what this module is for — a `# noqa: T201` on each of
-# the sixty-three `print` calls would be the same justification repeated
-# sixty-three times (ruling T9-c of the stage 1a execution, whose ledger is
+# the sixty-four `print` calls would be the same justification repeated
+# sixty-four times (ruling T9-c of the stage 1a execution, whose ledger is
 # lost, so the label resolves nowhere). The count is measured against this
 # configuration with every per-file ignore emptied out, `ruff check --select
 # T201 --config 'lint.per-file-ignores = {}' src/previously/cli.py` — that
@@ -136,7 +138,10 @@ ban-relative-imports = "all"
 # replacement notice, the summary, the two notices that nothing was written, the two
 # lines with the token, the revocation, its event id, and the two outputs of
 # `client list`. `access` took it to sixty-three on 2026-10-11, measured the same
-# way: the notice that no call matches, and the line of each call.
+# way: the notice that no call matches, and the line of each call. `serve`
+# took it to sixty-four the same day, measured the same way: the line that
+# says where it listens. `mcp` prints nothing, since standard output is the
+# protocol there.
 "src/previously/cli.py" = ["T201"]
 
 [tool.ruff.lint.flake8-type-checking]
