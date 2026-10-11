@@ -2,8 +2,13 @@
 
 # Configuration
 
-Previously reads its settings from twenty-one environment variables.
-Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store, fetch or delete a blob, as the table below says per variable, the five `PREVIOUSLY_IMAP_*` variables only by `ingest imap`, the four settings of the model providers only by `gate try`, and the four `PREVIOUSLY_MCP_*` variables only by `mcp` and `serve`.
+Previously reads its settings from nineteen environment variables.
+Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store, fetch or delete a blob, as the table below says per variable, the four `PREVIOUSLY_IMAP_*` variables only by `ingest imap`, the four settings of the model providers only by `gate try`, and the three `PREVIOUSLY_MCP_*` variables only by `mcp` and `serve`.
+
+No setting has a name that Kubernetes gives a variable of a Service.
+For every Service in a namespace, Kubernetes sets variables such as `X_SERVICE_HOST`, `X_PORT` and `X_PORT_8765_TCP` in every pod of that namespace, with `X` the name of the Service upper-cased and `-` written as `_`; a Service named `previously-mcp` sets `PREVIOUSLY_MCP_PORT`.
+A host and its port therefore stand in one setting that ends in `_ADDRESS`, in {ref}`the address form <address-form>`.
+`tests/test_settings.py` holds every name the source reads against the names Kubernetes sets.
 
 ## Database
 
@@ -106,25 +111,32 @@ The folder `ingest imap` takes mail in from; see {ref}`cli-reference`.
 
 | Variable | Meaning | Missing at |
 |---|---|---|
-| `PREVIOUSLY_IMAP_HOST` | The host name or address of the IMAP server, which the server's certificate has to name. | `ingest imap` |
-| `PREVIOUSLY_IMAP_PORT` | The port of IMAP over TLS, a number from 1 to 65535. Unset or empty, it's 993. | Never; a value that isn't a port number is refused. |
+| `PREVIOUSLY_IMAP_ADDRESS` | The IMAP server as `host` or `host:port`, in {ref}`the address form <address-form>`, such as `mail.example.org`. The server's certificate has to name the host. Without a port, it's 993, the port of IMAP over TLS. | `ingest imap` |
 | `PREVIOUSLY_IMAP_USER` | The user that logs in. | `ingest imap` |
 | `PREVIOUSLY_IMAP_PASSWORD` | The user's password, in ASCII; no message prints it. | `ingest imap` |
 | `PREVIOUSLY_IMAP_FOLDER` | The full name of the folder on the server, in plain characters, such as `Kunde Müller`; see below. | `ingest imap` |
 
-`ingest imap` reads all five before it connects to anything, and names the first one missing, as the blob settings do:
+`ingest imap` reads all four before it connects to anything, and names the first one missing, as the blob settings do:
 
 ```text
 Error: PREVIOUSLY_IMAP_FOLDER is not set
 ```
 
 The host, the user and the folder make the name of the watermark, `imap:<user>@<host>/<folder>`, and the port doesn't.
+The host stands there as the address spells it, without the brackets of an IPv6 address.
 A change to any of the three starts another watermark, and the folder is read from the start; every mail in the log counts as known.
 
 `PREVIOUSLY_IMAP_FOLDER` is the name the server gives the folder, which for a folder at the top level is the name a mail client shows.
 For a folder inside another, the name holds the names of the folders above it, each followed by the server's hierarchy delimiter, such as `Kunden.Müller` on a server whose delimiter is `.`, or `Kunden/Müller` on one whose delimiter is `/`.
 The server names its delimiter in its answer to the `LIST` command, and a mail client shows only the last part of the name.
 `ingest imap` writes the name in the modified UTF-7 of RFC 3501 itself, so the setting holds it as it reads, umlauts included, and never as `Kunde M&APw-ller`.
+
+`ingest imap` reads neither `PREVIOUSLY_IMAP_HOST` nor `PREVIOUSLY_IMAP_PORT`, which held the host and the port up to `0.1.0a3`.
+When `PREVIOUSLY_IMAP_ADDRESS` is unset or empty and `PREVIOUSLY_IMAP_HOST` is set, it returns 2 with a sentence that names the new setting:
+
+```text
+Error: PREVIOUSLY_IMAP_HOST is not read any more: set PREVIOUSLY_IMAP_ADDRESS to host or host:port
+```
 
 There is no setting for a certificate.
 `ingest imap` verifies the server's certificate and host name against the trust store of the system, and OpenSSL reads a certificate file named in `SSL_CERT_FILE` in place of the system's file.
@@ -176,8 +188,7 @@ The MCP server of `previously mcp` and `previously serve`; see {ref}`cli-mcp` an
 | Variable | Meaning | Missing at |
 |---|---|---|
 | `PREVIOUSLY_MCP_CLIENT` | The name of the client that `mcp` serves over standard input and output, a client in force from `client add`. | `mcp` |
-| `PREVIOUSLY_MCP_HOST` | The address `serve` listens on. Unset or empty, it's `127.0.0.1`. | Never. |
-| `PREVIOUSLY_MCP_PORT` | The port `serve` listens on, a number from 1 to 65535. Unset or empty, it's 8765. | Never; a value that isn't a port number is refused. |
+| `PREVIOUSLY_MCP_ADDRESS` | Where `serve` listens, as `host:port` in {ref}`the address form <address-form>`, such as `0.0.0.0:8765` or `[::1]:8765`. Unset or empty, it's `127.0.0.1:8765`. | Never; an address of another form is refused. |
 | `PREVIOUSLY_MCP_ALLOWED_HOSTS` | Host names a request to `serve` may name in its `Host` and `Origin` headers beside `127.0.0.1`, `localhost` and `[::1]`, such as the name of the machine in a private network, separated by commas or blanks. Unset or empty, only those three. | Never. |
 
 `mcp` reads `PREVIOUSLY_MCP_CLIENT` before anything connects, and returns 2 when it's unset or empty:
@@ -186,6 +197,33 @@ The MCP server of `previously mcp` and `previously serve`; see {ref}`cli-mcp` an
 Error: PREVIOUSLY_MCP_CLIENT is not set: name the client this process serves
 ```
 
-`serve` listens on another address only when `PREVIOUSLY_MCP_HOST` says so, such as `0.0.0.0` in a container.
+`serve` listens on another address only when `PREVIOUSLY_MCP_ADDRESS` says so, such as `0.0.0.0:8765` in a container.
+It reads neither `PREVIOUSLY_MCP_HOST` nor `PREVIOUSLY_MCP_PORT`, which held the host and the port in `0.1.0a3`.
+When `PREVIOUSLY_MCP_ADDRESS` is unset or empty and `PREVIOUSLY_MCP_HOST` is set, `serve` returns 2 before it listens anywhere:
+
+```text
+Error: PREVIOUSLY_MCP_HOST is not read any more: set PREVIOUSLY_MCP_ADDRESS to host:port
+```
+
 A client that connects by a name other than those three needs that name in `PREVIOUSLY_MCP_ALLOWED_HOSTS`, the name of a Kubernetes service among them, or its requests get the status 421.
 Over HTTP the client is the one whose bearer token a request carries; no variable names it.
+
+(address-form)=
+
+## The address form
+
+`PREVIOUSLY_IMAP_ADDRESS` and `PREVIOUSLY_MCP_ADDRESS` name a host and a port in one value.
+
+| Part | Form |
+|---|---|
+| Host | A host name of labels of 1 to 63 letters, digits, `-` and `_`, joined by `.`, with an optional final `.`; an IPv4 address, such as `0.0.0.0`; or an IPv6 address in brackets, such as `[::1]`. |
+| Port | `:` and a number from 1 to 65535, in digits alone. `PREVIOUSLY_IMAP_ADDRESS` may leave it out, and `PREVIOUSLY_MCP_ADDRESS` may not. |
+
+The host takes the form of the host in `PREVIOUSLY_DSN` ({ref}`dsn-form`).
+A host name outside ASCII stands in its ASCII form, the one that starts with `xn--`.
+An address of another form returns 2 before anything connects, with one sentence that names the setting and the form, and quotes the value:
+
+```text
+Error: PREVIOUSLY_MCP_ADDRESS is not host:port, with an IPv6 host in brackets: 'tcp://10.43.0.5:8765'
+Error: PREVIOUSLY_IMAP_ADDRESS is not host or host:port, with an IPv6 host in brackets: '::1'
+```

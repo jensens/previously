@@ -11,6 +11,7 @@ from previously.cli import escape_field
 from previously.cli import main
 from previously.cli import MAX_TEXT_BYTES
 from previously.cli import media_type_of
+from previously.cli import parse_address
 from previously.cli import parse_moment
 from previously.contract.rows import EventRow
 from previously.contract.rows import ProjectionState
@@ -20,6 +21,7 @@ from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
 from previously.core.errors import InvalidPayload
+from previously.core.errors import PreviouslyError
 from previously.core.identity import artifact_hash_of
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
@@ -32,6 +34,7 @@ from previously.storage.postgres import PostgresStorage
 from typing import TYPE_CHECKING
 
 import hashlib
+import http.client
 import io
 import json
 import mailfiles
@@ -39,6 +42,8 @@ import os
 import pytest
 import re
 import secrets
+import socket
+import subprocess
 import sys
 import threading
 import time
@@ -58,6 +63,60 @@ if TYPE_CHECKING:
     from typing import IO
 
     import pathlib
+
+
+@pytest.mark.parametrize(
+    ("text", "port", "expected"),
+    [
+        ("127.0.0.1:8765", None, ("127.0.0.1", 8765)),
+        ("10.43.0.5:1", None, ("10.43.0.5", 1)),
+        ("[::1]:8765", None, ("::1", 8765)),
+        ("[::]:65535", None, ("::", 65535)),
+        ("mail.example.org", 993, ("mail.example.org", 993)),
+        ("mail.example.org:143", 993, ("mail.example.org", 143)),
+        (
+            "previously-mcp.previously.svc.cluster.local.:8765",
+            None,
+            (
+                "previously-mcp.previously.svc.cluster.local.",
+                8765,
+            ),
+        ),
+        ("[2001:db8::1]", 993, ("2001:db8::1", 993)),
+    ],
+)
+def test_parse_address_splits_the_host_from_the_port(
+    text: str, port: int | None, expected: tuple[str, int]
+) -> None:
+    """The host comes back without the brackets of an IPv6 address, as the
+    socket wants it, and the port is the default where the address may leave
+    it out."""
+    assert parse_address("X", text, default_port=port) == expected
+
+
+@pytest.mark.parametrize(
+    ("text", "port"),
+    [
+        ("mail.example.org", None),
+        ("[::1]", None),
+        ("::1", 993),
+        ("::1:8765", None),
+        ("mail.example.org:", 993),
+        ("mail.example.org:0", 993),
+        ("mail.example.org:99999", 993),
+        ("mail example.org", 993),
+        ("mäil.example.org", 993),
+        ("a..b", 993),
+        ("[::1]x", 993),
+        ("[1.2.3.4]", 993),
+        ("", 993),
+    ],
+)
+def test_parse_address_refuses_any_other_form(text: str, port: int | None) -> None:
+    form = "host:port" if port is None else "host or host:port"
+    with pytest.raises(PreviouslyError) as raised:
+        parse_address("X", text, default_port=port)
+    assert str(raised.value) == f"X is not {form}, with an IPv6 host in brackets: {text!r}"
 
 
 def test_parse_moment_with_a_zone() -> None:
@@ -3659,8 +3718,7 @@ def test_blob_get_answers_from_the_log_without_any_blob_setting(
 # --- ingest imap ({ref}`cli-reference`) ---------------------------------------
 
 _IMAP_VARIABLES = (
-    "PREVIOUSLY_IMAP_HOST",
-    "PREVIOUSLY_IMAP_PORT",
+    "PREVIOUSLY_IMAP_ADDRESS",
     "PREVIOUSLY_IMAP_USER",
     "PREVIOUSLY_IMAP_PASSWORD",
     "PREVIOUSLY_IMAP_FOLDER",
@@ -3681,14 +3739,14 @@ def imap(
     monkeypatch: pytest.MonkeyPatch,
 ) -> _Blobs:
     """What the blob commands work with, a folder of four mails at UIDs 1 to
-    4, and the five settings that reach it.
+    4, and the four settings that reach it.
 
     The command line keeps no switch for a certificate it cannot verify, so
     the test trusts the server the way OpenSSL trusts anything:
     `SSL_CERT_FILE` names the certificate the container made, and the
     default context reads it. The directory of identities is unset, because
     taking in reads none."""
-    values = (_IMAP_HOST, str(mail_server.port), mail_server.user, mail_server.password)
+    values = (f"{_IMAP_HOST}:{mail_server.port}", mail_server.user, mail_server.password)
     for name, value in zip(_IMAP_VARIABLES, (*values, imap_folder), strict=True):
         monkeypatch.setenv(name, value)
     monkeypatch.setenv("SSL_CERT_FILE", str(mail_server.certificate))
@@ -3843,7 +3901,7 @@ def test_ingest_imap_verifies_the_certificate_and_the_host_name(
     )
 
     monkeypatch.setenv("SSL_CERT_FILE", str(mail_server.certificate))
-    monkeypatch.setenv("PREVIOUSLY_IMAP_HOST", "127.0.0.2")
+    monkeypatch.setenv("PREVIOUSLY_IMAP_ADDRESS", f"127.0.0.2:{mail_server.port}")
     assert main(["ingest", "imap"]) == 2
     assert capsys.readouterr() == (
         "",
@@ -3908,7 +3966,7 @@ def test_ingest_imap_stops_at_a_dropped_connection_with_the_watermark_at_the_las
     mail_server.append(imap_folder, _large_mail(1), _large_mail(2))
 
     with Relay(mail_server, limit=len(_large_mail(1)) + 512 * 1024) as relay:
-        monkeypatch.setenv("PREVIOUSLY_IMAP_PORT", str(relay.port))
+        monkeypatch.setenv("PREVIOUSLY_IMAP_ADDRESS", f"{_IMAP_HOST}:{relay.port}")
         assert main(["ingest", "imap"]) == 2
     out, err = capsys.readouterr()
     assert out == ""
@@ -3923,7 +3981,7 @@ def test_ingest_imap_stops_at_a_dropped_connection_with_the_watermark_at_the_las
     }
     assert _events(imap.engine) == 5
 
-    monkeypatch.setenv("PREVIOUSLY_IMAP_PORT", str(mail_server.port))
+    monkeypatch.setenv("PREVIOUSLY_IMAP_ADDRESS", f"{_IMAP_HOST}:{mail_server.port}")
     assert main(["ingest", "imap"]) == 0
     assert capsys.readouterr() == ("imap: 2 appended, 0 known, 0 variants, up to uid 6\n", "")
 
@@ -3932,8 +3990,7 @@ def test_ingest_imap_stops_at_a_dropped_connection_with_the_watermark_at_the_las
 # run that connected anywhere before it had read them all would end in an
 # error of that connection instead of naming the setting.
 _UNREACHABLE = {
-    "PREVIOUSLY_IMAP_HOST": "127.0.0.1",
-    "PREVIOUSLY_IMAP_PORT": "1",
+    "PREVIOUSLY_IMAP_ADDRESS": "127.0.0.1:1",
     "PREVIOUSLY_IMAP_USER": "pilot",
     "PREVIOUSLY_IMAP_PASSWORD": "not-the-password",
     "PREVIOUSLY_IMAP_FOLDER": "Kunde Müller",
@@ -3956,7 +4013,7 @@ def _unreachable(age_identity: str, monkeypatch: pytest.MonkeyPatch) -> None:
 @pytest.mark.parametrize(
     "missing",
     [
-        *(name for name in _UNREACHABLE if name != "PREVIOUSLY_IMAP_PORT"),
+        *_UNREACHABLE,
         "PREVIOUSLY_BLOB_RECIPIENT",
     ],
 )
@@ -3977,21 +4034,47 @@ def test_ingest_imap_reads_every_setting_and_then_connects(
 ) -> None:
     """The control of the test above: with every setting there, and the
     directory of identities not, the run gets as far as connecting — to the
-    database first, for the watermark. A port that is no port number is
-    refused before that, like a missing setting."""
+    database first, for the watermark. An address of another form is refused
+    before that, like a missing setting.
+
+    `PREVIOUSLY_IMAP_PORT` is what Kubernetes sets for a Service named
+    `previously-imap`, and nothing reads it any more: set to what the kubelet
+    writes, it changes nothing."""
     _unreachable(age_identity, monkeypatch)
+    monkeypatch.setenv("PREVIOUSLY_IMAP_PORT", "tcp://10.43.0.6:993")
     assert main(["ingest", "imap"]) == 2
     out, err = capsys.readouterr()
     assert out == ""
     assert err.startswith("Error: connecting to database previously at 127.0.0.1:1 failed: ")
 
-    for port in ("0", "imaps", "65536", "²"):
-        monkeypatch.setenv("PREVIOUSLY_IMAP_PORT", port)
+    for address in ("tcp://10.43.0.6:993", "mail.example.org:imaps", "::1", "[::1]:0"):
+        monkeypatch.setenv("PREVIOUSLY_IMAP_ADDRESS", address)
         assert main(["ingest", "imap"]) == 2
         assert capsys.readouterr() == (
             "",
-            f"Error: PREVIOUSLY_IMAP_PORT is not a port number: {port!r}\n",
+            "Error: PREVIOUSLY_IMAP_ADDRESS is not host or host:port, "
+            f"with an IPv6 host in brackets: {address!r}\n",
         )
+
+
+def test_ingest_imap_says_that_the_host_setting_was_renamed(
+    age_identity: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A deployment of the release before carries `PREVIOUSLY_IMAP_HOST`; the
+    run names the setting that took its place instead of only the missing
+    one. Without the old name, the missing one is all it says."""
+    _unreachable(age_identity, monkeypatch)
+    monkeypatch.delenv("PREVIOUSLY_IMAP_ADDRESS")
+    monkeypatch.setenv("PREVIOUSLY_IMAP_HOST", "mail.example.org")
+    assert main(["ingest", "imap"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        "Error: PREVIOUSLY_IMAP_HOST is not read any more: "
+        "set PREVIOUSLY_IMAP_ADDRESS to host or host:port\n",
+    )
+    monkeypatch.setenv("PREVIOUSLY_IMAP_HOST", "")
+    assert main(["ingest", "imap"]) == 2
+    assert capsys.readouterr() == ("", "Error: PREVIOUSLY_IMAP_ADDRESS is not set\n")
 
 
 # --- policy ------------------------------------------------------------------
@@ -4513,10 +4596,135 @@ def test_mcp_for_a_client_not_in_force_ends_with_2(
         )
 
 
-@pytest.mark.parametrize("port", ["http", "0", "65536", "８７６５"])
-def test_serve_with_a_port_that_is_none_ends_with_2(
-    port: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    "address",
+    [
+        "http",
+        "127.0.0.1",
+        "127.0.0.1:http",
+        "127.0.0.1:0",
+        "127.0.0.1:65536",
+        "127.0.0.1:８７６５",
+        "::1:8765",
+        "[::1]",
+        "[::1:8765",
+        "[::g]:8765",
+        ":8765",
+        "a..b:8765",
+        "tcp://10.43.0.5:8765",
+    ],
+)
+def test_serve_with_an_address_of_another_form_ends_with_2(
+    address: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("PREVIOUSLY_MCP_PORT", port)
+    monkeypatch.setenv("PREVIOUSLY_MCP_ADDRESS", address)
     assert main(["serve"]) == 2
-    assert capsys.readouterr().err == f"Error: PREVIOUSLY_MCP_PORT is not a port number: {port!r}\n"
+    assert capsys.readouterr().err == (
+        "Error: PREVIOUSLY_MCP_ADDRESS is not host:port, "
+        f"with an IPv6 host in brackets: {address!r}\n"
+    )
+
+
+@pytest.mark.parametrize("address", [None, "", "0.0.0.0:8765", "[::]:8765"])
+def test_serve_reads_neither_the_port_kubernetes_sets_nor_the_old_host(
+    address: str | None, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A Service named `previously-mcp` sets `PREVIOUSLY_MCP_PORT` to
+    `tcp://<cluster IP>:8765` in every pod of its namespace, and until
+    2026-10-11 `serve` read it and refused to start. With the address unset,
+    empty or set, it now goes on to the database; without a connection string
+    that is where it stops, before it listens anywhere."""
+    monkeypatch.setenv("PREVIOUSLY_MCP_PORT", "tcp://10.43.0.5:8765")
+    monkeypatch.delenv("PREVIOUSLY_MCP_HOST", raising=False)
+    monkeypatch.delenv("PREVIOUSLY_DSN", raising=False)
+    if address is None:
+        monkeypatch.delenv("PREVIOUSLY_MCP_ADDRESS", raising=False)
+    else:
+        monkeypatch.setenv("PREVIOUSLY_MCP_ADDRESS", address)
+    assert main(["serve"]) == 2
+    assert capsys.readouterr() == ("", "Error: PREVIOUSLY_DSN is not set\n")
+
+
+def test_serve_says_that_the_host_setting_was_renamed(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Without the hint, a deployment that still sets `PREVIOUSLY_MCP_HOST`
+    to the address of its pod would listen on the loopback address inside its pod, and
+    nothing would say why no probe reaches it. With the address set, the old
+    name is left alone: the control."""
+    monkeypatch.delenv("PREVIOUSLY_DSN", raising=False)
+    monkeypatch.delenv("PREVIOUSLY_MCP_ADDRESS", raising=False)
+    monkeypatch.setenv("PREVIOUSLY_MCP_HOST", "10.42.1.17")
+    assert main(["serve"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        "Error: PREVIOUSLY_MCP_HOST is not read any more: "
+        "set PREVIOUSLY_MCP_ADDRESS to host:port\n",
+    )
+    monkeypatch.setenv("PREVIOUSLY_MCP_ADDRESS", "0.0.0.0:8765")
+    assert main(["serve"]) == 2
+    assert capsys.readouterr() == ("", "Error: PREVIOUSLY_DSN is not set\n")
+
+
+def _free_port(host: str) -> int:
+    family = socket.AF_INET6 if ":" in host else socket.AF_INET
+    with socket.socket(family, socket.SOCK_STREAM) as probe:
+        probe.bind((host, 0))
+        return int(probe.getsockname()[1])
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("host", ["127.0.0.1", "::1"])
+def test_serve_listens_where_the_address_says_beside_the_variables_of_a_service(
+    host: str, db: object, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`previously serve` as kup6s runs it: in a pod where the Service
+    `previously-mcp` set its variables. The server starts, prints where it
+    listens, and answers the readiness probe there.
+
+    A process of its own, because the server runs until it is stopped and
+    the test has to stop it from outside."""
+    try:
+        port = _free_port(host)
+    except OSError:
+        pytest.skip(f"{host} is not an address of this machine")
+    where = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
+    _setup(db, monkeypatch)
+    environment = {
+        **os.environ,
+        "PREVIOUSLY_MCP_ADDRESS": where,
+        "PREVIOUSLY_MCP_PORT": "tcp://10.43.0.5:8765",
+        "PREVIOUSLY_MCP_SERVICE_HOST": "10.43.0.5",
+        "PREVIOUSLY_MCP_PORT_8765_TCP_PORT": "8765",
+    }
+    environment.pop("PREVIOUSLY_MCP_HOST", None)
+    server = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from previously.cli import main; sys.exit(main(['serve']))",
+        ],
+        env=environment,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert server.stderr is not None
+        assert server.stderr.readline() == f"serving MCP over HTTP on http://{where}/mcp\n"
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                connection = http.client.HTTPConnection(host, port, timeout=5)
+                connection.request("GET", "/healthz")
+                response = connection.getresponse()
+                break
+            except ConnectionRefusedError:
+                assert time.monotonic() < deadline, "the server never listened"
+                time.sleep(0.1)
+        assert (response.status, response.read()) == (200, b"ok")
+        connection.close()
+    finally:
+        server.terminate()
+        server.wait(timeout=30)
+        assert server.stderr is not None
+        server.stderr.close()
