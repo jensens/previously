@@ -244,6 +244,15 @@ Abschnitt, **P-ML** dessen Ausführungsprotokoll
   Ziel und einem Zeitraum; Unterprojekte über Projekte, die auf Projekte
   zeigen. In der MCP-Schnittstelle sind `project` und `matter` als Parameter
   des Werkzeugs `previously` reserviert.
+- **Kreise für Quellen ohne Adressen.** Ein Kreis ergibt sich heute nur aus
+  Adressen in `channel_identities` (`circles_of` in `core/decide.py`). Eine
+  Aufnahme, ein Transkript oder eine Datei aus Nextcloud hat keine und gehört
+  darum zu keinem Kreis: freigeben kann sie nur eine Regel `source:<name>`,
+  nie die Regel eines Kunden, und `previously access --circle` sieht sie
+  nicht. Zu entscheiden mit den Projekten (Punkt oben): die Zuordnung eines
+  Events zu einem Kreis als Feststellung wäre derselbe Mechanismus.
+  Aufgefallen am 2026-10-11 bei der Frage des Betreuers nach anderen
+  Eingängen des MCP-Servers (siehe *MCP-Lesezugang*).
 - Ein zweiter Schreibweg neben `append` für `assertion` und `action`; ihre
   Idempotenz ist heute „Sache des Aufrufers" (PP, A1 S1 und Zeile 19).
 - `verify` prüft Regeln je Art erst für `action` (eine Handlung braucht eine
@@ -730,6 +739,28 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
   des Bereichs, die nicht mehr auf die Seite passt, fehlt in `ids=[…]` des
   Fußes; `withholding` sagt bei einem lokalen Anbieter, der unter `local_only`
   scheitert, „the built-in rule local_only do not allow“.
+- **Andere Quellen als Mail, ein Folgeschritt vor der zweiten Quelle** — vom
+  Betreuer am 2026-10-11 gefragt, ob der Server andere Eingänge genug bedenkt,
+  und als Folgezweig nach dem Merge entschieden, „wir sollten es nur nicht
+  vergessen". Filter, Prüfung je Inhalt, Zugriffsprotokoll und Cursor sind
+  quellenneutral; die Darstellung ist es nicht, und kein Test liefert etwas
+  anderes als eine Mail (alle Fixtures in `tests/test_mcp_server.py` laufen
+  über `map_mail`). Drei Dinge, eine kleine Aufgabe, fällig bevor die Sprache
+  (Zweig `worktree-voice-rahmen`) oder eine Nicht-Mail-Datei aus Nextcloud
+  ankommt:
+  1. `UnitRow` trägt `speaker`, `start_ms` und `end_ms` — für Transkripte
+     angelegt —, aber `_texts` in `mcp_server/read.py` gibt nur
+     `(seq, content)` weiter; ein Transkript käme als namenlose Absätze ohne
+     Zeiten an. In die Einheitenmarke im Zaun, etwa
+     `#unit-3 · 00:12:04–00:12:31 · remote-2`, bereinigt wie jeder Fremdtext.
+  2. Der Kopf kennt nur die Rollen `from`/`sender` und `to`/`cc`/`bcc`
+     (`_SENDER_ROLES`, `_RECIPIENT_ROLES` in `read.py`); jede andere Rolle
+     fällt still weg. Unbekannte Rollen allgemein zeigen (`<role>: <name>`),
+     mit derselben Kappung wie die Empfänger.
+  3. Zwei Tests: eine schlichte Wahrnehmung ohne Beteiligte
+     (`previously append --source note`) und eine mit Einheiten in Form eines
+     Transkripts — je gerendert, je durch die Prüfung (ohne Kreis greift nur
+     eine Regel `source:<name>` oder `local_only`).
 
 ### Nextcloud-Ordner (Pilot, Einheit 7)
 
