@@ -200,10 +200,14 @@ Whoever reads the log can see the gap between the two, and the check is quiet ag
 
 An erasure takes content out of the log's tables, and that's less than taking it out of the world.
 
+So a promise of erasure says what it covers, and it covers only the data Previously holds: the database and its backups, the bucket and any backup or copy of it, and what the gate sent to a model provider, which only that provider's retention ends.
+It never covers a source system: not the mail server, the folder a mail came from, the backups of either, or the mail clients of the people who received the mail.
+A promise says that in so many words, because whoever hears that something is erased takes it to be gone everywhere.
+
 **Backups keep it.**
-Whatever an erasure took from the log stands in every backup of the database and in the write-ahead log archive until their retention runs out.
+Whatever an erasure took from the log stands in every backup of the database, and in the write-ahead log archive where one is kept, until their retention runs out.
 A blob isn't in either of those: an erased blob is gone from the store and stays in every backup or replica of the bucket for as long as that copy is kept, and the identity that opens it has a backup of its own, as {ref}`blobs` asks.
-The promise of an erasure is therefore as long as the longer of the two retentions, and whoever promises erasure within a deadline chooses both by it.
+The promise of an erasure is therefore as long as the longer of the two retentions, and whoever promises erasure within a deadline chooses both by it; {ref}`backup-encryption` asks every backup for a named retention for that reason.
 
 **Restoring brings it back.**
 Whoever restores to a point before an erasure has the content again and the redaction no longer.
@@ -239,8 +243,12 @@ A message identifier carries a domain, and whoever can't let that stand can't er
 
 **A mail stays where it came from.**
 A connector reads its source and never changes it, so a mail erased from the log still lies in its folder, in the mail client of everybody who received it, and in the backups of the mail server.
-Whoever promises the erasure of a mail deletes it there too, and the retention of those backups belongs to the promise as much as the retention of the database and the bucket.
+None of those is data Previously holds, and no promise of erasure covers them: whether the mail goes from there is decided by whoever runs the source, by the source's own rules.
+
+That leaves a problem Previously has to solve itself.
 As long as the mail lies in the folder, the log keeps it out only by knowing its key: a restore to a point before it was taken in forgets the key, and the next run takes the mail in again.
+A restore to a point after it was taken in and before the erasure brings the content back and takes the redaction away.
+Either way the erasure has to be done again, and the restored log no longer knows it was ever done, which is why every erasure is noted in a record kept outside the database and repeated from it after a restore, as {ref}`restore-from-a-backup` shows.
 
 **Quotes outlive the mail.**
 A reply usually quotes the mail it answers, and the reply is an event of its own, so its quote stays when the mail it quotes is erased.

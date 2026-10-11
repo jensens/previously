@@ -124,7 +124,8 @@ earlier point brings it back. The address of a blob and the source key stay as
 well, and an erasure of units leaves their wording in a payload that holds
 it too, and says so when a string of the payload contains a unit's wording.
 For a mail, it reaches neither the folder the mail came from, nor the backups
-of the mailbox, nor the replies that quote it;
+of the mailbox, nor the replies that quote it, and a promise of erasure never
+covers the source the mail came from;
 [About erasure](docs/explanation/erasure.md) says what an erasure does not
 achieve and why.
 

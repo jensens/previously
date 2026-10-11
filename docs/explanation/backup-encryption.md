@@ -1,165 +1,116 @@
 (backup-encryption)=
 
-# About the backup encryption
+# About what a backup has to meet
 
-The backups this design plans for Previously are encrypted on the client, before they leave the cluster, with `aes-256-cbc` and a key that lives outside the data path; no backup runs yet.
-That reads like a strong choice made out of caution.
-It isn't: at the storage provider this project uses, client-side encryption is the only kind that encrypts anything at all.
-This page is the reasoning, and it ends with the three paths that were on the table and the one finding that would still overturn the chosen one.
+Previously runs no backup of its own, and this repository builds none: backing up the database is the work of the environment that hosts it.
+What Previously does depend on is a handful of properties that any backup has to have, whatever system takes it.
+This page names them and says why each one is there.
+Which system meets them is the operator's choice: pgBackRest, Barman, `pg_dump` through `gpg` or `age`, or something else.
 
-## The provider encrypts nothing at rest
+Until 2026-10-11 this page argued for one system instead, and the section at the end says what changed and why.
 
-Checked on 2026-10-03 against the documentation of Hetzner Object Storage, and the position is sharper than the first draft of this reasoning assumed:
+## Encrypted before it leaves the database's host
+
+A backup of the database holds every unit in plain text, because the database does, and {ref}`trust-boundaries` counts it among the places where the content leaves the system.
+So a backup is encrypted before it leaves the host the database runs on, and the key that opens it lies outside the system it protects.
+
+Encryption by the storage provider doesn't meet that, and at the provider this project uses it isn't even available as a default.
+Checked on 2026-10-03 against the documentation of Hetzner Object Storage:
 
 > There is no default data-at-rest encryption of objects, but you can encrypt your data during the upload using SSE-C.
 
-So it isn't merely that there's no SSE-S3.
-There's **no** encryption at rest at all, as long as nobody applies one.
-That single sentence turns client-side encryption from the more comfortable option into the only option with any effect, and it's the reason this whole section exists rather than a line in a configuration file.
+SSE-C, where the client hands the key over with every request, is the one server-side mode on offer, and it breaks on copies.
+The same documentation states that a copy of an SSE-C encrypted object isn't supported, and that `CopyObject` works only within the same bucket; underneath lies a Ceph cluster, whose object gateway supports `CopyObject` under none of its server-side encryption modes.
+The sister project kup6s, on the same provider, keeps the standing rule *never use server-side encryption* for that reason.
+And even where server-side encryption works, the provider holds the key and can open the backup when pressed.
+For a store whose purpose is a defensible history of client projects, who holds the key outranks every convenience of the tooling.
 
-## Server-side encryption breaks on copies
-
-The one server-side mode on offer is SSE-C, where the client supplies the key with every request, and for a backup tool that mode isn't merely inconvenient.
-The same documentation states that a copy of an SSE-C encrypted object isn't supported, and that `CopyObject` works only within the same bucket.
-
-The cause lies underneath the API.
-The provider confirms that any data saved in a bucket is saved in a Ceph cluster, and in the Ceph object gateway none of the server-side encryption modes supports `CopyObject`.
-Every workflow that copies encrypted objects breaks there, which is most of what a backup repository does over its lifetime.
-
-This isn't a prediction.
-It has already landed operationally in a sister project (kup6s), where the standing rule reads *never use server-side encryption*, alongside the detour around the tagging calls that the same provider answers with `501`.
-
-## One tool can do it, and the obvious one can't
-
-`barman-cloud-backup` and `barman-cloud-wal-archive` support **only** server-side encryption, as AES256 or `aws:kms`.
-Barman in its classic form can encrypt with GPG; the `barman-cloud` tools can't, and the request for that capability remains open.
-Put the two facts together—a provider with no encryption at rest and a tool that can only ask the provider to encrypt—and the whole database would lie in the bucket in the clear.
-
-The pgBackRest plugin for CNPG-I closes exactly that gap.
-It encrypts backups **and** write-ahead log archives on the client, with `encryption: aes-256-cbc` and the key out of a secret, and it carries the rest of what a database backup needs besides: data directory backup and restore, archiving, point-in-time recovery, replica clusters.
-The provider's missing SSE-S3 becomes irrelevant, because the data is already encrypted when it leaves the cluster.
-
-## It isn't a choice between proven and new
-
-The decision looks like *established Barman against a young plugin*, and that framing is wrong.
-`barmanObjectStore` has been deprecated in CNPG since 1.26 and is meant to be removed with 1.30, and its successor is the Barman Cloud plugin—which is to say, a CNPG-I plugin, just as new.
-
-> Two new plugins, and only one of them encrypts.
-
-Staying put isn't one of the options.
-The choice is between two new things, and that changes what maturity can even mean here.
-
-## Which implementation, measured and dated
-
-Two implementations exist, from Dalibo and from Opera Software, and which one is the better kept at build time has to be looked up rather than remembered.
-What follows is a dated reading, so that the looking up doesn't start from zero.
-It's carried over from §10.5 of the frozen architecture record, where it was taken on 2026-10-03: neither the table below nor the pgBackRest figures after it were collected on this page.
-
-```text
-                          dalibo/cnpg-plugin-pgbackrest   operasoftware/...
-commits since 2026-07-03                              2                  30
-latest releases                      v0.0.3 (2026-06-25)   v0.8.0 (2026-08-25),
-                                                              v0.7.0, v0.6.1
-open issues                                          23                  44
-self-description                                       —   README: EXPERIMENTAL
-```
-
-That measurement reverses the expectation.
-This reasoning at first called the implementation from Opera expressly experimental and therefore leaned toward the one from Dalibo.
-Measured, the one from Dalibo has stood still since mid-year while the one from Opera released weekly through August.
-The README from Opera still carries the experimental note, so it isn't *the more mature one*—it's **the one being worked on**, which is a different and more useful property.
-
-The plugin from Opera also names precisely what's needed here: client-side encryption of both backups and archives, `aes-256-cbc` with the key from a secret, CNPG from 1.25 on.
-
-Neither of the two calls itself production-ready, so the choice stays a build-time decision.
-The criterion isn't the version number—`0.0.3` against `0.8.0` says more about counting conventions than about maturity—but whether somebody is still working on it on the day the cluster gets built.
-Collect that table again; don't read this one.
-
-A warning belongs beside it, for whoever performs that maintenance check.
-Articles circulate claiming that pgBackRest itself is archived or no longer maintained.
-That's false, checked on 2026-10-03 against the GitHub API: `archived: false`, last push on 2026-10-02, 24 commits in the preceding 30 days, and three releases in three months, `2.59.0`, `2.59.1` and `2.59.2`, the last of them on 2026-09-27.
-The next person to check will stumble over the same pages, which makes them a useful example of the rule they violate: a claim about maintenance gets checked against the repository, never against a headline.
-
-## The price of the passphrase
-
-It belongs said out loud, because it's of the same family as everything else in this design: **whoever loses the passphrase loses the backups, for good.**
-With server-side encryption the provider holds the key and can help when it matters; here nobody can, by construction, which is the whole point and also the whole exposure.
-
-Two requirements follow.
-
-The passphrase has to stand **before the first backup**.
-Changing it later is an operation across the entire repository, not an entry in a configuration file, and the window for getting it right closes with the first write.
-
-And it needs the same care as the data it protects: in the vault, with a documented path to recover it, and tested.
-A key that has never been used for a restore is as little a key as an untested restore is a backup—which is why the chain check in {ref}`verify-the-chain` is the end of the restore procedure rather than an optional extra.
-
-## Where the keys lie, and why the question stops here
-
-Two encryption points in this design need a key, and there are two keys.
-The blobs are sealed in the `age` format before they leave the process, and the identity that opens them lies in a directory of its own; {ref}`blobs` explains the format and the seam.
-The backups this design plans are encrypted on the client with `aes-256-cbc` and a passphrase.
-For both the same rule holds: a key must not lie where the data it opens lies.
-The identity of the blobs doesn't belong in the bucket, nor in a backup of the bucket; the passphrase doesn't belong in the backup target.
+The key that opens the backup lies neither beside the database nor in the backup target.
 A key that lies beside its data protects nothing from whoever reaches the data, and goes down with it in the same incident.
+Public-key encryption helps here: the host that takes the backup needs only the public key, and the private key that opens it never has to come near the database at all.
 
-In the operation this design plans, both keys arrive through the External Secrets Operator, out of a namespace of their own—which is to say, not the namespace the database runs in.
-That's the operational answer to the obvious objection about one vault holding everything: one place, two keys, and both of them outside the reach of what they protect.
-On a host without that operator, the same two requirements hold for whatever directory or file the keys come from.
-The keys are separate because the damage radius differs; blobs and backups aren't the same loss, so they aren't the same key.
+The price is said out loud, because it's of the same family as everything else in this design: **whoever loses the key that opens the backups loses the backups, for good.**
+With server-side encryption the provider could help; here nobody can, by construction.
+So the key needs the same care as the data it protects, and a **rehearsed** way to obtain it again and open a backup with it.
+A key that has never opened a backup is as little a key as an untested restore is a backup.
 
-A real vault is the direction of travel, and it isn't this project's business.
-That's a platform decision and belongs where the clusters are run.
-Previously asks the platform for two properties, and both are independent of whatever fulfills them: the keys lie neither in the database's namespace nor in the backup target, and there's a **rehearsed** way to obtain them again.
-So the question *which vault* isn't left open here—it's delegated, with two checkable requirements in place of an answer.
+The blobs follow the same line: they're sealed in the `age` format before they leave the process, and the identity that opens them lies apart from the bucket, as {ref}`blobs` explains.
+The two keys stay separate, because blobs and backups aren't the same loss, and {ref}`keep-the-blob-key-safe` shows how the blob key is kept.
+Which vault holds either key is a decision of the platform, not of this project; Previously asks only that neither key lies where the data it opens lies, and that obtaining it again has been rehearsed.
 
-## The retention is part of an erasure's promise
+## A named retention
 
-An erasure takes content out of the log, and out of the bucket, and leaves it in every backup taken before it; {ref}`erasure` explains why it can't do more.
-So a backup's retention isn't only a question of how far back a restore can reach.
-It's also how long an erased content stays readable for whoever holds the backup and its key.
-Whoever promises erasure within a period chooses the retention of the database backups and of the write-ahead log archive by that period, and, where the bucket is backed up or copied, the retention of that copy as well.
+An erasure takes content out of the log and out of the bucket, and leaves it in every backup taken before it; {ref}`erasure` explains why it can't do more.
+So a backup's retention isn't only how far back a restore can reach.
+It's also how long an erased content stays readable for whoever holds the backup and its key, and that bounds every promise of erasure.
 
-The encryption doesn't shorten that period.
-The backup and its passphrase stay together on the side of the operator, so a backup that opens for a restore opens for the erased content as well, until it's deleted.
+So the retention is named, as a number: of the database's backups, of a write-ahead log archive where one is kept, and of every backup or copy of the bucket.
+Whoever promises erasure within a period chooses these retentions by it.
+The encryption doesn't shorten that period: a backup that opens for a restore opens for the erased content as well, until it's deleted.
 
-## Three paths, and what would overturn the chosen one
+The promise reaches as far as the data Previously holds and no further.
+A mail server and its backups are the source's, and their retention belongs to no erasure promise of Previously; {ref}`erasure` draws that line.
 
-**A: pgBackRest for this database alone.**
-Price: a second backup tool in an operation that already has one, and a second restore rehearsal.
+## A stated recovery point, and what's lost up to it
 
-**B: keep the `barman-cloud` tools and move the backup target to an S3 service in the EU with real server-side encryption.**
-Price: a second provider relationship, and—the decisive part—the provider holds the key.
+Every backup has a recovery point: the newest state a restore can bring back.
+With a base backup and a write-ahead log archive, it can be any moment the archive reaches, which is point-in-time recovery.
+With dumps, it's the moment the newest dump took its snapshot, and nothing in between.
+Either is acceptable, as long as it's stated, because what a restore loses is everything written after it.
 
-**C: keep the `barman-cloud` tools and leave the backups in the clear.**
-Price: nothing technical at all, which is exactly what makes it dangerous.
-It has to be a *decision*, written down as one, rather than something that happens because nobody looked.
+For the log, that's every event since the recovery point.
+The mail the ingest took in comes back without anybody's help.
+The connector's watermark lives in the same database as the log, and it's written only after the batch it covers is appended, so a backup never holds a watermark ahead of its log; {ref}`connectors` explains the order.
+After a restore, the next run of `ingest imap` reads the folder from the restored watermark and takes in again what the restore gave up, under new `id` values.
+It appends nothing twice: a mail the restored log holds already, because the backup fell between an append and the watermark that followed it, is found under its source key and counted as known.
+That holds only for what the folder still holds: a mail taken in after the recovery point and removed from the folder since is gone with the restore.
 
-**A is chosen, and the reason isn't tool quality.**
-It's who holds the key.
-Under A it never leaves the project's own machine; under B the provider can decrypt when pressed; under C anybody who reaches the bucket can.
-For a store whose entire purpose is a defensible history of client projects, that distinction outranks the convenience of a single backup tool.
+The rest doesn't come back by itself.
+What the operator recorded since the recovery point, such as an `append`, a policy statement or a new client, has to be recorded again.
+The records of the model calls and of the clients' accesses since then are gone, and nothing can write them again.
+An erasure since the recovery point is undone by the restore, and the log can't say which ones those were, since its record of them is what the restore took away.
+That's why every erasure is noted in a record kept outside the database, and repeated from it after a restore, as {ref}`restore-from-a-backup` shows.
 
-**What would overturn A:** a finding that this database's backups stand no differently in the threat model than those of the other databases in the same cluster.
-Then uniformity wins the argument and B is the clean choice.
-That check hasn't been carried out.
-It depends on what lies in those other databases, which is a question for the people who run them rather than for this design, and it's recorded here as unsettled instead of being answered by assumption.
+## A restore probe, checked against the anchors
 
-That the sister project has the same point open—the `barman-cloud` tools against the same provider, in the clear—is no argument for A either way.
-It's only evidence that the gap is real and doesn't originate in this design.
+A backup that was never restored isn't known to be a backup.
+So a restore runs again and again, into a scratch database, as a probe.
 
-## The two objections that remain
+The probe ends with `previously verify --anchors`, not with PostgreSQL starting.
+The hash chain checks the restored holdings themselves, and an anchor kept outside the database adds whether anything up to the newest anchor is lost or rewritten; {ref}`external-anchor` says what each check sees.
+The anchors it checks against are those that stood when the backup was taken.
+An anchor taken after the recovery point describes events the backup can't hold, and against it the restore reads as a loss: a true one, but not the one the probe looks for.
+The anchor file doesn't date its own lines, so the version as of the backup has to come from somewhere: a history of the file, such as the Git history of a repository that holds it, gives it for any moment.
 
-**Plugin maturity.**
-A backup system is the worst possible place for young software, and the objection stands.
-But the answer to it doesn't depend on which plugin gets picked: an untested restore is no backup.
-Here that test says more than it usually does, because the hash chain verifies the **restored holdings** and not merely that PostgreSQL came up.
+The probe needs the key that opens the backup, which is the one place where that key comes near the database's environment.
+The operator decides where a scheduled probe may hold it, and a probe run by hand, with the key brought in for it alone, meets the requirement as well, as long as it runs.
 
-**Two backup tools in one operation.**
-Barman runs in the rest of the cluster and this design puts pgBackRest beside it, which costs two operational paths and two restore procedures.
-By the principle just stated, that means two rehearsals to keep in practice, not one.
-The objection is legitimate, and it was missing from this reasoning at first—worth recording, because an argument that lists only the costs it finds comfortable isn't an argument.
+## The blob bucket
 
-## What it tidies up
+The bucket keeps neither versions nor locked objects, because an erasure deletes an object and trusts the store that it's gone; {ref}`erasure` gives the reason.
+The bucket doesn't go back with the database either: after a restore, the blobs and the log are brought in line as {ref}`restore-from-a-backup` shows.
+Whether the bucket itself is backed up or copied is the operator's choice.
+If so, that copy is part of the data an erasure promise covers, so its retention is named beside the database's.
 
-The backup encryption follows the same line as the content blobs: client-side, with the keys outside the data path.
-One principle in two places, rather than encrypted blobs sitting next to a database in the clear—which is the shape these decisions take when each one is made on its own.
+## Two ways to meet the requirements
+
+The kup6s environment, where the pilot runs, dumps the database every hour with `pg_dump --format=custom` and streams the dump through `gpg --encrypt` to a backup key, into a bucket of its own that keeps each dump for seven days.
+The cluster holds the public key only, and the private key lies in a password vault; there's no point-in-time recovery, so the recovery point is the newest hourly dump.
+
+A host run with a `docker-compose` file meets the same requirements with one scheduled `cron` job: `pg_dump --format=custom`, piped through `age -r` with a recipient whose identity lives elsewhere, or through `gpg --encrypt`, into a file that's copied off the host, and a second job that deletes the files older than the retention.
+The restore probe there is the same commands as anywhere else, run against a second database container.
+
+## What changed on 2026-10-11
+
+Until 2026-10-11 this page chose a system: the pgBackRest plugin for CNPG-I, with client-side `aes-256-cbc` encryption of base backups and write-ahead log archives, against Barman with server-side encryption at another provider and Barman in the clear.
+That choice came from §10.5 of the frozen architecture record, which weighed those three paths and picked pgBackRest because, under it, only the project holds the key.
+
+When the kup6s environment had to put real mail into a backup, it checked the candidates on 2026-10-09 and rejected all of them, as its feedback of 2026-10-11 reports, in `docs/superpowers/handoffs/2026-10-11-kup6s-feedback-delivery-and-ingest.md`.
+Both pgBackRest plugins for CNPG-I call themselves experimental, the one from Opera had no commit since 2026-08-28 and the one from Dalibo two since September, and neither had been tested against Hetzner or Ceph.
+The Barman Cloud tools have no client-side encryption, and the requests for it are open.
+Barman behind an encrypting S3 proxy, `rclone serve s3` with `crypt`, rests on a command that documents itself as experimental.
+What kup6s built instead, encrypted dumps, wasn't among the three paths at all.
+
+So on 2026-10-11 the maintainer changed what this page decides: no longer a system, but the requirements any system has to meet, with the choice of system left to whoever runs it.
+The reason that drove the old choice survives as the first requirement.
+A backup encrypted by the provider, or not at all, still doesn't meet it, and that was the whole case against the two paths the architecture record rejected.

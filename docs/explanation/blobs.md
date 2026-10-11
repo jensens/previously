@@ -214,6 +214,7 @@ A blob shared by two mails stays when one of them is erased, because the other s
 Gone from the store isn't gone everywhere.
 Whatever backup or replica of the bucket exists keeps the object for as long as it's kept, and the identity, backed up as the warning above asks, still opens it.
 Whoever promises erasure within a period chooses the retention of the bucket's backups by it, beside that of the database's.
+The promise reaches no further than the copies Previously keeps: a blob that came in with a mail still lies in the mail's source, which no promise of erasure covers ({ref}`erasure`).
 
 The register is what makes that rule cheap to compute.
 An erasure asks it which events use a blob, holds each of them against the redactions, and knows whether the blob still has to lie, without reading a single payload.
