@@ -864,19 +864,26 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
   Point-in-Time-Recovery, wie in kup6s (RK), fällt ein Dump nur zufällig auf
   einen Anker. Ob Previously die Ankerdatei selbst irgendwohin veröffentlichen
   soll, ist offen (AL §12 Punkt 4).
-- Die Zugangsdaten der Buckets reichen weiter als der Bucket: ein S3-Schlüssel
-  bei Hetzner gilt für jeden Bucket eines Projekts, und kup6s nutzt eines; eine
-  Bucket-Policy mit `NotPrincipal` hält fremde Schlüssel aus einem Bucket
-  heraus, aber keinen Schlüssel aus anderen. Für die Probe nutzen Blob- und
-  Dump-Bucket die Zugangsdaten der Flotte; Blobs und Dumps sind verschlüsselt,
-  `verify --blobs` erkennt einen gelöschten oder ersetzten Blob, verhindert
-  ihn aber nicht. Ob „Zugangsdaten für diesen Bucket und nichts sonst" für den
-  regulären Gebrauch Anforderung bleibt — dann braucht es ein eigenes
-  Hetzner-Projekt —, entscheidet der Betreuer später (RK; 1c §7).
-- Eine geplante Restore-Probe braucht den privaten Schlüssel der Sicherungen,
-  der heute nur für die Probe von Hand in den Cluster kommt; wo ein geplanter
-  Job ihn halten darf, ist nicht entschieden, der Betreuer entscheidet später
-  (RK; `backup-encryption.md` lässt beides zu, solange die Probe läuft).
+- Anforderung: die Bucket-Zugangsdaten, die Previously hält, reichen an den
+  Blob-Bucket und an nichts sonst, kein anderer Schlüssel kann dessen
+  Objekte löschen oder überschreiben, und kein Schlüssel eines Prozesses,
+  der fremden Inhalt verarbeitet (Aufnahme, Gate, MCP-Server, Werkzeug-Pod),
+  kann eine Sicherung löschen oder überschreiben. Gründe in `blobs.md`
+  („Who may reach the bucket") und `backup-encryption.md` („Out of reach of
+  what handles foreign content"), gesammelt in `reference/environment.md`.
+  kup6s erfüllt das in der Testphase noch nicht: ein S3-Schlüssel bei Hetzner
+  gilt für jeden Bucket eines Projekts, und Blob- und Dump-Bucket nutzen die
+  Zugangsdaten der Flotte (RK). Vor dem regulären Gebrauch erfüllt kup6s es —
+  ein zweites Hetzner-Projekt nur für den Blob-Bucket und Object Lock auf dem
+  Dump-Bucket wären ein Weg, die Wahl liegt bei kup6s — oder entscheidet sich
+  bewusst dagegen und trägt das benannte Risiko (Grundsatz in `CLAUDE.md`,
+  „Previously demands, the environment provides"; RK; 1c §7).
+- Anforderung: die Restore-Probe läuft in einem benannten Takt; wo sie den
+  privaten Schlüssel der Sicherungen hält, wählt die Umgebung, solange er
+  außerhalb des Systems liegt, das er schützt (`backup-encryption.md`). kup6s
+  erfüllt das in der Testphase noch nicht: die Probe läuft von Hand, der
+  Schlüssel kommt nur für sie in den Cluster (RK). Vor dem regulären Gebrauch
+  erfüllt kup6s es oder entscheidet sich bewusst dagegen.
 - `previously migrate` geht nur vorwärts; ein Zurück im Betrieb ist eine
   Wiederherstellung, kein Kommando (AL §12 Punkt 3; `delivery.md`).
 - Der Container-Weg der Anker-Routine ist für `kubectl exec` ungemessen
