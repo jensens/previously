@@ -62,8 +62,9 @@ There, an explicit `sqlalchemy.url` in `alembic.ini`, or set programmatically on
 With neither set, the migration fails with an error that names both.
 
 ```{important}
-PostgreSQL 15 or newer.
-`NULLS NOT DISTINCT` is not optional; see {ref}`concurrency`.
+PostgreSQL 18 is the supported version, because it's the one version the tests and the smoke test run against.
+Earlier versions aren't supported, 17 included.
+The schema itself needs PostgreSQL 15 or newer, for the `NULLS NOT DISTINCT` of `event_prev_hash_idx`, which isn't optional; see {ref}`concurrency`.
 ```
 
 ## Blob settings

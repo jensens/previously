@@ -34,7 +34,7 @@ def test_the_downgrade_refuses_once_version_2_is_written() -> None:
     `append` wrote in version 2 it refuses with a sentence, with a unit
     without content beside it the sentence gives both reasons, and the
     database stays at `head`."""
-    with PostgresContainer("postgres:17", driver="psycopg") as container:
+    with PostgresContainer("postgres:18", driver="psycopg") as container:
         engine = create_engine(container.get_connection_url())
         config = Config("alembic.ini")
         config.set_main_option("sqlalchemy.url", container.get_connection_url())
@@ -100,7 +100,7 @@ def test_the_downgrade_refuses_on_any_version_other_than_1() -> None:
     version 2 row would. The version is set by hand, with raw SQL, since
     nothing in the tree writes it. Measured on 2026-10-05 with the downgrade
     asking for `hash_version = 2`: it went through and stripped the row."""
-    with PostgresContainer("postgres:17", driver="psycopg") as container:
+    with PostgresContainer("postgres:18", driver="psycopg") as container:
         engine = create_engine(container.get_connection_url())
         config = Config("alembic.ini")
         config.set_main_option("sqlalchemy.url", container.get_connection_url())

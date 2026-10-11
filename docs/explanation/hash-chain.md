@@ -323,7 +323,7 @@ The count catches every unreachable row: a gap in the middle as well, and a cons
 The finding carries `event_id = 0`, because no single row exists for it to point at, and 0 is no valid chain position: the chain starts at 1.
 
 Something learned while measuring that explains why a forger has to work for this one.
-A *genesis-like* `id = 0` row with `prev_hash = NULL` can't be smuggled in at all, because `event_prev_hash_idx` with `NULLS NOT DISTINCT` admits exactly one entry without a predecessor; see {ref}`configuration-reference` for why that puts PostgreSQL 15 at the floor.
+A *genesis-like* `id = 0` row with `prev_hash = NULL` can't be smuggled in at all, because `event_prev_hash_idx` with `NULLS NOT DISTINCT` admits exactly one entry without a predecessor; {ref}`concurrency` says why the clause matters and why no PostgreSQL before 15 can hold it.
 The forgery needs some other, unused `prev_hash`.
 A test that reaches for `NULL` is testing the index, not the check.
 

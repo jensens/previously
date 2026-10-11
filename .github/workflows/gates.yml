@@ -30,7 +30,7 @@ permissions:
 jobs:
   gates:
     # Docker is needed, because `tests/conftest.py` raises a real PostgreSQL
-    # 17 and a real S3 server, RustFS, via testcontainers — no mock stands in
+    # 18 and a real S3 server, RustFS, via testcontainers — no mock stands in
     # for the database or the blob store (CLAUDE.md).
     # Checked, not assumed: the runner image for ubuntu-24.04, which
     # `ubuntu-latest` currently resolves to, lists "Docker Client 28.0.4",
