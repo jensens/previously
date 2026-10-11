@@ -1,7 +1,7 @@
 # Previously — Pilot, Einheit 4: der MCP-Lesezugang
 
 **Datum:** 2026-10-10
-**Status:** Entwurf, zur Durchsicht durch den Betreuer
+**Status:** Entwurf, vom Betreuer am 2026-10-11 durchgesehen („ok für den Plan"), Grundlage des Plans
 
 Detail-Spec für die vierte Einheit des Piloten. Er schneidet aus dem Konzept
 `specs/2026-10-10-mcp-schnittstelle.md` („K" mit Abschnitt) den Lesezugang und

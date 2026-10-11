@@ -1,7 +1,7 @@
 # Previously — die MCP-Schnittstelle als Ganzes
 
 **Datum:** 2026-10-10
-**Status:** Entwurf, zur Durchsicht durch den Betreuer
+**Status:** Entwurf, vom Betreuer am 2026-10-11 durchgesehen („ok für den Plan"), Grundlage des Plans
 
 Konzept für das Hauptinterface von Previously. Es **löst §8 der Architektur
 ab** (`specs/2026-10-01-architektur.md`, eingefroren) und entscheidet, wie die
