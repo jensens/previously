@@ -272,7 +272,8 @@ def _decided(
     if decision.chosen is None:
         code, reason = withholding(policy, client, decision)
         mark = WithheldMark(event_uri(row.id), reason)
-        entry = Withheld(row.id, code, decision.circles, reason)
+        uncovered = decision.fallback.circles if decision.fallback is not None else ()
+        entry = Withheld(row.id, code, decision.circles, reason, uncovered, source)
         return _Pending(row, key, Read(mark, entry, rules, row.id))
     return _Pending(row, key, None, decision.circles, rules)
 

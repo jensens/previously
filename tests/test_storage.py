@@ -796,3 +796,29 @@ def test_read_by_kind_yields_only_that_kind_in_chain_order(db: Engine) -> None:
         assert [r.id for r in storage.read_by_kind(c, "action")] == [1, 3]
         assert [r.id for r in storage.read_by_kind(c, "observation")] == [2]
         assert list(storage.read_by_kind(c, "assertion")) == []
+
+
+@pytest.mark.db
+def test_actions_yields_only_the_actions_of_that_name_in_chain_order(db: Engine) -> None:
+    """The control is the observation whose payload names the same action:
+    the kind decides first, the name second, and an erased action names
+    nothing."""
+    storage = PostgresStorage(db)
+
+    def named(event_id: int, kind: str, payload: dict[str, object]) -> EventRow:
+        prev = None if event_id == 1 else bytes([event_id - 1]) * 32
+        return replace(_row(event_id, prev), kind=kind, payload=payload)
+
+    with storage.begin() as c:
+        storage.insert_event(c, named(1, "action", {"action": "policy"}), [], None)
+        storage.insert_event(c, named(2, "action", {"action": "mcp_access"}), [], None)
+        storage.insert_event(c, named(3, "observation", {"action": "policy"}), [], ("cli", "x3"))
+        storage.insert_event(c, named(4, "action", {"action": "policy"}), [], None)
+        storage.insert_event(c, named(5, "action", {"action": "policy"}), [], None)
+        storage.insert_event(c, named(6, "action", {"policy": "policy"}), [], None)
+        storage.erase_payload(c, 5)
+    with storage.begin() as c:
+        assert [r.id for r in storage.actions(c, "policy")] == [1, 4]
+        assert [r.id for r in storage.actions(c, "mcp_access")] == [2]
+        assert list(storage.actions(c, "redaction")) == []
+        assert [r.id for r in storage.read_by_kind(c, "action")] == [1, 2, 4, 5, 6]

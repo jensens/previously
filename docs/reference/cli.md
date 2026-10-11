@@ -844,7 +844,8 @@ source:email	1	2026-10-09T12:00:00.000000Z
 It reads the `model_call` events, and the source of each event that a call read where the fallback named no circle, and counts a call whether the local model answered it or not.
 `--since TIME` counts only the calls recorded from that moment on; the time needs a zone.
 A call over an event that has no source and no circle stands under `event:<id>`.
-It also counts what the MCP server withheld for lack of a rule, from the `mcp_access` events ({ref}`cli-access`): each entry of `withheld` with the reason code `no_rule` counts once for each circle it names, or under `event:<id>` when it names none.
+It also counts what the MCP server withheld for lack of a rule, from the `mcp_access` events ({ref}`cli-access`): each entry of `withheld` with the reason code `no_rule` counts once for each circle it names under `uncovered`, the circles of the event that have no rule.
+An entry that names none counts under `source:<source>` with the source it names, as the gate's lines do, or under `event:<id>` when it names no source either.
 Those lines start with `mcp:`, so that every line keeps its three fields and the gate's lines stay as they were.
 The gate's lines come first and the MCP lines after them, each group sorted by name:
 
@@ -1092,7 +1093,7 @@ A port that isn't a number from 1 to 65535 is refused before anything connects, 
 Error: PREVIOUSLY_MCP_PORT is not a port number: 'http'
 ```
 
-Every request needs the header `Authorization: Bearer TOKEN`, with the token that `client add` printed for a client in force.
+Every request but the readiness probe below needs the header `Authorization: Bearer TOKEN`, with the token that `client add` printed for a client in force.
 The token is checked against the policy at every request, so a token that a later `client add` for the same name replaced, or that `client revoke` lifted, stops working with the next request.
 A header that names a client is no identity: only the token says which client asks.
 A request without a valid token gets the status 401, the header `WWW-Authenticate: Bearer`, and one sentence as its body:
@@ -1102,8 +1103,19 @@ Error: a valid bearer token is required
 ```
 
 No `mcp_access` is written for such a request, since no client is known.
-The server publishes no Protected Resource Metadata: `/.well-known/oauth-protected-resource` answers 404 to a request with a valid token, and 401 without one, like every other path.
+The server publishes no Protected Resource Metadata: `/.well-known/oauth-protected-resource` answers 404 to a request with a valid token, and 401 without one, like every other path but the readiness probe.
+
+`GET /healthz` is the readiness probe, and it needs no token.
+It runs one trivial query against the database and answers with the status 200 and the body `ok`, or, when the database doesn't answer, with the status 503 and this body:
+
+```text
+Error: the database does not answer
+```
+
+It reaches no MCP, returns no data and writes no `mcp_access`.
+Only `GET` on exactly that path passes without a token: another method, or another path such as `/healthz/`, gets the 401 above.
 
 The `Host` header of a request has to name `127.0.0.1`, `localhost`, `[::1]` or a name in `PREVIOUSLY_MCP_ALLOWED_HOSTS`, with any port, or the request gets the status 421.
 An `Origin` header has to name one of those hosts too, with `http` or `https`, or the request gets the status 403.
 Both checks are the protection of the MCP SDK against DNS rebinding.
+The readiness probe is answered before them, whatever the two headers name, since it shows nothing.

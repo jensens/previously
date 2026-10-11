@@ -568,7 +568,7 @@ def read_policy[Conn](log: LogStore[Conn], conn: Conn, *, at: datetime | None = 
     is broken is skipped as `verify` reports it; neither stops the read.
     """
     current: dict[tuple[str, str], tuple[Statement, int] | None] = {}
-    for row in log.read_by_kind(conn, "action"):
+    for row in log.actions(conn, POLICY):
         payload = row.payload
         if payload is None or payload.get("action") != POLICY:
             continue

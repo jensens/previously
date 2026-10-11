@@ -80,7 +80,10 @@ def _access(
 
 
 def _no_rule(event: int, *circles: str) -> Withheld:
-    return Withheld(event, "no_rule", circles, f"circle {circles[0]} has no rule for this client")
+    """A withholding for lack of a rule, where every circle of the event is
+    one without a rule."""
+    reason = f"circle {circles[0]} has no rule for this client"
+    return Withheld(event, "no_rule", circles, reason, circles, "email")
 
 
 def _strings(value: object) -> list[str]:
@@ -220,7 +223,7 @@ def test_the_search_for_content_finds_it_in_a_stored_payload(db: Engine) -> None
         storage,
         _access(
             arguments={"circle": "h_da", "note": {"deep": [line]}, "key4711": 1},
-            withheld=(Withheld(2, "no_rule", ("h_da",), f"because {line}"),),
+            withheld=(Withheld(2, "no_rule", ("h_da",), f"because {line}", ("h_da",), None),),
         ),
         recorded_at=T1,
     )
@@ -246,6 +249,10 @@ def _entry(base: dict[str, object], key: str) -> dict[str, object]:
     return cast("list[dict[str, object]]", base[key])[0]
 
 
+def _without(entry: dict[str, object], key: str) -> dict[str, object]:
+    return {name: value for name, value in entry.items() if name != key}
+
+
 @pytest.mark.db
 def test_verify_finds_a_broken_form(db: Engine) -> None:
     storage = PostgresStorage(db)
@@ -268,6 +275,10 @@ def test_verify_finds_a_broken_form(db: Engine) -> None:
         {**base, "withheld": [{**_entry(base, "withheld"), "text": "smuggled"}]},
         {**base, "withheld": [{**_entry(base, "withheld"), "reason": 5}]},
         {**base, "withheld": [{**_entry(base, "withheld"), "circles": [True]}]},
+        {**base, "withheld": [{**_entry(base, "withheld"), "uncovered": "h_da"}]},
+        {**base, "withheld": [{**_entry(base, "withheld"), "uncovered": [7]}]},
+        {**base, "withheld": [{**_entry(base, "withheld"), "source": ["email"]}]},
+        {**base, "withheld": [_without(_entry(base, "withheld"), "source")]},
         {**base, "withheld": ["event 2"]},
         {**base, "delivered": [3]},
         {**base, "delivered": [{**_entry(base, "delivered"), "text": "smuggled"}]},
@@ -312,7 +323,7 @@ def test_gaps_count_what_mcp_withheld_for_lack_of_a_rule_apart_from_the_gate(db:
         _access(
             withheld=(
                 _no_rule(6, "xz"),
-                Withheld(7, "rule", ("xz",), "circle xz requires eu"),
+                Withheld(7, "rule", ("xz",), "circle xz requires eu", (), "email"),
                 _no_rule(8, "h_da"),
             )
         ),
@@ -331,12 +342,42 @@ def test_gaps_count_what_mcp_withheld_for_lack_of_a_rule_apart_from_the_gate(db:
 
 
 @pytest.mark.db
+def test_gaps_count_only_the_circles_without_a_rule_and_else_the_source(db: Engine) -> None:
+    """An event of three circles, two of them with a rule, is a gap of the
+    third alone; an event of no circle is one of its source, once per source
+    as the gate counts it, and of itself only where it has no source
+    (ruling R-16 of the 2026-10-11 MCP read access plan: counting every circle
+    of the event named rules that exist as missing)."""
+    storage = PostgresStorage(db)
+    reason = "circle team has no rule"
+    record_access(
+        storage,
+        _access(
+            withheld=(
+                Withheld(5, "no_rule", ("huber", "office", "team"), reason, ("team",), "email"),
+                Withheld(6, "no_rule", (), "no rule covers this content", (), "email"),
+                Withheld(7, "no_rule", (), "no rule covers this content", (), "email"),
+                Withheld(8, "no_rule", (), "no rule covers this content", (), None),
+            )
+        ),
+        recorded_at=T0,
+    )
+    with storage.begin() as conn:
+        found = gaps(storage, conn, since=None)
+    assert [(g.what, g.count) for g in found] == [
+        ("circle:team", 1),
+        ("event:8", 1),
+        ("source:email", 2),
+    ]
+
+
+@pytest.mark.db
 def test_gaps_ignore_a_withholding_that_a_rule_caused(db: Engine) -> None:
     """The control of the test above: `rule` is no gap."""
     storage = PostgresStorage(db)
     record_access(
         storage,
-        _access(withheld=(Withheld(7, "rule", ("xz",), "circle xz requires eu"),)),
+        _access(withheld=(Withheld(7, "rule", ("xz",), "circle xz requires eu", (), "email"),)),
         recorded_at=T0,
     )
     with storage.begin() as conn:
@@ -420,6 +461,8 @@ def test_the_stored_payload_is_the_sketch_of_the_concept(db: Engine) -> None:
                     "reason_code": "no_rule",
                     "circles": ["h_da"],
                     "reason": "circle h_da has no rule for this client",
+                    "uncovered": ["h_da"],
+                    "source": "email",
                 }
             ],
             "outcome": "ok",

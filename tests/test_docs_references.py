@@ -264,36 +264,72 @@ def _quoted_block(page: str, after: str) -> list[str]:
     return [line for line in block.splitlines() if line.strip()]
 
 
-def _static_parts(node: ast.expr) -> list[str]:
+def _static_parts(node: ast.expr, constants: Mapping[str, str] | None = None) -> list[str]:
     """What stays of a string literal once the interpolations are taken out.
 
     A plain literal is one part, an f-string is its `Constant` values in
     order. Only the direct children of the `JoinedStr` count: a literal
     nested inside an interpolation -- `_plural(lag, 'event')` is the case in
     this tree -- is an argument, not text of the message.
+
+    An interpolation of a name in `constants` is text, not a gap: it is a
+    module-level string such as `CURSOR_REFUSED`, and left a gap it would let
+    any wording stand in for it. Measured on 2026-10-11: with the cursor
+    sentence interpolated, `cursor is NOT VALID ANYWHERE; call again without a
+    cursor for the first page` passed for a text the server builds.
     """
     if isinstance(node, ast.Constant):
         return [node.value] if isinstance(node.value, str) else []
-    if isinstance(node, ast.JoinedStr):
-        parts = [
-            value.value
-            for value in node.values
-            if isinstance(value, ast.Constant) and isinstance(value.value, str)
-        ]
-        if not "".join(parts):
-            return []
-        # An interpolation at either end becomes an empty part there, so that
-        # `_is_the_same_sentence` lets the line open or close with whatever
-        # was interpolated: `f"there is no event {event_id}"` ends in a number,
-        # not in `event `. Measured on 2026-10-04, when `redact` brought the
-        # first quoted messages that end in an interpolation and the check
-        # refused every one of them.
-        if not isinstance(node.values[0], ast.Constant):
-            parts.insert(0, "")
-        if not isinstance(node.values[-1], ast.Constant):
-            parts.append("")
-        return parts
-    return []
+    if not isinstance(node, ast.JoinedStr):
+        return []
+    known = constants or {}
+    parts: list[str] = []
+    text: str | None = None
+    for value in node.values:
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            text = (text or "") + value.value
+        elif (
+            isinstance(value, ast.FormattedValue)
+            and isinstance(value.value, ast.Name)
+            and value.value.id in known
+            and value.format_spec is None
+            and value.conversion == -1
+        ):
+            text = (text or "") + known[value.value.id]
+        else:
+            # An interpolation at either end becomes an empty part there, so
+            # that `_is_the_same_sentence` lets the line open or close with
+            # whatever was interpolated: `f"there is no event {event_id}"`
+            # ends in a number, not in `event `. Measured on 2026-10-04, when
+            # `redact` brought the first quoted messages that end in an
+            # interpolation and the check refused every one of them.
+            parts.append(text or "")
+            text = None
+    parts.append(text or "")
+    if not "".join(parts):
+        return []
+    return parts
+
+
+def _module_strings(*paths: pathlib.Path) -> dict[str, str]:
+    """The module-level names of `paths` that are bound to a string literal,
+    or to an f-string made only of literals and such names, by name."""
+    found: dict[str, str] = {}
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for statement in tree.body:
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+                target, value = statement.targets[0], statement.value
+            elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+                target, value = statement.target, statement.value
+            else:
+                continue
+            if not isinstance(target, ast.Name):
+                continue
+            parts = _static_parts(value, found)
+            if len(parts) == 1:
+                found[target.id] = parts[0]
+    return found
 
 
 def _message_patterns(path: pathlib.Path) -> list[list[str]]:
@@ -1155,7 +1191,10 @@ def test_the_reference_quotes_what_mcp_and_serve_say() -> None:
     and the sentence of a 401, as `cli.md` and `configuration.md` quote them,
     held against the code: the errors against what `cli.py` raises as
     `PreviouslyError`, the line against what it prints to standard error,
-    and the 401 against the one constant the HTTP wrapper sends, whole."""
+    and the 401 and both answers of the readiness probe against the
+    constants the HTTP wrapper sends, whole."""
+    from previously.mcp_server.auth import NOT_READY
+    from previously.mcp_server.auth import READY
     from previously.mcp_server.auth import REFUSAL
 
     cli = ROOT / "src" / "previously" / "cli.py"
@@ -1170,6 +1209,8 @@ def test_the_reference_quotes_what_mcp_and_serve_say() -> None:
     (line,) = _quoted_block(page, "On start it prints one line to standard error")
     assert any(_is_the_same_sentence(parts, line) for parts in _message_patterns(cli)), line
     assert _quoted_block(page, "and one sentence as its body") == [REFUSAL]
+    assert _quoted_block(page, "with the status 503 and this body") == [NOT_READY]
+    assert "with the status 200 and the body `" + READY + "`," in page
 
     configuration = (DOCS / "reference" / "configuration.md").read_text(encoding="utf-8")
     unset = _quoted_block(configuration, "and returns 2 when it's unset or empty")
@@ -1208,11 +1249,13 @@ def _mcp_lines(after: str) -> list[str]:
 
 def _literal_patterns(module: str) -> list[list[str]]:
     """The static parts of every string literal of a module of the server
-    that is no docstring, with at least ten characters of text."""
+    that is no docstring, with at least ten characters of text; a module
+    constant of the server interpolated into one counts as its text."""
     tree = ast.parse((MCP_DIR / module).read_text(encoding="utf-8"))
     docstrings = _docstrings(tree)
+    constants = _module_strings(*(MCP_DIR / name for name in ("render.py", "read.py", "server.py")))
     found = [
-        _static_parts(node)
+        _static_parts(node, constants)
         for node in ast.walk(tree)
         if isinstance(node, ast.Constant | ast.JoinedStr) and id(node) not in docstrings
     ]
@@ -1339,12 +1382,6 @@ def test_the_mcp_reference_quotes_what_the_server_says() -> None:
         assert prefix == "Error", f"{MCP_PAGE_NAME} quotes {line!r} without `Error: `"
         assert re.fullmatch(r"previously://event/\d+|ids\[\d+\]", label), line
         _said(message, read, "read.py")
-    for after in (
-        "and the sentence is one of these:",
-        "and the sentence ends in the reason the decision gives",
-    ):
-        for line in _mcp_lines(after):
-            _said(line, read, "read.py")
     for line in _mcp_lines("A note after its fence says where the rest is:"):
         _said(line, render, "render.py")
     for line in _mcp_lines("When more follows, the result ends with a footer:"):
@@ -1357,6 +1394,57 @@ def test_the_mcp_reference_quotes_what_the_server_says() -> None:
     ):
         (line,) = _mcp_lines(after)
         _said(line, server, "server.py")
+
+
+def test_the_mcp_reference_quotes_the_reasons_the_decision_builds() -> None:
+    """The reasons of a withheld event, built by `decide` and `withholding`
+    for the client and the circles the page names, and compared whole: a
+    pattern of the f-string would hold the `rule` reason by its first
+    thirteen characters, `the rules of `, and nothing after them."""
+    from previously.core.decide import Candidate
+    from previously.core.decide import decide
+    from previously.core.policy import Circle
+    from previously.core.policy import Client
+    from previously.core.policy import Inference
+    from previously.core.policy import Membership
+    from previously.core.policy import Policy
+    from previously.core.policy import Provider
+    from previously.core.policy import Rule
+    from previously.mcp_server.read import withholding
+
+    us = frozenset({"us"})
+    policy = Policy(
+        circles={name: Circle(name) for name in ("bauer", "eva", "team")},
+        memberships=(
+            Membership("bauer", "@bauer.example"),
+            Membership("eva", "eva@example.org"),
+            Membership("team", "team@example.org"),
+        ),
+        own=(),
+        rules={"circle:bauer": Rule("circle:bauer", frozenset({"eu"}), None, frozenset())},
+        providers={
+            "claude-max": Provider("claude-max", (Inference("us", us),), us, 30, False, False)
+        },
+        ids={},
+    )
+    client = Client("claude-code", "claude-max", "0" * 64)
+
+    def reason(*addresses: str) -> tuple[str, str]:
+        decision = decide(
+            policy,
+            identities=[{"address": address} for address in addresses],
+            source=None,
+            candidates=(Candidate(client.processor, "", None),),
+        )
+        assert decision.chosen is None
+        return withholding(policy, client, decision)
+
+    no_rule = [reason("team@example.org"), reason("eva@example.org", "team@example.org"), reason()]
+    assert {code for code, _ in no_rule} == {"no_rule"}
+    assert _mcp_lines("and the sentence is one of these:") == [line for _, line in no_rule]
+    code, line = reason("lea@bauer.example")
+    assert code == "rule"
+    assert _mcp_lines("and the sentence ends in the reason the decision gives") == [line]
 
 
 def test_the_mcp_reference_names_every_tool_template_and_prompt() -> None:

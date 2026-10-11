@@ -56,10 +56,13 @@ The results decided the form:
 | An error with structured content | Only the text arrives, marked as an error. | Nothing arrives. | Not measured. |
 | An error with text only | Not measured. | Not measured. | The text arrives, but the error flag is lost. |
 | Text and a resource link | Both arrive. | Nothing arrives, the text included. | Not measured. |
+| An embedded resource | Arrives. | Arrives. | Not measured. |
 | A number of 2^60 + 1 in structured content | Rounded, and the exact number in the text is missing. | The whole turn ends with an error. | Not measured. |
 | A source cited as a URI in the text | Not measured. | Not measured. | Arrives exactly. |
 
-The pattern is that every addition to plain text costs content in at least one client, and in Vibe sometimes the whole result.
+Structured content and a resource link each cost content in at least one client, and in Vibe sometimes the whole result.
+Two text blocks and an embedded resource arrived in both clients, though Claude Code joins two blocks without a separator.
+Nothing the server returns needs more than one block, and one text block is the form both clients carry whole.
 What holds in both is narrow, and the server keeps to it: one Markdown text block per result, no structured content and no resource link, sources cited by URI inside the text, no number above 2^53, and an error that says it's an error in its first word.
 The server sets the protocol's error flag as well, and relies on it nowhere, because one of the two clients drops it.
 
@@ -106,7 +109,7 @@ Removing the variation selectors costs emoji their choice of presentation, and r
 
 ## The record of every call lives in the log
 
-Every call, whether of a tool, a resource or a prompt, becomes an event of the kind `action` with `payload.action` set to `mcp_access`.
+Every call that reaches the server's code, whether of a tool, a resource or a prompt, becomes an event of the kind `action` with `payload.action` set to `mcp_access`.
 There's no second store of truth beside the knowledge store, and an access log kept elsewhere would be one.
 In the log, the question "what has Claude seen of customer X?" has the same answer for anybody who reads the chain, and `previously access` reads it.
 
@@ -117,8 +120,11 @@ The circles are recorded with each event so that a call of `get_event` by id is 
 The entry records what reached the page, not what the server read.
 A page ends before it would grow past its limit, and an item that didn't fit was never seen by the model, so it belongs to the entry of the next page; a unit that was cut appeared in part, and is listed.
 
-The entry is written after the call has read, in a transaction of its own.
+The entry is written after the call has read and before its answer leaves, in a transaction of its own.
+So no answer reaches a client without its entry.
+A write that fails replaces the answer with the error of the SDK, and the client gets no content.
 A request without a valid token writes nothing, because no principal exists to write it for, and over HTTP that includes the token of a client revoked since: it no longer resolves to anybody.
+Two refusals of the transport of the SDK write nothing either, although the token was valid: a host that the check against DNS rebinding doesn't allow gets 421, and a protocol version the transport doesn't take gets 400, both before any code of the server runs.
 On standard input and output the client is fixed when the process starts, so a client revoked while it runs gets an error from its next call on, and that call is recorded with the outcome `error`.
 A call that the SDK refuses before any function of the server runs, such as one for an unknown tool or with arguments that don't fit the schema, is recorded too, by a hook that the SDK offers for every message.
 
@@ -142,7 +148,7 @@ When Vibe speaks the newer generation, the switch and the test of the older hand
 
 Vibe's default harness didn't see two tools that a restarted server offered, and didn't ask the server again.
 So the list of tools changes only with a release, after which the clients connect again, and a test holds the names, descriptions and schemas against a checksum, which makes every change to them a deliberate one.
-No change has broken a call yet; the design has one that would come under a new name, with the old one kept for one release.
+No change has broken a call yet; one that would comes under a new name, and the old one stays for one release.
 
 The descriptions and the server's instructions are declarative.
 They name no data of a customer, and they tell the model nothing beyond how to use a tool, because they reach every client before any policy has decided anything.
@@ -152,6 +158,10 @@ They name no data of a customer, and they tell the model nothing beyond how to u
 ## A token, not the network
 
 Over HTTP, each client presents a static token as `Authorization: Bearer`, and the server looks it up in the policy on every request, so a replaced or revoked token stops working at the next one.
+The lookup and the call aren't one read, though.
+The wrapper turns the token into the name of a client, and the call then finds that client by name in its own, later read of the policy.
+A `previously client add` for the same name that commits in between, or a revocation followed by a new `client add`, has the one request that carried the old token served under the new record, which may name another processor.
+The window is that one request, and the pilot leaves it open.
 The token stays required inside a closed network too.
 The network tells the server that somebody from inside asks; the token tells it which client, and the access log needs exactly that.
 A header that names a client is no identity.
@@ -159,6 +169,12 @@ A header that names a client is no identity.
 The SDK has a token verifier of its own, and the server doesn't use it.
 With it, the SDK publishes metadata that sends a client to an authorization server, and there is none.
 So a small wrapper of the server's own checks the token, and moving to an authorization server later replaces that wrapper and nothing else.
+
+One request passes without a token: `GET /healthz`, the probe that tells a deployment whether the server is ready.
+It answers `ok` after a trivial query of the database, or 503 when the database doesn't answer, and it reaches no MCP, returns no data and writes no entry.
+A probe that carried a token would need a client of its own, and a client can call every tool and read whatever its processor may see, so a deployment would keep a reading credential just to learn whether the server is up.
+The reason for the token, knowing who asked, doesn't reach a route that asks nothing of the log.
+The path is matched exactly and only for `GET`, so it opens no door to anything else.
 
 Over standard input and output there is no token: whoever starts the process is the client, named in `PREVIOUSLY_MCP_CLIENT`.
 That fits a client that starts the server itself on a machine that reaches the database.
@@ -175,11 +191,19 @@ These limits are known, named, and left for later; the map of open points holds 
   It hasn't been measured against real mail yet; the run of the maintainer after the merge is where it gets measured.
 - **The chronicle reads the log**, in batches of 200 rows and with no bound per call, because the derived chronicle doesn't know who took part in an event.
   A circle that matches few events reads the whole log for one page, and a derived view of its own waits until reading the log gets too slow.
+  The yardstick is 60 seconds, the time Vibe waits for a call by default: every call should stay well under it, and a sparse circle on a long log is what reaches it first.
 - **The order of the placeholders** narrows the time of a withheld event: it happened between the visible events around it.
   The cursor carries the id of the last item and no time, because the time of a withheld event is content like its subject, but the order of the page can't be hidden.
-- **A record without a delivery, and a delivery without a record.**
-  On standard input and output, a call still running when the input closes writes its entry, and the answer never reaches the client, so the log names a delivery the client didn't receive.
-  The opposite also exists, as with the gate: a process that stops between the answer and the write leaves an answer that no entry records.
+- **A record can name an answer that never arrived.**
+  The entry is written before the answer leaves, so the log never misses an answer that a client got.
+  The reverse can happen on either transport: an answer lost after its entry committed, because standard input closed, an HTTP connection dropped or the process stopped, stands in the log as delivered.
+  The gate has the opposite limit, because it calls the provider first and writes afterward; this server reads, writes, and then answers.
 - **The hook** that records the calls the SDK refuses uses an interface that the SDK calls provisional, so a minor release of the SDK may change it.
 - **The volume of the access log** is one event per call, an estimated few thousand a month.
   Where it would have to be summarized is open.
+- **Every call reads the policy**, twice over HTTP, once for the token and once for the call.
+  Until 2026-10-11 that read went through every action and passed over the access entries one by one, so each call made the next one slower.
+  Measured that day with 6,000 access entries, one read of the policy took 0.341 seconds.
+  It now asks the database for the policy's own actions, and the same read took 0.010 seconds.
+  The database still visits every action, so the time still grows with the log, at a far lower rate; a derived view of the policy is the step that's left.
+  `previously access` and `policy gaps` still read every action.

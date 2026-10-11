@@ -49,6 +49,7 @@ from previously.mcp_server.render import PAGE_CHARS
 from previously.mcp_server.server import build_app
 from previously.mcp_server.server import build_server
 from previously.storage.postgres import PostgresStorage
+from sqlalchemy import create_engine
 from sqlalchemy import Engine
 from sqlalchemy import text
 from typing import Any
@@ -289,11 +290,13 @@ def test_a_circle_without_a_rule_is_withheld_for_lack_of_a_rule_and_a_local_clie
         "which is not local]"
     )
     (withheld,) = _last_access(world).access.withheld
-    assert (withheld.event, withheld.reason_code, withheld.circles) == (
+    assert (withheld.event, withheld.reason_code, withheld.circles, withheld.uncovered) == (
         plain,
         "no_rule",
         ("huber", "office", "team"),
+        ("team",),
     )
+    assert withheld.source == "email"
     local = _text(_tool(world, mode, "get_event", {"ids": [plain]}, client="local-harness"))
     assert "Eckpunkte für den Relaunch" in local
     (delivered,) = _last_access(world).access.delivered
@@ -755,9 +758,15 @@ def test_whoami_names_the_client_its_chain_and_the_era(world: World, mode: str) 
 def test_policy_gaps_counts_what_this_server_withheld_for_lack_of_a_rule(
     world: World, mode: str
 ) -> None:
+    # The plain mail involves huber and office, which have a rule, and team,
+    # which has none: only team is a gap (ruling R-16 of the 2026-10-11 MCP
+    # read access plan; counting every circle of a withheld event named
+    # rules that exist as missing).
     _tool(world, mode, "previously")
     page = _text(_tool(world, mode, "policy_gaps"))
-    assert any(line.startswith("- circle:team · mcp · 2 · last ") for line in page.splitlines())
+    assert [line.split(" · last ")[0] for line in page.splitlines()[2:]] == [
+        "- circle:team · mcp · 2"
+    ]
 
 
 @pytest.mark.db
@@ -1049,6 +1058,93 @@ def test_a_rotated_token_stops_working_with_the_next_request_and_the_new_one_wor
         return statuses
 
     assert anyio.run(run) == [200, 401, 200, 401]
+
+
+@pytest.mark.db
+def test_a_read_resource_may_be_kept_only_by_the_client_that_asked(world: World) -> None:
+    """On the wire, as the revision 2026-07-28 answers: `cacheScope` private
+    and `ttlMs` 0 (ruling R-19 of the 2026-10-11 MCP read access plan: the
+    hint is set by the server, so a changed default of the SDK cannot widen
+    it). The older revision has no such field."""
+    bodies: list[str] = []
+
+    async def keep(response: httpx2.Response) -> None:
+        await response.aread()
+        if response.request.headers.get("mcp-method") == "resources/read":
+            bodies.append(response.text)
+
+    async def use(http: httpx2.AsyncClient) -> None:
+        http.headers["Authorization"] = f"Bearer {world.tokens['claude-code']}"
+        http.event_hooks["response"] = [keep]
+        async with Client(streamable_http_client(URL, http_client=http), mode="auto") as session:
+            await session.read_resource(f"previously://event/{world.ids['html_only']}")
+
+    _http(world, use)
+    (body,) = bodies
+    result = json.loads(body)["result"]
+    assert (result["cacheScope"], result["ttlMs"]) == ("private", 0)
+
+
+def _get_without_token(
+    storage: PostgresStorage, method: str, path: str, *, host: str = "127.0.0.1:8765"
+) -> httpx2.Response:
+    app = build_app(storage, allowed_hosts=())
+
+    async def run() -> httpx2.Response:
+        async with app.router.lifespan_context(app):
+            transport = httpx2.ASGITransport(app=app)
+            async with httpx2.AsyncClient(transport=transport, base_url=f"http://{host}") as http:
+                return await http.request(method, path)
+
+    return anyio.run(run)
+
+
+@pytest.mark.db
+def test_the_readiness_probe_answers_without_a_token_and_records_nothing(world: World) -> None:
+    response = _get_without_token(world.storage, "GET", "/healthz")
+    assert (response.status_code, response.text) == (200, "ok")
+    assert _accesses(world) == []
+
+
+@pytest.mark.db
+def test_the_readiness_probe_answers_whatever_host_the_request_names(world: World) -> None:
+    # A kubelet names the pod's address, which no allowed host lists; the
+    # probe shows nothing, so the check against DNS rebinding has nothing to
+    # protect there. The control: the same host on `/mcp` with a token is 421.
+    assert _get_without_token(world.storage, "GET", "/healthz", host="10.1.2.3:8765").text == "ok"
+    foreign = {"Authorization": f"Bearer {world.tokens['claude-code']}", "Host": "10.1.2.3:8765"}
+    assert _post(world, foreign).status_code == 421
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("method", "path"),
+    [
+        ("POST", "/healthz"),
+        ("HEAD", "/healthz"),
+        ("GET", "/healthz/"),
+        ("GET", "/healthz/mcp"),
+        ("GET", "/healthzz"),
+        ("GET", "/mcp"),
+        ("GET", "/"),
+    ],
+)
+def test_every_other_request_without_a_token_is_still_refused(
+    world: World, method: str, path: str
+) -> None:
+    # Only `GET` on exactly `/healthz` passes: a prefix or another method
+    # would open a door past the token check (ruling R-18 of the 2026-10-11
+    # MCP read access plan: the probe needs no principal because it reads
+    # nothing and records nothing; every other request does).
+    assert _get_without_token(world.storage, method, path).status_code == 401
+    assert _accesses(world) == []
+
+
+def test_the_readiness_probe_answers_503_when_the_database_does_not() -> None:
+    # A real store whose database does not listen: nothing stands in for it.
+    unreachable = PostgresStorage(create_engine("postgresql+psycopg://p:p@127.0.0.1:9/none"))
+    response = _get_without_token(unreachable, "GET", "/healthz")
+    assert (response.status_code, response.text) == (503, "Error: the database does not answer")
 
 
 @pytest.mark.db

@@ -4,7 +4,7 @@
 
 The MCP server that `previously mcp` and `previously serve` start offers five tools, two resource templates and two prompts.
 Every one of them only reads.
-Every call writes an action `mcp_access` to the log, described at the end of this page.
+Every call that reaches the server's code writes an action `mcp_access` to the log, described at the end of this page.
 {ref}`cli-mcp` and {ref}`cli-serve` describe the two commands, the token and the checks of an HTTP request, and {ref}`mcp-interface` explains why the server has this shape.
 
 ## The server
@@ -59,7 +59,7 @@ TEXT
 - `SOURCE` is the source of the event's key, or `unknown` when it has none.
 - `SENDER` and `RECIPIENT` are the display name of an identity of the channel, or its address when it has no name.
   The sender is the first identity in the role `from` or `sender`; the recipients are every identity in the role `to`, `cc` or `bcc`.
-  Without a sender, the part reads `unknown → RECIPIENT`, and without recipients it's the sender alone.
+  Without a sender, the part reads `unknown → RECIPIENT`, without recipients it's the sender alone, and without either it's left out.
 - Each field of the heading is kept to one line and cut at 200 characters, the last one an ellipsis.
   After ten recipients, `+N more` stands for the rest.
 - `TAG` is eight hexadecimal characters, drawn anew for every result and never a string that occurs in the result's content.
@@ -72,7 +72,7 @@ Inside the fence, before the units, an event that `get_event` returns carries th
 
 | Line | Content |
 |---|---|
-| `Attachments: NAME (MEDIA TYPE, N bytes), …` | Every blob the event names except the raw mail, without its content. A blob with no file name is `unnamed`. Left out when there's none. |
+| `Attachments: NAME (MEDIA TYPE, N bytes), …` | Every blob the event names except the raw mail, without its content. A blob with no file name is `unnamed`. Each entry is kept to one line and cut at 200 characters, and after ten entries `+N more` stands for the rest. Left out when there's none. |
 | `Found in: KEY VALUE, …` | The `found_in` of the payload, its keys sorted. Left out when there's none. |
 | `Message-ID: ID` | The external id of an event of the source `email`, unless it starts with `sha256:`. |
 | `Source key: SOURCE ID` | The source key of any other event that has one. |
@@ -142,7 +142,7 @@ End of page 1. More results: call again with cursor=eyJhZnRlciI6NDQsImZpbHRlcnMi
 
 ## Sanitizing
 
-Before anything reaches a result, these characters are removed from it and counted in the header:
+Before anything reaches a result, these characters are removed from it, and counted in the header where the result has one:
 
 - the escape sequences of a terminal, introduced by ESC or by their 8-bit forms U+009B, U+009D, U+0090, U+0098, U+009E and U+009F, each counted by its length;
 - every control character of the Unicode category `Cc` except the line feed and the tab, which covers C0, DEL and C1;
@@ -205,6 +205,7 @@ It takes no argument.
 - NAME · statement: STATEMENT · rule: none — only local processing · 1 member · this client does not see it: REASON
 ```
 
+`STATEMENT` is the statement the circle was set with, or `erased` when its payload was erased.
 `RULE` is the rule for `circle:NAME`: `regions REGIONS`, followed, where the rule sets them and separated by commas, by `retention at most N days`, `excludes providers NAMES`, `no training`, `no subprocessors`, `excludes operators NAMES` and `excludes model origins NAMES`.
 Whether the client sees the circle is decided for a member of the circle alone; a rule of a source can still narrow it.
 No line holds an address.
@@ -227,6 +228,7 @@ sources:
 ```
 
 A property the provider didn't declare reads `unknown`, and so does the revision of a call that names none.
+A processor that no provider declares reads `processor NAME: not declared`.
 The lines under `sources:` are one per rule of a source, then one for content that no circle and no rule of a source covers.
 
 ### `policy_gaps`
@@ -240,7 +242,11 @@ Where the built-in rule `local_only` acted, as `previously policy gaps` lists it
 ```text
 - circle:NAME · gate · N · last YYYY-MM-DD HH:MM UTC
 - circle:NAME · mcp · N · last YYYY-MM-DD HH:MM UTC
+- source:NAME · mcp · N · last YYYY-MM-DD HH:MM UTC
 ```
+
+A line of the origin `mcp` names a circle of a withheld event that has no rule; the circles of that event that have one aren't named.
+An event of no circle stands under its source as `source:NAME`, as a line of the gate does, or under itself as `event:ID` when it has no source key.
 
 When nothing fell back, the line is `No call fell back to local only.`
 
@@ -289,6 +295,7 @@ the rules of circle:bauer do not allow claude-max, the processor of this client 
 | `previously://event/{event_id}` | `event` | The event `event_id`, as `get_event` returns it with `ids` set to it alone. |
 
 The URI of an event is `previously://event/<id>` in either case.
+In the revision `2026-07-28` the result of `resources/read` carries `cacheScope` `private` and `ttlMs` `0`: a client may reuse it for no time and only for itself.
 An `event_id` that isn't a whole number in ASCII digits is refused:
 
 ```text
@@ -322,8 +329,8 @@ An argument is repeated sanitized, on one line, and cut at 1,000 characters.
 
 ## The access entry `mcp_access`
 
-Every call of a tool, a resource or a prompt that has a client is an event of the kind `action`, with no source key and no units, written after the call has read.
-A request over HTTP without a valid token writes none.
+Every call of a tool, a resource or a prompt that has a client is an event of the kind `action`, with no source key and no units, written after the call has read and before its answer leaves.
+A request over HTTP without a valid token writes none, and neither does a request that the transport of the SDK refuses before the server runs, with 421 for a host that isn't allowed or 400 for a protocol version it doesn't take.
 `previously access` reads the entries ({ref}`cli-access`).
 
 The keys of the payload:
@@ -332,10 +339,10 @@ The keys of the payload:
 |---|---|
 | `action` | `mcp_access`. |
 | `client` | The name of the client. |
-| `policy` | The ids of the events that decided: `client`, `processor` and `rules`; an empty object where the call ended before the policy was read, such as for a client not in force. |
+| `policy` | The ids of the events that decided: `client`, `processor` and `rules`; an empty object where the call found no client in force, or never reached the server's code. |
 | `call` | The call: `kind`, `name` and `arguments`. |
 | `delivered` | The events that reached the result, each with `event`, `units` and `circles`. |
-| `withheld` | The events the policy kept from the client, each with `event`, `reason_code`, `circles` and `reason`. |
+| `withheld` | The events the policy kept from the client, each with `event`, `reason_code`, `circles`, `reason`, `uncovered` and `source`. |
 | `outcome` | `ok`, or `error` for a result that's an error. |
 | `era` | The protocol revision of the call, such as `2026-07-28`, or `null` where the call names none. Required. |
 
@@ -344,14 +351,15 @@ The entry of `call`:
 | Key | Value |
 |---|---|
 | `kind` | `tool`, `resource` or `prompt`. |
-| `name` | The name of the tool or the prompt, or the template of the resource. |
+| `name` | The name of the tool or the prompt, or the template of the resource; for a resource call that the SDK refused, the URI it asked for. |
 | `arguments` | The arguments the call gave: a string cut at 1,000 characters and without NUL, a list or an object cut at 50 entries and at a depth of four, a whole number beyond 2^53 − 1 as a string, and only keys that start with a lower-case ASCII letter and go on with lower-case letters, digits and underscores; other keys are left out. A resource records `circle` or `event_id`. |
 
 An entry of `delivered` names the units that appeared on the page, a unit cut inside among them, and the circles of the event when the call was made.
-An erased event stands in `delivered` with no units and no circles.
+An erased event stands in `delivered` with no units and no circles: it was delivered as its placeholder, and no unit of it reached the client.
 An event that didn't fit on the page is in no entry of that call.
 
 An entry of `withheld` carries `reason_code` `no_rule` where a circle had no rule for a client that isn't local, `rule` where a rule said no, the circles of the event, and the sentence of the placeholder.
+`uncovered` lists the circles of the event that have no rule, and `source` is the source of the event's key, or `null` where it has none; `policy gaps` counts by these two.
 
 A call of `get_event` that delivered one event and withheld another looks like this:
 
@@ -367,7 +375,9 @@ A call of `get_event` that delivered one event and withheld another looks like t
       "event": 43,
       "reason_code": "no_rule",
       "circles": ["huber", "team"],
-      "reason": "circle team has no rule, so only local processing is allowed; this client (claude-code) processes with claude-max, which is not local"
+      "reason": "circle team has no rule, so only local processing is allowed; this client (claude-code) processes with claude-max, which is not local",
+      "uncovered": ["team"],
+      "source": "email"
     }
   ],
   "outcome": "ok",

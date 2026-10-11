@@ -114,6 +114,7 @@ With `api_key_env`, Vibe 2.26.1 sent no header at all, the server refused every 
 
 Vibe's default harness keeps the list of tools across sessions.
 After a release of Previously that changes the tools, start Vibe with `--legacy-harness` until the default harness offers the new ones.
+Whether `/mcp refresh` in Vibe brings the new tools into the default harness hasn't been measured.
 
 ## Check the connection
 

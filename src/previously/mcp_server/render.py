@@ -51,9 +51,14 @@ if TYPE_CHECKING:
 PAGE_CHARS: Final = 60_000
 
 # A heading field longer than this is cut, so that a page can always hold the
-# heading of one event, whatever the headers of a mail contained.
+# heading of one event, whatever the headers of a mail contained. The lists in
+# it are capped too, recipients and attachment names alike, with a count of
+# the rest: the lines before the first unit then come to a few thousand
+# characters at most, and the first unit of a cut event always gets text on
+# the page and not only its marker.
 _FIELD_CHARS: Final = 200
 _MAX_RECIPIENTS: Final = 10
+_MAX_ATTACHMENTS: Final = 10
 _REASON_CHARS: Final = 500
 _ERROR_CHARS: Final = 2_000
 
@@ -311,8 +316,10 @@ def _shown_block(item: Shown, counter: _Counter, budget: int | None) -> tuple[st
     if item.head.subject is not None:
         prefix.append("Subject: " + counter.line(item.head.subject, 300))
     if item.attachments:
-        names = ", ".join(counter.line(name) for name in item.attachments)
-        prefix.append("Attachments: " + names)
+        names = [counter.line(name) for name in item.attachments[:_MAX_ATTACHMENTS]]
+        if len(item.attachments) > _MAX_ATTACHMENTS:
+            names.append(f"+{len(item.attachments) - _MAX_ATTACHMENTS} more")
+        prefix.append("Attachments: " + ", ".join(names))
     prefix.extend(
         f"{counter.line(label)}: {counter.line(value)}" for label, value in item.provenance
     )
@@ -559,9 +566,3 @@ def decode_position(cursor: str, filters: Mapping[str, str]) -> Position:
     if recorded != dict(filters):
         raise ValueError(CURSOR_REFUSED)
     return Position(event_id, page)
-
-
-def decode_cursor(cursor: str, filters: Mapping[str, str]) -> int:
-    """Decode the id a cursor resumes after; raise `ValueError` if it is
-    malformed or not for `filters`."""
-    return decode_position(cursor, filters).after

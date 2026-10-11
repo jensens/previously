@@ -390,7 +390,7 @@ class PostgresStorage:
                 raise SourceKeyTaken(name) from error
             raise
 
-    # The reading methods below — `read`, `read_by_kind`, `units`,
+    # The reading methods below — `read`, `read_by_kind`, `actions`, `units`,
     # `units_by_event`, `count_events`, `source_keys`, `blobs_by_event` and
     # `events_by_blob` — take the `Connection` in, just like `tip`, `lookup`
     # and `insert_event` (review finding G4 of the final review). It said
@@ -427,11 +427,34 @@ class PostgresStorage:
 
         `storage` does not interpret a payload, so the question "which events
         are redactions" is not asked in SQL here: `core.redaction` reads the
-        actions and decides ({ref}`erasure`).
+        actions and decides ({ref}`erasure`). `actions` asks for the name of
+        an action and nothing more.
         """
         query = (
             select(event)
             .where(event.c.kind == kind)
+            .order_by(event.c.id)
+            .execution_options(stream_results=True, yield_per=100)
+        )
+        for row in conn.execute(query):
+            yield _event_row(row)
+
+    def actions(self, conn: Connection, action: str) -> Iterator[EventRow]:
+        """Every action whose payload names `action`, in chain order, through
+        a server-side cursor like `read`; an erased action has no payload and
+        names none.
+
+        The one place where `storage` asks a payload a question, and it asks
+        only for the name every action carries; whether the payload is sound
+        stays the caller's to decide, as with `read_by_kind`. Without it, the
+        policy read on every MCP call read every `mcp_access` the calls before
+        it wrote, and parsed each in Python only to pass it over
+        ({ref}`mcp-open-limits`). No index serves the filter: the database
+        still visits every action, but it hands over only those named.
+        """
+        query = (
+            select(event)
+            .where(event.c.kind == "action", event.c.payload["action"].astext == action)
             .order_by(event.c.id)
             .execution_options(stream_results=True, yield_per=100)
         )

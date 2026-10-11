@@ -146,9 +146,9 @@ The retention of the gate's providers applies to the provider behind a client to
 **Names outside the fence.**
 The heading of an event carries the display names of its sender and recipients, which a mail supplies, outside the fence: up to about 2,200 characters per event, cleaned and kept to one line.
 
-**A call can go unrecorded here too.**
-The `mcp_access` is written after the call has read, so a process that stops between the answer and the write leaves an answer that no event records.
-Over standard input and output the opposite exists as well: a call still running when the input closes writes its entry, and the client never receives the answer.
+**A record can name an answer that never arrived.**
+The `mcp_access` is written after the call has read and before the answer leaves, so the log never misses an answer that a client got, and a write that fails sends the client an error instead of content.
+The reverse can happen on either transport: an answer lost after its entry committed, because standard input closed, an HTTP connection dropped or the process stopped, stands in the log as delivered.
 
 **Writing outward.**
 It's ahead.

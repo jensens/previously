@@ -48,12 +48,22 @@ _FIELDS: frozenset[str] = frozenset(
 @dataclass(frozen=True)
 class Withheld:
     """An event the call did not get: `reason_code` is `no_rule` where a
-    circle had no rule for this client, `rule` where a rule said no."""
+    circle had no rule for this client, `rule` where a rule said no.
+
+    `circles` are all the circles of the event, which `previously access
+    --circle` finds it by. `uncovered` are those of them that have no rule,
+    and `source` is the source of the event, or `None` where it has no source
+    key: `policy gaps` counts a missing rule by these two, so that a circle
+    with a rule never shows up there as one without. Circle names are policy
+    names and a source is a name such as `email`, so neither is content.
+    """
 
     event: int
     reason_code: str
     circles: tuple[str, ...]
     reason: str
+    uncovered: tuple[str, ...]
+    source: str | None
 
 
 @dataclass(frozen=True)
@@ -106,6 +116,8 @@ def _payload(access: Access) -> dict[str, object]:
                 "reason_code": item.reason_code,
                 "circles": list(item.circles),
                 "reason": item.reason,
+                "uncovered": list(item.uncovered),
+                "source": item.source,
             }
             for item in access.withheld
         ],
@@ -116,9 +128,11 @@ def _payload(access: Access) -> dict[str, object]:
 
 def record_access[Conn](log: LogStore[Conn], access: Access, *, recorded_at: datetime) -> int:
     """Writes the access in a transaction of its own, after the call has read
-    what it answered with, and returns the `id` of the event. A stop between
-    the answer and this write loses the entry, the same named limit as the
-    gate's."""
+    what it answers with and before the answer leaves, and returns the `id` of
+    the event. So no answer leaves without its entry; what can happen is the
+    reverse, an answer lost after this write commits, which the log then
+    names as delivered ({ref}`mcp-open-limits`). A write that fails raises, and
+    the client gets an error instead of the answer."""
     return append_action(log, _payload(access), (), recorded_at=recorded_at)
 
 
@@ -141,7 +155,9 @@ def _in(value: object, allowed: frozenset[str]) -> bool:
 
 
 _DELIVERED_KEYS: frozenset[str] = frozenset({"event", "units", "circles"})
-_WITHHELD_KEYS: frozenset[str] = frozenset({"event", "reason_code", "circles", "reason"})
+_WITHHELD_KEYS: frozenset[str] = frozenset(
+    {"event", "reason_code", "circles", "reason", "uncovered", "source"}
+)
 _CALL_KEYS: frozenset[str] = frozenset({"kind", "name", "arguments"})
 
 
@@ -159,10 +175,20 @@ def _entry_problem(entry: object, key: str, keys: frozenset[str]) -> str | None:
     if key == "delivered":
         if not _is_list_of(named["units"], _is_int):
             return 'a "delivered" entry has units that are no list of numbers'
-    elif not _in(named["reason_code"], REASON_CODES):
+        return None
+    return _withheld_problem(named)
+
+
+def _withheld_problem(named: Mapping[str, object]) -> str | None:
+    """What is wrong with the fields only a `withheld` entry has, or `None`."""
+    if not _in(named["reason_code"], REASON_CODES):
         return 'a "withheld" entry has no known reason_code'
-    elif not isinstance(named["reason"], str):
+    if not isinstance(named["reason"], str):
         return 'a "withheld" entry has no reason'
+    if not _is_list_of(named["uncovered"], _is_str):
+        return 'a "withheld" entry has uncovered circles that are no list of text'
+    if not (named["source"] is None or isinstance(named["source"], str)):
+        return 'a "withheld" entry has a source that is neither text nor null'
     return None
 
 
@@ -249,6 +275,8 @@ def parse_access(payload: Mapping[str, object]) -> Access | None:
                 cast("str", item["reason_code"]),
                 _strings(item["circles"]),
                 cast("str", item["reason"]),
+                _strings(item["uncovered"]),
+                cast("str | None", item["source"]),
             )
             for item in withheld
         ),

@@ -380,6 +380,11 @@ Reading it off that way is what keeps the protocol a statement about what `core`
 A protocol copied from the implementation would have carried ten methods and said something false about `core`.
 Stage 1c took it to thirteen, read off the same way from the five modules of `core` that named it then; the command that counts them stands at the top of `contract/store.py`.
 On 2026-10-06 the run of a connector, `core/ingest.py`, became the sixth, and it calls nothing the other five don't, so the count stayed at thirteen, measured that day with the same command and `core/ingest.py` added to its files.
+The command kept naming those six files while more modules of `core` came to name the protocol, eleven by 2026-10-11, so it now takes its files from `grep -rl LogStore` and can't fall behind again.
+That day the MCP server took the protocol to fifteen methods.
+`observations` reads the chronicle for the server, which calls it from `mcp_server` rather than from `core`.
+`actions` reads the actions of one name, so that reading the policy doesn't read every access entry the calls before it wrote; `core.policy` and `core.clients` call it, which made fourteen methods that `core` calls.
+It's also the one method in which the store asks a payload anything, and it asks only for the name that every action carries: whether the payload is sound stays a question for `core`.
 
 The store still has to satisfy the protocol, and that's now a typed claim rather than a guarded one.
 Renaming `count_events` to `count_rows` in `storage/postgres.py`, measured on 2026-10-04, turns `pyright` red at every place a `PostgresStorage` is handed to `append` or `verify`:

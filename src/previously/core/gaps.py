@@ -16,7 +16,8 @@ but this list.
 
 The MCP server withholds an event of a circle that has no rule for the client
 and writes that into its `mcp_access` (`reason_code` `no_rule`); those are
-counted too, under the origin `mcp`.
+counted too, under the origin `mcp`, by the circles the entry names as having
+no rule, and by its source where the event belongs to no circle, as here.
 """
 
 from collections.abc import Mapping
@@ -105,11 +106,13 @@ def gaps[Conn](log: LogStore[Conn], conn: Conn, *, since: datetime | None) -> li
 
 
 def _mcp_gaps[Conn](log: LogStore[Conn], conn: Conn, *, since: datetime | None) -> list[Gap]:
-    """What the MCP server withheld for lack of a rule: per circle named in
-    a `withheld` entry with `reason_code` `no_rule`, one count for each
-    entry; an entry with no circle stands under `event:<id>`. Kept apart from
-    the gate's by `origin`: the same missing rule shows up in both, and the
-    list should say who ran into it."""
+    """What the MCP server withheld for lack of a rule: per circle a
+    `withheld` entry with `reason_code` `no_rule` names as `uncovered`, one
+    count for each entry. Its other circles have a rule and are no gap. An
+    entry with no such circle stands under `source:<source>` as the gate's
+    does, and under `event:<id>` where the event had no source. Kept apart
+    from the gate's by `origin`: the same missing rule shows up in both, and
+    the list should say who ran into it."""
     found: dict[str, Gap] = {}
     for row in log.read_by_kind(conn, "action"):
         payload = row.payload
@@ -123,7 +126,12 @@ def _mcp_gaps[Conn](log: LogStore[Conn], conn: Conn, *, since: datetime | None) 
         for item in access.withheld:
             if item.reason_code != NO_RULE:
                 continue
-            scopes = [f"circle:{name}" for name in item.circles] or [f"event:{item.event}"]
+            if item.uncovered:
+                scopes = [f"circle:{name}" for name in item.uncovered]
+            elif item.source is not None:
+                scopes = [f"source:{item.source}"]
+            else:
+                scopes = [f"event:{item.event}"]
             for scope in scopes:
                 known = found.get(scope)
                 found[scope] = (

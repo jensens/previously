@@ -318,17 +318,18 @@ def test_verify_reports_a_policy_event_with_units(db: Engine, units: bool) -> No
 
 
 class _RevokingAfterTheRead(PostgresStorage):
-    """The real store, except that the first read of the actions through it,
-    once its rows are read, revokes the circle `xz` through another store, in
-    a transaction of its own that commits before the rows are handed on."""
+    """The real store, except that the first read of the policy actions
+    through it, once its rows are read, revokes the circle `xz` through
+    another store, in a transaction of its own that commits before the rows
+    are handed on."""
 
     def __init__(self, engine: Engine, *, revoke: bool) -> None:
         super().__init__(engine)
         self._other = PostgresStorage(engine)
         self._revoke = revoke
 
-    def read_by_kind(self, conn: Connection, kind: str) -> Iterator[EventRow]:
-        rows = list(super().read_by_kind(conn, kind))
+    def actions(self, conn: Connection, action: str) -> Iterator[EventRow]:
+        rows = list(super().actions(conn, action))
         if self._revoke:
             self._revoke = False
             set_policy(self._other, Circle("xz"), statement="gone", revoked=True, recorded_at=T0)

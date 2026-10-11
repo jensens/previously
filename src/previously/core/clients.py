@@ -15,6 +15,7 @@ leading digits were right.
 
 from dataclasses import dataclass
 from datetime import datetime
+from previously.core.action import POLICY
 from previously.core.policy import CLIENT
 from previously.core.policy import Client
 from previously.core.policy import PolicyRefused
@@ -100,9 +101,7 @@ def client_rows[Conn](log: LogStore[Conn], conn: Conn) -> list[ClientRow]:
     """The clients in force by name, each with its event and its date."""
     policy = read_policy(log, conn)
     wanted = {policy.ids[(CLIENT, name)] for name in policy.clients}
-    dates = {
-        row.id: row.recorded_at for row in log.read_by_kind(conn, "action") if row.id in wanted
-    }
+    dates = {row.id: row.recorded_at for row in log.actions(conn, POLICY) if row.id in wanted}
     return [
         ClientRow(client, policy.ids[(CLIENT, name)], dates[policy.ids[(CLIENT, name)]])
         for name, client in sorted(policy.clients.items())

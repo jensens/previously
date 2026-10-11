@@ -3,9 +3,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The MCP server: five tools, two resource templates and two prompts.
 
-Every call reads the policy anew, finds its client in it, and writes an
-`mcp_access` after it has read, whatever became of it
-({ref}`mcp-access-log`).
+Every call that reaches a handler here reads the policy anew, finds its
+client in it, and writes an `mcp_access` after it has read and before it
+answers, whatever became of it ({ref}`mcp-access-log`).
+A request refused before that writes none: a missing or invalid token (401),
+a host the DNS-rebinding check refuses (421), or a protocol version the SDK's
+transport does not take (400).
 The client is the one `previously mcp` was started for on stdio, or the one
 whose bearer token the HTTP wrapper resolved (`auth.guarded`); a header is
 never an identity.
@@ -34,6 +37,7 @@ from datetime import date
 from datetime import datetime
 from datetime import UTC
 from importlib.metadata import version
+from mcp.server import CacheHint
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
@@ -66,6 +70,7 @@ from previously.mcp_server.read import source_verdict
 from previously.mcp_server.render import CURSOR_REFUSED
 from previously.mcp_server.render import decode_position
 from previously.mcp_server.render import encode_cursor
+from previously.mcp_server.render import PAGE_CHARS
 from previously.mcp_server.render import render_error
 from previously.mcp_server.render import render_page
 from previously.mcp_server.render import render_text
@@ -87,6 +92,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
     from collections.abc import Mapping
     from collections.abc import Sequence
+    from mcp.server.caching import CacheableMethod
     from mcp.server.context import CallNext
     from mcp.server.context import HandlerResult
     from mcp.server.context import ServerRequestContext
@@ -122,12 +128,12 @@ _CHRONICLE: Final = (
     "inside a fence of foreign content. The filters combine: circle (a member of the "
     "circle is involved), source, since and until. An event the processing policy "
     "keeps from this client stands as a placeholder with the reason. A page stays "
-    "under 60,000 characters, and its footer names the cursor of the next page. An "
+    f"under {PAGE_CHARS:,} characters, and its footer names the cursor of the next page. An "
     "event is cited as previously://event/<id>, a unit as "
     "previously://event/<id>#unit-<n>."
 )
 _GET_EVENT: Final = (
-    "1 to 20 events by id, each in full: its heading, all its units, the "
+    f"1 to {MAX_IDS} events by id, each in full: its heading, all its units, the "
     "names of its attachments (never their content), and where it was found "
     "(folder, Message-ID). An id that is unknown, not an observation, or withheld "
     "by the processing policy gets a line of its own; the other ids are served."
@@ -154,8 +160,19 @@ _SOURCE = Field(description="a source, such as email")
 _SINCE = Field(description=f"from this time on, inclusive: {_MOMENT_HELP}")
 _UNTIL = Field(description=f"before this time, exclusive: {_MOMENT_HELP}")
 _CURSOR = Field(description="the cursor from the footer of the previous page")
-_IDS = Field(description="1 to 20 event ids")
+_IDS = Field(description=f"1 to {MAX_IDS} event ids")
 _FROM_UNIT = Field(description="start every event at this unit, for the rest of a cut event")
+
+# What a client may keep of a read resource, as the protocol revision
+# 2026-07-28 lets a server say: nothing past the answer, and only for the
+# client that asked, since what a resource shows depends on who reads it.
+# The SDK defaults to the same, measured on 2026-10-11 with `mcp` 2.3.0; it
+# is named here so that a changed default does not change what this server
+# says (ruling R-19 of the 2026-10-11 MCP read access plan: a silent change
+# of a default is the risk, not today's answer).
+_CACHE_HINTS: Final[Mapping[CacheableMethod, CacheHint]] = {
+    "resources/read": CacheHint(ttl_ms=0, scope="private")
+}
 
 # The tools/call, resources/read and prompts/get of MCP, by the kind the
 # access log gives them.
@@ -415,7 +432,9 @@ class Service[Conn]:
     ) -> HandlerResult:
         """The access entry for a call the SDK refused before it reached one
         of the functions below: an unknown name, or arguments that do not fit
-        the schema. Every call writes one ({ref}`mcp-access-log`)."""
+        the schema. So every call that reaches this middleware writes one;
+        a request the transport refused before it never gets here
+        ({ref}`mcp-access-log`)."""
         kind = _KINDS.get(ctx.method)
         if kind is None or ctx.request_id is None:
             return await call_next(ctx)
@@ -605,6 +624,7 @@ def build_server[Conn](log: LogStore[Conn], *, stdio_client: str | None) -> MCPS
         version=version("previously"),
         instructions=INSTRUCTIONS,
         log_level="WARNING",
+        cache_hints=_CACHE_HINTS,
     )
     server.middleware.append(service.safety_net)
     _tools(server, service)
@@ -832,7 +852,18 @@ def build_app[Conn](log: LogStore[Conn], *, allowed_hosts: Sequence[str]) -> Sta
             client = client_for_token(read_policy(log, conn), token)
         return None if client is None else client.name
 
-    app.add_middleware(guarded, resolve=resolve)
+    def ready() -> bool:
+        # The newest event's id and hash, one indexed query: the cheapest
+        # question `LogStore` has, and nothing of it leaves this function.
+        try:
+            with log.snapshot() as conn:
+                log.tip(conn)
+        except Exception:
+            logger.exception("the readiness probe found no database")
+            return False
+        return True
+
+    app.add_middleware(guarded, resolve=resolve, ready=ready)
     return app
 
 

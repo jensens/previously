@@ -5,7 +5,6 @@ from datetime import datetime
 from datetime import UTC
 from hypothesis import given
 from hypothesis import strategies as st
-from previously.mcp_server.render import decode_cursor
 from previously.mcp_server.render import decode_position
 from previously.mcp_server.render import draw_tag
 from previously.mcp_server.render import encode_cursor
@@ -378,22 +377,22 @@ def test_a_page_with_removed_characters_stays_within_the_limit() -> None:
 def test_a_cursor_comes_back_as_it_went_in() -> None:
     filters = {"circle": "h_da", "source": "email"}
     cursor = encode_cursor(42, filters)
-    assert decode_cursor(cursor, filters) == 42
+    assert decode_position(cursor, filters).after == 42
     assert re.fullmatch(r"[A-Za-z0-9_-]+", cursor)
 
 
 def test_a_cursor_with_other_filters_is_refused() -> None:
     cursor = encode_cursor(42, {"circle": "h_da"})
     with pytest.raises(ValueError, match="cursor is not valid for these filters"):
-        decode_cursor(cursor, {"circle": "other"})
+        decode_position(cursor, {"circle": "other"})
     with pytest.raises(ValueError, match="cursor is not valid for these filters"):
-        decode_cursor(cursor, {})
+        decode_position(cursor, {})
 
 
 @pytest.mark.parametrize("junk", ["", "not a cursor", "e30", "bnVsbA", "W10"])
 def test_a_malformed_cursor_is_refused(junk: str) -> None:
     with pytest.raises(ValueError):
-        decode_cursor(junk, {})
+        decode_position(junk, {})
 
 
 # --- the redraw inside render_page --------------------------------------------
@@ -442,6 +441,21 @@ def test_a_mail_to_400_recipients_stays_within_the_page_and_shows_the_cap() -> N
     assert heading.endswith("+390 more")
     assert "010nnn" not in heading
     assert "009n" in heading
+
+
+def test_a_mail_with_400_attachments_stays_within_the_page_and_shows_text() -> None:
+    """The attachment names are capped like the recipients, so the event is
+    cut inside its unit with text of that unit on the page, and the unit the
+    page reports is one whose text a reader sees, not just its marker."""
+    names = tuple(f"{n:03d}" + "a" * 147 + ".pdf (application/pdf, 1 bytes)" for n in range(400))
+    shown = Shown(_head(), ((1, "z" * 100_000), (2, "next")), attachments=names)
+    page = _render(shown)
+    assert len(page.text) <= PAGE_CHARS
+    attachments = next(line for line in page.text.splitlines() if line.startswith("Attachments: "))
+    assert attachments.endswith("+390 more")
+    assert "010aaa" not in attachments
+    assert page.units == ((1,),)
+    assert re.search(r"^#unit-1\nz{1000}", page.text, re.MULTILINE)
 
 
 def test_a_long_heading_field_is_cut_with_an_ellipsis() -> None:
@@ -520,7 +534,7 @@ def test_the_invisible_groups_never_reach_the_page(content: str) -> None:
 def test_a_cursor_error_does_not_carry_the_parser_message() -> None:
     for junk in ["", "@@@@", "A", "bnVsbA"]:
         with pytest.raises(ValueError) as caught:
-            decode_cursor(junk, {})
+            decode_position(junk, {})
         assert str(caught.value) == "cursor is not valid for these filters"
 
 
