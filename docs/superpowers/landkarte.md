@@ -174,13 +174,12 @@ Auslieferung mit Abschnitt, **P-AL** das Ausführungsprotokoll der Auslieferung
 Spec der Pilot-Einheit 1 mit Abschnitt, **P-PI** ihr Ausführungsprotokoll
 (`sdd/2026-10-06-pilot-imap-aufnahme/`) mit dem Ruling oder der Aufgabe,
 **PG** der Spec der Pilot-Einheit 3 mit Abschnitt, **P-PG** ihr
-Ausführungsprotokoll (`sdd/2026-10-09-pilot-gate-und-policy/`, folgt mit der
-Endprüfung) mit dem Ruling oder der Aufgabe,
+Ausführungsprotokoll (`sdd/2026-10-09-pilot-gate-und-policy/`) mit dem
+Ruling oder der Aufgabe,
 **MK** das Konzept der MCP-Schnittstelle (`specs/2026-10-10-mcp-schnittstelle.md`)
 mit Abschnitt, **ML** der Spec der Pilot-Einheit 4, des MCP-Lesezugangs, mit
 Abschnitt, **P-ML** dessen Ausführungsprotokoll
-(`sdd/2026-10-11-pilot-mcp-lesezugang/`, folgt mit der Endprüfung) mit dem
-Ruling oder der Aufgabe,
+(`sdd/2026-10-11-pilot-mcp-lesezugang/`) mit dem Ruling oder der Aufgabe,
 **PP** der Prüfpunkt vom 2026-10-04 mit der Zeile seines Belegberichts.
 
 ### Einwurf-Vertrag (`contract`, Teilprojekt 2)
