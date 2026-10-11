@@ -24,13 +24,7 @@ Gebaut und abgenommen, auf `main`:
 | Auslieferung | Die Migrationen im Paket und `previously migrate` unter einer Advisory-Sperre; `PREVIOUSLY_DSN` nach einer eigenen Grammatik gelesen; ein Image aus dem Paket auf PyPI, mit Smoke-Test; `release.yml`: Test-PyPI bei jedem Push auf `main`, PyPI und Image für zwei Plattformen bei einem veröffentlichten Release; der Handoff an kup6s | `specs/2026-10-05-auslieferung.md` | PR #6, `fd3e17f`; veröffentlicht als `0.1.0a1`, wie der Spec der Aufnahme festhält |
 | Aufnahme | `RawEvent` trägt `artifact_hash` und `channel_identities`, `append` vergleicht die Inhaltsidentität und weist Abweichendes mit `ArtifactChanged` ab; eine Mail als Event (`core/mail.py`), mit Rohmail und Anhängen als Blobs und einer Mail im Anhang als eigenem Event; `Connector`, `Fetched`, `Watermark`, `WatermarkStore` in `contract`, die Tabelle `watermark` (Migration `0005_watermark`); der Lauf (`core/ingest.py`), der das Wasserzeichen erst nach dem Anfügen schreibt; `connectors/imap.py` und `previously ingest imap`; der Handoff `handoffs/2026-10-06-kup6s-ingest.md` | `specs/2026-10-06-pilot-imap-aufnahme.md` | PR #7, `009c669`; Bedingung 11, der Lauf des Betreuers gegen seinen echten Mailu-Ordner, bestanden am 2026-10-09; veröffentlicht als `v0.1.0a2` am 2026-10-09, der Handoff `handoffs/2026-10-06-kup6s-ingest.md` am selben Tag an den Agenten in kup6s übergeben |
 | Einheit 3 | Gate und Policy: Kreise, Mitgliedschaften, eigene Identitäten, Regeln und die Zusagen der Anbieter als Handlungen im Log (`policy`); die Entscheidung als reine Funktion in `core/decide.py`, die strengste Regel gewinnt, ohne Regel nur lokal, und der Rückfall wird sichtbar (`policy gaps`); `gate` mit den Adaptern für Anthropic, Mistral und ein lokales Modell, der Aufgabe `mail_overview`, einer Preisdatei und dem Audit als `model_call` mit der Kaskade der Tilgung und den Prüfungen in `verify`; die Chronik zeigt nur Wahrnehmungen; die Seiten `trust-boundaries.md`, `processing-policy.md`, `policy-and-model-calls.md` und die Anleitung; der Handoff `handoffs/2026-10-09-kup6s-gate.md` | `specs/2026-10-09-pilot-gate-und-policy.md` | PR #9, `d75c4b3`; Bedingung 10, der Lauf des Betreuers gegen die echten APIs, bestanden am 2026-10-09 |
-
-Gebaut, aber nicht abgenommen — abgenommen ist, was der Betreuer nach `main`
-mergt, und dieser Zweig ist es noch nicht:
-
-| Einheit | Inhalt | Spec | Abnahme |
-|---|---|---|---|
-| 4 | MCP-Lesezugang: Clients als Prinzipale mit Token und Verarbeitungskette (`client`); die Zusage um Betreiber, Training, Unterverarbeiter und Herkunft des Modells erweitert, die Regel um die vier passenden Einschränkungen; `previously mcp` (stdio) und `previously serve` (HTTP, beide Generationen, Bereitschaft über `GET /healthz` ohne Token); fünf Werkzeuge, zwei Ressourcen-Vorlagen, zwei Prompts, jeder Inhalt nur nach `decide` mit der Kette des Clients; das Zugriffsprotokoll als `mcp_access` und `previously access`; `policy gaps` zählt, was MCP zurückhielt; die Seiten `mcp-interface.md`, `mcp-tools.md` und die Anleitung `connect-claude-code-and-vibe.md`; der Handoff `handoffs/2026-10-11-kup6s-mcp.md` | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, beide eingefroren am 2026-10-11 | Zweig `worktree-mcp-konzept`, noch nicht gemergt; Bedingung 9, der Lauf des Betreuers mit Claude Code und Vibe, folgt dem Merge |
+| Einheit 4 | MCP-Lesezugang: Clients als Prinzipale mit Token und Verarbeitungskette (`client`); die Zusage um Betreiber, Training, Unterverarbeiter und Herkunft des Modells erweitert, die Regel um die vier passenden Einschränkungen; `previously mcp` (stdio) und `previously serve` (HTTP, beide Generationen, Bereitschaft über `GET /healthz` ohne Token); fünf Werkzeuge, zwei Ressourcen-Vorlagen, zwei Prompts, jeder Inhalt nur nach `decide` mit der Kette des Clients; das Zugriffsprotokoll als `mcp_access` und `previously access`; `policy gaps` zählt, was MCP zurückhielt; die Seiten `mcp-interface.md`, `mcp-tools.md` und die Anleitung `connect-claude-code-and-vibe.md`; der Handoff `handoffs/2026-10-11-kup6s-mcp.md` | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, beide eingefroren am 2026-10-11 | PR #12, `ffa28fb`; veröffentlicht als `v0.1.0a3` am 2026-10-11; Bedingung 9, der Lauf des Betreuers mit Claude Code und Vibe, steht aus |
 
 Mit Stufe 1c ist Teilprojekt 1 gebaut und abgeschlossen, wie die Architektur
 es in §12.1 zuschneidet: Log, Projektionen, Blobs. Die Auslieferung und die
@@ -38,15 +32,22 @@ Aufnahme sind die Einheiten 0 und 1 des Piloten (unten).
 
 Das Gate ist gebaut (Einheit 3, oben) und am 2026-10-09 gegen alle drei
 Anbieter gelaufen (Bedingung 10), aber noch in keinem Betrieb. Der
-MCP-Lesezugang ist gebaut (Einheit 4, oben), aber weder gemergt noch in einem
-Betrieb, und noch mit keinem echten Client gegen `previously serve` gelaufen.
+MCP-Lesezugang ist abgenommen und mit `v0.1.0a3` veröffentlicht (Einheit 4,
+oben), aber in keinem Betrieb und noch mit keinem echten Client gegen
+`previously serve` gelaufen.
+
+In Betrieb ist `0.1.0a2` in kup6s, nach den Handoffs der Auslieferung und
+der Aufnahme: Datenbank, Bucket, Werkzeug-Pod, die CronJobs `project`,
+`anchor` (täglich seit dem 2026-10-06) und `verify`, die Aufnahme des echten
+Ordners mit neun Mails. Jede Prüfung beider Handoffs ist bestanden, und kup6s weicht an vier
+Stellen begründet ab — PostgreSQL 18, verschlüsselte Dumps statt Barman oder
+pgBackRest, Zugangsdaten für das ganze Hetzner-Projekt, die Ankerdatei in Git
+bei keinem Dritten (RK). Das Log dort ist eine Probe: die Daten werden vor dem
+regulären Gebrauch zurückgesetzt, das dauerhafte Log beginnt danach.
 
 Nicht gebaut: die Suche, jede
 Feststellung und jede Entität, jedes schreibende MCP-Werkzeug, KI-Schicht,
-jeder Konnektor außer dem für IMAP — und kein Betrieb: es gibt ein Paket und ein Image,
-betrieben wird es noch nirgends; das System hat **noch kein einziges echtes
-Event** gehalten, das bleibt. Die Probe der Bedingung 11 wird verworfen, das
-dauerhafte Log beginnt im Cluster.
+jeder Konnektor außer dem für IMAP.
 
 ## Was als Nächstes kommt
 
@@ -69,16 +70,22 @@ Alpha-Release mit `ingest imap`, `v0.1.0a2`, ist am 2026-10-09 veröffentlicht,
 und der Handoff der Aufnahme ist am selben Tag an den Agenten in kup6s
 übergeben. Einheit 3, Gate und Policy, ist abgenommen (PR #9, `d75c4b3`).
 Bedingung 10, der Lauf des Betreuers gegen die echten APIs, ist bestanden
-(unten unter *Erledigt*). Einheit 4, der MCP-Lesezugang, ist gebaut (oben);
-der Handoff des Gates wurde zurückgehalten, damit Gate und MCP-Server mit
-einem Release kommen. Was jetzt kommt, in dieser Reihenfolge: der Merge von
-Einheit 4; das Alpha-Release `v0.1.0a3` mit Gate und MCP-Lesezugang;
-Bedingung 9 der Einheit 4, der Lauf des Betreuers mit Claude Code und Vibe
-gegen `previously serve` (ML §12); die Handoffs
-`handoffs/2026-10-09-kup6s-gate.md` und `handoffs/2026-10-11-kup6s-mcp.md`
-zusammen an den Agenten in kup6s; in kup6s Einheit 2 nach den Handoffs — die
-erste Aufnahme des echten Ordners geschieht dort; und als nächste Einheit mit
-Spec Einheit 5, die Feststellungen. Was die Aufnahme offen lässt, steht unten
+(unten unter *Erledigt*). Einheit 4, der MCP-Lesezugang, ist abgenommen
+(PR #12, `ffa28fb`) und mit Gate und Policy als `v0.1.0a3` am 2026-10-11
+veröffentlicht; der Handoff des Gates wurde zurückgehalten, damit Gate und
+MCP-Server mit einem Release kommen. Am selben Tag hat kup6s auf die Handoffs
+der Auslieferung und der Aufnahme geantwortet (RK), und der Betreuer hat
+daraufhin vier Dinge entschieden: Sicherungen sind Anforderungen, das System
+wählt der Betrieb; eine Tilgungszusage deckt nie die Quellsysteme; PostgreSQL
+18 ist die getestete und unterstützte Version, 17 nicht mehr; Ablageort der
+Anker und Rückgabecode auf leerem Log sind für den Piloten hingenommen. Der
+Zweig `worktree-betrieb-rueckmeldung` setzt das um. Was jetzt kommt, in dieser
+Reihenfolge: der Merge dieses Zweigs; die Handoffs
+`handoffs/2026-10-09-kup6s-gate.md` und `handoffs/2026-10-11-kup6s-mcp.md`,
+der zweite mit der Antwort auf die Rückmeldung, zusammen an den Agenten in
+kup6s; Bedingung 9 der Einheit 4, der Lauf des Betreuers mit Claude Code und
+Vibe gegen `previously serve` (ML §12); in kup6s Einheit 2 nach den beiden
+Handoffs; und als nächste Einheit mit Spec Einheit 5, die Feststellungen. Was die Aufnahme offen lässt, steht unten
 unter *Aufnahme aus IMAP* und an den Einheiten, zu denen es gehört.
 
 Der Weg dorthin hatte zwei Umwege, und sie stehen hier, damit die Reihenfolge
@@ -111,9 +118,9 @@ Spec:
 |---|---|---|---|
 | 0 | Auslieferung: Migrationen im Paket, `previously migrate`, Image, Release-Weg, Handoff an kup6s | ein Image, aus dem kup6s alles startet | `specs/2026-10-05-auslieferung.md`, eingefroren am 2026-10-05; abgenommen mit PR #6 (oben) |
 | 1 | Aufnahme aus dem IMAP-Ordner, mit dem Einwurf- und dem Konnektor-Vertrag | Chronik des Kunden; echte Post im Log | `specs/2026-10-06-pilot-imap-aufnahme.md`, eingefroren am 2026-10-06; abgenommen mit PR #7 (oben). Er ersetzt den Entwurf vom 2026-10-04 auf dem Zweig `worktree-pilot-imap-aufnahme` (`9b493f0`) |
-| 2 | Betrieb in kup6s: Datenbank mit Sicherung, Restore-Probe, Bucket, Werkzeug-Pod, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | beginnt beim Image aus Einheit 0; gebaut wird er vom Agenten in kup6s, nie von hier. Was er braucht, sagen die Handoffs `handoffs/2026-10-05-kup6s-delivery.md` und, für die Aufnahme, `handoffs/2026-10-06-kup6s-ingest.md` und, für das Gate, `handoffs/2026-10-09-kup6s-gate.md` und, für den MCP-Server, `handoffs/2026-10-11-kup6s-mcp.md`, englisch; die ersten beiden liegen dort, die beiden anderen folgen zusammen mit dem Release `v0.1.0a3` |
+| 2 | Betrieb in kup6s: Datenbank mit Sicherung, Restore-Probe, Bucket, Werkzeug-Pod, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | beginnt beim Image aus Einheit 0; gebaut wird er vom Agenten in kup6s, nie von hier. Was er braucht, sagen die Handoffs `handoffs/2026-10-05-kup6s-delivery.md` und, für die Aufnahme, `handoffs/2026-10-06-kup6s-ingest.md` und, für das Gate, `handoffs/2026-10-09-kup6s-gate.md` und, für den MCP-Server, `handoffs/2026-10-11-kup6s-mcp.md`, englisch; die ersten beiden liegen dort und stehen, wie die Rückmeldung vom 2026-10-11 sagt (RK); die beiden anderen folgen mit dem Zweig `worktree-betrieb-rueckmeldung`, nach seinem Merge, für das Release `v0.1.0a3` |
 | 3 | Gate und Policy: Kreise statt Organisationsprofil, drei Anbieter-Adapter, Audit, die Verarbeitungsprüfung (nicht mehr „Offenlegungsprüfung“: PG §1.2) | die Grenze, hinter der ein Modell Inhalt sieht | `specs/2026-10-09-pilot-gate-und-policy.md`, eingefroren am 2026-10-09; abgenommen mit PR #9 (oben) |
-| 4 | MCP-Lesezugang, mit der Verarbeitungsprüfung davor (die Entscheidung aus Einheit 3, wiederverwendet) | Claude Code fragt das Log | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, das §8 der Architektur ablöst; beide eingefroren am 2026-10-11; gebaut, nicht abgenommen (oben) |
+| 4 | MCP-Lesezugang, mit der Verarbeitungsprüfung davor (die Entscheidung aus Einheit 3, wiederverwendet) | Claude Code fragt das Log | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, das §8 der Architektur ablöst; beide eingefroren am 2026-10-11; abgenommen mit PR #12 (oben) |
 | 5 | Feststellungen: Schreibweg, Verpflichtung und Entscheidung, Projektionen, Freigabe | was festgestellt ist, mit Quelle und Verantwortung | — |
 | 6 | KI-Schicht: Vorschläge hinter dem Gate | Protokoll und offene Punkte | — |
 | 7 | Nextcloud-Ordner mit Textextraktion | Dokumente | — |
@@ -137,7 +144,7 @@ ihren Beleg im Prüfpunkt.
 | Feststellungen: zweiter Schreibweg, Art und Unterart, Regeln je Art in `verify` | Triage, `record_assertion`, KI-Schicht, Identitätsgraph, jede fachliche Projektion | `append` schreibt nur `observation`; `verify` kennt keine Art-Regeln |
 | Blobs mit Verschlüsselung — **gebaut mit Stufe 1c** | Drop-Ordner mit Dateien, IMAP mit Anhängen und Rohmail, Voice | es gab keinen Ort für Bytes |
 | Tilgung als Event, die Einheiten und Projektionen mitnimmt — **gebaut mit Stufe 1c** | Inhalte Dritter im Log (Mail, Dokumente) — also der Pilot | ein Grabstein war von einer Fälschung nicht zu unterscheiden, und die Einheiten blieben stehen |
-| Ein Betrieb mit Sicherung, Restore-Probe und Anker-Routine — das Image **gebaut mit der Auslieferung**, der Rest beim Agenten in kup6s | Daten, deren Verlust weh tut | bisher gibt es nur Wegwerf-Datenbanken |
+| Ein Betrieb mit Sicherung, Restore-Probe und Anker-Routine — das Image **gebaut mit der Auslieferung**, der Rest **steht in kup6s** mit stündlichen verschlüsselten Dumps und täglichen Ankern, die Restore-Probe bisher von Hand (RK) | Daten, deren Verlust weh tut | bis zur Rückmeldung vom 2026-10-11 gab es nur Wegwerf-Datenbanken; auch das Log in kup6s ist noch eine Probe, die vor dem regulären Gebrauch zurückgesetzt wird |
 | Echte, gemischtsprachige Einheiten im Log | die Messung zur Textsuche und die Wahl des Embedding-Modells | beide verlangen einen Testsatz aus echten gemischten Einheiten (Architektur §11, Nachtrag) |
 | Warteschlange (die Sperre auf der Zustandszeile ist gebaut, Commit `3ae7038`) | der erste asynchrone Produzent | ein asynchroner Produzent braucht Entprellung und Wiederholung |
 | Das Gate — **gebaut mit Einheit 3**, nur `gate` importiert die Clients der Anbieter | jeder Modellaufruf | Regel 2 der Architektur: nur `gate` ruft Modelle |
@@ -180,7 +187,11 @@ Ruling oder der Aufgabe,
 mit Abschnitt, **ML** der Spec der Pilot-Einheit 4, des MCP-Lesezugangs, mit
 Abschnitt, **P-ML** dessen Ausführungsprotokoll
 (`sdd/2026-10-11-pilot-mcp-lesezugang/`) mit dem Ruling oder der Aufgabe,
-**PP** der Prüfpunkt vom 2026-10-04 mit der Zeile seines Belegberichts.
+**PP** der Prüfpunkt vom 2026-10-04 mit der Zeile seines Belegberichts,
+**RK** die Rückmeldung des Agenten in kup6s vom 2026-10-11 auf die Handoffs
+der Auslieferung und der Aufnahme
+(`handoffs/2026-10-11-kup6s-feedback-delivery-and-ingest.md`), englisch, wie
+erhalten.
 
 ### Einwurf-Vertrag (`contract`, Teilprojekt 2)
 
@@ -846,14 +857,24 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
 
 ### Betrieb (ohne Teilprojekt)
 
-- Deployment-Mechanismus und Datenbank mit Sicherung baut der Agent in kup6s
-  nach dem Handoff (das Image ist gebaut, unten unter *Erledigt*); offen,
-  welche pgBackRest-Plugin-Implementierung (A §11, §13;
-  `backup-encryption.md`).
-- Ablageort und Intervall der Anker; benannter Restore-Point im Takt des
-  Ankerns (AA §10 Punkt 4). Wo die Ankerdatei im Cluster liegt, entscheidet
-  der Betrieb, die Bedingungen stehen in `verify-the-chain.md`; ob Previously
-  sie selbst irgendwohin veröffentlichen soll, ist offen (AL §12 Punkt 4).
+- Benannter Restore-Point im Takt des Ankerns, für `--exact` nach einer
+  Wiederherstellung (AA §10 Punkt 4); mit stündlichen Dumps ohne
+  Point-in-Time-Recovery, wie in kup6s (RK), fällt ein Dump nur zufällig auf
+  einen Anker. Ob Previously die Ankerdatei selbst irgendwohin veröffentlichen
+  soll, ist offen (AL §12 Punkt 4).
+- Die Zugangsdaten der Buckets reichen weiter als der Bucket: ein S3-Schlüssel
+  bei Hetzner gilt für jeden Bucket eines Projekts, und kup6s nutzt eines; eine
+  Bucket-Policy mit `NotPrincipal` hält fremde Schlüssel aus einem Bucket
+  heraus, aber keinen Schlüssel aus anderen. Für die Probe nutzen Blob- und
+  Dump-Bucket die Zugangsdaten der Flotte; Blobs und Dumps sind verschlüsselt,
+  `verify --blobs` erkennt einen gelöschten oder ersetzten Blob, verhindert
+  ihn aber nicht. Ob „Zugangsdaten für diesen Bucket und nichts sonst" für den
+  regulären Gebrauch Anforderung bleibt — dann braucht es ein eigenes
+  Hetzner-Projekt —, entscheidet der Betreuer später (RK; 1c §7).
+- Eine geplante Restore-Probe braucht den privaten Schlüssel der Sicherungen,
+  der heute nur für die Probe von Hand in den Cluster kommt; wo ein geplanter
+  Job ihn halten darf, ist nicht entschieden, der Betreuer entscheidet später
+  (RK; `backup-encryption.md` lässt beides zu, solange die Probe läuft).
 - `previously migrate` geht nur vorwärts; ein Zurück im Betrieb ist eine
   Wiederherstellung, kein Kommando (AL §12 Punkt 3; `delivery.md`).
 - Der Container-Weg der Anker-Routine ist für `kubectl exec` ungemessen
@@ -877,23 +898,8 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
   Datenbank migrieren muss, sagen seit der Auslieferung `run-the-image.md`
   und die Release-Notes für Betreiber, die `cut-a-release.md` verlangt — mit
   `previously migrate` statt `alembic upgrade head`.
-- Die Aufbewahrungsfrist der Sicherungen ist Teil der Tilgungszusage: die der
-  Datenbank und des WAL-Archivs, und die der Sicherungen oder Kopien des
-  Buckets, wenn es sie gibt (1c §4.5, §7; P-1c). Steht auf `erasure.md`,
-  `blobs.md` und `backup-encryption.md`; gewählt ist keine Frist. Seit der
-  Aufnahme gehört die der Sicherungen des Mailservers dazu, und die Mail im
-  Ordner selbst: Previously verändert den Ordner nie (PI §6; Handoff
-  `handoffs/2026-10-06-kup6s-ingest.md`).
-- Die Aufnahme in kup6s baut der Agent dort nach dem Handoff
-  `handoffs/2026-10-06-kup6s-ingest.md`: ein CronJob alle 5 bis 15 Minuten
-  mit `ingest imap` und `project`, `concurrencyPolicy: Forbid`, ein Secret
-  nur für ihn mit den fünf IMAP-Angaben, ein eigener Mailu-Benutzer, Port 993
-  nach außen, ein beschreibbares `/tmp` und eine Speichergrenze von 768 MiB;
-  die erste Aufnahme des echten Ordners geschieht dort (PI §6). Gemessen am
-  2026-10-06 im Image dieses Zweigs: 529 bis 531 MiB für eine Mail von
-  49,5 MiB (P-PI, Aufgabe 6). Die Cron-Zeile für einen Host mit Docker in
-  `ingest-a-mail-folder.md` ist als Zeile nicht gelaufen; ihre Befehle sind
-  es.
+- Die Cron-Zeile für einen Host mit Docker in `ingest-a-mail-folder.md` ist
+  als Zeile nicht gelaufen; ihre Befehle sind es (PI §6).
 - Ein Verzeichnis der Tilgungen außerhalb der Datenbank: nach einer
   Wiederherstellung auf einen älteren Stand weiß das Log nicht mehr, was
   seither getilgt wurde, und die Tilgungen sind zu wiederholen; die Anker-Datei
@@ -941,6 +947,19 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
 - Ein Befund nennt die `id`, nicht die Zeile der Ankerdatei (P-AA).
 - `anchored event is missing (the log ends at 5)` für ein Event aus der Mitte
   liest sich wie ein Widerspruch (P-AA).
+- Der Ablageort der Anker ist kein Dritter: in kup6s liegt `anchors.txt` in
+  Git auf `git.bluedynamics.eu`, außerhalb des Clusters, Force-Push gesperrt,
+  Schreiben nur mit dem Deploy-Key des Anker-Jobs — betrieben aber von
+  denselben Leuten (RK). Gegenüber Dritten ist der Anker so kein Beleg
+  (AA §10 Punkt 4). Für den Piloten hingenommen, später muss es eine Lösung
+  geben; Object Lock klingt gut (Betreuer, 2026-10-11: „beim Piloten egal,
+  später muss es eine Lösung geben"). Object Lock gibt es bei Hetzner,
+  einschaltbar nur beim Anlegen des Buckets (RK).
+- `verify --anchors` endet auf einem leeren Log mit 2: `anchor` schreibt dort
+  keinen Anker, und eine Ankerdatei ohne Ankerzeile ist ein Eingabefehler.
+  Der Anker-CronJob einer frischen Installation, der zuerst die alten Anker
+  prüft, scheitert so bis zum ersten Event; die Handoffs verlangten von jedem
+  CronJob 0 (RK). Für den Piloten hingenommen (Betreuer, 2026-10-11).
 - Externer Compliance-Anlass: die Annahme „nicht zertifizierungsgetrieben" ist
   unbestätigt, und der Anker hat Teile eines Drittbelegs vorweggenommen
   (E §16; PP, A2).
@@ -1087,6 +1106,44 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
   Nachtrag).
 
 ## Erledigt, seit es auf einer Liste stand
+
+- ~~Das Alpha-Release `v0.1.0a3` mit Gate und MCP-Lesezugang~~ (unter *Was
+  als Nächstes kommt*) — veröffentlicht am 2026-10-11 aus `ffa28fb`, dem Merge
+  von PR #12. Die Handoffs des Gates und des MCP-Servers kamen nicht mit ihm,
+  sie folgen mit dem Zweig `worktree-betrieb-rueckmeldung`.
+- ~~Welche pgBackRest-Plugin-Implementierung~~ (A §11, §13;
+  `backup-encryption.md`) — keine. kup6s hat am 2026-10-09 beide Plugins
+  (experimentell, kaum gepflegt, nie gegen Hetzner oder Ceph erprobt), Barman
+  Cloud (ohne Verschlüsselung beim Client) und Barman hinter `rclone serve s3`
+  verworfen und sichert stündlich mit `pg_dump` durch `gpg` (RK). Der Betreuer
+  hat am 2026-10-11 aus der Wahl eines Systems Anforderungen gemacht; das
+  System wählt der Betrieb. Commit `15ab87a`, `backup-encryption.md`. Mit
+  erledigt: der Deployment-Mechanismus und die Datenbank mit Sicherung in
+  kup6s, die der Agent dort nach dem Handoff gebaut hat (RK).
+- ~~Die Aufbewahrungsfrist der Sicherungen als Teil der Tilgungszusage, keine
+  Frist gewählt; seit der Aufnahme die der Sicherungen des Mailservers und die
+  Mail im Ordner dazu~~ (1c §4.5, §7; P-1c; PI §6) — in kup6s sieben Tage für
+  die verschlüsselten Dumps, keine Sicherung und keine Kopie des Blob-Buckets
+  (RK). Die Quellsysteme gehören nicht dazu: eine Tilgungszusage deckt nie den
+  Mailserver, seinen Ordner, seine Sicherungen oder die Mailprogramme der
+  Empfänger (Betreuer, 2026-10-11). Commit `15ab87a`: `erasure.md`,
+  `erase-something.md`, `ingest-a-mail-folder.md`, `blobs.md`,
+  `trust-boundaries.md`, `backup-encryption.md`, der Handoff des Gates.
+- ~~Ablageort und Intervall der Anker~~ (AA §10 Punkt 4) — in kup6s
+  `anchors.txt` in Git auf einem eigenen Server, täglich seit dem 2026-10-06
+  (RK), Commit `3465fb1`. Dass der Ort kein Dritter ist, steht als neuer Punkt
+  unter *Kette und Anker*; der benannte Restore-Point bleibt unter *Betrieb*.
+- ~~Ein Bucket mit Object Lock als Ablageort der Anker: „ungeprüft, ob der
+  Anbieter das hat"~~ (AA §10 Punkt 4) — Hetzner hat Object Lock, mit
+  Aufbewahrung und Legal Hold, einschaltbar nur beim Anlegen des Buckets (RK),
+  Commit `3465fb1`.
+- ~~Die Aufnahme in kup6s nach dem Handoff
+  `handoffs/2026-10-06-kup6s-ingest.md`; die erste Aufnahme des echten Ordners
+  geschieht dort~~ (PI §6) — gebaut; der erste Lauf meldete `imap: 10
+  appended, 1 known, 0 variants, up to uid 9` für neun Mails, der zweite
+  `0 appended`, die Flags im Ordner blieben unverändert (RK), Commit
+  `3465fb1`. Gemessen am 2026-10-06 im Image: 529 bis 531 MiB für eine Mail
+  von 49,5 MiB (P-PI, Aufgabe 6).
 
 - ~~Bedingung 10 der Abnahme von Gate und Policy~~ (PG §10) — der Lauf des
   Betreuers am 2026-10-09, lokal, aus `main` nach PR #9, gegen die echten APIs
