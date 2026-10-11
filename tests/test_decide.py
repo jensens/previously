@@ -422,6 +422,51 @@ def test_an_undeclared_provider_is_rejected_by_name() -> None:
     assert "ghost" in decision.reasons[0]
 
 
+def test_undeclared_names_each_missing_provider_of_a_rejected_candidate_once() -> None:
+    """In the order of the candidates, each provider once, and only those
+    missing from the policy: `anthropic` is declared and fails on its
+    storage, so it is no part of it."""
+    decision = decide(
+        build(rules=(rule("source:email", {"eu"}),), providers=(ANTHROPIC,)),
+        identities=[],
+        source="email",
+        candidates=[
+            Candidate("ghost", "a", None),
+            Candidate("anthropic", "claude-haiku-5-5", "low"),
+            Candidate("ghost", "b", None),
+            Candidate("local", "qwen3:4b", None),
+        ],
+    )
+    assert decision.chosen is None
+    assert decision.undeclared == ("ghost", "local")
+
+
+def test_undeclared_stops_where_a_candidate_is_chosen() -> None:
+    """The control: a candidate after the chosen one is never weighed, so its
+    missing declaration is no reason of anything."""
+    decision = decide(
+        build(rules=(rule("source:email", {"eu"}),), providers=(MISTRAL,)),
+        identities=[],
+        source="email",
+        candidates=[
+            Candidate("ghost", "a", None),
+            Candidate("mistral", "mistral-small-2603", None),
+            Candidate("local", "qwen3:4b", None),
+        ],
+    )
+    assert decision.chosen == Candidate("mistral", "mistral-small-2603", None)
+    assert decision.undeclared == ("ghost",)
+
+
+def test_undeclared_under_local_only_names_them_all_and_says_local_only() -> None:
+    """Under `local_only` the field still lists every missing declaration:
+    which of them would be local is what a declaration says, so `decide`
+    cannot tell. The caller reads `local_only` beside it."""
+    decision = decide(build(providers=()), identities=[], source="email", candidates=CANDIDATES)
+    assert decision.local_only
+    assert decision.undeclared == ("anthropic", "mistral", "local")
+
+
 def test_an_excluded_provider_is_rejected() -> None:
     policy = build(rules=(rule("source:email", {ANY}, excluded={"anthropic"}),))
     assert passing(policy, [], "email") == {"mistral", "local"}

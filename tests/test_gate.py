@@ -1742,13 +1742,23 @@ def test_gate_explain_says_no_fallback_for_a_denial(
     assert lines[1] == "rules\tlocal_only"
     assert lines[5] == "candidate\t-\tno local provider is declared"
     assert lines[-1] == "decision\tdenied"
-    assert err == _undeclared("local")
+    assert err == _ONLY_LOCAL
 
 
 # The client's chain of `connect-claude-code-and-vibe.md`: a provider that the
 # gate never calls, since no candidate of the task names it.
 CLAUDE_MAX = Provider(
     "claude-max", (Inference("us", frozenset({"us"})),), frozenset({"us"}), 30, False, False
+)
+
+
+# What a denial under the built-in rule `local_only` says when a declaration is
+# missing: no provider is named, since only one declared with `--local` could
+# be chosen, and whether a provider is local is what its declaration says.
+_ONLY_LOCAL = (
+    "only local: the built-in rule local_only acted, so only a provider declared with "
+    "--local can be chosen — set a rule with previously policy rule SCOPE …, or declare "
+    "one with previously policy provider NAME … --local\n"
 )
 
 
@@ -1791,6 +1801,34 @@ def test_gate_says_which_of_its_providers_are_undeclared_when_that_denies(
     assert denied.startswith("denied: anthropic/claude-haiku-5-5: no declaration for the provider")
     assert hint == _undeclared("anthropic, mistral, local")
     assert model_server.requests == []
+
+
+@pytest.mark.db
+def test_gate_under_local_only_names_no_provider_whose_declaration_would_not_help(
+    db: Engine,
+    model_server: ModelServer,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """No rule at all, and only a client's chain declared: `local_only` acts.
+    Declaring `anthropic` or `mistral` as the hosted services they are would
+    change nothing — they would fail as not local — so the line names
+    neither and says what can be chosen instead."""
+    storage = PostgresStorage(db)
+    event_id = append_mail(storage)
+    declare(storage, CLAUDE_MAX)
+    _env(monkeypatch, db, model_server)
+
+    assert main(["gate", "explain", str(event_id)]) == 0
+    out, err = capsys.readouterr()
+    assert out.splitlines()[1] == "rules\tlocal_only"
+    assert out.splitlines()[-1] == "decision\tdenied"
+    assert err == _ONLY_LOCAL
+    assert err.rstrip("\n") in quoted("`gate explain` writes one more line to standard error")
+
+    assert main(["gate", "try", str(event_id)]) == 2
+    _denied, hint = capsys.readouterr().err.splitlines(keepends=True)
+    assert hint == _ONLY_LOCAL
 
 
 @pytest.mark.db

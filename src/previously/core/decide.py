@@ -59,8 +59,11 @@ class Decision:
     fallback: Fallback | None
     reasons: tuple[str, ...]  # one sentence per rejected candidate
     # The providers of the candidates rejected for want of a declaration, in
-    # the order of the candidates, so that a caller can say which ones to
-    # declare without reading it out of the sentences.
+    # the order of the candidates and each once, so that a caller can say
+    # which ones to declare without reading it out of the sentences. Under
+    # `local_only` it lists them all as well: whether a provider is local is
+    # what its declaration says, so nothing here can tell which of them a
+    # declaration would let through.
     undeclared: tuple[str, ...] = ()
 
 
@@ -276,7 +279,8 @@ def decide(
         )
         if sentence is not None:
             reasons.append(sentence)
-            if candidate.provider not in policy.providers:
+            missing = candidate.provider not in policy.providers
+            if missing and candidate.provider not in undeclared:
                 undeclared.append(candidate.provider)
         else:
             chosen, geo = candidate, space

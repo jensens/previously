@@ -503,7 +503,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     five restrictions below" with a row missing. Deriving the payloads from
     the code is the fix and it is not built yet.
 
-    The second half holds the twenty-one standard-error sentences, the two
+    The second half holds the twenty-two standard-error sentences, the two
     lines of `redact` and the three of `migrate` on standard output that
     `cli.md` quotes, in fifteen blocks, against the literals in `cli.py` — not
     the line `blob get` prints on success, which `_message_patterns` does
@@ -577,7 +577,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         ("For each variant, one notice goes to standard error", 1),
         ("When no call fell back, standard output stays empty, and one notice goes", 1),
         ("`gate try` writes these lines to standard error as well", 6),
-        ("`gate explain` writes one more line to standard error", 1),
+        ("`gate explain` writes one more line to standard error", 2),
         ("does the same after one more line", 2),
     ):
         notices = _quoted_block(page, after)

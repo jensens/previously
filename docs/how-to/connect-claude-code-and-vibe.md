@@ -32,7 +32,7 @@ The statement is your source for the values, and it stays in the log.
 
 These declarations are the clients' and not the gate's.
 `previously gate` calls only the providers its task names, `anthropic`, `mistral` and `local`, and each of them needs a declaration of its own, even when a client of the same company is declared already.
-A `gate explain` that says `denied` after a client's setup names the gate's providers that have no declaration on standard error; {ref}`set-a-policy-and-try-a-call` declares them.
+A `gate explain` that says `denied` after a client's setup names on standard error the gate's providers that have no declaration, or, where no rule applies, says that only a provider declared with `--local` can be chosen; {ref}`set-a-policy-and-try-a-call` declares them.
 
 A harness against a local model is declared with `--local`.
 Declare it with `--training no --subprocessors none` as well: without them it fails every rule that forbids training or subprocessors, and a circle with such a rule stays withheld from it.

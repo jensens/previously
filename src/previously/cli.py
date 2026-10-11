@@ -1735,15 +1735,29 @@ def _undeclared_lines(decision: Decision) -> list[str]:
 
 def _undeclared_line(decision: Decision) -> str | None:
     """One line where the decision chose nothing and a candidate of the task
-    failed because its provider has no declaration: the providers, and that
-    the gate's are declared apart from an MCP client's.
+    failed because its provider has no declaration.
 
     kup6s's maintainer met it on 2026-10-11 after setting up a client: the
     client's chain declared, a rule for the circle, and `gate explain` said
-    `denied`, which read like the client's view of the circle. A decision
-    that chose a provider gets no line, since nothing was denied."""
+    `denied`, which read like the client's view of the circle. Under a rule,
+    the line names the providers and says that the gate's are declared apart
+    from an MCP client's.
+
+    Under the built-in rule `local_only` it names none. Only a provider
+    declared with `--local` can be chosen there, and naming `anthropic` sent
+    the reader to declare it and then meet `not local, and only local
+    applies`. Which undeclared provider would be local is what its
+    declaration says, so the line says what can be chosen instead of
+    guessing from a name. A decision that chose a provider gets no line,
+    since nothing was denied."""
     if decision.chosen is not None or not decision.undeclared:
         return None
+    if decision.local_only:
+        return (
+            "only local: the built-in rule local_only acted, so only a provider declared with "
+            "--local can be chosen — set a rule with previously policy rule SCOPE …, or declare "
+            "one with previously policy provider NAME … --local"
+        )
     names = ", ".join(escape_field(name) for name in decision.undeclared)
     return (
         f"undeclared: {names} — the gate chooses among its own providers, each declared "

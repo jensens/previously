@@ -919,13 +919,16 @@ An erased event is denied with the reason `the event is erased`.
 An event that isn't an observation, such as a policy event, a redaction or a `model_call`, is denied with the reason `the event is not an observation`.
 Where the built-in rule `local_only` acted and the decision chose the local model, `gate explain` writes the `processed locally` line of `gate try` to standard error, after the table; a denial gets no such line.
 
-Where the decision allows no candidate and the provider of at least one has no declaration, `gate explain` writes one more line to standard error, after the table, naming those providers in the order of the candidates:
+Where the decision allows no candidate and the provider of at least one has no declaration, `gate explain` writes one more line to standard error, after the table:
 
 ```text
 undeclared: anthropic, mistral, local — the gate chooses among its own providers, each declared with previously policy provider NAME …, apart from the provider of an MCP client
+only local: the built-in rule local_only acted, so only a provider declared with --local can be chosen — set a rule with previously policy rule SCOPE …, or declare one with previously policy provider NAME … --local
 ```
 
+The first names those providers in the order of the candidates, each once, and stands where rules applied.
 The gate calls only the providers its task names, and a provider declared for an MCP client, such as `claude-max`, is none of them.
+The second stands where the built-in rule `local_only` acted, and names no provider: only one declared with `--local` can be chosen there, and whether a provider is local is what its declaration says.
 
 ### `gate try`
 
@@ -973,7 +976,7 @@ It's written only where the local model answered: a call denied because no local
 The second is an alarm: the provider reported another inference region than the one requested, and the call returns 3.
 The third is an answer that isn't JSON, lacks a field, or has a field too many; the gate checks every answer itself, even where the provider enforces the schema.
 The fourth names the setting that's missing, and the fifth the address of the local model server that didn't answer.
-The sixth follows a denial where the provider of a candidate has no declaration, as for `gate explain`.
+The sixth follows a denial where the provider of a candidate has no declaration, as for `gate explain`, and reads `only local: …` where `local_only` acted.
 A call that failed prints the sentence of the client, after the provider and the class of the error, and never the key.
 What the provider said doesn't go into the event: the event names the provider, the class of the error and the HTTP status.
 
