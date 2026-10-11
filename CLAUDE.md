@@ -409,7 +409,15 @@ all, while `ruff check docs/conf.py` reports `A001`. It stays because whoever
 lints that file by hand should not have to rediscover why the name cannot
 change — but it is a note, not a suppression the gate needs.
 
-That is five suppressions in the whole tree, and the list is meant to stay
+The sixth arrived with the MCP server on 2026-10-11, and it is the one the
+gate does need: `A002` on the parameter `id` of the resource
+`previously://event/{id}` in `src/previously/mcp_server/server.py`. The SDK
+binds the variables of a URI template to the parameters of the function by
+name and refuses a function whose names differ, and the template is the
+interface clients see, so the name cannot change; the builtin it shadows is
+not used in that function.
+
+That is six suppressions in the whole tree, and the list is meant to stay
 complete. If you add one, add it here — a rule whose own file does not keep
 it is an invitation to ignore it. Removing one counts too: stage 1b deleted
 the `S603` on starting a fresh interpreter, because the test that needed it

@@ -54,6 +54,7 @@ from sqlalchemy import insert
 from sqlalchemy import null
 from sqlalchemy import Row
 from sqlalchemy import select
+from sqlalchemy import tuple_
 from sqlalchemy import update
 from sqlalchemy import URL
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -432,6 +433,48 @@ class PostgresStorage:
             select(event)
             .where(event.c.kind == kind)
             .order_by(event.c.id)
+            .execution_options(stream_results=True, yield_per=100)
+        )
+        for row in conn.execute(query):
+            yield _event_row(row)
+
+    def observations(
+        self,
+        conn: Connection,
+        *,
+        since: datetime | None,
+        until: datetime | None,
+        source: str | None,
+        after: tuple[datetime, int] | None,
+        limit: int,
+    ) -> Iterator[EventRow]:
+        """At most `limit` observations in time order, `(occurred_at, id)`,
+        strictly after the position `after`, through a server-side cursor
+        like `read`.
+
+        The window is half-open like `read_chronicle`'s: `since` inclusive,
+        `until` exclusive. `source` keeps the events whose source key names
+        that source; an observation whose key was erased has none and drops
+        out of a source filter. Which circle an event belongs to is not asked
+        here: that depends on the policy and on the addresses in the payload,
+        and `core` decides it.
+        """
+        query = select(event).where(event.c.kind == "observation")
+        if since is not None:
+            query = query.where(event.c.occurred_at >= since)
+        if until is not None:
+            query = query.where(event.c.occurred_at < until)
+        if source is not None:
+            query = query.where(
+                select(source_key.c.event_id)
+                .where(source_key.c.event_id == event.c.id, source_key.c.source == source)
+                .exists()
+            )
+        if after is not None:
+            query = query.where(tuple_(event.c.occurred_at, event.c.id) > tuple_(*after))
+        query = (
+            query.order_by(event.c.occurred_at, event.c.id)
+            .limit(limit)
             .execution_options(stream_results=True, yield_per=100)
         )
         for row in conn.execute(query):

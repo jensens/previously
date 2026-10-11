@@ -1148,3 +1148,30 @@ def test_the_policy_reference_holds_the_words_the_gate_writes() -> None:
     assert _policy_cells("### The unit of an `ok` call", "with these keys:") == set(
         MailOverview.model_fields
     )
+
+
+def test_the_reference_quotes_what_mcp_and_serve_say() -> None:
+    """The two errors of `mcp`, the line and the refused port of `serve`,
+    and the sentence of a 401, as `cli.md` and `configuration.md` quote them,
+    held against the code: the errors against what `cli.py` raises as
+    `PreviouslyError`, the line against what it prints to standard error,
+    and the 401 against the one constant the HTTP wrapper sends, whole."""
+    from previously.mcp_server.auth import REFUSAL
+
+    cli = ROOT / "src" / "previously" / "cli.py"
+    raised = _raised_patterns(cli, "PreviouslyError")
+    page = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
+    quoted = _quoted_block(page, "and otherwise returns 2 with one of two sentences")
+    assert len(quoted) == 2, quoted
+    _assert_raised(quoted, raised, "PreviouslyError")
+    port = _quoted_block(page, "A port that isn't a number from 1 to 65535 is refused before")
+    assert len(port) == 1, port
+    _assert_raised(port, raised, "PreviouslyError")
+    (line,) = _quoted_block(page, "On start it prints one line to standard error")
+    assert any(_is_the_same_sentence(parts, line) for parts in _message_patterns(cli)), line
+    assert _quoted_block(page, "and one sentence as its body") == [REFUSAL]
+
+    configuration = (DOCS / "reference" / "configuration.md").read_text(encoding="utf-8")
+    unset = _quoted_block(configuration, "and returns 2 when it's unset or empty")
+    assert len(unset) == 1, unset
+    _assert_raised(unset, raised, "PreviouslyError")

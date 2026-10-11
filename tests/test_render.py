@@ -6,19 +6,24 @@ from datetime import UTC
 from hypothesis import given
 from hypothesis import strategies as st
 from previously.mcp_server.render import decode_cursor
+from previously.mcp_server.render import decode_position
 from previously.mcp_server.render import draw_tag
 from previously.mcp_server.render import encode_cursor
 from previously.mcp_server.render import ErasedMark
+from previously.mcp_server.render import ErrorMark
 from previously.mcp_server.render import Head
 from previously.mcp_server.render import Item
 from previously.mcp_server.render import Page
 from previously.mcp_server.render import PAGE_CHARS
 from previously.mcp_server.render import render_error
 from previously.mcp_server.render import render_page
+from previously.mcp_server.render import render_text
 from previously.mcp_server.render import sanitize
 from previously.mcp_server.render import Shown
 from previously.mcp_server.render import WithheldMark
 
+import base64
+import json
 import pytest
 import re
 import unicodedata
@@ -515,3 +520,145 @@ def test_a_cursor_error_does_not_carry_the_parser_message() -> None:
         with pytest.raises(ValueError) as caught:
             decode_cursor(junk, {})
         assert str(caught.value) == "cursor is not valid for these filters"
+
+
+# --- what get_event adds (ruling R-8 of the 2026-10-11 MCP read access plan) ---
+
+
+def test_attachments_and_provenance_stand_inside_the_fence_and_are_sanitized() -> None:
+    item = Shown(
+        _head(),
+        ((1, "text"),),
+        attachments=("Angebot.pdf (application/pdf, 47 bytes)", "evil\x1b[2J.png"),
+        provenance=(("Found in", "connector imap:x/INBOX, uid 7"), ("Message-ID", "a@b\u202e")),
+    )
+    page = _render(item)
+    (tag,) = _tags(page)
+    inside = page.text.split(f"<<<customer-content {tag}>>>\n", 1)[1].split(f"<<<end {tag}>>>")[0]
+    assert inside.splitlines()[:4] == [
+        "Subject: AW: Server",
+        "Attachments: Angebot.pdf (application/pdf, 47 bytes), evil.png",
+        "Found in: connector imap:x/INBOX, uid 7",
+        "Message-ID: a@b",
+    ]
+    assert page.removed_characters == 5
+
+
+def test_an_error_of_one_id_is_one_sanitized_line_and_the_others_stay() -> None:
+    page = _render(
+        _shown("first", event_id=1),
+        ErrorMark("previously://event/2", "no event has\nthis id\x1b[1m"),
+        _shown("third", event_id=3),
+    )
+    assert "\n\nError: previously://event/2 — no event has this id\n\n" in page.text
+    assert "first" in page.text
+    assert "third" in page.text
+    assert page.removed_characters == 4
+
+
+# --- what a page used up (ruling R-9 of the 2026-10-11 MCP read access plan) ---
+
+
+def test_a_page_reports_the_items_it_consumed_and_the_units_that_appeared() -> None:
+    items: list[Item] = [
+        _shown("a", "b", event_id=1),
+        WithheldMark("previously://event/2", "no rule"),
+        ErasedMark("previously://event/3"),
+        ErrorMark("previously://event/4", "no event has this id"),
+    ]
+    page = _render(*items)
+    assert (page.consumed, page.units) == (4, ((1, 2), (), (), ()))
+
+
+def test_a_page_that_cuts_an_event_reports_only_the_units_on_it() -> None:
+    event = _shown(*("p" * 9_000 for _ in range(10)), event_id=42)
+    page = _render(event, _shown("later", event_id=43))
+    shown = tuple(int(seq) for seq in re.findall(r"^#unit-(\d+)$", page.text, re.MULTILINE))
+    assert page.consumed == 1
+    assert page.units == (shown,)
+    assert 0 < len(shown) < 10
+
+
+def test_a_unit_cut_inside_counts_as_appeared() -> None:
+    page = _render(_shown("z" * 100_000, "next"))
+    assert page.units == ((1,),)
+
+
+def test_an_item_that_did_not_fit_is_not_consumed() -> None:
+    items = [_shown("x" * 20_000, event_id=n) for n in range(1, 6)]
+    page = _render(*items)
+    assert page.consumed == 2
+    assert page.units == ((1,), (1,))
+
+
+# --- more items beyond, and a way on that is no cursor ---------------------------
+
+
+def test_more_gives_the_last_page_a_cursor_after_its_last_item() -> None:
+    page = render_page("t", [_shown("a")], cursor_for=_cursor_for, more=True)
+    assert page.next_cursor == "after-0"
+    assert page.text.endswith("call again with cursor=after-0")
+
+
+def test_without_more_and_without_items_no_cursor_follows() -> None:
+    page = render_page("t", [], cursor_for=_cursor_for, more=True)
+    assert page.next_cursor is None
+
+
+def test_a_next_hint_words_the_footer_and_keeps_the_cursor_out_of_the_header() -> None:
+    items = [_shown("x" * 20_000, event_id=n) for n in range(1, 6)]
+    page = render_page(
+        "get_event",
+        items,
+        cursor_for=lambda index: ", ".join(str(n) for n in range(index + 2, 6)),
+        next_hint=lambda rest: f"call get_event with ids=[{rest}]",
+    )
+    assert page.text.splitlines()[0] == "previously · get_event · page 1"
+    assert page.text.endswith("End of page 1. More results: call get_event with ids=[3, 4, 5]")
+
+
+# --- the page number in the cursor -------------------------------------------------
+
+
+def test_a_cursor_carries_the_number_of_the_page_it_opens() -> None:
+    cursor = encode_cursor((_MOMENT, 42), {"circle": "h_da"}, page=3)
+    position = decode_position(cursor, {"circle": "h_da"})
+    assert (position.after, position.page) == ((_MOMENT, 42), 3)
+
+
+def _forged(payload: object) -> str:
+    raw = json.dumps(payload).encode()
+    return base64.urlsafe_b64encode(raw).decode().rstrip("=")
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"after": ["2026-09-12T09:14:00", 42], "filters": {}, "page": 2},
+        {"after": ["2026-09-12T09:14:00+00:00", 2**60], "filters": {}, "page": 2},
+        {"after": ["2026-09-12T09:14:00+00:00", -1], "filters": {}, "page": 2},
+        {"after": ["2026-09-12T09:14:00+00:00", 42], "filters": {}, "page": 1},
+        {"after": ["2026-09-12T09:14:00+00:00", 42], "filters": {}, "page": True},
+        [1, 2],
+    ],
+)
+def test_a_cursor_with_a_value_no_query_should_get_is_refused(payload: object) -> None:
+    with pytest.raises(ValueError, match="cursor is not valid for these filters"):
+        decode_position(_forged(payload), {})
+
+
+def test_a_forged_cursor_inside_the_ranges_is_accepted() -> None:
+    cursor = _forged({"after": ["2026-09-12T09:14:00+00:00", 42], "filters": {}, "page": 7})
+    assert decode_position(cursor, {}).page == 7
+
+
+# --- a result without customer content ---------------------------------------------
+
+
+def test_render_text_sanitizes_every_line_and_counts_what_it_removed() -> None:
+    text = render_text("circles", ["- a\x1b[1m · b", "- c\nd"])
+    assert text == "previously · circles · 4 control characters removed\n\n- a · b\n- c d"
+
+
+def test_render_text_without_lines_says_so() -> None:
+    assert render_text("gaps", []) == "previously · gaps\n\nNo results."

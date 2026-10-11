@@ -4466,3 +4466,57 @@ def test_client_add_prints_the_summary_then_the_two_lines_and_the_page_says_so(
     page = (Path(__file__).parent.parent / "docs/reference/cli.md").read_text(encoding="utf-8")
     assert "`client NAME` and `processor PROVIDER`, separated by a tab" in page
     assert "prints nothing after the two lines" in page
+
+
+# --- mcp and serve --------------------------------------------------------------
+
+
+def test_the_help_names_mcp_and_serve_with_their_sentences(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "mcp serve MCP over stdio" in out
+    assert "serve serve MCP over HTTP" in out
+
+
+def test_mcp_without_its_client_ends_with_2_before_it_reads_anything(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No DSN either: the client is named before anything connects.
+    monkeypatch.delenv("PREVIOUSLY_MCP_CLIENT", raising=False)
+    monkeypatch.delenv("PREVIOUSLY_DSN", raising=False)
+    assert main(["mcp"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == "Error: PREVIOUSLY_MCP_CLIENT is not set: name the client this process serves\n"
+
+
+@pytest.mark.db
+def test_mcp_for_a_client_not_in_force_ends_with_2(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    assert main(["client", "revoke", "claude-code", "--statement", "gone", "--yes"]) == 0
+    capsys.readouterr()
+    for name in ("claude-code", "nobody"):
+        monkeypatch.setenv("PREVIOUSLY_MCP_CLIENT", name)
+        assert main(["mcp"]) == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err == (
+            f'Error: no client "{name}" is in force; add it with previously client add\n'
+        )
+
+
+@pytest.mark.parametrize("port", ["http", "0", "65536", "８７６５"])
+def test_serve_with_a_port_that_is_none_ends_with_2(
+    port: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PREVIOUSLY_MCP_PORT", port)
+    assert main(["serve"]) == 2
+    assert capsys.readouterr().err == f"Error: PREVIOUSLY_MCP_PORT is not a port number: {port!r}\n"

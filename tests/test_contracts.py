@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING
 import previously.connectors
 import previously.core
 import previously.gate.adapters
+import previously.mcp_server
 import previously.storage
 import pytest
 import subprocess
@@ -53,7 +54,10 @@ _CONNECTORS_PROBE = Path(previously.connectors.__file__).parent / "_violation.py
 # The fourth: `gate/adapters`, beside the two adapters, the only modules allowed
 # to import a vendor SDK.
 _ADAPTERS_PROBE = Path(previously.gate.adapters.__file__).parent / "_violation.py"
-_PROBES = (_PROBE, _STORAGE_PROBE, _CONNECTORS_PROBE, _ADAPTERS_PROBE)
+# The fifth: `mcp_server`, beside `mcp_server.server` and `mcp_server.auth`,
+# the only modules allowed to import the MCP SDK and its HTTP side.
+_MCP_PROBE = Path(previously.mcp_server.__file__).parent / "_violation.py"
+_PROBES = (_PROBE, _STORAGE_PROBE, _CONNECTORS_PROBE, _ADAPTERS_PROBE, _MCP_PROBE)
 
 
 @pytest.fixture(autouse=True, scope="module")
@@ -256,3 +260,21 @@ def test_a_vendor_sdk_outside_its_adapter_breaks_its_contract(probe: Path, sdk: 
     parts = probe.parent.parts
     package = ".".join(parts[len(parts) - 1 - parts[::-1].index("previously") :])
     assert f"{package}._violation -> {sdk}" in output, output
+
+
+@pytest.mark.parametrize("package", ["mcp", "mcp_types", "starlette", "uvicorn"])
+@pytest.mark.parametrize("probe", [_PROBE, _MCP_PROBE], ids=["core", "mcp_server"])
+def test_the_mcp_sdk_outside_the_server_breaks_its_contract(probe: Path, package: str) -> None:
+    """The MCP SDK, or its HTTP side, anywhere but in the two named modules of
+    `mcp_server` breaks the contract by name: in `core`, and beside the
+    server, so the exemptions are shown to be those modules and not their
+    package."""
+    with _probe_module(f"import {package}\n", probe):
+        result = _gate()
+    output = result.stdout + result.stderr
+
+    assert result.returncode != 0, output
+    assert "Only the MCP server imports the MCP SDK BROKEN" in output, output
+    parts = probe.parent.parts
+    named = ".".join(parts[len(parts) - 1 - parts[::-1].index("previously") :])
+    assert f"{named}._violation -> {package}" in output, output

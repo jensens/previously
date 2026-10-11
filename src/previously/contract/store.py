@@ -30,7 +30,12 @@ blob register with `blobs_by_event`. The erasure of blobs took it to
 thirteen: `redact` asks `events_by_blob`, which until then only the command
 line asked, and `verify --blobs` reads the whole register with
 `blob_references`. Every method the protocol declares is called by `core`
-on that day. Typing `core` against
+on that day. The fourteenth, `observations`, came on 2026-10-11 with the MCP
+server, and `core` does not call it: `mcp_server/read.py` does, to read the
+chronicle of a circle from the log (decision 3 of the 2026-10-11 MCP read
+access plan). The command above still counts thirteen, measured that day,
+and `grep -ohE 'log\.[a-z_]*\(' src/previously/mcp_server/*.py` names the
+six the server calls, `observations` among them. Typing `core` against
 this protocol instead of against `PostgresStorage` removes the edge
 `core -> storage.postgres`, and with it the two named exemptions in
 `.importlinter` and the test that guarded them ({ref}`module-boundaries`).
@@ -58,6 +63,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from collections.abc import Sequence
     from contextlib import AbstractContextManager
+    from datetime import datetime
     from previously.contract.rows import ChronicleRow
     from previously.contract.rows import EventRow
     from previously.contract.rows import ProjectionState
@@ -95,6 +101,16 @@ class LogStore[Conn](Protocol):
     def blobs_by_event(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, list[bytes]]: ...
     def events_by_blob(self, conn: Conn, sha256: bytes) -> list[int]: ...
     def blob_references(self, conn: Conn) -> Iterator[tuple[bytes, int]]: ...
+    def observations(
+        self,
+        conn: Conn,
+        *,
+        since: datetime | None,
+        until: datetime | None,
+        source: str | None,
+        after: tuple[datetime, int] | None,
+        limit: int,
+    ) -> Iterator[EventRow]: ...
 
 
 class RedactionStore[Conn](Protocol):

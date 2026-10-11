@@ -3,10 +3,11 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has sixteen subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, `gate`, `client`, and `access`.
+It has eighteen subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, `gate`, `client`, `access`, `mcp`, and `serve`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
 `append --attach`, `ingest imap`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
 `ingest imap` alone reads the five `PREVIOUSLY_IMAP_*` settings, and `gate try` alone reads `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `PREVIOUSLY_LOCAL_MODEL_URL` and `PREVIOUSLY_PRICES`.
+`mcp` alone reads `PREVIOUSLY_MCP_CLIENT`, and `serve` alone reads `PREVIOUSLY_MCP_HOST`, `PREVIOUSLY_MCP_PORT` and `PREVIOUSLY_MCP_ALLOWED_HOSTS`.
 A missing setting is an input error that names the first variable missing, in the form `Error: PREVIOUSLY_BLOB_BUCKET is not set`.
 An error sentence prints every control character but a tab and a line feed as `\xNN`, such as `\x1b` for the escape character, because a key it quotes can be the Message-ID of a mail.
 A transaction the database aborts in a conflict with a concurrent one, a deadlock or a lock not granted in time, is a storage error with exit code 2, in the form `Error: the database aborted the operation in a conflict with a concurrent one; run the command again`.
@@ -67,6 +68,8 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `policy` | The statement was written, `show` printed the policy, or `gaps` printed what fell back, even when nothing did. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the statement was refused, or storage raised an error. |
 | `client` | The client was added and its token printed, revoked, or listed, even when none exists. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the processor isn't declared, no such client exists to revoke, or storage raised an error. |
 | `access` | The access log was printed, even when no call matches. | Not used. | The input was invalid, or storage raised an error. |
+| `mcp` | Standard input closed, and the server ended. | Not used. | `PREVIOUSLY_MCP_CLIENT` is unset or names no client in force, or storage raised an error. |
+| `serve` | The server was stopped with an interrupt, such as Ctrl+C. | Not used. | `PREVIOUSLY_MCP_PORT` isn't a port number, or storage raised an error. |
 | `gate` | `explain` printed the decision, whether it allows a call or denies it; `try` made the call, got an answer that matches the schema, and recorded it. | Not used. | The event doesn't exist, the price file can't be read, storage raised an error, or `try` recorded a call that was denied, failed, refused by the model, or answered against the schema. |
 
 `gate try` returns 3 when the call was made and recorded with an answer that matches the schema, and the provider reported another inference region than the one requested; the code differs from 0 so that a script doesn't read past the alarm.
@@ -1032,7 +1035,7 @@ It prints one line per call, in the order of the chain, the six fields separated
 The delivered events are ids separated by commas, the withheld ones `ID:REASON_CODE:REASON` separated by spaces, and a dash stands for none:
 
 ```text
-2026-10-11T12:00:00.000000Z	claude-code	tool:previously	ok	delivered 42,44	withheld 43:no_rule:circle h_da has no rule for this client
+2026-10-11T12:00:00.000000Z	claude-code	tool:previously	ok	delivered 42,44	withheld 43:no_rule:circle h_da has no rule, so only local processing is allowed; this client (claude-code) processes with claude-max, which is not local
 ```
 
 The reason code is `no_rule` where a circle of the event had no rule for the client, and `rule` where a rule said no.
@@ -1045,3 +1048,62 @@ no access matches
 
 `verify` holds every `mcp_access` to its form: known fields only, at every level, a client, a policy, a call with a known kind (`tool`, `resource` or `prompt`), a name and arguments, lists `delivered` and `withheld` whose every entry is an object with exactly its fields, an event, and its circles as a list of names (and its units as a list of numbers), a known reason code on every withheld entry, an outcome of `ok` or `error`, and no units.
 A break of that form is a finding of the form `FINDING 12: mcp_access has no valid form: it has no outcome`, and an `mcp_access` with units is `FINDING 12: mcp_access has units`.
+
+(cli-mcp)=
+
+## `mcp`
+
+Serves MCP over standard input and standard output, for the client that `PREVIOUSLY_MCP_CLIENT` names:
+
+```shell
+PREVIOUSLY_MCP_CLIENT=claude-code previously mcp
+```
+
+`mcp` takes no options.
+Over standard input there is no token: whoever starts the process is the client.
+Before it reads a request, `mcp` checks that the variable names a client in force, and otherwise returns 2 with one of two sentences:
+
+```text
+Error: PREVIOUSLY_MCP_CLIENT is not set: name the client this process serves
+Error: no client "claude-code" is in force; add it with previously client add
+```
+
+Every call reads the policy again.
+A client revoked while the process runs gets an error from its next call on, and the access log records that call with the outcome `error`.
+Standard output carries the protocol and nothing else, and the process ends when standard input closes.
+The tools, resources and prompts are the same as over HTTP; every call writes an `mcp_access`, which {ref}`cli-access` reads.
+
+(cli-serve)=
+
+## `serve`
+
+Serves MCP over HTTP under the path `/mcp`, with answers as JSON and without a session.
+A client of the protocol revision `2026-07-28` and one of an earlier revision are served at the same address.
+`serve` takes no options, and reads `PREVIOUSLY_MCP_HOST`, `PREVIOUSLY_MCP_PORT` and `PREVIOUSLY_MCP_ALLOWED_HOSTS` ({ref}`configuration-reference`).
+On start it prints one line to standard error, and then runs until it's stopped:
+
+```text
+serving MCP over HTTP on http://127.0.0.1:8765/mcp
+```
+
+A port that isn't a number from 1 to 65535 is refused before anything connects, with exit code 2:
+
+```text
+Error: PREVIOUSLY_MCP_PORT is not a port number: 'http'
+```
+
+Every request needs the header `Authorization: Bearer TOKEN`, with the token that `client add` printed for a client in force.
+The token is checked against the policy at every request, so a token that a later `client add` for the same name replaced, or that `client revoke` lifted, stops working with the next request.
+A header that names a client is no identity: only the token says which client asks.
+A request without a valid token gets the status 401, the header `WWW-Authenticate: Bearer`, and one sentence as its body:
+
+```text
+Error: a valid bearer token is required
+```
+
+No `mcp_access` is written for such a request, since no client is known.
+The server publishes no Protected Resource Metadata, so `/.well-known/oauth-protected-resource` answers 404.
+
+The `Host` header of a request has to name `127.0.0.1`, `localhost`, `[::1]` or a name in `PREVIOUSLY_MCP_ALLOWED_HOSTS`, with any port, or the request gets the status 421.
+An `Origin` header has to name one of those hosts too, with `http` or `https`, or the request gets the status 403.
+Both checks are the protection of the MCP SDK against DNS rebinding.

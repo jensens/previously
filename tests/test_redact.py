@@ -704,6 +704,20 @@ class _ContestedLog:
     def blob_references(self, conn: Connection) -> Iterator[tuple[bytes, int]]:
         return self._inner.blob_references(conn)
 
+    def observations(
+        self,
+        conn: Connection,
+        *,
+        since: datetime | None,
+        until: datetime | None,
+        source: str | None,
+        after: tuple[datetime, int] | None,
+        limit: int,
+    ) -> Iterator[EventRow]:
+        return self._inner.observations(
+            conn, since=since, until=until, source=source, after=after, limit=limit
+        )
+
 
 @pytest.mark.db
 def test_a_lost_chain_position_is_retried_and_leaves_nothing_behind(db: Engine) -> None:

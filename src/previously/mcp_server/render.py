@@ -22,6 +22,7 @@ reaches the page passes through it, including the title, the reason of a
 placeholder and error messages.
 """
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 from datetime import UTC
@@ -36,7 +37,6 @@ import unicodedata
 
 
 if TYPE_CHECKING:
-    from collections.abc import Callable
     from collections.abc import Iterator
     from collections.abc import Mapping
     from collections.abc import Sequence
@@ -73,6 +73,9 @@ _ESCAPE_SEQUENCE = re.compile(
 )
 _LINE_BREAKS = str.maketrans(dict.fromkeys("\n\t\r  ", " "))
 _CURSOR_REFUSED: Final = "cursor is not valid for these filters"
+# The largest integer a result may show: above it, a client that reads JSON
+# numbers as doubles rounds (spec section 6 of the concept, measurement M4).
+_MAX_SAFE: Final = 2**53 - 1
 _EVENT_ID = re.compile(r"(\d+)$")
 _TAG_BLOCK = range(0xE0000, 0xE0080)
 # Invisible characters outside the category `Cf`, removed by ruling R-6 of the
@@ -106,8 +109,21 @@ class Head:
 
 @dataclass(frozen=True)
 class Shown:
+    """An event shown in full: its heading, its units, and what `get_event`
+    adds (spec section 5.2).
+
+    `attachments` are the names of the blobs the event names, never their
+    content, and `provenance` the pairs of label and value that say where the
+    event came from (`found_in`, the Message-ID).
+    Both are rendered **inside** the fence: the mail supplied them, so they
+    are as foreign as its text (ruling R-8 of the 2026-10-11 MCP read access
+    plan).
+    """
+
     head: Head
     units: tuple[tuple[int, str], ...]  # (seq, text)
+    attachments: tuple[str, ...] = ()
+    provenance: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -121,14 +137,38 @@ class ErasedMark:
     uri: str
 
 
-type Item = Shown | WithheldMark | ErasedMark
+@dataclass(frozen=True)
+class ErrorMark:
+    """The error of one requested item, so that the others of the call stay
+    untouched: `label` is the URI of the event, or another short name where
+    the URI cannot be written (an id beyond 2^53 may not appear in a result).
+    """
+
+    label: str
+    message: str
+
+
+type Item = Shown | WithheldMark | ErasedMark | ErrorMark
 
 
 @dataclass(frozen=True)
 class Page:
+    """A laid-out page and what it used up.
+
+    `consumed` is how many of the items reached the page, and `units` holds,
+    for each of them in order, the seqs of the units that appeared on it
+    (empty for a placeholder or an error).
+    A unit cut inside appeared, in part, and is listed.
+    The access log is built from these two and not from what was read:
+    an item that did not fit was not seen, and belongs to the next page's
+    entry (ruling R-9 of the 2026-10-11 MCP read access plan).
+    """
+
     text: str
     next_cursor: str | None
     removed_characters: int
+    consumed: int = 0
+    units: tuple[tuple[int, ...], ...] = ()
 
 
 def _removable(char: str) -> bool:
@@ -261,22 +301,29 @@ def _fence_close() -> str:
     return f"<<<end {_TAG_SENTINEL}>>>"
 
 
-def _shown_block(item: Shown, counter: _Counter, budget: int | None) -> tuple[str, bool]:
-    """Return the block of one event and whether it was cut to fit `budget`.
+def _shown_block(item: Shown, counter: _Counter, budget: int | None) -> tuple[str, tuple[int, ...]]:
+    """Return the block of one event and the seqs of the units in it.
 
     The caller passes `None` first, to learn the full size, and only passes a
-    budget for an event that stands alone on its page.
+    budget for an event that stands alone on its page; then the block is cut
+    to fit, and the seqs are those that made it.
     """
     uri = counter.line(item.head.uri)
     prefix = [_heading(item.head, uri, counter), _fence_open()]
     if item.head.subject is not None:
         prefix.append("Subject: " + counter.line(item.head.subject, 300))
+    if item.attachments:
+        names = ", ".join(counter.line(name) for name in item.attachments)
+        prefix.append("Attachments: " + names)
+    prefix.extend(
+        f"{counter.line(label)}: {counter.line(value)}" for label, value in item.provenance
+    )
     units = [(seq, counter.text(text)) for seq, text in item.units]
     marked = [f"#unit-{seq}\n{text}" for seq, text in units]
     closing = _fence_close()
     full = "\n".join([*prefix, *marked, closing])
     if budget is None or len(full) <= budget:
-        return full, False
+        return full, tuple(seq for seq, _ in units)
 
     # Reserve room for the longer of the two notes, with one digit to spare
     # for `seq + 1`.
@@ -288,10 +335,12 @@ def _shown_block(item: Shown, counter: _Counter, budget: int | None) -> tuple[st
     )
     room = budget - len("\n".join([*prefix, closing])) - 1 - note_length - 1
     shown: list[str] = []
+    seqs: list[int] = []
     note = _pointer_note(uri, units[0][0] if units else 0)
     for index, ((seq, text), block) in enumerate(zip(units, marked, strict=True)):
         if len(block) + 1 <= room:
             shown.append(block)
+            seqs.append(seq)
             room -= len(block) + 1
             continue
         if shown:
@@ -299,15 +348,19 @@ def _shown_block(item: Shown, counter: _Counter, budget: int | None) -> tuple[st
         else:
             marker = f"#unit-{seq}\n"
             shown.append(marker + text[: max(room - len(marker) - 1, 0)])
+            seqs.append(seq)
             following = units[index + 1][0] if index + 1 < len(units) else None
             note = _cut_unit_note(uri, seq, following)
         break
     else:
         note = _pointer_note(uri, units[-1][0] + 1 if units else 0)
-    return "\n".join([*prefix, *shown, closing, note]), True
+    return "\n".join([*prefix, *shown, closing, note]), tuple(seqs)
 
 
-def _placeholder(item: WithheldMark | ErasedMark, counter: _Counter) -> str:
+def _placeholder(item: WithheldMark | ErasedMark | ErrorMark, counter: _Counter) -> str:
+    if isinstance(item, ErrorMark):
+        label = counter.line(item.label)
+        return f"Error: {label} — {counter.line(item.message, _REASON_CHARS)}"
     uri = counter.line(item.uri)
     if isinstance(item, ErasedMark):
         return f"[erased: {uri}]"
@@ -321,25 +374,36 @@ def _removed_note(removed: int) -> str:
     return f" · {removed} control {noun} removed"
 
 
-def _header(title: str, page: int, cursor: str | None, removed: int) -> str:
-    text = f"previously · {title} · page {page}"
-    if cursor is not None:
-        text += f" · next: c={cursor}"
-    return text + _removed_note(removed)
+def _again(cursor: str) -> str:
+    return f"call again with cursor={cursor}"
 
 
-def _footer(page: int, cursor: str) -> str:
-    return f"End of page {page}. More results: call again with cursor={cursor}"
+@dataclass(frozen=True)
+class _Frame:
+    """What stands around the blocks: the title, the page number, and how
+    the footer says where to go on (`next_hint`, given the next cursor)."""
 
+    title: str
+    page: int
+    next_hint: Callable[[str], str] | None
 
-def _length(title: str, page: int, cursor: str | None, removed: int, blocks: list[str]) -> int:
-    """Length of the assembled page, without building it."""
-    parts = [len(_header(title, page, cursor, removed))]
-    parts.extend(len(block) for block in blocks)
-    if cursor is not None:
-        parts.append(len(_footer(page, cursor)))
-    total = sum(parts) + 2 * (len(parts) - 1)
-    return total
+    def header(self, cursor: str | None, removed: int) -> str:
+        text = f"previously · {self.title} · page {self.page}"
+        if cursor is not None and self.next_hint is None:
+            text += f" · next: c={cursor}"
+        return text + _removed_note(removed)
+
+    def footer(self, cursor: str) -> str:
+        hint = (self.next_hint or _again)(cursor)
+        return f"End of page {self.page}. More results: {hint}"
+
+    def length(self, cursor: str | None, removed: int, blocks: list[str]) -> int:
+        """Length of the assembled page, without building it."""
+        parts = [len(self.header(cursor, removed))]
+        parts.extend(len(block) for block in blocks)
+        if cursor is not None:
+            parts.append(len(self.footer(cursor)))
+        return sum(parts) + 2 * (len(parts) - 1)
 
 
 def render_page(
@@ -349,36 +413,49 @@ def render_page(
     cursor_for: Callable[[int], str],
     page: int = 1,
     candidates: Iterator[str] | None = None,
+    more: bool = False,
+    next_hint: Callable[[str], str] | None = None,
 ) -> Page:
     """Lay out as many `items` as fit in `PAGE_CHARS`.
 
-    `cursor_for(i)` returns an `encode_cursor` value, the cursor that resumes **after** the item at
+    `cursor_for(i)` returns the cursor that resumes **after** the item at
     index `i`; it is called with the index of the last item delivered.
+    `more` says that further items exist beyond `items`, so that a page that
+    holds every one of them still gets a cursor.
+    `next_hint(cursor)` words the footer's way on, for a caller whose way on
+    is no `cursor` argument (`get_event` names the ids that are left); without
+    it the footer says to call again with the cursor, and the header names the
+    cursor too.
     `page` is the number of this page, which the caller knows from the cursor
     chain; the total is unknown here, so the indicator reads `page N` and not
     `page N of M`.
 
-    An item that is cut because it alone exceeds the page counts as delivered:
-    the next cursor points behind it, and the rest of it is reachable through
-    `get_event` with `from_unit`.
-    So a later page never starts in the middle of an event.
+    An item that is cut because it alone exceeds the page counts as delivered,
+    and the next cursor points behind it, so a later page never starts in the
+    middle of an event.
+    Cut at a unit boundary, the note points at `get_event` with `from_unit`
+    for the rest; cut inside a unit, the note says that the rest of that unit
+    is not served in the pilot, and points at the unit after it, if there is
+    one (ruling R-5 of the 2026-10-11 MCP read access plan).
     For a cut unit the removed-character count covers the whole unit.
     """
     counter = _Counter()
-    clean_title = counter.line(title)
+    frame = _Frame(counter.line(title), page, next_hint)
     blocks: list[str] = []
+    shown: list[tuple[int, ...]] = []
     cursor: str | None = None
     for index, item in enumerate(items):
         before = (counter.removed, len(counter.content))
         if isinstance(item, Shown):
-            block, _ = _shown_block(item, counter, None)
+            block, seqs = _shown_block(item, counter, None)
         else:
-            block = _placeholder(item, counter)
+            block, seqs = _placeholder(item, counter), ()
         candidate = [*blocks, block]
-        last = index == len(items) - 1
+        last = index == len(items) - 1 and not more
         next_cursor = None if last else cursor_for(index)
-        if _length(clean_title, page, next_cursor, counter.removed, candidate) <= PAGE_CHARS:
+        if frame.length(next_cursor, counter.removed, candidate) <= PAGE_CHARS:
             blocks, cursor = candidate, next_cursor
+            shown.append(seqs)
             continue
         if blocks:
             counter.removed, kept = before
@@ -387,29 +464,40 @@ def render_page(
         if not isinstance(item, Shown):
             # A placeholder is capped far below the page.
             blocks, cursor = candidate, next_cursor
+            shown.append(seqs)
             break
         # The first item alone is over the page: cut it, and count it as
         # delivered.
         with_item = counter.removed
         counter.removed, kept = before
         del counter.content[kept:]
-        fixed = _length(clean_title, page, next_cursor, with_item, [""])
-        cut, _ = _shown_block(item, counter, PAGE_CHARS - fixed)
+        fixed = frame.length(next_cursor, with_item, [""])
+        cut, seqs = _shown_block(item, counter, PAGE_CHARS - fixed)
         blocks, cursor = [cut], next_cursor
+        shown.append(seqs)
         break
-    else:
-        cursor = None
 
     body = "\n\n".join(blocks) if blocks else "No results."
-    text = _header(clean_title, page, cursor, counter.removed) + "\n\n" + body
+    text = frame.header(cursor, counter.removed) + "\n\n" + body
     if cursor is not None:
-        text += "\n\n" + _footer(page, cursor)
+        text += "\n\n" + frame.footer(cursor)
     tag = draw_tag("\n".join(counter.content), candidates=candidates)
     return Page(
         text=text.replace(_TAG_SENTINEL, tag),
         next_cursor=cursor,
         removed_characters=counter.removed,
+        consumed=len(shown),
+        units=tuple(shown),
     )
+
+
+def render_text(title: str, lines: Sequence[str]) -> str:
+    """Return a result that holds no customer content, such as the circles of
+    the policy: a header, then each line sanitized and kept on one line."""
+    counter = _Counter()
+    clean_title = counter.line(title)
+    body = [counter.line(line, _ERROR_CHARS) for line in lines] or ["No results."]
+    return f"previously · {clean_title}{_removed_note(counter.removed)}\n\n" + "\n".join(body)
 
 
 def render_error(message: str) -> str:
@@ -418,8 +506,17 @@ def render_error(message: str) -> str:
     return "Error: " + _one_line(clean, _ERROR_CHARS)
 
 
-def encode_cursor(after: tuple[datetime, int], filters: Mapping[str, str]) -> str:
-    """Encode the last position and the filters as an opaque, URL-safe string.
+@dataclass(frozen=True)
+class Position:
+    """Where a cursor resumes: after `after`, on page `page`."""
+
+    after: tuple[datetime, int]
+    page: int
+
+
+def encode_cursor(after: tuple[datetime, int], filters: Mapping[str, str], *, page: int = 2) -> str:
+    """Encode the last position, the filters and the number of the page the
+    cursor opens as an opaque, URL-safe string.
 
     The cursor is not sealed: it releases nothing, because every call checks
     access again.
@@ -427,29 +524,44 @@ def encode_cursor(after: tuple[datetime, int], filters: Mapping[str, str]) -> st
     payload = {
         "after": [after[0].isoformat(), after[1]],
         "filters": dict(filters),
+        "page": page,
     }
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
 
 
-def decode_cursor(cursor: str, filters: Mapping[str, str]) -> tuple[datetime, int]:
-    """Decode a cursor; raise `ValueError` if it is malformed or not for `filters`."""
+def _whole(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and 0 <= value <= _MAX_SAFE
+
+
+def decode_position(cursor: str, filters: Mapping[str, str]) -> Position:
+    """Decode a cursor; raise `ValueError` if it is malformed or not for `filters`.
+
+    A cursor is the caller's input like any other argument, so whatever it
+    holds is checked before it reaches a query: a moment with a zone, and an
+    id and a page number inside the range a result may show.
+    """
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
         moment, event_id = payload["after"]
         recorded = payload["filters"]
-        if (
-            not isinstance(moment, str)
-            or not isinstance(event_id, int)
-            or isinstance(event_id, bool)
-        ):
+        page = payload.get("page", 2)
+        if not isinstance(moment, str) or not _whole(event_id) or not _whole(page) or page < 2:
             raise ValueError("unexpected types")
-        after = (datetime.fromisoformat(moment), event_id)
-    except (ValueError, KeyError, TypeError) as error:
+        when = datetime.fromisoformat(moment)
+        if when.tzinfo is None:
+            raise ValueError("no zone")
+    except (ValueError, KeyError, TypeError, AttributeError) as error:
         # One fixed message: the parser's own wording would leak internals to
         # whoever echoes it.
         raise ValueError(_CURSOR_REFUSED) from error
     if recorded != dict(filters):
         raise ValueError(_CURSOR_REFUSED)
-    return after
+    return Position((when, event_id), page)
+
+
+def decode_cursor(cursor: str, filters: Mapping[str, str]) -> tuple[datetime, int]:
+    """Decode a cursor's position; raise `ValueError` if it is malformed or
+    not for `filters`."""
+    return decode_position(cursor, filters).after

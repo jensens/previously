@@ -2,8 +2,8 @@
 
 # Configuration
 
-Previously reads its settings from seventeen environment variables.
-Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store, fetch or delete a blob, as the table below says per variable, the five `PREVIOUSLY_IMAP_*` variables only by `ingest imap`, and the four settings of the model providers only by `gate try`.
+Previously reads its settings from twenty-one environment variables.
+Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store, fetch or delete a blob, as the table below says per variable, the five `PREVIOUSLY_IMAP_*` variables only by `ingest imap`, the four settings of the model providers only by `gate try`, and the four `PREVIOUSLY_MCP_*` variables only by `mcp` and `serve`.
 
 ## Database
 
@@ -167,3 +167,24 @@ us = 1.1
 Each `model_call` carries the SHA-256 of the file as it lies on disk, and the estimate as a decimal string under `cost_usd`, which is `null` for a model the file doesn't name, such as the local one.
 The file in the package was read on 2026-10-09 and names its sources in its header.
 A file that can't be read, isn't TOML or has no date `as_of` stops `gate try` before it calls anything, with exit code 2 and one sentence that names the file.
+
+## Server settings
+
+The MCP server of `previously mcp` and `previously serve`; see {ref}`cli-mcp` and {ref}`cli-serve`.
+
+| Variable | Meaning | Missing at |
+|---|---|---|
+| `PREVIOUSLY_MCP_CLIENT` | The name of the client that `mcp` serves over standard input and output, a client in force from `client add`. | `mcp` |
+| `PREVIOUSLY_MCP_HOST` | The address `serve` listens on. Unset or empty, it's `127.0.0.1`. | Never. |
+| `PREVIOUSLY_MCP_PORT` | The port `serve` listens on, a number from 1 to 65535. Unset or empty, it's 8765. | Never; a value that isn't a port number is refused. |
+| `PREVIOUSLY_MCP_ALLOWED_HOSTS` | Host names a request to `serve` may name in its `Host` and `Origin` headers beside `127.0.0.1`, `localhost` and `[::1]`, such as the name of the machine in a private network, separated by commas or blanks. Unset or empty, only those three. | Never. |
+
+`mcp` reads `PREVIOUSLY_MCP_CLIENT` before anything connects, and returns 2 when it's unset or empty:
+
+```text
+Error: PREVIOUSLY_MCP_CLIENT is not set: name the client this process serves
+```
+
+`serve` listens on another address only when `PREVIOUSLY_MCP_HOST` says so, such as `0.0.0.0` in a container.
+A client that connects by a name other than those three needs that name in `PREVIOUSLY_MCP_ALLOWED_HOSTS`, the name of a Kubernetes service among them, or its requests get the status 421.
+Over HTTP the client is the one whose bearer token a request carries; no variable names it.

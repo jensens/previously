@@ -1910,6 +1910,75 @@ def _cmd_client(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- The MCP server ------------------------------------------------------------
+
+# Where `previously serve` listens unless told otherwise: the loopback address,
+# so that nothing outside the machine reaches it without a decision.
+MCP_HOST = "127.0.0.1"
+MCP_PORT = 8765
+
+
+def _cmd_mcp(_args: argparse.Namespace) -> int:
+    """Serves MCP over stdin and stdout for the client named in
+    `PREVIOUSLY_MCP_CLIENT` ({ref}`cli-reference`).
+
+    Over stdio there is no token: whoever starts the process is the client.
+    The name has to be a client in force, checked before a request is read;
+    a revocation while the process runs locks the client out from its next
+    call, because every call reads the policy again.
+    Nothing is printed: standard output is the protocol.
+
+    The server module is imported here and not at the head, as the adapters
+    of the gate are: the MCP SDK, Starlette and uvicorn add about 0.3 s to
+    the import, measured on 2026-10-11 with `python -X importtime -c "import
+    previously.cli, previously.mcp_server.server"` at 0.67 s against 0.36 s
+    for `previously.cli` alone, cumulative, three runs each; every other
+    command would pay for it.
+    """
+    from previously.mcp_server.server import CLIENT_VARIABLE
+    from previously.mcp_server.server import run_stdio
+
+    name = os.environ.get(CLIENT_VARIABLE)
+    if not name:
+        raise PreviouslyError(f"{CLIENT_VARIABLE} is not set: name the client this process serves")
+    with _storage() as storage:
+        with storage.begin() as conn:
+            if name not in read_policy(storage, conn).clients:
+                raise PreviouslyError(
+                    f'no client "{name}" is in force; add it with previously client add'
+                )
+        run_stdio(storage, name)
+    return 0
+
+
+def _mcp_port() -> int:
+    """`PREVIOUSLY_MCP_PORT`, or 8765 when it is unset or empty."""
+    text = os.environ.get("PREVIOUSLY_MCP_PORT") or str(MCP_PORT)
+    if not (text.isascii() and text.isdigit() and 0 < int(text) < 65536):
+        raise PreviouslyError(f"PREVIOUSLY_MCP_PORT is not a port number: {text!r}")
+    return int(text)
+
+
+def _cmd_serve(_args: argparse.Namespace) -> int:
+    """Serves MCP over HTTP under `/mcp` until stopped ({ref}`cli-reference`).
+
+    Every request needs the bearer token of a client in force. The host check
+    against DNS rebinding lets through the loopback names and those in
+    `PREVIOUSLY_MCP_ALLOWED_HOSTS`, separated by commas or blanks.
+
+    The server module is imported here for the reason `_cmd_mcp` gives.
+    """
+    from previously.mcp_server.server import run_http
+
+    host = os.environ.get("PREVIOUSLY_MCP_HOST") or MCP_HOST
+    port = _mcp_port()
+    allowed = (os.environ.get("PREVIOUSLY_MCP_ALLOWED_HOSTS") or "").replace(",", " ").split()
+    with _storage() as storage:
+        print(f"serving MCP over HTTP on http://{host}:{port}/mcp", file=sys.stderr)
+        run_http(storage, host=host, port=port, allowed_hosts=allowed)
+    return 0
+
+
 # The one place a command is declared. `main` builds the subparsers and the
 # dispatch from this sequence, so a command cannot have a subparser and no
 # body, or a body nobody can call: until 2026-10-04 the two were written out
@@ -1940,6 +2009,8 @@ COMMANDS: tuple[Command, ...] = (
     Command("gate", "explain or try a model call", _cmd_gate, _gate_arguments),
     Command("client", "add, revoke and list MCP clients", _cmd_client, _client_arguments),
     Command("access", "show what MCP clients saw", _cmd_access, _access_arguments),
+    Command("mcp", "serve MCP over stdio", _cmd_mcp),
+    Command("serve", "serve MCP over HTTP", _cmd_serve),
 )
 
 
