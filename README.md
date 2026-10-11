@@ -159,7 +159,7 @@ The full documentation â€” tutorials, how-to guides, reference and explanation â
 lives under `docs/`. Build it locally with `make -C docs html`, then open
 `docs/_build/html/index.html`. Start with
 [Record your first event](docs/tutorials/record-your-first-event.md): a
-session typed out against a real PostgreSQL 17, from a fresh checkout to a
+session typed out against a real PostgreSQL 18, from a fresh checkout to a
 passing test suite.
 
 The eleven specifications below are **frozen design records**, in German and

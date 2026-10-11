@@ -3,13 +3,13 @@
 # Record your first event
 
 In this tutorial, we will record our first event in Previously, read it back from the log, check that the chain holds, pin its tip outside the database, build the two derived views, read the chronicle and the counts per source, and prove all of it with the project's own test suite.
-Every command below is real: it was typed in a fresh checkout, against a real PostgreSQL 17 in a container like the one below.
+Every command below is real: it was typed in a fresh checkout, against a real PostgreSQL 18 in a container like the one below.
 No output below names a directory, so nothing here depends on where you put yours.
 
 ## Prerequisites
 
 - **Python 3.14**, and **[uv](https://docs.astral.sh/uv/)**, which fetches that version of Python itself if the machine doesn't have it.
-- **PostgreSQL 17** to append to.
+- **PostgreSQL 18** to append to.
 - **Docker**, for the test suite at the end: the tests start their own PostgreSQL container and their own S3 server, so they never touch the database below.
 
 Start a trial database if you don't already have one running:
@@ -19,7 +19,7 @@ docker run -d --name previously -p 5432:5432 \
     -e POSTGRES_USER=previously \
     -e POSTGRES_PASSWORD=previously \
     -e POSTGRES_DB=previously \
-    postgres:17
+    postgres:18
 ```
 
 ## Install the dependencies
