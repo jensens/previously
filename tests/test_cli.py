@@ -119,6 +119,26 @@ def test_parse_address_refuses_any_other_form(text: str, port: int | None) -> No
     assert str(raised.value) == f"X is not {form}, with an IPv6 host in brackets: {text!r}"
 
 
+@pytest.mark.parametrize(
+    ("text", "shown"),
+    [
+        ("imaps://pilot:s3cret@mail.example.org", "…@mail.example.org"),
+        ("pilot:s3c@ret@mail.example.org:993", "…@mail.example.org:993"),
+        ("s3cret@", "…@"),
+    ],
+)
+def test_parse_address_quotes_nothing_before_the_last_at(text: str, shown: str) -> None:
+    """An address holds no `@`, so one there is a mistake, and the likely one
+    is a user and a password written in front of the host. The refusal
+    quotes from the last `@` on; a value without one is quoted whole, as the
+    test above shows."""
+    with pytest.raises(PreviouslyError) as raised:
+        parse_address("X", text, default_port=993)
+    message = str(raised.value)
+    assert message == f"X is not host or host:port, with an IPv6 host in brackets: {shown!r}"
+    assert "s3c" not in message
+
+
 def test_parse_moment_with_a_zone() -> None:
     assert parse_moment("2026-10-01T09:00:00+02:00").utcoffset() is not None
 

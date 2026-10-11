@@ -8,7 +8,7 @@ Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables ar
 No setting has a name that Kubernetes gives a variable of a Service.
 For every Service in a namespace, Kubernetes sets variables such as `X_SERVICE_HOST`, `X_PORT` and `X_PORT_8765_TCP` in every pod of that namespace, with `X` the name of the Service upper-cased and `-` written as `_`; a Service named `previously-mcp` sets `PREVIOUSLY_MCP_PORT`.
 A host and its port therefore stand in one setting that ends in `_ADDRESS`, in {ref}`the address form <address-form>`.
-`tests/test_settings.py` holds every name the source reads against the names Kubernetes sets.
+`tests/test_settings.py` holds every `PREVIOUSLY_` name the source spells out against the names that Kubernetes and the legacy links of Docker set; a name put together while the program runs would escape it, and no setting is read that way.
 
 ## Database
 
@@ -131,7 +131,7 @@ For a folder inside another, the name holds the names of the folders above it, e
 The server names its delimiter in its answer to the `LIST` command, and a mail client shows only the last part of the name.
 `ingest imap` writes the name in the modified UTF-7 of RFC 3501 itself, so the setting holds it as it reads, umlauts included, and never as `Kunde M&APw-ller`.
 
-`ingest imap` reads neither `PREVIOUSLY_IMAP_HOST` nor `PREVIOUSLY_IMAP_PORT`, which held the host and the port up to `0.1.0a3`.
+`ingest imap` no longer takes the host from `PREVIOUSLY_IMAP_HOST` or the port from `PREVIOUSLY_IMAP_PORT`, the two settings that held them up to `0.1.0a3`.
 When `PREVIOUSLY_IMAP_ADDRESS` is unset or empty and `PREVIOUSLY_IMAP_HOST` is set, it returns 2 with a sentence that names the new setting:
 
 ```text
@@ -198,7 +198,7 @@ Error: PREVIOUSLY_MCP_CLIENT is not set: name the client this process serves
 ```
 
 `serve` listens on another address only when `PREVIOUSLY_MCP_ADDRESS` says so, such as `0.0.0.0:8765` in a container.
-It reads neither `PREVIOUSLY_MCP_HOST` nor `PREVIOUSLY_MCP_PORT`, which held the host and the port in `0.1.0a3`.
+It no longer takes the host from `PREVIOUSLY_MCP_HOST` or the port from `PREVIOUSLY_MCP_PORT`, the two settings that held them in `0.1.0a3`.
 When `PREVIOUSLY_MCP_ADDRESS` is unset or empty and `PREVIOUSLY_MCP_HOST` is set, `serve` returns 2 before it listens anywhere:
 
 ```text
@@ -221,9 +221,11 @@ Over HTTP the client is the one whose bearer token a request carries; no variabl
 
 The host takes the form of the host in `PREVIOUSLY_DSN` ({ref}`dsn-form`).
 A host name outside ASCII stands in its ASCII form, the one that starts with `xn--`.
-An address of another form returns 2 before anything connects, with one sentence that names the setting and the form, and quotes the value:
+An IPv6 address with a zone index, such as `[fe80::1%eth0]`, isn't accepted.
+An address of another form returns 2 before anything connects, with one sentence that names the setting and the form, and quotes the value from its last `@` on, so that a user and a password written in front of the host, as in `imaps://user:password@host`, stay out of the message:
 
 ```text
 Error: PREVIOUSLY_MCP_ADDRESS is not host:port, with an IPv6 host in brackets: 'tcp://10.43.0.5:8765'
 Error: PREVIOUSLY_IMAP_ADDRESS is not host or host:port, with an IPv6 host in brackets: '::1'
+Error: PREVIOUSLY_IMAP_ADDRESS is not host or host:port, with an IPv6 host in brackets: '…@mail.example.org'
 ```

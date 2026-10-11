@@ -31,7 +31,8 @@ An IPv6 host stands in brackets, such as `[::1]:8765`.
 
 **Why:** for every Service in a namespace, Kubernetes sets variables such as `X_SERVICE_HOST`, `X_PORT` and `X_PORT_8765_TCP` in every pod, with `X` the Service's name upper-cased.
 A Service named `previously-mcp` set `PREVIOUSLY_MCP_PORT`, the setting `serve` read, and a Service named `previously-imap` would have set `PREVIOUSLY_IMAP_PORT`.
-No setting of Previously ends in `_PORT` or `_HOST` any more, and a test holds every name the source reads against the names Kubernetes sets, so a new setting can't bring the collision back.
+No setting of Previously ends in `_PORT` or `_HOST` any more, and a test holds every `PREVIOUSLY_` name the source spells out against the names Kubernetes sets, so a new setting spelled out in the source fails the build before it can bring the collision back.
+A name put together while the program runs would escape that test; no setting is read that way today.
 `PREVIOUSLY_MCP_PORT` and `PREVIOUSLY_IMAP_PORT` are never read: what Kubernetes sets there changes nothing.
 
 ### The secret of the ingest
@@ -80,7 +81,7 @@ Nothing of Previously reads a variable that a Service sets, so a pod with servic
 ## A host without a cluster
 
 A `docker-compose` file sets `PREVIOUSLY_MCP_ADDRESS=0.0.0.0:8765` for the service `mcp` and `PREVIOUSLY_IMAP_ADDRESS` for the ingest, where it set the four settings before.
-Docker's legacy links set variables of the same form as Kubernetes does, and they no longer reach any setting either.
+Docker's legacy links set variables of the same form as Kubernetes does, and beside them `<ALIAS>_NAME` and one `<ALIAS>_ENV_<VARIABLE>` per variable of the linked container; none of them reaches a setting, and the same test holds the names against those two forms as well.
 This file considers it and builds nothing for it.
 
 ## How to recognize that everything stands

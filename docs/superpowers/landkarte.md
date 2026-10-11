@@ -141,8 +141,9 @@ Spec:
 Für Einheit 2 beantwortet, mit der Auslieferung: kup6s arbeitet mit cdk8s,
 ArgoCD und dem CloudNativePG-Operator; das Image kommt von `ghcr.io`; was dort
 entsteht, baut der Agent in kup6s nach dem Handoff (Betreuer, 2026-10-05). Der
-Zugang vom Arbeitsplatz ist `kubectl exec` in den Werkzeug-Pod, bis der
-MCP-Server in kup6s läuft.
+Zugang vom Arbeitsplatz ist `kubectl exec` in den Werkzeug-Pod für die
+Kommandos und, seit dem 2026-10-11, `kubectl port-forward` zu
+`previously-mcp` für die Clients; das Tailnet (Stufe A2) steht noch aus (RG).
 
 ## Was vor was kommen muss
 
@@ -706,7 +707,7 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
 
 - Die Grenze von 60.000 Zeichen je Seite (`PAGE_CHARS` in
   `mcp_server/render.py`) ist geschätzt, nicht an echten Mails gemessen;
-  Bedingung 9 hat sie mit drei Mails eines Kreises nicht erreicht (ML §5.1,
+  der Lauf der Bedingung 9 meldet dazu nichts, sie bleibt ungemessen (ML §5.1,
   §13 Punkt 2; RG).
 - `previously-mcp` unter Last ist ungemessen: gesetzt sind 50m CPU und 128 MiB
   angefordert, 1 CPU und 512 MiB als Grenze, gebraucht im Leerlauf 3m CPU und

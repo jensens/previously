@@ -1222,7 +1222,7 @@ def test_the_reference_quotes_what_mcp_and_serve_say() -> None:
     for after, count in (
         ("is set, it returns 2 with a sentence that names the new setting", 1),
         ("is set, `serve` returns 2 before it listens anywhere", 1),
-        ("names the setting and the form, and quotes the value", 2),
+        ("names the setting and the form, and quotes the value", 3),
     ):
         quoted = _quoted_block(configuration, after)
         assert len(quoted) == count, quoted

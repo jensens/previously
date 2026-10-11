@@ -131,7 +131,7 @@ That holds for the code as it's written, and the code isn't all that runs.
 The ingest parses mail anybody could have sent, through a mail parser and an HTML converter it didn't write; the gate and the server run the clients of their vendors; and any of them could be taken over by a flaw in that code, or by a dependency that changes.
 A process that holds the database connection and can reach any host is then a way out that no rule decides and no record shows: what it sends leaves no `model_call` and no `mcp_access` behind.
 
-So the network has to say what the code says, and that's a requirement on the environment ({ref}`environment-requirements`): each process of Previously reaches the hosts its commands need, and nothing else on the internet.
+So the network has to say what the code says, and that's a requirement on the environment ({ref}`environment-requirements`): each process of Previously reaches name resolution, the database and the hosts its commands need, and nothing else.
 The environment chooses how.
 In a Kubernetes cluster, network policies that deny every connection to and from a pod of Previously, except DNS, the database and the hosts that pod's commands name, are one way; on a single host, a firewall for the user the commands run as is another.
 

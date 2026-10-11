@@ -344,21 +344,30 @@ def parse_address(name: str, text: str, *, default_port: int | None) -> tuple[st
     The host is a host name, an IPv4 address, or an IPv6 address in brackets,
     and comes back without the brackets, as a socket takes it. The port is a
     number from 1 to 65535; `default_port` is the port where the address may
-    leave it out, and `None` where it may not. The value is quoted in the
-    refusal: it names a server and holds no secret.
+    leave it out, and `None` where it may not.
+
+    The refusal quotes the value from its last `@` on. An address holds no
+    `@`, and the likely mistake that puts one there is a URL with a user and
+    a password in front of the host, such as `imaps://user:password@host`;
+    the setting stands beside the password in the same secret, and a value
+    quoted whole would print it. What is left can still hold a secret
+    written anywhere else in the value, as any quotation of a mistyped
+    setting can.
 
     Public because a test calls it directly, as for `escape_field`.
     """
     # Two sentences written out rather than one with the form interpolated:
     # `tests/test_docs_references.py` holds the pages' quotations against the
     # literal parts, and an interpolated form would let any wording pass.
+    _before, at, after = text.rpartition("@")
+    shown = f"…@{after}" if at else text
     if default_port is None:
         refusal = PreviouslyError(
-            f"{name} is not host:port, with an IPv6 host in brackets: {text!r}"
+            f"{name} is not host:port, with an IPv6 host in brackets: {shown!r}"
         )
     else:
         refusal = PreviouslyError(
-            f"{name} is not host or host:port, with an IPv6 host in brackets: {text!r}"
+            f"{name} is not host or host:port, with an IPv6 host in brackets: {shown!r}"
         )
     match = _ADDRESS.fullmatch(text)
     if match is None:

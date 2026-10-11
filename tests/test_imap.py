@@ -233,6 +233,30 @@ def test_a_server_nobody_answers_at_is_one_sentence(unused_port: int) -> None:
     )
 
 
+def test_an_ipv6_server_is_named_with_its_host_in_brackets() -> None:
+    """`::1:993` would read as an address without a port; the refusal
+    brackets the host as an address is written."""
+    try:
+        with socket.socket(socket.AF_INET6) as probe:
+            probe.bind(("::1", 0))
+            port: int = probe.getsockname()[1]
+    except OSError:
+        pytest.skip("::1 is not an address of this machine")
+    connector = ImapConnector(
+        host="::1",
+        port=port,
+        user="pilot",
+        password=secrets.token_hex(8),
+        folder="Kunde Müller",
+        ssl_context=ssl.create_default_context(),
+    )
+    with pytest.raises(ImapError) as raised:
+        list(connector.fetch(None))
+    assert (
+        str(raised.value) == f"cannot connect to the IMAP server [::1]:{port}: Connection refused"
+    )
+
+
 @pytest.fixture
 def unused_port() -> int:
     """A port on the loopback that was free a moment ago and nothing listens

@@ -17,6 +17,9 @@ that page links to, adds `X_SERVICE_PORT_<NAME>` for every named port; both
 read on 2026-10-11. `<n>` is the port's number and `<PROTO>` its protocol,
 `TCP`, `UDP` or `SCTP`.
 
+Docker's legacy links set the same names, and `X_NAME` and `X_ENV_<VARIABLE>`
+beside them, which are held here as well.
+
 A Service named `previously-mcp` therefore set `PREVIOUSLY_MCP_PORT` to
 `tcp://<cluster IP>:8765` in every pod of its namespace, which until
 2026-10-11 was the port `previously serve` read, and `serve` refused to start
@@ -43,6 +46,10 @@ SERVICE_LINK = re.compile(
     r"(?:SERVICE_HOST|SERVICE_PORT(?:_[A-Z0-9_]+)?"
     r"|PORT(?:_[0-9]+_(?:TCP|UDP|SCTP)(?:_(?:PROTO|PORT|ADDR))?)?)"
 )
+# Docker's legacy links, which Kubernetes copied, set the same names and two
+# more forms beside them: `X_NAME`, and `X_ENV_<VARIABLE>` for every variable
+# of the linked container.
+DOCKER_LINK = re.compile(r"[A-Z][A-Z0-9_]*_(?:NAME|ENV_[A-Z0-9_]+)")
 _NAME = re.compile(r"PREVIOUSLY_[A-Z0-9_]*[A-Z0-9]")
 
 
@@ -93,7 +100,9 @@ def test_no_setting_has_a_name_that_kubernetes_gives_a_service() -> None:
         "PREVIOUSLY_MCP_CLIENT",
         "PREVIOUSLY_LOCAL_MODEL_URL",
     } <= names
-    colliding = sorted(name for name in names if SERVICE_LINK.fullmatch(name))
+    colliding = sorted(
+        name for name in names if SERVICE_LINK.fullmatch(name) or DOCKER_LINK.fullmatch(name)
+    )
     assert colliding == [], (
         f"{colliding}: a Service whose name upper-cases to the part before the "
         "suffix sets this variable in every pod of its namespace"
@@ -144,3 +153,9 @@ def test_the_pattern_matches_every_variable_of_a_service(name: str) -> None:
 )
 def test_the_pattern_leaves_every_other_name_alone(name: str) -> None:
     assert not SERVICE_LINK.fullmatch(name)
+
+
+@pytest.mark.parametrize("name", ["PREVIOUSLY_NAME", "PREVIOUSLY_ENV_PREVIOUSLY_DSN"])
+def test_the_docker_pattern_matches_the_two_forms_kubernetes_does_not_set(name: str) -> None:
+    assert DOCKER_LINK.fullmatch(name)
+    assert not DOCKER_LINK.fullmatch("PREVIOUSLY_MCP_CLIENT")
