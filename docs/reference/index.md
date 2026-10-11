@@ -1,6 +1,6 @@
 # Reference
 
-Look up the exact behavior of a command, a configuration variable, a column, the mapping of a mail, the events of the policy and of a model call, or the tools of the MCP server and the record of each call.
+Look up the exact behavior of a command, a configuration variable, a column, the mapping of a mail, the events of the policy and of a model call, the tools of the MCP server and the record of each call, or what Previously requires of the environment it runs in.
 
 ```{toctree}
 :maxdepth: 1
@@ -12,4 +12,5 @@ hash-format
 mail-mapping
 policy-and-model-calls
 mcp-tools
+environment
 ```

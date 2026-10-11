@@ -48,7 +48,7 @@ So the retention is named, as a number: of the database's backups, of a write-ah
 Whoever promises erasure within a period chooses these retentions by it.
 The encryption doesn't shorten that period: a backup that opens for a restore opens for the erased content as well, until it's deleted.
 
-The promise reaches as far as the data Previously holds and no further.
+The promise reaches what Previously holds and what it passed on itself, and no further.
 A mail server and its backups are the source's, and their retention belongs to no erasure promise of Previously; {ref}`erasure` draws that line.
 
 ## A stated recovery point, and what's lost up to it
@@ -82,8 +82,25 @@ The anchors it checks against are those that stood when the backup was taken.
 An anchor taken after the recovery point describes events the backup can't hold, and against it the restore reads as a loss: a true one, but not the one the probe looks for.
 The anchor file doesn't date its own lines, so the version as of the backup has to come from somewhere: a history of the file, such as the Git history of a repository that holds it, gives it for any moment.
 
-The probe needs the key that opens the backup, which is the one place where that key comes near the database's environment.
-The operator decides where a scheduled probe may hold it, and a probe run by hand, with the key brought in for it alone, meets the requirement as well, as long as it runs.
+The probe runs at a rhythm the operator names, because a backup that restored last month says little about the one taken last night.
+It needs the key that opens the backup, which is the one place where that key comes near the database's environment.
+The environment chooses where the probe holds it, under the requirement above: the key lies outside the system it protects.
+A probe run by hand, with the key brought in for it alone, meets the requirement as long as it keeps the rhythm; one that waits for somebody to remember it doesn't.
+
+(backup-deletion)=
+
+## Out of reach of what handles foreign content
+
+**No credential that a process handling foreign content holds can delete or overwrite a backup.**
+Those processes are the ingest, which parses mail from outside; the gate, which sends content to a provider and reads its answer; the MCP server, which answers the requests of a client; and wherever an operator runs the commands by hand, such as a tools pod.
+A backup is the way back after the database or the bucket is damaged, and those processes are the likeliest to be taken over.
+If one of their credentials can also delete the backups, one compromise takes the data and the way back together.
+Encryption doesn't help here: it keeps a backup from being read, not from being deleted.
+
+The credentials of the blob bucket are the case that matters in practice.
+The ingest and the operator's commands hold them, and where they reach further than the blob bucket they may reach the backups, which {ref}`blob-bucket-requirements` rules out from the other side.
+Object Lock on the bucket of the backups, with a retention as long as the named one, is one way to meet this requirement: no credential can then delete a backup before its time, and the named retention that bounds every erasure promise stays what it was.
+It doesn't fit the blob bucket, where an erasure has to be able to delete.
 
 ## The blob bucket
 
@@ -91,13 +108,15 @@ The bucket keeps neither versions nor locked objects, because an erasure deletes
 The bucket doesn't go back with the database either: after a restore, the blobs and the log are brought in line as {ref}`restore-from-a-backup` shows.
 Whether the bucket itself is backed up or copied is the operator's choice.
 If so, that copy is part of the data an erasure promise covers, so its retention is named beside the database's.
+Who may reach the bucket at all is a requirement of its own, stated in {ref}`blob-bucket-requirements`.
 
 ## Two ways to meet the requirements
 
 The kup6s environment, where the pilot runs, dumps the database every hour with `pg_dump --format=custom` and streams the dump through `gpg --encrypt` to a backup key, into a bucket of its own that keeps each dump for seven days.
 The cluster holds the public key only, and the private key lies in a password vault; there's no point-in-time recovery, so the recovery point is the newest hourly dump.
+In its test phase, kup6s doesn't yet meet two of the requirements: the credentials of the blob bucket reach the bucket of the dumps as well, and the restore probe runs by hand when somebody starts it.
 
-A host run with a `docker-compose` file meets the same requirements with one scheduled `cron` job: `pg_dump --format=custom`, piped through `age -r` with a recipient whose identity lives elsewhere, or through `gpg --encrypt`, into a file that's copied off the host, and a second job that deletes the files older than the retention.
+A host run with a `docker-compose` file meets the same requirements with one scheduled `cron` job: `pg_dump --format=custom`, piped through `age -r` with a recipient whose identity lives elsewhere, or through `gpg --encrypt`, into a file that's copied off the host, to a place no container of Previously can write to, and a second job that deletes the files older than the retention.
 The restore probe there is the same commands as anywhere else, run against a second database container.
 
 ## What changed on 2026-10-11

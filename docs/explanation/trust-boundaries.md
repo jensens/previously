@@ -40,11 +40,13 @@ A blob is sealed in the `age` format before it leaves the process, so the bucket
 What that operator does see is the name of each object, and the name is the SHA-256 of the plaintext without a salt ({ref}`blobs` gives the reason).
 Whoever holds a candidate file can hash it and learn whether the bucket holds it.
 The seal protects the content, and the address leaks equality.
+It also protects reading only, not deleting: who may delete or overwrite the objects, and what else the credentials Previously holds may reach, are requirements on the environment that {ref}`blob-bucket-requirements` states with their reasons.
 
 ## The backups carry everything
 
 A backup of the database holds every unit in plain text, because the database does.
 Its protection is the client-side encryption of {ref}`backup-encryption`, and nothing in this repository runs a backup: that's the work of the environment that hosts Previously.
+Encryption keeps a backup from being read, not from being deleted, so no credential of a process that handles foreign content may reach the backups; {ref}`backup-deletion` gives the reason.
 An erasure doesn't reach a backup taken before it, and a restore to an earlier point brings the erased content back ({ref}`erasure`).
 
 ## The anchor carries a hash
