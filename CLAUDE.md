@@ -230,6 +230,26 @@ a hole in the external-anchor specification: its restore check assumed one
 instant at which the backup was taken, and a backup with a write-ahead log
 archive has no such instant.
 
+### Previously demands, the environment provides
+
+Previously states what it requires of the environment it runs in — of
+backups, of a bucket and the credentials that reach it, of where a key lives —
+and it does not prescribe how one particular environment meets that. The how
+belongs to the environment. At Hetzner, credentials that reach one bucket and
+nothing else take a second cloud project that holds only that bucket; another
+provider solves it another way, or doesn't have the problem.
+
+So a page, a specification or a handoff states the requirement and its
+reason. It may name one environment's solution as an example, and it never
+turns one environment's limitation into the rule. An operator who doesn't
+meet a requirement decides that consciously and carries the risk; the
+documentation says what the risk is, so that the decision can be a conscious
+one.
+
+Stated by the maintainer on 2026-10-11, after the kup6s feedback showed that
+Hetzner's S3 credentials reach every bucket of a project, and the same day the
+backups moved from a chosen system to requirements.
+
 ### Weigh the execution method per plan
 
 Do not default to one way of executing a plan. Weigh it, and say why.
