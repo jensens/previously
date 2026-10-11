@@ -1761,7 +1761,7 @@ def _access_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--circle",
         metavar="NAME",
-        help="only calls that named this circle or had something of it withheld",
+        help="only calls that named this circle, or delivered or withheld something of it",
     )
     parser.add_argument(
         "--since", metavar="TIME", help="only calls from then on (ISO 8601, a zone)"

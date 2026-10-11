@@ -13,8 +13,10 @@ event point at its tombstones.
 
 `read_access` answers what a client saw, and what was withheld from it, as the
 rows of the log; `previously access` prints them. A circle filter matches the
-circle a call named in its arguments and the circles of what it withheld, and
-nothing else, because the payload names no circle for what it delivered.
+circle a call named in its arguments, the circles of what it delivered and the
+circles of what it withheld, so that a `get_event` by id is found by the
+circle of the event. Those circles are policy names, not content, and the
+server fills them from the policy at the time of the call.
 """
 
 from collections.abc import Mapping
@@ -27,15 +29,16 @@ from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
     from previously.contract.store import LogStore
 
 NO_RULE = "no_rule"
 RULE = "rule"
 REASON_CODES: frozenset[str] = frozenset({NO_RULE, RULE})
 KINDS: frozenset[str] = frozenset({"tool", "resource", "prompt"})
-OK = "ok"
-ERROR = "error"
-OUTCOMES: frozenset[str] = frozenset({OK, ERROR})
+ACCESS_OK = "ok"
+ACCESS_ERROR = "error"
+ACCESS_OUTCOMES: frozenset[str] = frozenset({ACCESS_OK, ACCESS_ERROR})
 
 _FIELDS: frozenset[str] = frozenset(
     {"action", "client", "policy", "call", "delivered", "withheld", "outcome", "era"}
@@ -55,10 +58,12 @@ class Withheld:
 
 @dataclass(frozen=True)
 class Delivered:
-    """An event the call got, with the units of it."""
+    """An event the call got, with the units of it and the circles it belonged
+    to when the call was made."""
 
     event: int
     units: tuple[int, ...]
+    circles: tuple[str, ...]
 
 
 @dataclass(frozen=True)
@@ -92,7 +97,8 @@ def _payload(access: Access) -> dict[str, object]:
         "policy": dict(access.policy_ids),
         "call": {"kind": access.kind, "name": access.name, "arguments": dict(access.arguments)},
         "delivered": [
-            {"event": item.event, "units": list(item.units)} for item in access.delivered
+            {"event": item.event, "units": list(item.units), "circles": list(item.circles)}
+            for item in access.delivered
         ],
         "withheld": [
             {
@@ -120,19 +126,55 @@ def _is_int(value: object) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
 
-def _entries(payload: Mapping[str, object], key: str) -> list[Mapping[str, object]] | str:
-    """The list under `key` as objects, or the problem with it."""
-    value = payload.get(key)
-    if not isinstance(value, list):
-        return f'it has no list "{key}"'
-    entries: list[Mapping[str, object]] = []
-    for entry in cast("list[object]", value):
-        if not isinstance(entry, dict) or not _is_int(
-            cast("dict[str, object]", entry).get("event")
-        ):
-            return f'it has a "{key}" entry without an event'
-        entries.append(cast("dict[str, object]", entry))
-    return entries
+def _is_list_of(value: object, check: Callable[[object], bool]) -> bool:
+    return isinstance(value, list) and all(check(item) for item in cast("list[object]", value))
+
+
+def _is_str(value: object) -> bool:
+    return isinstance(value, str)
+
+
+def _in(value: object, allowed: frozenset[str]) -> bool:
+    """Whether `value` is one of `allowed`; a value that isn't text is not,
+    and is not hashed, because a forged list or object would raise."""
+    return isinstance(value, str) and value in allowed
+
+
+_DELIVERED_KEYS: frozenset[str] = frozenset({"event", "units", "circles"})
+_WITHHELD_KEYS: frozenset[str] = frozenset({"event", "reason_code", "circles", "reason"})
+_CALL_KEYS: frozenset[str] = frozenset({"kind", "name", "arguments"})
+
+
+def _entry_problem(entry: object, key: str, keys: frozenset[str]) -> str | None:
+    """What is wrong with one entry of `delivered` or `withheld`, or `None`."""
+    if not isinstance(entry, dict):
+        return f'it has a "{key}" entry that is no object'
+    named = cast("dict[str, object]", entry)
+    if named.keys() != keys:
+        return f'a "{key}" entry has other fields than {sorted(keys)}'
+    if not _is_int(named["event"]):
+        return f'it has a "{key}" entry without an event'
+    if not _is_list_of(named["circles"], _is_str):
+        return f'a "{key}" entry has circles that are no list of text'
+    if key == "delivered":
+        if not _is_list_of(named["units"], _is_int):
+            return 'a "delivered" entry has units that are no list of numbers'
+    elif not _in(named["reason_code"], REASON_CODES):
+        return 'a "withheld" entry has no known reason_code'
+    elif not isinstance(named["reason"], str):
+        return 'a "withheld" entry has no reason'
+    return None
+
+
+def _entries_problem(payload: Mapping[str, object]) -> str | None:
+    for key, keys in (("delivered", _DELIVERED_KEYS), ("withheld", _WITHHELD_KEYS)):
+        value = payload.get(key)
+        if not isinstance(value, list):
+            return f'it has no list "{key}"'
+        for entry in cast("list[object]", value):
+            if (problem := _entry_problem(entry, key, keys)) is not None:
+                return problem
+    return None
 
 
 def _call_problem(payload: Mapping[str, object]) -> str | None:
@@ -140,29 +182,22 @@ def _call_problem(payload: Mapping[str, object]) -> str | None:
     if not isinstance(call, dict):
         return "it has no call"
     named = cast("dict[str, object]", call)
-    if named.get("kind") not in KINDS:
+    if named.keys() != _CALL_KEYS:
+        return "its call has other fields than arguments, kind and name"
+    if not _in(named["kind"], KINDS):
         return "its call has no known kind"
-    if not isinstance(named.get("name"), str):
+    if not isinstance(named["name"], str):
         return "its call has no name"
-    if not isinstance(named.get("arguments"), dict):
+    if not isinstance(named["arguments"], dict):
         return "its call has no arguments"
     return None
 
 
-def _entries_problem(payload: Mapping[str, object]) -> str | None:
-    delivered = _entries(payload, "delivered")
-    if isinstance(delivered, str):
-        return delivered
-    withheld = _entries(payload, "withheld")
-    if isinstance(withheld, str):
-        return withheld
-    if any(entry.get("reason_code") not in REASON_CODES for entry in withheld):
-        return 'a "withheld" entry has no known reason_code'
-    return None
-
-
 def access_problem(payload: Mapping[str, object]) -> str | None:
-    """What is wrong with the form of an `mcp_access` payload, or `None`."""
+    """What is wrong with the form of an `mcp_access` payload, or `None`.
+
+    Never raises, whatever a forged row holds: `verify` exists for those.
+    """
     unknown = sorted(set(payload) - _FIELDS)
     if unknown:
         return f'it has the unknown field "{unknown[0]}"'
@@ -175,28 +210,19 @@ def access_problem(payload: Mapping[str, object]) -> str | None:
     outcome = payload.get("outcome")
     if not isinstance(outcome, str):
         return "it has no outcome"
-    if outcome not in OUTCOMES:
+    if outcome not in ACCESS_OUTCOMES:
         return f'it has the unknown outcome "{outcome}"'
-    era = payload.get("era")
-    if era is not None and not isinstance(era, str):
+    if "era" not in payload or not (payload["era"] is None or isinstance(payload["era"], str)):
         return "its era is neither text nor null"
     return None
 
 
 def _strings(value: object) -> tuple[str, ...]:
-    if not isinstance(value, list):
-        return ()
-    return tuple(item for item in cast("list[object]", value) if isinstance(item, str))
-
-
-def _text(value: object) -> str:
-    return value if isinstance(value, str) else ""
+    return tuple(cast("list[str]", value))
 
 
 def _ints(value: object) -> tuple[int, ...]:
-    if not isinstance(value, list):
-        return ()
-    return tuple(item for item in cast("list[object]", value) if isinstance(item, int))
+    return tuple(cast("list[int]", value))
 
 
 def parse_access(payload: Mapping[str, object]) -> Access | None:
@@ -214,14 +240,15 @@ def parse_access(payload: Mapping[str, object]) -> Access | None:
         name=cast("str", call["name"]),
         arguments=cast("Mapping[str, object]", call["arguments"]),
         delivered=tuple(
-            Delivered(cast("int", item["event"]), _ints(item.get("units"))) for item in delivered
+            Delivered(cast("int", item["event"]), _ints(item["units"]), _strings(item["circles"]))
+            for item in delivered
         ),
         withheld=tuple(
             Withheld(
                 cast("int", item["event"]),
                 cast("str", item["reason_code"]),
-                _strings(item.get("circles")),
-                _text(item.get("reason")),
+                _strings(item["circles"]),
+                cast("str", item["reason"]),
             )
             for item in withheld
         ),
@@ -231,8 +258,10 @@ def parse_access(payload: Mapping[str, object]) -> Access | None:
 
 
 def _names_circle(access: Access, circle: str) -> bool:
-    return access.arguments.get("circle") == circle or any(
-        circle in item.circles for item in access.withheld
+    return (
+        access.arguments.get("circle") == circle
+        or any(circle in item.circles for item in access.delivered)
+        or any(circle in item.circles for item in access.withheld)
     )
 
 
@@ -245,9 +274,9 @@ def read_access[Conn](
     since: datetime | None,
 ) -> list[AccessRow]:
     """The accesses in the order of the chain, narrowed to one client, to the
-    calls that named a circle or had something of it withheld, and to those
-    recorded at or after `since`. An erased entry and one with a form
-    `verify` reports are left out."""
+    calls that named a circle, delivered something of it or had something of
+    it withheld, and to those recorded at or after `since`. An erased entry and
+    one with a form `verify` reports are left out."""
     rows: list[AccessRow] = []
     for row in log.read_by_kind(conn, "action"):
         payload = row.payload

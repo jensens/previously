@@ -18,6 +18,7 @@ from previously.core.access import Withheld
 from previously.core.action import append_action
 from previously.core.action import KNOWN_ACTIONS
 from previously.core.append import append
+from previously.core.gaps import Gap
 from previously.core.gaps import gaps
 from previously.core.projection.chronicle import CHRONICLE
 from previously.core.projection.worker import catch_up
@@ -109,7 +110,7 @@ def test_mcp_access_is_a_known_action() -> None:
 def test_an_access_is_written_and_read_back(db: Engine) -> None:
     storage = PostgresStorage(db)
     written = _access(
-        delivered=(Delivered(42, (1, 2)),),
+        delivered=(Delivered(42, (1, 2), ()),),
         withheld=(_no_rule(43, "h_da"),),
     )
     event_id = record_access(storage, written, recorded_at=T1)
@@ -146,40 +147,93 @@ def test_reading_narrows_by_client_circle_and_time(db: Engine) -> None:
     assert ids(client="nobody") == []
 
 
+def _wordings() -> list[str]:
+    return [
+        MAIL_TEXT,
+        *(line.strip() for line in MAIL_TEXT.splitlines() if len(line.strip()) >= 8),
+        "Hofer",
+        "4711",
+    ]
+
+
+def _found_in(payload: dict[str, object]) -> list[tuple[str, str]]:
+    """Every wording of the mail, with the string of the payload it stands in."""
+    return [(w, s) for s in _strings(payload) for w in _wordings() if w in s]
+
+
+@pytest.mark.db
+def test_a_delivered_event_of_a_circle_is_found_by_that_circle(db: Engine) -> None:
+    """A `get_event` by id names no circle in its arguments; the circles of
+    the event it delivered still find it."""
+    storage = PostgresStorage(db)
+    record_access(
+        storage,
+        _access(
+            name="get_event",
+            arguments={"ids": [5]},
+            delivered=(Delivered(5, (1,), ("xz",)),),
+        ),
+        recorded_at=T0,
+    )
+    record_access(
+        storage,
+        _access(arguments={"ids": [6]}, delivered=(Delivered(6, (1,), ("h_da",)),)),
+        recorded_at=T1,
+    )
+    with storage.begin() as conn:
+        xz = read_access(storage, conn, client=None, circle="xz", since=None)
+        other = read_access(storage, conn, client=None, circle="nope", since=None)
+    assert [row.id for row in xz] == [1]
+    assert other == []
+
+
 @pytest.mark.db
 def test_the_payload_of_an_access_holds_no_content(db: Engine) -> None:
-    """Not the text of a unit, not a line of it, not a name in it — searched in
-    every string of the payload, keys included. The arguments are the client's
-    input and stay."""
+    """Not the text of a unit, not a line of it, not a name in it, searched in
+    every string of the stored payload, keys included. The arguments are the
+    client's input and stay."""
     storage = PostgresStorage(db)
     event_id = _mail(storage)
     record_access(
         storage,
         _access(
             arguments={"circle": "h_da", "since": "2026-09-01", "ids": [event_id]},
-            delivered=(Delivered(event_id, (1, 2)),),
+            delivered=(Delivered(event_id, (1, 2), ("h_da",)),),
             withheld=(_no_rule(event_id + 1, "h_da"),),
         ),
         recorded_at=T1,
     )
-    wordings = [
-        MAIL_TEXT,
-        *(line.strip() for line in MAIL_TEXT.splitlines() if len(line.strip()) >= 8),
-        "Hofer",
-        "4711",
-    ]
     payload = _payloads(db)[-1]
     assert payload["action"] == "mcp_access"
-    assert [(w, s) for s in _strings(payload) for w in wordings if w in s] == []
-    # The control: the same search finds the wording where it is.
-    assert any(w in s for s in _strings({"units": [MAIL_TEXT]}) for w in wordings)
+    assert _found_in(payload) == []
+
+
+@pytest.mark.db
+def test_the_search_for_content_finds_it_in_a_stored_payload(db: Engine) -> None:
+    """The control of the test above, on a real stored payload: the same
+    search finds a wording of the mail put into `reason` and into
+    `arguments`, nested and as a key, so that its green is not blindness."""
+    storage = PostgresStorage(db)
+    _mail(storage)
+    line = "the invoice 4711 of the Danube project is overdue."
+    record_access(
+        storage,
+        _access(
+            arguments={"circle": "h_da", "note": {"deep": [line]}, "key4711": 1},
+            withheld=(Withheld(2, "no_rule", ("h_da",), f"because {line}"),),
+        ),
+        recorded_at=T1,
+    )
+    found = _found_in(_payloads(db)[-1])
+    strings = {s for _, s in found}
+    assert strings == {line, f"because {line}", "key4711"}
 
 
 @pytest.mark.db
 def test_an_access_has_no_units_and_does_not_enter_the_chronicle(db: Engine) -> None:
     storage = PostgresStorage(db)
     _mail(storage)
-    record_access(storage, _access(delivered=(Delivered(1, (1, 2)),)), recorded_at=T1)
+    record_access(storage, _access(delivered=(Delivered(1, (1, 2), ()),)), recorded_at=T1)
     catch_up(storage, storage, CHRONICLE)
     with storage.begin() as conn:
         assert storage.units_by_event(conn, [2]).get(2, []) == []
@@ -188,10 +242,14 @@ def test_an_access_has_no_units_and_does_not_enter_the_chronicle(db: Engine) -> 
     assert shown == {1}
 
 
+def _entry(base: dict[str, object], key: str) -> dict[str, object]:
+    return cast("list[dict[str, object]]", base[key])[0]
+
+
 @pytest.mark.db
 def test_verify_finds_a_broken_form(db: Engine) -> None:
     storage = PostgresStorage(db)
-    good = _access(delivered=(Delivered(1, (1,)),), withheld=(_no_rule(2, "h_da"),))
+    good = _access(delivered=(Delivered(1, (1,), ("h_da",)),), withheld=(_no_rule(2, "h_da"),))
     record_access(storage, good, recorded_at=T0)
     assert verify(storage) == []  # the control
 
@@ -204,12 +262,36 @@ def test_verify_finds_a_broken_form(db: Engine) -> None:
         {**base, "delivered": [{"units": [1]}]},
         {**base, "withheld": [{"event": 2, "reason_code": "because"}]},
         {**base, "call": {"kind": "tool", "name": "x"}},
+        {**base, "call": {**cast("dict[str, object]", base["call"]), "kind": ["tool"]}},
+        {**base, "call": {**cast("dict[str, object]", base["call"]), "text": "smuggled"}},
+        {**base, "withheld": [{**_entry(base, "withheld"), "reason_code": {"a": 1}}]},
+        {**base, "withheld": [{**_entry(base, "withheld"), "text": "smuggled"}]},
+        {**base, "withheld": [{**_entry(base, "withheld"), "reason": 5}]},
+        {**base, "withheld": [{**_entry(base, "withheld"), "circles": [True]}]},
+        {**base, "withheld": ["event 2"]},
+        {**base, "delivered": [3]},
+        {**base, "delivered": [{**_entry(base, "delivered"), "text": "smuggled"}]},
+        {**base, "delivered": [{**_entry(base, "delivered"), "units": [True]}]},
+        {**base, "delivered": [{**_entry(base, "delivered"), "units": "1"}]},
+        {**base, "delivered": [{**_entry(base, "delivered"), "circles": [1]}]},
+        {**base, "delivered": [{"event": 1, "units": [1]}]},
+        {**base, "client": ["claude-code"]},
+        {**base, "policy": []},
+        {**base, "outcome": ["ok"]},
+        {**base, "era": 7},
     ]
     for payload in broken:
         append_action(storage, payload, (), recorded_at=T1)
     findings = verify(storage)
     assert [f.event_id for f in findings] == list(range(2, 2 + len(broken)))
     assert all(f.reason.startswith("mcp_access has no valid form: ") for f in findings)
+
+    # Reading, counting and printing survive the forged rows and show only the good one.
+    with storage.begin() as conn:
+        assert [r.id for r in read_access(storage, conn, client=None, circle=None, since=None)] == [
+            1
+        ]
+        assert gaps(storage, conn, since=None) == [Gap("circle:h_da", 1, T0, "mcp")]
 
 
 @pytest.mark.db
@@ -270,7 +352,8 @@ def test_the_command_access_prints_one_line_per_call(
     record_access(
         storage,
         _access(
-            delivered=(Delivered(42, (1, 2)), Delivered(44, ())), withheld=(_no_rule(43, "h_da"),)
+            delivered=(Delivered(42, (1, 2), ()), Delivered(44, (), ())),
+            withheld=(_no_rule(43, "h_da"),),
         ),
         recorded_at=T0,
     )
@@ -314,7 +397,7 @@ def test_the_stored_payload_is_the_sketch_of_the_concept(db: Engine) -> None:
         storage,
         _access(
             arguments={"circle": "h_da", "since": "2026-09-01"},
-            delivered=(Delivered(42, (1, 2, 3)),),
+            delivered=(Delivered(42, (1, 2, 3), ("h_da",)),),
             withheld=(_no_rule(43, "h_da"),),
         ),
         recorded_at=T0,
@@ -329,7 +412,7 @@ def test_the_stored_payload_is_the_sketch_of_the_concept(db: Engine) -> None:
                 "name": "previously",
                 "arguments": {"circle": "h_da", "since": "2026-09-01"},
             },
-            "delivered": [{"event": 42, "units": [1, 2, 3]}],
+            "delivered": [{"event": 42, "units": [1, 2, 3], "circles": ["h_da"]}],
             "withheld": [
                 {
                     "event": 43,

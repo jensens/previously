@@ -842,12 +842,13 @@ It reads the `model_call` events, and the source of each event that a call read 
 `--since TIME` counts only the calls recorded from that moment on; the time needs a zone.
 A call over an event that has no source and no circle stands under `event:<id>`.
 It also counts what the MCP server withheld for lack of a rule, from the `mcp_access` events ({ref}`cli-access`): each entry of `withheld` with the reason code `no_rule` counts once for each circle it names, or under `event:<id>` when it names none.
-Those lines start with `mcp:`, so that every line keeps its three fields and the gate's lines stay as they were:
+Those lines start with `mcp:`, so that every line keeps its three fields and the gate's lines stay as they were.
+The gate's lines come first and the MCP lines after them, each group sorted by name:
 
 ```text
-circle:xz	3	2026-10-09T14:02:11.482113Z
-mcp:circle:h_da	2	2026-10-11T09:30:00.000000Z
+circle:xz	3	2026-10-09T14:11:11.482113Z
 source:email	1	2026-10-09T12:00:00.000000Z
+mcp:circle:h_da	2	2026-10-11T09:30:00.000000Z
 ```
 
 When no call fell back, standard output stays empty, and one notice goes to standard error:
@@ -1014,7 +1015,7 @@ Revoking a client that doesn't exist is refused as `Error: no client "NAME" exis
 
 Shows what the MCP clients saw.
 Every call of a client, whether a tool, a resource or a prompt, is written to the log as an action `mcp_access`, with no source key and no units.
-Its payload holds ids, names, reason codes, the sentences that say why something was withheld, and the arguments of the call, which are the client's input; it holds nothing of any event.
+Its payload holds ids, names, the circles of each delivered or withheld event as the policy named them at the time of the call, reason codes, the sentences that say why something was withheld, and the arguments of the call, which are the client's input; it holds nothing of any event.
 `access` reads those events:
 
 ```text
@@ -1024,7 +1025,7 @@ previously access [--client NAME] [--circle NAME] [--since TIME]
 | Option | Required | Default | Description |
 |---|---|---|---|
 | `--client NAME` | No | all clients | Only the calls of this client. |
-| `--circle NAME` | No | all circles | Only the calls that named this circle in their arguments, or had an event of it withheld. |
+| `--circle NAME` | No | all circles | Only the calls that named this circle in their arguments, or delivered or withheld an event of it. |
 | `--since TIME` | No | all time | Only the calls recorded from that moment on (ISO 8601, with a zone). |
 
 It prints one line per call, in the order of the chain, the six fields separated by a tab: the time, the client, the kind and the name of the call joined by a colon, the outcome (`ok` or `error`), the delivered events, and the withheld ones.
@@ -1042,5 +1043,5 @@ When no call matches, standard output stays empty, and one notice goes to standa
 no access matches
 ```
 
-`verify` holds every `mcp_access` to its form: known fields only, a client, a policy, a call with a known kind (`tool`, `resource` or `prompt`), a name and arguments, lists `delivered` and `withheld` whose every entry names an event, a known reason code on every withheld entry, an outcome of `ok` or `error`, and no units.
+`verify` holds every `mcp_access` to its form: known fields only, at every level, a client, a policy, a call with a known kind (`tool`, `resource` or `prompt`), a name and arguments, lists `delivered` and `withheld` whose every entry is an object with exactly its fields, an event, and its circles as a list of names (and its units as a list of numbers), a known reason code on every withheld entry, an outcome of `ok` or `error`, and no units.
 A break of that form is a finding of the form `FINDING 12: mcp_access has no valid form: it has no outcome`, and an `mcp_access` with units is `FINDING 12: mcp_access has units`.
