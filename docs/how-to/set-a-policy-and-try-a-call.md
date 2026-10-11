@@ -58,17 +58,21 @@ Every command that writes shows you the statement and asks `write? [y/N]`; add `
 ```shell
 previously policy provider anthropic --inference global=any --inference us=us \
     --storage us --retention-days 30 --reports-geo \
+    --operator Anthropic --training unknown --subprocessors unknown \
     --statement "Anthropic: US storage, 30 days, reports the region" --yes
 previously policy provider mistral --inference eu=eu --storage eu \
-    --retention-days unknown \
+    --retention-days unknown --operator Mistral --training unknown --subprocessors unknown \
     --statement "Mistral: EU, retention not yet looked up" --yes
 previously policy provider local --inference eu=eu --storage --retention-days 0 --local \
+    --operator me --training no --subprocessors none \
     --statement "Ollama on my own machine" --yes
 ```
 
 Write what your contract says and not what the examples above say.
 `--storage` is required: give it no region for a provider that stores nothing, such as the local one, because a provider that stores nothing passes every region rule.
 If you don't know the retention, write `unknown`: a rule with a retention limit then rejects the provider.
+`--operator`, `--training` and `--subprocessors` describe the processing chain behind the provider, and they're required for the same reason: an unknown value passes no restriction that concerns it, so a rule that says `--no-training` never uses a provider that left `--training` at `unknown`.
+`--model-origin` is optional and defaults to unknown.
 
 ## Create a circle and its members
 
@@ -231,5 +235,5 @@ Had you given `source:email` a rule, the mail would go by that rule, `any` inclu
 To keep the mail of a former customer on your machine, revoke the rule of the circle instead and keep the circle: a circle without a rule brings back `local_only`.
 {ref}`processing-policy` explains why a revoked circle releases its content.
 
-A rule needs `--regions` even when you revoke it, and a provider needs `--storage` and `--retention-days`, because the statement has to be well formed; the values aren't read.
+A rule needs `--regions` even when you revoke it, and a provider needs `--storage`, `--retention-days`, `--operator`, `--training` and `--subprocessors`, because the statement has to be well formed; the values aren't read.
 `previously policy show --at TIME` prints the policy as it stood at a moment, so you can see what a past call rested on.

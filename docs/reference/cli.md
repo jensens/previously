@@ -3,10 +3,11 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has fourteen subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, and `gate`.
+It has eighteen subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, `gate`, `client`, `access`, `mcp`, and `serve`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
 `append --attach`, `ingest imap`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
 `ingest imap` alone reads the five `PREVIOUSLY_IMAP_*` settings, and `gate try` alone reads `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `PREVIOUSLY_LOCAL_MODEL_URL` and `PREVIOUSLY_PRICES`.
+`mcp` alone reads `PREVIOUSLY_MCP_CLIENT`, and `serve` alone reads `PREVIOUSLY_MCP_HOST`, `PREVIOUSLY_MCP_PORT` and `PREVIOUSLY_MCP_ALLOWED_HOSTS`.
 A missing setting is an input error that names the first variable missing, in the form `Error: PREVIOUSLY_BLOB_BUCKET is not set`.
 An error sentence prints every control character but a tab and a line feed as `\xNN`, such as `\x1b` for the escape character, because a key it quotes can be the Message-ID of a mail.
 A transaction the database aborts in a conflict with a concurrent one, a deadlock or a lock not granted in time, is a storage error with exit code 2, in the form `Error: the database aborted the operation in a conflict with a concurrent one; run the command again`.
@@ -65,6 +66,10 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `chronicle` | The chronicle was printed, even when the window holds no row. | Not used. | The input was invalid, or storage raised an error. |
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
 | `policy` | The statement was written, `show` printed the policy, or `gaps` printed what fell back, even when nothing did. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the statement was refused, or storage raised an error. |
+| `client` | The client was added and its token printed, revoked, or listed, even when none exists. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the processor isn't declared, no such client exists to revoke, or storage raised an error. |
+| `access` | The access log was printed, even when no call matches. | Not used. | The input was invalid, or storage raised an error. |
+| `mcp` | Standard input closed, and the server ended. | Not used. | `PREVIOUSLY_MCP_CLIENT` is unset or names no client in force, or storage raised an error. |
+| `serve` | The server was stopped with an interrupt, such as Ctrl+C. | Not used. | `PREVIOUSLY_MCP_PORT` isn't a port number, or storage raised an error. |
 | `gate` | `explain` printed the decision, whether it allows a call or denies it; `try` made the call, got an answer that matches the schema, and recorded it. | Not used. | The event doesn't exist, the price file can't be read, storage raised an error, or `try` recorded a call that was denied, failed, refused by the model, or answered against the schema. |
 
 `gate try` returns 3 when the call was made and recorded with an answer that matches the schema, and the provider reported another inference region than the one requested; the code differs from 0 so that a script doesn't read past the alarm.
@@ -513,7 +518,7 @@ FINDING 9: unknown action "teleport"
 | `redaction names a target that does not exist` | The event a redaction names doesn't stand before the redaction in the chain, or doesn't have a unit it names; for a redaction of a blob, an event it names doesn't stand before it or doesn't name the blob in the blob register. | The redaction. |
 | `units are erased in part, which version 1 cannot attest` | An event in hash format 1 has some units without content, and others with it. | The event. |
 | `action has no valid form` | An event of kind `action` carries no `action` name in its payload, or a redaction's payload doesn't have exactly the form `redact` writes. | The action. |
-| `unknown action "<name>"` | An event of kind `action` carries an `action` name that isn't `redaction`, `policy` or `model_call`. | The action. |
+| `unknown action "<name>"` | An event of kind `action` carries an `action` name that isn't `redaction`, `policy`, `model_call` or `mcp_access`. | The action. |
 
 One finding comes from the blob register:
 
@@ -759,7 +764,7 @@ previously policy circle NAME --statement TEXT
 previously policy member CIRCLE ADDRESS-OR-@DOMAIN --statement TEXT
 previously policy own ADDRESS-OR-@DOMAIN --statement TEXT
 previously policy rule SCOPE --regions REGION [REGION ...] --statement TEXT
-previously policy provider NAME --storage [REGION ...] --retention-days N|unknown --statement TEXT
+previously policy provider NAME --storage [REGION ...] --retention-days N|unknown --operator NAME|unknown --training yes|no|unknown --subprocessors NAME [NAME ...]|none|unknown --statement TEXT
 previously policy show [--at TIME]
 previously policy gaps [--since TIME]
 ```
@@ -785,6 +790,10 @@ previously policy gaps [--since TIME]
 | `--regions REGION ...` | Yes | — | `eu`, `us`, both, or `any`. `any` can't stand beside another region. |
 | `--max-retention-days N` | No | no limit | A whole number of days. `0` means zero retention. |
 | `--exclude-provider NAME` | No | none | A provider the scope never uses. May repeat. |
+| `--no-training` | No | off | Only a provider declared not to train on its input passes. One that trains, or that says nothing about it, fails. |
+| `--no-subprocessors` | No | off | Only a provider declared to have no subprocessors passes. |
+| `--exclude-operator NAME` | No | none | An operator the scope never uses. A provider whose operator is unknown fails too. May repeat. |
+| `--exclude-model-origin NAME` | No | none | A model origin the scope never uses. A provider whose origin is unknown fails too. May repeat. |
 
 `provider` takes these further options:
 
@@ -793,6 +802,10 @@ previously policy gaps [--since TIME]
 | `--inference NAME=REGIONS` | No | none | A space of inference and what it means, such as `global=any` or `us=us`. May repeat. |
 | `--storage [REGION ...]` | Yes | — | Where the provider stores. Given with no region, the provider stores nothing, as a local one does. |
 | `--retention-days N\|unknown` | Yes | — | How long the provider keeps what it receives. |
+| `--operator NAME\|unknown` | Yes | — | Who runs the service. |
+| `--training yes\|no\|unknown` | Yes | — | Whether the provider trains on what it receives. |
+| `--subprocessors NAME ...\|none\|unknown` | Yes | — | The others who handle the input. `none` and `unknown` stand alone, without a name beside them. |
+| `--model-origin NAME\|unknown` | No | unknown | Where the model comes from. `unknown` is the same as leaving it out. |
 | `--reports-geo` | No | off | The answer of the provider names the region. |
 | `--local` | No | off | The provider runs on hardware the operator runs. |
 
@@ -813,6 +826,7 @@ These are refused:
 - an empty statement.
 
 `policy show` prints one table per kind, with a row ending in the id of the event that set it.
+The rule rows end with the four restrictions on the processing chain, and the provider rows with the operator, the training, the subprocessors and the model origin, each `unknown` where nothing was declared.
 The rules table starts with the built-in rule `local_only`, which isn't an event and can't be revoked: where no other rule applies, only a provider declared `local` is used.
 `--at TIME` prints the policy as it stood at that moment, which is the log read up to it; the time needs a zone, as for `--occurred-at`.
 A newer event with the same key replaces the older one, a revocation lifts the statement, and an event whose payload was erased counts for nothing.
@@ -830,6 +844,17 @@ source:email	1	2026-10-09T12:00:00.000000Z
 It reads the `model_call` events, and the source of each event that a call read where the fallback named no circle, and counts a call whether the local model answered it or not.
 `--since TIME` counts only the calls recorded from that moment on; the time needs a zone.
 A call over an event that has no source and no circle stands under `event:<id>`.
+It also counts what the MCP server withheld for lack of a rule, from the `mcp_access` events ({ref}`cli-access`): each entry of `withheld` with the reason code `no_rule` counts once for each circle it names under `uncovered`, the circles of the event that have no rule.
+An entry that names none counts under `source:<source>` with the source it names, as the gate's lines do, or under `event:<id>` when it names no source either.
+Those lines start with `mcp:`, so that every line keeps its three fields and the gate's lines stay as they were.
+The gate's lines come first and the MCP lines after them, each group sorted by name:
+
+```text
+circle:xz	3	2026-10-09T14:11:11.482113Z
+source:email	1	2026-10-09T12:00:00.000000Z
+mcp:circle:h_da	2	2026-10-11T09:30:00.000000Z
+```
+
 When no call fell back, standard output stays empty, and one notice goes to standard error:
 
 ```text
@@ -945,3 +970,152 @@ FINDING 12: model_call has no valid form: it is denied and has units
 FINDING 12: model_call has no valid form: it has no list "inputs"
 FINDING 12: model_call has no valid form: it has an "inputs" entry without an event
 ```
+
+## `client`
+
+Adds, revokes or lists the MCP clients.
+A client is a name, a declared provider whose promise its reading is processed under, and a token.
+It's stored as a policy event of the kind `client` ({ref}`policy-and-model-calls`), and holds only the SHA-256 of the token.
+
+```text
+previously client add NAME --processor PROVIDER --statement TEXT [--yes]
+previously client revoke NAME --statement TEXT [--yes]
+previously client list
+```
+
+| Option | Required | Default | Description |
+|---|---|---|---|
+| `--processor PROVIDER` | Yes, for `add` | — | The name of a provider declared with `policy provider`. |
+| `--statement TEXT` | Yes, for `add` and `revoke` | — | The sentence the statement was set with. It stays in the log. |
+| `--yes` | No | off | Write without asking. |
+
+`add` prints a summary of two fields on standard output, `client NAME` and `processor PROVIDER`, separated by a tab.
+It then asks `write? [y/N]` the way `policy` does, and after the write prints the token on standard output in two lines:
+
+```text
+client NAME: token TOKEN
+shown once; store it now
+```
+
+The token is 32 random bytes, encoded as base64url.
+Those two lines are the only place it ever appears: not in the log, not in `client list`, not in an error, not in `policy show`.
+Nothing can bring it back, so a lost token means adding the client again.
+
+`add` for a name that already belongs to a client replaces it: a new token is made, and the old one stops matching from the next lookup.
+It says `client NAME exists: this replaces it, and its token stops working` on standard error before the question.
+`revoke` lifts the client, and its token matches nothing from then on.
+`revoke` prints `policy event ID`, and `add` prints nothing after the two lines.
+
+`list` prints one line per client in force, sorted by name, the three fields separated by a tab: the name, the processor and the time of the event that set it.
+It never prints the hash.
+With no client it prints `no client exists` to standard error.
+
+An undeclared processor is refused before the question, as `Error: the processor "NAME" is not declared — declare it first with previously policy provider NAME`.
+Revoking a client that doesn't exist is refused as `Error: no client "NAME" exists`.
+
+(cli-access)=
+
+## `access`
+
+Shows what the MCP clients saw.
+Every call of a client, whether a tool, a resource or a prompt, is written to the log as an action `mcp_access`, with no source key and no units.
+Its payload holds ids, names, the circles of each delivered or withheld event as the policy named them at the time of the call, reason codes, the sentences that say why something was withheld, and the arguments of the call, which are the client's input; it holds nothing of any event.
+`access` reads those events:
+
+```text
+previously access [--client NAME] [--circle NAME] [--since TIME]
+```
+
+| Option | Required | Default | Description |
+|---|---|---|---|
+| `--client NAME` | No | all clients | Only the calls of this client. |
+| `--circle NAME` | No | all circles | Only the calls that named this circle in their arguments, or delivered or withheld an event of it. |
+| `--since TIME` | No | all time | Only the calls recorded from that moment on (ISO 8601, with a zone). |
+
+It prints one line per call, in the order of the chain, the six fields separated by a tab: the time, the client, the kind and the name of the call joined by a colon, the outcome (`ok` or `error`), the delivered events, and the withheld ones.
+The delivered events are ids separated by commas, the withheld ones `ID:REASON_CODE:REASON` separated by spaces, and a dash stands for none:
+
+```text
+2026-10-11T12:00:00.000000Z	claude-code	tool:previously	ok	delivered 42,44	withheld 43:no_rule:circle h_da has no rule, so only local processing is allowed; this client (claude-code) processes with claude-max, which is not local
+```
+
+The reason code is `no_rule` where a circle of the event had no rule for the client, and `rule` where a rule said no.
+An entry that was erased, or whose form `verify` reports, is left out.
+When no call matches, standard output stays empty, and one notice goes to standard error:
+
+```text
+no access matches
+```
+
+`verify` holds every `mcp_access` to its form: known fields only, at every level, a client, a policy, a call with a known kind (`tool`, `resource` or `prompt`), a name and arguments, lists `delivered` and `withheld` whose every entry is an object with exactly its fields, an event, and its circles as a list of names (and its units as a list of numbers), a known reason code on every withheld entry, an outcome of `ok` or `error`, and no units.
+A break of that form is a finding of the form `FINDING 12: mcp_access has no valid form: it has no outcome`, and an `mcp_access` with units is `FINDING 12: mcp_access has units`.
+
+(cli-mcp)=
+
+## `mcp`
+
+Serves MCP over standard input and standard output, for the client that `PREVIOUSLY_MCP_CLIENT` names:
+
+```shell
+PREVIOUSLY_MCP_CLIENT=claude-code previously mcp
+```
+
+`mcp` takes no options.
+Over standard input there is no token: whoever starts the process is the client.
+Before it reads a request, `mcp` checks that the variable names a client in force, and otherwise returns 2 with one of two sentences:
+
+```text
+Error: PREVIOUSLY_MCP_CLIENT is not set: name the client this process serves
+Error: no client "claude-code" is in force; add it with previously client add
+```
+
+Every call reads the policy again.
+A client revoked while the process runs gets an error from its next call on, and the access log records that call with the outcome `error`.
+Standard output carries the protocol and nothing else, and the process ends when standard input closes.
+The tools, resources and prompts are the same as over HTTP; every call writes an `mcp_access`, which {ref}`cli-access` reads.
+
+(cli-serve)=
+
+## `serve`
+
+Serves MCP over HTTP under the path `/mcp`, with answers as JSON and without a session.
+A client of the protocol revision `2026-07-28` and one of an earlier revision are served at the same address.
+`serve` takes no options, and reads `PREVIOUSLY_MCP_HOST`, `PREVIOUSLY_MCP_PORT` and `PREVIOUSLY_MCP_ALLOWED_HOSTS` ({ref}`configuration-reference`).
+On start it prints one line to standard error, and then runs until it's stopped:
+
+```text
+serving MCP over HTTP on http://127.0.0.1:8765/mcp
+```
+
+A port that isn't a number from 1 to 65535 is refused before anything connects, with exit code 2:
+
+```text
+Error: PREVIOUSLY_MCP_PORT is not a port number: 'http'
+```
+
+Every request but the readiness probe below needs the header `Authorization: Bearer TOKEN`, with the token that `client add` printed for a client in force.
+The token is checked against the policy at every request, so a token that a later `client add` for the same name replaced, or that `client revoke` lifted, stops working with the next request.
+A header that names a client is no identity: only the token says which client asks.
+A request without a valid token gets the status 401, the header `WWW-Authenticate: Bearer`, and one sentence as its body:
+
+```text
+Error: a valid bearer token is required
+```
+
+No `mcp_access` is written for such a request, since no client is known.
+The server publishes no Protected Resource Metadata: `/.well-known/oauth-protected-resource` answers 404 to a request with a valid token, and 401 without one, like every other path but the readiness probe.
+
+`GET /healthz` is the readiness probe, and it needs no token.
+It runs one trivial query against the database and answers with the status 200 and the body `ok`, or, when the database doesn't answer, with the status 503 and this body:
+
+```text
+Error: the database does not answer
+```
+
+It reaches no MCP, returns no data and writes no `mcp_access`.
+Only `GET` on exactly that path passes without a token: another method, or another path such as `/healthz/`, gets the 401 above.
+
+The `Host` header of a request has to name `127.0.0.1`, `localhost`, `[::1]` or a name in `PREVIOUSLY_MCP_ALLOWED_HOSTS`, with any port, or the request gets the status 421.
+An `Origin` header has to name one of those hosts too, with `http` or `https`, or the request gets the status 403.
+Both checks are the protection of the MCP SDK against DNS rebinding.
+The readiness probe is answered before them, whatever the two headers name, since it shows nothing.

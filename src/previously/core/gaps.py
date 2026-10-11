@@ -13,11 +13,19 @@ key of that event, which is all this reads beside the calls. A local model on
 CPU is weaker than the ones a rule would allow, and one call that fell back
 is seen by whoever runs it; a hundred calls of a batch are seen by nobody
 but this list.
+
+The MCP server withholds an event of a circle that has no rule for the client
+and writes that into its `mcp_access` (`reason_code` `no_rule`); those are
+counted too, under the origin `mcp`, by the circles the entry names as having
+no rule, and by its source where the event belongs to no circle, as here.
 """
 
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime
+from previously.core.access import NO_RULE
+from previously.core.access import parse_access
+from previously.core.action import MCP_ACCESS
 from previously.core.action import MODEL_CALL
 from typing import cast
 from typing import TYPE_CHECKING
@@ -31,11 +39,13 @@ if TYPE_CHECKING:
 class Gap:
     """A scope without a rule, as `circle:<name>` or `source:<source>`, or
     `event:<id>` for a call over an event with no source; how many calls
-    fell back for it, and the `recorded_at` of the last."""
+    fell back for it, and the `recorded_at` of the last. `origin` is `gate`
+    for a model call and `mcp` for a withholding of the MCP server."""
 
     what: str
     count: int
     last: datetime
+    origin: str = "gate"
 
 
 def _input_event(payload: Mapping[str, object]) -> int | None:
@@ -92,4 +102,41 @@ def gaps[Conn](log: LogStore[Conn], conn: Conn, *, since: datetime | None) -> li
                 if known is None
                 else Gap(scope, known.count + 1, max(known.last, recorded_at))
             )
+    return [found[scope] for scope in sorted(found)] + _mcp_gaps(log, conn, since=since)
+
+
+def _mcp_gaps[Conn](log: LogStore[Conn], conn: Conn, *, since: datetime | None) -> list[Gap]:
+    """What the MCP server withheld for lack of a rule: per circle a
+    `withheld` entry with `reason_code` `no_rule` names as `uncovered`, one
+    count for each entry. Its other circles have a rule and are no gap. An
+    entry with no such circle stands under `source:<source>` as the gate's
+    does, and under `event:<id>` where the event had no source. Kept apart
+    from the gate's by `origin`: the same missing rule shows up in both, and
+    the list should say who ran into it."""
+    found: dict[str, Gap] = {}
+    for row in log.read_by_kind(conn, "action"):
+        payload = row.payload
+        if payload is None or payload.get("action") != MCP_ACCESS:
+            continue
+        if since is not None and row.recorded_at < since:
+            continue
+        access = parse_access(payload)
+        if access is None:
+            continue
+        for item in access.withheld:
+            if item.reason_code != NO_RULE:
+                continue
+            if item.uncovered:
+                scopes = [f"circle:{name}" for name in item.uncovered]
+            elif item.source is not None:
+                scopes = [f"source:{item.source}"]
+            else:
+                scopes = [f"event:{item.event}"]
+            for scope in scopes:
+                known = found.get(scope)
+                found[scope] = (
+                    Gap(scope, 1, row.recorded_at, "mcp")
+                    if known is None
+                    else Gap(scope, known.count + 1, max(known.last, row.recorded_at), "mcp")
+                )
     return [found[scope] for scope in sorted(found)]

@@ -54,6 +54,7 @@ from sqlalchemy import insert
 from sqlalchemy import null
 from sqlalchemy import Row
 from sqlalchemy import select
+from sqlalchemy import tuple_
 from sqlalchemy import update
 from sqlalchemy import URL
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -389,7 +390,7 @@ class PostgresStorage:
                 raise SourceKeyTaken(name) from error
             raise
 
-    # The reading methods below — `read`, `read_by_kind`, `units`,
+    # The reading methods below — `read`, `read_by_kind`, `actions`, `units`,
     # `units_by_event`, `count_events`, `source_keys`, `blobs_by_event` and
     # `events_by_blob` — take the `Connection` in, just like `tip`, `lookup`
     # and `insert_event` (review finding G4 of the final review). It said
@@ -426,12 +427,77 @@ class PostgresStorage:
 
         `storage` does not interpret a payload, so the question "which events
         are redactions" is not asked in SQL here: `core.redaction` reads the
-        actions and decides ({ref}`erasure`).
+        actions and decides ({ref}`erasure`). `actions` asks for the name of
+        an action and nothing more.
         """
         query = (
             select(event)
             .where(event.c.kind == kind)
             .order_by(event.c.id)
+            .execution_options(stream_results=True, yield_per=100)
+        )
+        for row in conn.execute(query):
+            yield _event_row(row)
+
+    def actions(self, conn: Connection, action: str) -> Iterator[EventRow]:
+        """Every action whose payload names `action`, in chain order, through
+        a server-side cursor like `read`; an erased action has no payload and
+        names none.
+
+        The one place where `storage` asks a payload a question, and it asks
+        only for the name every action carries; whether the payload is sound
+        stays the caller's to decide, as with `read_by_kind`. Without it, the
+        policy read on every MCP call read every `mcp_access` the calls before
+        it wrote, and parsed each in Python only to pass it over
+        ({ref}`mcp-open-limits`). No index serves the filter: the database
+        still visits every action, but it hands over only those named.
+        """
+        query = (
+            select(event)
+            .where(event.c.kind == "action", event.c.payload["action"].astext == action)
+            .order_by(event.c.id)
+            .execution_options(stream_results=True, yield_per=100)
+        )
+        for row in conn.execute(query):
+            yield _event_row(row)
+
+    def observations(
+        self,
+        conn: Connection,
+        *,
+        since: datetime | None,
+        until: datetime | None,
+        source: str | None,
+        after: tuple[datetime, int] | None,
+        limit: int,
+    ) -> Iterator[EventRow]:
+        """At most `limit` observations in time order, `(occurred_at, id)`,
+        strictly after the position `after`, through a server-side cursor
+        like `read`.
+
+        The window is half-open like `read_chronicle`'s: `since` inclusive,
+        `until` exclusive. `source` keeps the events whose source key names
+        that source; an observation whose key was erased has none and drops
+        out of a source filter. Which circle an event belongs to is not asked
+        here: that depends on the policy and on the addresses in the payload,
+        and `core` decides it.
+        """
+        query = select(event).where(event.c.kind == "observation")
+        if since is not None:
+            query = query.where(event.c.occurred_at >= since)
+        if until is not None:
+            query = query.where(event.c.occurred_at < until)
+        if source is not None:
+            query = query.where(
+                select(source_key.c.event_id)
+                .where(source_key.c.event_id == event.c.id, source_key.c.source == source)
+                .exists()
+            )
+        if after is not None:
+            query = query.where(tuple_(event.c.occurred_at, event.c.id) > tuple_(*after))
+        query = (
+            query.order_by(event.c.occurred_at, event.c.id)
+            .limit(limit)
             .execution_options(stream_results=True, yield_per=100)
         )
         for row in conn.execute(query):

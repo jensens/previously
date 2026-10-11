@@ -8,6 +8,7 @@ from datetime import UTC
 from previously.contract.types import RawUnit
 from previously.core.action import append_action
 from previously.core.action import KNOWN_ACTIONS
+from previously.core.action import MCP_ACCESS
 from previously.core.action import MODEL_CALL
 from previously.core.action import POLICY
 from previously.core.action import REDACTION
@@ -24,9 +25,14 @@ import pytest
 NOW = datetime(2026, 10, 9, 12, 0, 0, tzinfo=UTC)
 
 
-def test_the_known_actions_are_the_three_names() -> None:
-    assert {REDACTION, POLICY, MODEL_CALL} == KNOWN_ACTIONS
-    assert (REDACTION, POLICY, MODEL_CALL) == ("redaction", "policy", "model_call")
+def test_the_known_actions_are_the_four_names() -> None:
+    assert {REDACTION, POLICY, MODEL_CALL, MCP_ACCESS} == KNOWN_ACTIONS
+    assert (REDACTION, POLICY, MODEL_CALL, MCP_ACCESS) == (
+        "redaction",
+        "policy",
+        "model_call",
+        "mcp_access",
+    )
 
 
 @pytest.mark.db

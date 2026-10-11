@@ -4,34 +4,40 @@
 r"""The store protocols: what `core` may ask of a store, and nothing more.
 
 `LogStore` is what the modules of `core` that write or read the log call —
-thirteen methods, counted on 2026-10-05, after the final fixes of stage 1c,
-and counted again on 2026-10-06 once `core/ingest.py` had joined, which
-calls none the others do not, by this command, run from the root of the
-repository in bash or fish:
+fourteen methods, counted on 2026-10-11 by this command, run from the root of
+the repository in bash or fish:
 
-    grep -ohE '(storage|log)\.[a-z_]*\(' src/previously/core/append.py \
-        src/previously/core/verify.py src/previously/core/redact.py \
-        src/previously/core/redaction.py src/previously/core/projection/worker.py \
-        src/previously/core/ingest.py \
+    grep -ohE '(storage|log)\.[a-z_]*\(' $(grep -rl LogStore src/previously/core) \
         | sed 's/.*\.//' | sort -u | wc -l
 
-The files are the six modules that name `LogStore` today, found with
-`grep -rl LogStore src/previously/core`, and the count is not copied from
-the method list of the implementation. The docstring is raw
-so that the text in this file is the command, backslashes as they stand.
-Without the `sed` stage, as the command stood here until then, `sort -u`
-leaves 21 lines, a name once for each of the two prefixes it is called
-through, and the claim was a count of those by hand. It was eight
-until the chain
-check took `snapshot` instead of `begin` for its reads, and `append` still
-takes `begin`, so both stay; it was nine until stage 1c, whose redactions
-are read with `read_by_kind`, and ten until `verify` and `redact` read the
-blob register with `blobs_by_event`. The erasure of blobs took it to
-thirteen: `redact` asks `events_by_blob`, which until then only the command
-line asked, and `verify --blobs` reads the whole register with
-`blob_references`. Every method the protocol declares is called by `core`
-on that day. Typing `core` against
-this protocol instead of against `PostgresStorage` removes the edge
+The files are every module of `core` that names `LogStore`, eleven that day,
+and the count is not copied from the method list of the implementation. The
+docstring is raw so that the text in this file is the command, backslashes as
+they stand. Until 2026-10-11 the command named its files one by one, six of
+them, and the sentence beside it called those "the six modules that name
+`LogStore` today" long after `grep -rl` found more: nine at the start of the
+MCP work, eleven at its end. The count of thirteen it gave was still right,
+since the modules it left out call nothing the six do not, but the sentence
+was not.
+Without the `sed` stage, as the command stood here until 2026-10-06, `sort -u`
+leaves a name once for each of the two prefixes it is called through, and the
+claim was a count of those by hand. It was eight until the chain check took
+`snapshot` instead of `begin` for its reads, and `append` still takes `begin`,
+so both stay; it was nine until stage 1c, whose redactions are read with
+`read_by_kind`, and ten until `verify` and `redact` read the blob register with
+`blobs_by_event`. The erasure of blobs took it to thirteen: `redact` asks
+`events_by_blob`, which until then only the command line asked, and `verify
+--blobs` reads the whole register with `blob_references`. The fourteenth is
+`actions`, which `core.policy` reads the policy with since 2026-10-11, and
+`core.clients` the dates of the clients, so that the policy read of every MCP
+call does not read every access entry the calls before it wrote
+({ref}`mcp-open-limits`).
+The protocol declares fifteen: `observations` came the same day with the MCP
+server, and `core` does not call it: `mcp_server/read.py` does, to read the
+chronicle of a circle from the log (decision 3 of the 2026-10-11 MCP read
+access plan). `grep -ohE 'log\.[a-z_]*\(' src/previously/mcp_server/*.py`
+names the six the server calls, `observations` among them. Typing `core`
+against this protocol instead of against `PostgresStorage` removes the edge
 `core -> storage.postgres`, and with it the two named exemptions in
 `.importlinter` and the test that guarded them ({ref}`module-boundaries`).
 
@@ -58,6 +64,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from collections.abc import Sequence
     from contextlib import AbstractContextManager
+    from datetime import datetime
     from previously.contract.rows import ChronicleRow
     from previously.contract.rows import EventRow
     from previously.contract.rows import ProjectionState
@@ -92,9 +99,20 @@ class LogStore[Conn](Protocol):
     def count_events(self, conn: Conn) -> int: ...
     def source_keys(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, tuple[str, str]]: ...
     def read_by_kind(self, conn: Conn, kind: str) -> Iterator[EventRow]: ...
+    def actions(self, conn: Conn, action: str) -> Iterator[EventRow]: ...
     def blobs_by_event(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, list[bytes]]: ...
     def events_by_blob(self, conn: Conn, sha256: bytes) -> list[int]: ...
     def blob_references(self, conn: Conn) -> Iterator[tuple[bytes, int]]: ...
+    def observations(
+        self,
+        conn: Conn,
+        *,
+        since: datetime | None,
+        until: datetime | None,
+        source: str | None,
+        after: tuple[datetime, int] | None,
+        limit: int,
+    ) -> Iterator[EventRow]: ...
 
 
 class RedactionStore[Conn](Protocol):

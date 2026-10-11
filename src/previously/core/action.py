@@ -49,8 +49,9 @@ if TYPE_CHECKING:
 REDACTION = "redaction"
 POLICY = "policy"
 MODEL_CALL = "model_call"
+MCP_ACCESS = "mcp_access"
 
-KNOWN_ACTIONS: frozenset[str] = frozenset({REDACTION, POLICY, MODEL_CALL})
+KNOWN_ACTIONS: frozenset[str] = frozenset({REDACTION, POLICY, MODEL_CALL, MCP_ACCESS})
 
 # What became of a model call. Every call the gate decides on is written,
 # whatever became of it, and only `ok` keeps an answer, in the units.

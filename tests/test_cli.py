@@ -4101,11 +4101,15 @@ def test_policy_rule_provider_member_own_and_revoke_round_trip_through_show(
         ["own", "me@mine.example", "--statement", "s"],
         [
             *("rule", "circle:xz", "--regions", "eu", "--max-retention-days", "0"),
-            *("--exclude-provider", "anthropic", "--statement", "s"),
+            *("--exclude-provider", "anthropic", "--no-training", "--no-subprocessors"),
+            *("--exclude-operator", "zeta", "--exclude-operator", "alpha"),
+            *("--exclude-model-origin", "cn", "--statement", "s"),
         ],
         [
             *("provider", "anthropic", "--inference", "global=any", "--inference", "us=us"),
             *("--storage", "us", "--retention-days", "30", "--reports-geo", "--statement", "s"),
+            *("--operator", "Anthropic PBC", "--training", "no", "--subprocessors", "aws", "gcp"),
+            *("--model-origin", "us"),
         ],
     ]
     for step in steps:
@@ -4115,10 +4119,15 @@ def test_policy_rule_provider_member_own_and_revoke_round_trip_through_show(
     shown = capsys.readouterr().out
     assert "  xz\t@kunde-xz.at\t(event 2)" in shown
     assert "  me@mine.example\t(event 3)" in shown
-    assert "  circle:xz\tregions eu\tmax retention days 0\texcluded anthropic\t(event 4)" in shown
+    assert (
+        "  circle:xz\tregions eu\tmax retention days 0\texcluded anthropic"
+        "\tno training yes\tno subprocessors yes\texcluded operators alpha,zeta"
+        "\texcluded model origins cn\t(event 4)" in shown
+    )
     assert (
         "  anthropic\tinference global=any,us=us\tstorage us\tretention days 30"
-        "\treports geo yes\tlocal no\t(event 5)" in shown
+        "\treports geo yes\tlocal no\toperator Anthropic PBC\ttraining no"
+        "\tsubprocessors aws,gcp\tmodel origin us\t(event 5)" in shown
     )
 
     revoke = ["policy", "member", "xz", "@kunde-xz.at", "--statement", "gone", "--revoke", "--yes"]
@@ -4142,6 +4151,7 @@ def test_policy_provider_requires_storage(
     written as `storage: []`, the way a local provider is declared."""
     _setup(db, monkeypatch)
     argv = ["policy", "provider", "local", "--inference", "eu=eu", "--retention-days", "0"]
+    argv += [*("--operator", "me", "--training", "no", "--subprocessors", "none")]
     argv += [] if storage is None else ["--storage", *storage]
     argv += ["--statement", "s", "--yes"]
     if storage is None:
@@ -4183,3 +4193,330 @@ def test_the_help_names_gate_with_its_sentence(capsys: pytest.CaptureFixture[str
     with pytest.raises(SystemExit):
         main(["--help"])
     assert re.search(r"^\s+gate\s+explain or try a model call$", capsys.readouterr().out, re.M)
+
+
+_CHAIN_ARGUMENTS = {
+    "--operator": "acme",
+    "--training": "no",
+    "--subprocessors": "none",
+}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("omitted", [None, "--operator", "--training", "--subprocessors"])
+def test_policy_provider_requires_the_processing_chain(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    omitted: str | None,
+) -> None:
+    """An unknown chain passes no restriction, so a forgotten option would
+    declare a provider that no rule can use, and silently: argparse refuses
+    the omission and writes nothing. `omitted=None` is the control that
+    writes."""
+    _setup(db, monkeypatch)
+    argv = ["policy", "provider", "p", "--inference", "eu=eu", "--storage", "eu"]
+    argv += ["--retention-days", "0", "--statement", "s", "--yes"]
+    for option, value in _CHAIN_ARGUMENTS.items():
+        if option != omitted:
+            argv += [option, value]
+    if omitted is None:
+        assert main(argv) == 0
+        assert _action_count(db) == 1
+        return
+    with pytest.raises(SystemExit) as raised:
+        main(argv)
+    assert raised.value.code == 2
+    assert f"the following arguments are required: {omitted}" in capsys.readouterr().err
+    assert _action_count(db) == 0
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("training", "subprocessors", "expected_training", "expected_subprocessors"),
+    [
+        ("yes", ["none"], True, []),
+        ("no", ["unknown"], False, None),
+        ("unknown", ["b", "a"], None, ["a", "b"]),
+    ],
+)
+def test_policy_provider_writes_the_chain_in_the_payload(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    training: str,
+    subprocessors: list[str],
+    expected_training: bool | None,
+    expected_subprocessors: list[str] | None,
+) -> None:
+    _setup(db, monkeypatch)
+    argv = ["policy", "provider", "p", "--inference", "eu=eu", "--storage", "eu"]
+    argv += ["--retention-days", "0", "--operator", "unknown", "--training", training]
+    argv += ["--subprocessors", *subprocessors, "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    statement, _ = capsys.readouterr().out.rsplit("policy event ", 1)
+    payload = json.loads(statement)
+    assert payload["training"] is expected_training
+    assert payload["subprocessors"] == expected_subprocessors
+    assert payload["operator"] is None
+    assert payload["model_origin"] is None
+
+
+@pytest.mark.db
+def test_policy_provider_refuses_none_beside_a_name(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    argv = ["policy", "provider", "p", "--inference", "eu=eu", "--storage", "eu"]
+    argv += ["--retention-days", "0", "--operator", "x", "--training", "no"]
+    argv += ["--subprocessors", "none", "aws", "--statement", "s", "--yes"]
+    assert main(argv) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.count("\n") == 1
+    assert _action_count(db) == 0
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(("given", "expected"), [("unknown", None), ("us", "us")])
+def test_policy_provider_reads_model_origin_unknown_as_unknown(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    given: str,
+    expected: str | None,
+) -> None:
+    _setup(db, monkeypatch)
+    argv = ["policy", "provider", "p", "--inference", "eu=eu", "--storage", "eu"]
+    argv += ["--retention-days", "0", "--operator", "x", "--training", "no"]
+    argv += ["--subprocessors", "none", "--model-origin", given, "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    statement, _ = capsys.readouterr().out.rsplit("policy event ", 1)
+    assert json.loads(statement)["model_origin"] == expected
+
+
+def _declare_local(db: object, capsys: pytest.CaptureFixture[str]) -> None:
+    argv = ["policy", "provider", "local", "--storage", "--retention-days", "0"]
+    argv += ["--operator", "me", "--training", "no", "--subprocessors", "none"]
+    argv += ["--local", "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    capsys.readouterr()
+
+
+def _all_actions(db: object) -> str:
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    with db.begin() as c:
+        rows = c.execute(text("SELECT payload::text FROM event WHERE kind = 'action'")).scalars()
+        return "\n".join(rows)
+
+
+def _token_of(out: str) -> str:
+    """The token of the one line that carries it; a prompt without a newline
+    may stand in front of that line."""
+    assert out.endswith("\nshown once; store it now\n")
+    prefix = "client claude-code: token "
+    (line,) = (line for line in out.splitlines() if prefix in line)
+    return line.split(prefix, 1)[1]
+
+
+@pytest.mark.db
+def test_client_add_prints_the_token_once_and_stores_only_its_hash(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from previously.core.clients import token_hash
+
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    out, err = capsys.readouterr()
+    token = _token_of(out)
+    assert len(token) == 43
+    assert token not in err
+    assert out.count(token) == 1
+    stored = _all_actions(db)
+    assert token not in stored
+    assert token_hash(token) in stored
+    # The list shows the name, the processor and a date; never the hash, never the token.
+    assert main(["client", "list"]) == 0
+    listed = capsys.readouterr().out
+    assert listed.startswith("claude-code\tlocal\t20")
+    assert token_hash(token) not in listed
+    assert token not in listed
+    assert main(["policy", "show"]) == 0
+    shown = capsys.readouterr().out
+    assert token not in shown
+    assert token_hash(token) not in shown
+
+
+@pytest.mark.db
+def test_client_add_for_an_existing_name_says_so_before_it_asks(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s"]
+    _answer(monkeypatch, "y\n")
+    assert main(argv) == 0
+    old = _token_of(capsys.readouterr().out)
+    # The control: a first add says nothing about replacing.
+    # An n replaces nothing.
+    _answer(monkeypatch, "n\n")
+    assert main(argv) == 1
+    out, err = capsys.readouterr()
+    assert "exists: this replaces it, and its token stops working" in err
+    assert "nothing written" in err
+    assert "token" not in out
+    _answer(monkeypatch, "y\n")
+    assert main(argv) == 0
+    out, err = capsys.readouterr()
+    assert "exists: this replaces it" in err
+    assert _token_of(out) != old
+
+
+@pytest.mark.db
+def test_client_add_for_a_new_name_does_not_claim_a_replacement(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    assert "replaces" not in capsys.readouterr().err
+
+
+@pytest.mark.db
+def test_client_add_without_an_answer_writes_nothing(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    before = _action_count(db)
+    _answer(monkeypatch, "")
+    argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s"]
+    assert main(argv) == 1
+    out, err = capsys.readouterr()
+    assert "token" not in out
+    assert "nothing written" in err
+    assert _action_count(db) == before
+
+
+@pytest.mark.db
+def test_client_add_for_an_undeclared_processor_is_refused_before_the_question(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    argv = ["client", "add", "claude-code", "--processor", "nowhere", "--statement", "s"]
+    assert main(argv) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.startswith('Error: the processor "nowhere" is not declared')
+    assert _action_count(db) == 0
+
+
+@pytest.mark.db
+def test_client_revoke_lifts_the_client_and_list_is_empty_again(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    add = ["client", "add", "claude-code", "--processor", "local", "--statement", "s", "--yes"]
+    assert main(add) == 0
+    capsys.readouterr()
+    assert main(["client", "revoke", "claude-code", "--statement", "left", "--yes"]) == 0
+    assert capsys.readouterr().out.endswith("policy event 3\n")
+    assert main(["client", "list"]) == 0
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == "no client exists\n"
+    assert main(["client", "revoke", "claude-code", "--statement", "again", "--yes"]) == 2
+    assert 'Error: no client "claude-code" exists' in capsys.readouterr().err
+
+
+def test_the_help_of_client_names_what_it_does(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    assert "add, revoke and list MCP clients" in " ".join(capsys.readouterr().out.split())
+    with pytest.raises(SystemExit):
+        main(["client", "--help"])
+    out = capsys.readouterr().out
+    assert "add" in out and "revoke" in out and "list" in out
+
+
+@pytest.mark.db
+def test_client_add_prints_the_summary_then_the_two_lines_and_the_page_says_so(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pathlib import Path
+
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    argv = ["client", "add", "a\tb", "--processor", "local", "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    lines = capsys.readouterr().out.splitlines()
+    # The tab of the name is escaped like in every other line, so the summary
+    # stays two fields; the token line carries the same escaped name.
+    assert lines[0] == "client a\\tb\tprocessor local"
+    assert lines[1].startswith("client a\\tb: token ")
+    assert lines[2] == "shown once; store it now"
+    assert len(lines) == 3
+    page = (Path(__file__).parent.parent / "docs/reference/cli.md").read_text(encoding="utf-8")
+    assert "`client NAME` and `processor PROVIDER`, separated by a tab" in page
+    assert "prints nothing after the two lines" in page
+
+
+# --- mcp and serve --------------------------------------------------------------
+
+
+def test_the_help_names_mcp_and_serve_with_their_sentences(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    out = " ".join(capsys.readouterr().out.split())
+    assert "mcp serve MCP over stdio" in out
+    assert "serve serve MCP over HTTP" in out
+
+
+def test_mcp_without_its_client_ends_with_2_before_it_reads_anything(
+    capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # No DSN either: the client is named before anything connects.
+    monkeypatch.delenv("PREVIOUSLY_MCP_CLIENT", raising=False)
+    monkeypatch.delenv("PREVIOUSLY_DSN", raising=False)
+    assert main(["mcp"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err == "Error: PREVIOUSLY_MCP_CLIENT is not set: name the client this process serves\n"
+
+
+@pytest.mark.db
+def test_mcp_for_a_client_not_in_force_ends_with_2(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    assert main(["client", "revoke", "claude-code", "--statement", "gone", "--yes"]) == 0
+    capsys.readouterr()
+    for name in ("claude-code", "nobody"):
+        monkeypatch.setenv("PREVIOUSLY_MCP_CLIENT", name)
+        assert main(["mcp"]) == 2
+        out, err = capsys.readouterr()
+        assert out == ""
+        assert err == (
+            f'Error: no client "{name}" is in force; add it with previously client add\n'
+        )
+
+
+@pytest.mark.parametrize("port", ["http", "0", "65536", "８７６５"])
+def test_serve_with_a_port_that_is_none_ends_with_2(
+    port: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("PREVIOUSLY_MCP_PORT", port)
+    assert main(["serve"]) == 2
+    assert capsys.readouterr().err == f"Error: PREVIOUSLY_MCP_PORT is not a port number: {port!r}\n"

@@ -31,9 +31,15 @@ heading there reads as an exception that nobody granted. That is the test for
 any root file added later: it gets read beside the others, so it is English.
 
 **German is fine** — specifications (`docs/superpowers/specs/`), plans
-(`docs/superpowers/plans/`), execution records (`docs/superpowers/sdd/`), the
-map (`docs/superpowers/landkarte.md`), the brainstorming notes in
-`NOTIZEN.md`, and analyses or working notes under `.superpowers/`.
+(`docs/superpowers/plans/`), execution records (`docs/superpowers/sdd/`),
+research reports (`docs/superpowers/recherche/`), the map
+(`docs/superpowers/landkarte.md`), the brainstorming notes in `NOTIZEN.md`,
+and analyses or working notes under `.superpowers/`.
+
+`docs/superpowers/recherche/` joined that list on 2026-10-09, with the MCP
+research the interface design starts from. A report there is dated and not
+kept up to date, like an execution record: it says what held on its day, and
+its raw notes, with every source, lie beside it.
 
 `docs/superpowers/sdd/` joined that list on 2026-10-04, when the ledger of a
 plan's execution moved out of the git-ignored scratch directory and into the

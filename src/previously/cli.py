@@ -21,6 +21,7 @@ from previously.connectors.imap import PORT as IMAP_PORT
 from previously.contract.types import BlobRef
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
+from previously.core.access import read_access
 from previously.core.anchor import format_anchor
 from previously.core.anchor import parse_anchors
 from previously.core.append import append
@@ -28,6 +29,10 @@ from previously.core.append import check_units
 from previously.core.blob import fetch_blob
 from previously.core.blob import store_blob
 from previously.core.chain import read_references
+from previously.core.clients import add_client
+from previously.core.clients import client_rows
+from previously.core.clients import revoke_client
+from previously.core.clients import token_hash
 from previously.core.errors import AddressMismatch
 from previously.core.errors import CannotOpen
 from previously.core.errors import InvalidPayload
@@ -42,6 +47,7 @@ from previously.core.hashing import iso_utc
 from previously.core.identity import artifact_hash_of
 from previously.core.ingest import ingest
 from previously.core.policy import Circle
+from previously.core.policy import Client
 from previously.core.policy import Inference
 from previously.core.policy import key_of
 from previously.core.policy import LOCAL_ONLY
@@ -1293,6 +1299,20 @@ def _policy_arguments(parser: argparse.ArgumentParser) -> None:
     rule.add_argument(
         "--exclude-provider", action="append", default=[], metavar="NAME", help="may repeat"
     )
+    rule.add_argument(
+        "--no-training", action="store_true", help="only providers declared not to train on input"
+    )
+    rule.add_argument(
+        "--no-subprocessors",
+        action="store_true",
+        help="only providers declared to have no subprocessors",
+    )
+    rule.add_argument(
+        "--exclude-operator", action="append", default=[], metavar="NAME", help="may repeat"
+    )
+    rule.add_argument(
+        "--exclude-model-origin", action="append", default=[], metavar="NAME", help="may repeat"
+    )
     provider = writing("provider", "declare what a provider account promises")
     provider.add_argument("name")
     provider.add_argument(
@@ -1314,6 +1334,29 @@ def _policy_arguments(parser: argparse.ArgumentParser) -> None:
     )
     provider.add_argument(
         "--retention-days", required=True, metavar="N|unknown", help="how long the provider keeps"
+    )
+    # Required like `--storage`: an unknown chain passes no restriction that
+    # concerns it, so it has to be said and never fall out of a forgotten option.
+    provider.add_argument(
+        "--operator", required=True, metavar="NAME|unknown", help="who runs the service"
+    )
+    provider.add_argument(
+        "--training",
+        required=True,
+        choices=["yes", "no", "unknown"],
+        help="whether the provider trains on input",
+    )
+    provider.add_argument(
+        "--subprocessors",
+        nargs="+",
+        required=True,
+        metavar="NAME|none|unknown",
+        help="who else handles the input: names, none or unknown",
+    )
+    provider.add_argument(
+        "--model-origin",
+        metavar="NAME",
+        help="where the model comes from; unknown, or unknown if omitted",
     )
     provider.add_argument("--reports-geo", action="store_true", help="the answer names the region")
     provider.add_argument("--local", action="store_true", help="runs on hardware the operator runs")
@@ -1340,6 +1383,20 @@ def _retention_of(text: str) -> int | None:
         raise InvalidPayload(f"{text!r} is not a number of days or unknown") from error
 
 
+def _training_of(text: str) -> bool | None:
+    return {"yes": True, "no": False}.get(text)
+
+
+def _subprocessors_of(names: list[str]) -> frozenset[str] | None:
+    if names == ["unknown"]:
+        return None
+    if names == ["none"]:
+        return frozenset()
+    if "none" in names or "unknown" in names:
+        raise InvalidPayload('"none" and "unknown" stand alone, without a name beside them')
+    return frozenset(names)
+
+
 def _policy_statement(args: argparse.Namespace) -> Statement:
     """The statement the arguments of a writing form describe."""
     if args.what == "circle":
@@ -1354,6 +1411,10 @@ def _policy_statement(args: argparse.Namespace) -> Statement:
             frozenset(args.regions),
             args.max_retention_days,
             frozenset(args.exclude_provider),
+            args.no_training,
+            args.no_subprocessors,
+            frozenset(args.exclude_operator),
+            frozenset(args.exclude_model_origin),
         )
     return Provider(
         args.name,
@@ -1362,6 +1423,10 @@ def _policy_statement(args: argparse.Namespace) -> Statement:
         _retention_of(args.retention_days),
         args.reports_geo,
         args.local,
+        None if args.operator == "unknown" else args.operator,
+        _training_of(args.training),
+        _subprocessors_of(args.subprocessors),
+        None if args.model_origin == "unknown" else args.model_origin,
     )
 
 
@@ -1431,7 +1496,12 @@ def _policy_lines(policy: Policy) -> list[str]:
         days = "-" if rule.max_retention_days is None else str(rule.max_retention_days)
         lines.append(
             f"  {escape_field(scope)}\tregions {_list(rule.regions)}\tmax retention days {days}"
-            f"\texcluded {_list(rule.excluded_providers)}\t{event('rule', scope)}"
+            f"\texcluded {_list(rule.excluded_providers)}"
+            f"\tno training {'yes' if rule.no_training else 'no'}"
+            f"\tno subprocessors {'yes' if rule.no_subprocessors else 'no'}"
+            f"\texcluded operators {_list(rule.excluded_operators)}"
+            f"\texcluded model origins {_list(rule.excluded_model_origins)}"
+            f"\t{event('rule', scope)}"
         )
     lines += ["providers"]
     for name, provider in sorted(policy.providers.items()):
@@ -1442,10 +1512,18 @@ def _policy_lines(policy: Policy) -> list[str]:
         )
         reports = "yes" if provider.reports_inference_geo else "no"
         local = "yes" if provider.local else "no"
+        training = "unknown" if provider.training is None else "yes" if provider.training else "no"
+        subprocessors = (
+            "unknown" if provider.subprocessors is None else _list(provider.subprocessors)
+        )
         lines.append(
             f"  {escape_field(name)}\tinference {inference or '-'}"
             f"\tstorage {_list(provider.storage)}\tretention days {days}"
-            f"\treports geo {reports}\tlocal {local}\t{event('provider', name)}"
+            f"\treports geo {reports}\tlocal {local}"
+            f"\toperator {escape_field(provider.operator or 'unknown')}\ttraining {training}"
+            f"\tsubprocessors {escape_field(subprocessors)}"
+            f"\tmodel origin {escape_field(provider.model_origin or 'unknown')}"
+            f"\t{event('provider', name)}"
         )
     return lines
 
@@ -1459,7 +1537,10 @@ def _cmd_policy_gaps(args: argparse.Namespace) -> int:
     if not found:
         print("no call fell back to local only", file=sys.stderr)
     for gap in found:
-        print(f"{escape_field(gap.what)}\t{gap.count}\t{iso_utc(gap.last)}")
+        # A withholding of the MCP server is told from a model call by the
+        # prefix, so that every line keeps its three fields.
+        scope = gap.what if gap.origin == "gate" else f"{gap.origin}:{gap.what}"
+        print(f"{escape_field(scope)}\t{gap.count}\t{iso_utc(gap.last)}")
     return 0
 
 
@@ -1675,6 +1756,49 @@ def _cmd_gate(args: argparse.Namespace) -> int:
     return _cmd_gate_try(args)
 
 
+def _access_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--client", metavar="NAME", help="only calls of this client")
+    parser.add_argument(
+        "--circle",
+        metavar="NAME",
+        help="only calls that named this circle, or delivered or withheld something of it",
+    )
+    parser.add_argument(
+        "--since", metavar="TIME", help="only calls from then on (ISO 8601, a zone)"
+    )
+
+
+def _ids(values: tuple[int, ...]) -> str:
+    return ",".join(str(value) for value in values) or "-"
+
+
+def _cmd_access(args: argparse.Namespace) -> int:
+    """Prints one line per call: the time, the client, the kind and name of
+    the call, the delivered events, and the withheld ones with the reason
+    ({ref}`cli-reference`)."""
+    since = parse_moment(args.since) if args.since else None
+    with _storage() as storage, storage.begin() as conn:
+        rows = read_access(storage, conn, client=args.client, circle=args.circle, since=since)
+    if not rows:
+        print("no access matches", file=sys.stderr)
+    for row in rows:
+        access = row.access
+        delivered = _ids(tuple(item.event for item in access.delivered))
+        withheld = (
+            " ".join(
+                f"{item.event}:{item.reason_code}:{escape_field(item.reason)}"
+                for item in access.withheld
+            )
+            or "-"
+        )
+        print(
+            f"{iso_utc(row.recorded_at)}\t{escape_field(access.client)}"
+            f"\t{access.kind}:{escape_field(access.name)}\t{access.outcome}"
+            f"\tdelivered {delivered}\twithheld {withheld}"
+        )
+    return 0
+
+
 def _no_arguments(_parser: argparse.ArgumentParser) -> None:
     """For a command that takes no arguments."""
 
@@ -1687,6 +1811,172 @@ class Command:
     help: str
     run: Callable[[argparse.Namespace], int]
     arguments: Callable[[argparse.ArgumentParser], None] = _no_arguments
+
+
+# --- MCP clients ---------------------------------------------------------------
+
+
+def _client_arguments(parser: argparse.ArgumentParser) -> None:
+    what = parser.add_subparsers(dest="what", required=True)
+
+    def writing(name: str, sentence: str) -> argparse.ArgumentParser:
+        form = what.add_parser(name, help=sentence, description=sentence)
+        form.add_argument("name")
+        form.add_argument(
+            "--statement", required=True, help="the sentence it was set with; it stays in the log"
+        )
+        form.add_argument("--yes", action="store_true", help="write without asking")
+        return form
+
+    add = writing("add", "create a client and print its token once")
+    add.add_argument(
+        "--processor", required=True, metavar="PROVIDER", help="a declared provider's promise"
+    )
+    writing("revoke", "lift a client; its token stops matching")
+    sentence = "list the clients in force"
+    what.add_parser("list", help=sentence, description=sentence)
+
+
+def _cmd_client_add(args: argparse.Namespace) -> int:
+    """Asks, writes the client and prints its token: the only place the
+    token ever appears. A refusal and the replacement of a client come
+    before the question, so nobody confirms what cannot be written or what
+    they did not know they were replacing."""
+    with _storage() as storage:
+        with storage.begin() as conn:
+            current = read_policy(storage, conn)
+        # Only the form and the processor are checked here, and neither
+        # depends on the hash: a placeholder of the right length stands in
+        # for a hash that does not exist before the token does.
+        placeholder = Client(args.name, args.processor, token_hash(""))
+        sentence = refusal(placeholder, statement=args.statement, revoked=False, current=current)
+        if sentence is not None:
+            raise PolicyRefused(sentence)
+        replaced = args.name in current.clients
+        if replaced:
+            print(
+                f"client {escape_field(args.name)} exists: this replaces it, "
+                "and its token stops working",
+                file=sys.stderr,
+            )
+        print(f"client {escape_field(args.name)}\tprocessor {escape_field(args.processor)}")
+        if not _confirmed(args):
+            print("nothing written", file=sys.stderr)
+            return 1
+        _event_id, token = add_client(
+            storage,
+            args.name,
+            processor=args.processor,
+            statement=args.statement,
+            recorded_at=datetime.now(UTC),
+        )
+    print(f"client {escape_field(args.name)}: token {token}")
+    print("shown once; store it now")
+    return 0
+
+
+def _cmd_client_revoke(args: argparse.Namespace) -> int:
+    with _storage() as storage:
+        with storage.begin() as conn:
+            if args.name not in read_policy(storage, conn).clients:
+                raise PolicyRefused(f'no client "{args.name}" exists')
+        print(f"revoke client {escape_field(args.name)}")
+        if not _confirmed(args):
+            print("nothing written", file=sys.stderr)
+            return 1
+        event_id = revoke_client(
+            storage, args.name, statement=args.statement, recorded_at=datetime.now(UTC)
+        )
+    print(f"policy event {event_id}")
+    return 0
+
+
+def _cmd_client(args: argparse.Namespace) -> int:
+    """Adds, revokes or lists the MCP clients. The list shows the name, the
+    processor and the date of the event, never the hash."""
+    if args.what == "add":
+        return _cmd_client_add(args)
+    if args.what == "revoke":
+        return _cmd_client_revoke(args)
+    with _storage() as storage, storage.begin() as conn:
+        rows = client_rows(storage, conn)
+    if not rows:
+        print("no client exists", file=sys.stderr)
+    for row in rows:
+        print(
+            f"{escape_field(row.client.name)}\t{escape_field(row.client.processor)}"
+            f"\t{iso_utc(row.recorded_at)}"
+        )
+    return 0
+
+
+# --- The MCP server ------------------------------------------------------------
+
+# Where `previously serve` listens unless told otherwise: the loopback address,
+# so that nothing outside the machine reaches it without a decision.
+MCP_HOST = "127.0.0.1"
+MCP_PORT = 8765
+
+
+def _cmd_mcp(_args: argparse.Namespace) -> int:
+    """Serves MCP over stdin and stdout for the client named in
+    `PREVIOUSLY_MCP_CLIENT` ({ref}`cli-reference`).
+
+    Over stdio there is no token: whoever starts the process is the client.
+    The name has to be a client in force, checked before a request is read;
+    a revocation while the process runs locks the client out from its next
+    call, because every call reads the policy again.
+    Nothing is printed: standard output is the protocol.
+
+    The server module is imported here and not at the head, as the adapters
+    of the gate are: the MCP SDK, Starlette and uvicorn add about 0.3 s to
+    the import, measured on 2026-10-11 with `python -X importtime -c "import
+    previously.cli, previously.mcp_server.server"` at 0.67 s against 0.36 s
+    for `previously.cli` alone, cumulative, three runs each; every other
+    command would pay for it.
+    """
+    from previously.mcp_server.server import CLIENT_VARIABLE
+    from previously.mcp_server.server import run_stdio
+
+    name = os.environ.get(CLIENT_VARIABLE)
+    if not name:
+        raise PreviouslyError(f"{CLIENT_VARIABLE} is not set: name the client this process serves")
+    with _storage() as storage:
+        with storage.begin() as conn:
+            if name not in read_policy(storage, conn).clients:
+                raise PreviouslyError(
+                    f'no client "{name}" is in force; add it with previously client add'
+                )
+        run_stdio(storage, name)
+    return 0
+
+
+def _mcp_port() -> int:
+    """`PREVIOUSLY_MCP_PORT`, or 8765 when it is unset or empty."""
+    text = os.environ.get("PREVIOUSLY_MCP_PORT") or str(MCP_PORT)
+    if not (text.isascii() and text.isdigit() and 0 < int(text) < 65536):
+        raise PreviouslyError(f"PREVIOUSLY_MCP_PORT is not a port number: {text!r}")
+    return int(text)
+
+
+def _cmd_serve(_args: argparse.Namespace) -> int:
+    """Serves MCP over HTTP under `/mcp` until stopped ({ref}`cli-reference`).
+
+    Every request needs the bearer token of a client in force. The host check
+    against DNS rebinding lets through the loopback names and those in
+    `PREVIOUSLY_MCP_ALLOWED_HOSTS`, separated by commas or blanks.
+
+    The server module is imported here for the reason `_cmd_mcp` gives.
+    """
+    from previously.mcp_server.server import run_http
+
+    host = os.environ.get("PREVIOUSLY_MCP_HOST") or MCP_HOST
+    port = _mcp_port()
+    allowed = (os.environ.get("PREVIOUSLY_MCP_ALLOWED_HOSTS") or "").replace(",", " ").split()
+    with _storage() as storage:
+        print(f"serving MCP over HTTP on http://{host}:{port}/mcp", file=sys.stderr)
+        run_http(storage, host=host, port=port, allowed_hosts=allowed)
+    return 0
 
 
 # The one place a command is declared. `main` builds the subparsers and the
@@ -1717,6 +2007,10 @@ COMMANDS: tuple[Command, ...] = (
     Command("stats", "print the per-source statistics", _cmd_stats),
     Command("policy", "set and show the processing policy", _cmd_policy, _policy_arguments),
     Command("gate", "explain or try a model call", _cmd_gate, _gate_arguments),
+    Command("client", "add, revoke and list MCP clients", _cmd_client, _client_arguments),
+    Command("access", "show what MCP clients saw", _cmd_access, _access_arguments),
+    Command("mcp", "serve MCP over stdio", _cmd_mcp),
+    Command("serve", "serve MCP over HTTP", _cmd_serve),
 )
 
 

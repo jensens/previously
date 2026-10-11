@@ -695,6 +695,9 @@ class _ContestedLog:
     def read_by_kind(self, conn: Connection, kind: str) -> Iterator[EventRow]:
         return self._inner.read_by_kind(conn, kind)
 
+    def actions(self, conn: Connection, action: str) -> Iterator[EventRow]:
+        return self._inner.actions(conn, action)
+
     def blobs_by_event(self, conn: Connection, event_ids: Sequence[int]) -> dict[int, list[bytes]]:
         return self._inner.blobs_by_event(conn, event_ids)
 
@@ -703,6 +706,20 @@ class _ContestedLog:
 
     def blob_references(self, conn: Connection) -> Iterator[tuple[bytes, int]]:
         return self._inner.blob_references(conn)
+
+    def observations(
+        self,
+        conn: Connection,
+        *,
+        since: datetime | None,
+        until: datetime | None,
+        source: str | None,
+        after: tuple[datetime, int] | None,
+        limit: int,
+    ) -> Iterator[EventRow]:
+        return self._inner.observations(
+            conn, since=since, until=until, source=source, after=after, limit=limit
+        )
 
 
 @pytest.mark.db

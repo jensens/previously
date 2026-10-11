@@ -5,25 +5,25 @@
 Two kinds of action carry the processing policy and its audit.
 A policy event sets one statement of the policy, and a `model_call` records one attempt of the gate to call a model.
 Both are events of the kind `action`, written with no source key, and `payload.action` names which one.
-`verify` accepts exactly three names there: `redaction`, `policy` and `model_call`.
+`verify` accepts exactly four names there: `redaction`, `policy`, `model_call` and `mcp_access`, the record of a call from an MCP client ({ref}`cli-access`).
 {ref}`cli-reference` lists the commands that write and read them, and {ref}`processing-policy` explains why they look the way they do.
 
 ## Policy events
 
 A policy event has no units.
-Four keys are common to all five kinds.
+Four keys are common to all six kinds.
 
 | Key | Value |
 |---|---|
 | `action` | `policy` |
-| `policy` | The kind of statement, one of the five below. |
+| `policy` | The kind of statement, one of the six below. |
 | `statement` | The sentence the statement was set with. Nothing evaluates it. |
 | `revoked` | `true` where the event lifts the statement, otherwise `false`. |
 
 A newer event with the same key replaces the older one, and an event with `revoked` set lifts the statement.
 The key is what the table calls the replacement key, and the older event stays in the chain.
 
-### The five kinds
+### The six kinds
 
 Each kind has a replacement key and keys of its own, beside the four common ones:
 
@@ -32,8 +32,9 @@ Each kind has a replacement key and keys of its own, beside the four common ones
 | `circle` | `name` | `name` |
 | `membership` | `circle` and `member` | `circle`, `member` |
 | `own_identity` | `member` | `member` |
-| `rule` | `scope` | `scope`, `regions`, `max_retention_days`, `excluded_providers` |
-| `provider` | `provider` | `provider`, `inference`, `storage`, `retention_days`, `reports_inference_geo`, `local` |
+| `rule` | `scope` | `scope`, `regions`, `max_retention_days`, `excluded_providers`, `no_training`, `no_subprocessors`, `excluded_operators`, `excluded_model_origins` |
+| `provider` | `provider` | `provider`, `inference`, `storage`, `retention_days`, `reports_inference_geo`, `local`, `operator`, `training`, `subprocessors`, `model_origin` |
+| `client` | `name` | `name`, `processor`, `token_sha256` |
 
 Every set is written as a sorted list, so the same statement has the same payload whatever order it was typed in.
 
@@ -50,20 +51,49 @@ The keys of a `rule` and a `provider`, with their values:
 | `regions` | A list of `eu` and `us`, or the list `any`. |
 | `max_retention_days` | A whole number of days, `0` for zero retention, or `null` for no limit. |
 | `excluded_providers` | A list of provider names. |
+| `no_training` | Whether only a provider declared not to train on its input may be used. |
+| `no_subprocessors` | Whether only a provider declared to have no subprocessors may be used. |
+| `excluded_operators` | A list of operator names. A provider whose operator is unknown fails the restriction too. |
+| `excluded_model_origins` | A list of model origins, with the same treatment of an unknown one. |
 | `provider` | The name of the provider. |
 | `inference` | A list of the spaces of inference the provider lets a caller choose, each as `name` and `regions`. |
 | `storage` | A list of places where the provider stores, or an empty list for a provider that stores nothing. |
 | `retention_days` | How long the provider keeps what it receives, in whole days, or `null` for unknown. |
 | `reports_inference_geo` | Whether a response names the region. |
 | `local` | Whether the provider runs on hardware the operator runs. |
+| `operator` | Who runs the service, or `null` for unknown. |
+| `training` | `true` or `false` for whether the provider trains on its input, or `null` for unknown. |
+| `subprocessors` | A list of the others who handle the input, an empty list for none, or `null` for unknown. |
+| `model_origin` | Where the model comes from, or `null` for unknown. |
+
+The four keys of the processing chain, and the four restrictions of a rule, are absent from an event written before they existed.
+Such an event reads with the defaults: every value of the chain unknown, and no restriction.
+Stored events aren't migrated, since they're hash-chained.
+A candidate passes a restriction only with a known value that satisfies it, the way an unknown retention fails a retention limit.
+Where several rules apply, a flag holds if one of them sets it, and the excluded names are the union.
+
+The keys of a `client`, with their values:
+
+| Key | Value |
+|---|---|
+| `name` | The name of the client. |
+| `processor` | The name of a declared provider, whose promise the client's reading is processed under. |
+| `token_sha256` | The SHA-256 of the token as 64 lower-case hexadecimal digits. The token itself is never stored. |
+
+A `client` is refused while its `processor` isn't a declared provider.
+Its revocation isn't, so a client can still be lifted after its provider was.
 
 A rule written like this holds for content of the circle `xz`:
 
 ```json
 {
   "action": "policy",
+  "excluded_model_origins": [],
+  "excluded_operators": [],
   "excluded_providers": [],
   "max_retention_days": null,
+  "no_subprocessors": false,
+  "no_training": false,
   "policy": "rule",
   "regions": ["eu"],
   "revoked": false,

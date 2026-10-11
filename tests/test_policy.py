@@ -263,6 +263,8 @@ def test_check_payload_is_none_for_every_payload_the_write_path_makes() -> None:
         OwnIdentity("@b.at"),
         RULE_EU,
         ANTHROPIC,
+        STRICT,
+        CHAINED,
     ):
         assert check_payload(to_payload(item, statement="s")) is None
 
@@ -316,17 +318,18 @@ def test_verify_reports_a_policy_event_with_units(db: Engine, units: bool) -> No
 
 
 class _RevokingAfterTheRead(PostgresStorage):
-    """The real store, except that the first read of the actions through it,
-    once its rows are read, revokes the circle `xz` through another store, in
-    a transaction of its own that commits before the rows are handed on."""
+    """The real store, except that the first read of the policy actions
+    through it, once its rows are read, revokes the circle `xz` through
+    another store, in a transaction of its own that commits before the rows
+    are handed on."""
 
     def __init__(self, engine: Engine, *, revoke: bool) -> None:
         super().__init__(engine)
         self._other = PostgresStorage(engine)
         self._revoke = revoke
 
-    def read_by_kind(self, conn: Connection, kind: str) -> Iterator[EventRow]:
-        rows = list(super().read_by_kind(conn, kind))
+    def actions(self, conn: Connection, action: str) -> Iterator[EventRow]:
+        rows = list(super().actions(conn, action))
         if self._revoke:
             self._revoke = False
             set_policy(self._other, Circle("xz"), statement="gone", revoked=True, recorded_at=T0)
@@ -372,3 +375,178 @@ def test_verify_reports_a_policy_event_that_missed_the_write_path(db: Engine) ->
     assert 'unknown kind "wish"' in finding.reason
     # The read skips it and does not stop.
     assert _read(storage).circles == {}
+
+
+CHAINED = Provider(
+    "chained",
+    (Inference("eu", frozenset({"eu"})),),
+    frozenset({"eu"}),
+    0,
+    False,
+    False,
+    operator="acme",
+    training=False,
+    subprocessors=frozenset({"b-cloud", "a-cloud"}),
+    model_origin="fr",
+)
+STRICT = Rule(
+    "circle:xz",
+    frozenset({"eu"}),
+    None,
+    frozenset(),
+    no_training=True,
+    no_subprocessors=True,
+    excluded_operators=frozenset({"y", "x"}),
+    excluded_model_origins=frozenset({"cn"}),
+)
+
+
+@pytest.mark.db
+def test_the_processing_chain_and_the_restrictions_are_written_and_read_back(db: Engine) -> None:
+    storage = PostgresStorage(db)
+    set_policy(storage, CHAINED, statement="s", recorded_at=T0)
+    set_policy(storage, STRICT, statement="s", recorded_at=T0)
+    policy = _read(storage)
+    assert policy.providers["chained"] == CHAINED
+    assert policy.rules["circle:xz"] == STRICT
+
+
+def test_the_chain_is_written_with_sorted_sets_and_null_for_unknown() -> None:
+    payload = to_payload(CHAINED, statement="s")
+    assert payload["subprocessors"] == ["a-cloud", "b-cloud"]
+    assert (payload["operator"], payload["training"], payload["model_origin"]) == (
+        "acme",
+        False,
+        "fr",
+    )
+    bare = to_payload(ANTHROPIC, statement="s")
+    assert (bare["operator"], bare["training"], bare["subprocessors"], bare["model_origin"]) == (
+        None,
+        None,
+        None,
+        None,
+    )
+    assert to_payload(STRICT, statement="s")["excluded_operators"] == ["x", "y"]
+
+
+def test_none_and_unknown_subprocessors_stay_apart_in_the_payload() -> None:
+    none = Provider("p", (), frozenset(), 0, False, True, subprocessors=frozenset())
+    assert to_payload(none, statement="s")["subprocessors"] == []
+    assert to_payload(ANTHROPIC, statement="s")["subprocessors"] is None
+
+
+@pytest.mark.db
+def test_a_declaration_and_a_rule_from_before_the_chain_read_with_the_defaults(db: Engine) -> None:
+    """Stored events are hash-chained and are not migrated: a payload without
+    the new keys reads as unknown, and as no restriction."""
+    storage = PostgresStorage(db)
+    legacy_provider = to_payload(ANTHROPIC, statement="s")
+    legacy_rule = to_payload(RULE_EU, statement="s")
+    for key in ("operator", "training", "subprocessors", "model_origin"):
+        del legacy_provider[key]
+    for key in ("no_training", "no_subprocessors", "excluded_operators", "excluded_model_origins"):
+        del legacy_rule[key]
+    append_action(storage, legacy_provider, (), recorded_at=T0)
+    append_action(storage, legacy_rule, (), recorded_at=T0)
+    assert verify(storage) == []
+    policy = _read(storage)
+    assert policy.providers["anthropic"] == ANTHROPIC
+    assert policy.rules["circle:xz"] == RULE_EU
+    assert policy.providers["anthropic"].subprocessors is None
+    assert policy.providers["anthropic"].training is None
+
+
+@pytest.mark.parametrize(
+    ("key", "value", "sentence"),
+    [
+        ("training", "no", 'a "training" that is not true, false or null'),
+        ("operator", 3, 'a "operator" that is not text'),
+        ("subprocessors", "aws", 'has no list "subprocessors"'),
+    ],
+)
+def test_check_payload_names_a_chain_field_of_the_wrong_kind(
+    key: str, value: object, sentence: str
+) -> None:
+    payload = to_payload(CHAINED, statement="s")
+    payload[key] = value
+    found = check_payload(payload)
+    assert found is not None
+    assert sentence in found
+
+
+@pytest.mark.db
+def test_a_client_is_a_statement_of_its_own_kind(db: Engine) -> None:
+    from previously.core.policy import Client
+
+    storage = PostgresStorage(db)
+    set_policy(storage, ANTHROPIC, statement="declared", recorded_at=T0)
+    client = Client("claude-code", "anthropic", "0" * 64)
+    event_id = set_policy(storage, client, statement="s", recorded_at=T1)
+    policy = _read(storage)
+    assert policy.clients == {"claude-code": client}
+    assert policy.ids[("client", "claude-code")] == event_id
+    assert to_payload(client, statement="s")["policy"] == "client"
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("name", "processor", "token_sha256"),
+    [
+        ("", "anthropic", "0" * 64),
+        ("c", "", "0" * 64),
+        ("c", "anthropic", "0" * 63),
+        ("c", "anthropic", "G" * 64),
+    ],
+)
+def test_a_client_of_a_wrong_form_is_refused(
+    db: Engine, name: str, processor: str, token_sha256: str
+) -> None:
+    from previously.core.policy import Client
+
+    storage = PostgresStorage(db)
+    set_policy(storage, ANTHROPIC, statement="declared", recorded_at=T0)
+    before = _count(storage)
+    with pytest.raises(PolicyRefused):
+        set_policy(storage, Client(name, processor, token_sha256), statement="s", recorded_at=T1)
+    assert _count(storage) == before
+
+
+@pytest.mark.db
+def test_a_client_with_an_undeclared_processor_is_refused_but_its_revocation_is_not(
+    db: Engine,
+) -> None:
+    from previously.core.policy import Client
+
+    storage = PostgresStorage(db)
+    client = Client("c", "anthropic", "0" * 64)
+    with pytest.raises(PolicyRefused, match="is not declared"):
+        set_policy(storage, client, statement="s", recorded_at=T0)
+    set_policy(storage, ANTHROPIC, statement="declared", recorded_at=T0)
+    set_policy(storage, client, statement="s", recorded_at=T1)
+    # The provider goes; lifting the client still has to work.
+    set_policy(storage, ANTHROPIC, statement="gone", revoked=True, recorded_at=T2)
+    set_policy(storage, client, statement="gone", revoked=True, recorded_at=T2)
+    assert _read(storage).clients == {}
+
+
+@pytest.mark.db
+def test_a_client_event_with_a_damaged_hash_is_skipped_and_a_lookup_returns_none(
+    db: Engine,
+) -> None:
+    """A hash that is not 64 lower-case hex digits, such as one of
+    non-ASCII characters, makes the event malformed: the read skips it, so a
+    lookup never compares a token against it, and finds no client."""
+    from previously.core.clients import client_for_token
+    from previously.core.policy import Client
+
+    storage = PostgresStorage(db)
+    set_policy(storage, ANTHROPIC, statement="declared", recorded_at=T0)
+    good = Client("good", "anthropic", "0" * 64)
+    set_policy(storage, good, statement="s", recorded_at=T0)
+    damaged = to_payload(Client("bad", "anthropic", "0" * 64), statement="s")
+    damaged["token_sha256"] = "é" * 64
+    append_action(storage, damaged, (), recorded_at=T1)
+    policy = _read(storage)
+    assert policy.clients == {"good": good}
+    assert client_for_token(policy, "any token") is None

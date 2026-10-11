@@ -6,10 +6,11 @@
 The policy is not a file or a table. It is a sequence of events of the kind
 `action` with `payload.action = "policy"`, set by the keeper, with no source
 key and no units, so it sits in the chain and `verify` covers it like any
-other action. Five statements exist (`payload.policy`): a circle, the
+other action. Six statements exist (`payload.policy`): a circle, the
 membership of an address or a domain in a circle, an own identity of the
-operator, a rule that gives a scope its conditions, and what a provider
-account promises. Every one carries the sentence it was set with under
+operator, a rule that gives a scope its conditions, what a provider account
+promises, and an MCP client with the promise it is processed under and the
+SHA-256 of its token. Every one carries the sentence it was set with under
 `statement`; the gate never reads it.
 
 A newer event with the same key replaces the older one, and a revocation is
@@ -25,6 +26,7 @@ payload whatever order it was typed in.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from dataclasses import field
 from enum import StrEnum
 from previously.core.action import POLICY
 from previously.core.action import retrying
@@ -65,7 +67,12 @@ MEMBERSHIP: Final = "membership"
 OWN_IDENTITY: Final = "own_identity"
 RULE: Final = "rule"
 PROVIDER: Final = "provider"
-KINDS: Final = (CIRCLE, MEMBERSHIP, OWN_IDENTITY, RULE, PROVIDER)
+CLIENT: Final = "client"
+KINDS: Final = (CIRCLE, MEMBERSHIP, OWN_IDENTITY, RULE, PROVIDER, CLIENT)
+
+# A SHA-256 as hex: 64 digits. The payload never holds the token itself.
+_TOKEN_HASH_LENGTH: Final = 64
+_HEX_DIGITS: Final = frozenset("0123456789abcdef")
 
 _KEY_SEPARATOR: Final = "\t"
 
@@ -92,6 +99,13 @@ class Rule:
     regions: frozenset[str]  # {"eu"}, {"us"}, {"eu", "us"} or {"any"}
     max_retention_days: int | None
     excluded_providers: frozenset[str]
+    # Restrictions on the processing chain behind a provider. A flag is off
+    # by default; a candidate passes a restriction only with a known value
+    # that satisfies it.
+    no_training: bool = False
+    no_subprocessors: bool = False
+    excluded_operators: frozenset[str] = frozenset()
+    excluded_model_origins: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -108,9 +122,26 @@ class Provider:
     retention_days: int | None  # None: unknown
     reports_inference_geo: bool
     local: bool
+    # The processing chain. `None` means unknown, which is what a declaration
+    # written before these fields existed reads as; for the subprocessors,
+    # `frozenset()` is the statement that there are none.
+    operator: str | None = None
+    training: bool | None = None
+    subprocessors: frozenset[str] | None = None
+    model_origin: str | None = None
 
 
-type Statement = Circle | Membership | OwnIdentity | Rule | Provider
+@dataclass(frozen=True)
+class Client:
+    """An MCP client as a principal: a name, the declared provider whose
+    promise its reading is processed under, and the hash of its token."""
+
+    name: str
+    processor: str  # the name of a declared provider
+    token_sha256: str  # hex; the token itself is never stored
+
+
+type Statement = Circle | Membership | OwnIdentity | Rule | Provider | Client
 
 
 @dataclass(frozen=True)
@@ -122,6 +153,7 @@ class Policy:
     providers: Mapping[str, Provider]
     # (kind, key) → the id of the event that set it, for the audit of a call.
     ids: Mapping[tuple[str, str], int]
+    clients: Mapping[str, Client] = field(default_factory=dict[str, Client])
 
 
 class PolicyRefused(PreviouslyError):
@@ -144,6 +176,8 @@ def _kind_of(item: Statement) -> str:
             return RULE
         case Provider():
             return PROVIDER
+        case Client():
+            return CLIENT
 
 
 def key_of(item: Statement) -> tuple[str, str]:
@@ -159,6 +193,8 @@ def key_of(item: Statement) -> tuple[str, str]:
             return RULE, scope
         case Provider(name=name):
             return PROVIDER, name
+        case Client(name=name):
+            return CLIENT, name
 
 
 def to_payload(item: Statement, *, statement: str, revoked: bool = False) -> dict[str, object]:
@@ -177,6 +213,10 @@ def to_payload(item: Statement, *, statement: str, revoked: bool = False) -> dic
             payload["regions"] = sorted(item.regions)
             payload["max_retention_days"] = item.max_retention_days
             payload["excluded_providers"] = sorted(item.excluded_providers)
+            payload["no_training"] = item.no_training
+            payload["no_subprocessors"] = item.no_subprocessors
+            payload["excluded_operators"] = sorted(item.excluded_operators)
+            payload["excluded_model_origins"] = sorted(item.excluded_model_origins)
         case Provider():
             payload["provider"] = item.name
             payload["inference"] = [
@@ -187,6 +227,16 @@ def to_payload(item: Statement, *, statement: str, revoked: bool = False) -> dic
             payload["retention_days"] = item.retention_days
             payload["reports_inference_geo"] = item.reports_inference_geo
             payload["local"] = item.local
+            payload["operator"] = item.operator
+            payload["training"] = item.training
+            payload["subprocessors"] = (
+                None if item.subprocessors is None else sorted(item.subprocessors)
+            )
+            payload["model_origin"] = item.model_origin
+        case Client():
+            payload["name"] = item.name
+            payload["processor"] = item.processor
+            payload["token_sha256"] = item.token_sha256
     payload["statement"] = statement
     payload["revoked"] = revoked
     return payload
@@ -247,6 +297,26 @@ def _check_scope(scope: str) -> None:
         raise _FormError(f'scope "{scope}" is not circle:<name> or source:<source>')
 
 
+def _check_names(names: frozenset[str], what: str) -> None:
+    for name in names:
+        _check_text(name, f"{what} name")
+
+
+def _check_chain(provider: Provider) -> None:
+    for what, value in (("operator", provider.operator), ("model origin", provider.model_origin)):
+        if value is not None:
+            _check_text(value, f"the {what}")
+    _check_names(provider.subprocessors or frozenset(), "a subprocessor")
+
+
+def _check_client(client: Client) -> None:
+    _check_text(client.name, "the client name")
+    _check_text(client.processor, "the processor")
+    digits = set(client.token_sha256)
+    if len(client.token_sha256) != _TOKEN_HASH_LENGTH or not digits <= _HEX_DIGITS:
+        raise _FormError("the token hash is not a SHA-256 in lower-case hex")
+
+
 def _check(item: Statement, statement: str) -> None:
     """Everything that can be said about a statement without the policy."""
     _check_text(statement, "the statement")
@@ -262,14 +332,18 @@ def _check(item: Statement, statement: str) -> None:
             _check_scope(item.scope)
             _check_regions(item.regions, _REGIONS, "a rule")
             _check_days(item.max_retention_days, "the retention limit")
+            _check_names(item.excluded_operators | item.excluded_model_origins, "an exclusion")
         case Provider():
             _check_text(item.name, "the provider name")
             _check_days(item.retention_days, "the retention")
+            _check_chain(item)
             for spaces in item.inference:
                 _check_text(spaces.name, "an inference space name")
                 _check_regions(spaces.regions, _REGIONS, f'inference "{spaces.name}"')
             if item.storage:
                 _check_regions(item.storage, _STORAGE_PLACES, "storage")
+        case Client():
+            _check_client(item)
 
 
 def refusal(item: Statement, *, statement: str, revoked: bool, current: Policy) -> str | None:
@@ -283,6 +357,11 @@ def refusal(item: Statement, *, statement: str, revoked: bool, current: Policy) 
         return (
             f'no circle "{item.circle}" exists — create it first with '
             f"previously policy circle {item.circle}"
+        )
+    if isinstance(item, Client) and not revoked and item.processor not in current.providers:
+        return (
+            f'the processor "{item.processor}" is not declared — declare it first with '
+            f"previously policy provider {item.processor}"
         )
     return None
 
@@ -368,6 +447,42 @@ def _flag(payload: Mapping[str, object], key: str) -> bool:
     return value
 
 
+def _optional_text(payload: Mapping[str, object], key: str) -> str | None:
+    """Text, or `None` for `null` and for a key a declaration written before
+    the key existed does not have."""
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise _FormError(f'has a "{key}" that is not text or null')
+    return value
+
+
+def _optional_flag(payload: Mapping[str, object], key: str) -> bool | None:
+    value = payload.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise _FormError(f'has a "{key}" that is not true, false or null')
+    return value
+
+
+def _optional_names(payload: Mapping[str, object], key: str) -> frozenset[str] | None:
+    if payload.get(key) is None:
+        return None
+    return _names(payload, key)
+
+
+def _flag_or_off(payload: Mapping[str, object], key: str) -> bool:
+    """A flag that an older rule does not have is off."""
+    return _flag(payload, key) if key in payload else False
+
+
+def _names_or_empty(payload: Mapping[str, object], key: str) -> frozenset[str]:
+    """A set that an older rule does not have is empty."""
+    return _names(payload, key) if key in payload else frozenset()
+
+
 def _inference(payload: Mapping[str, object]) -> tuple[Inference, ...]:
     value = payload.get("inference")
     if not isinstance(value, list):
@@ -399,6 +514,14 @@ def _parse(payload: Mapping[str, object]) -> tuple[Statement, str, bool]:
                 _names(payload, "regions"),
                 _days(payload, "max_retention_days"),
                 _names(payload, "excluded_providers"),
+                _flag_or_off(payload, "no_training"),
+                _flag_or_off(payload, "no_subprocessors"),
+                _names_or_empty(payload, "excluded_operators"),
+                _names_or_empty(payload, "excluded_model_origins"),
+            )
+        case "client":
+            item = Client(
+                _text(payload, "name"), _text(payload, "processor"), _text(payload, "token_sha256")
             )
         case "provider":
             item = Provider(
@@ -408,6 +531,10 @@ def _parse(payload: Mapping[str, object]) -> tuple[Statement, str, bool]:
                 _days(payload, "retention_days"),
                 _flag(payload, "reports_inference_geo"),
                 _flag(payload, "local"),
+                _optional_text(payload, "operator"),
+                _optional_flag(payload, "training"),
+                _optional_names(payload, "subprocessors"),
+                _optional_text(payload, "model_origin"),
             )
         case str():
             raise _FormError(f'is of the unknown kind "{kind}"')
@@ -441,7 +568,7 @@ def read_policy[Conn](log: LogStore[Conn], conn: Conn, *, at: datetime | None = 
     is broken is skipped as `verify` reports it; neither stops the read.
     """
     current: dict[tuple[str, str], tuple[Statement, int] | None] = {}
-    for row in log.read_by_kind(conn, "action"):
+    for row in log.actions(conn, POLICY):
         payload = row.payload
         if payload is None or payload.get("action") != POLICY:
             continue
@@ -462,6 +589,7 @@ def _assemble(current: Mapping[tuple[str, str], tuple[Statement, int] | None]) -
     own: list[OwnIdentity] = []
     rules: dict[str, Rule] = {}
     providers: dict[str, Provider] = {}
+    clients: dict[str, Client] = {}
     ids: dict[tuple[str, str], int] = {}
     for key in sorted(current):
         entry = current[key]
@@ -480,4 +608,6 @@ def _assemble(current: Mapping[tuple[str, str], tuple[Statement, int] | None]) -
                 rules[scope] = item
             case Provider(name=name):
                 providers[name] = item
-    return Policy(circles, tuple(memberships), tuple(own), rules, providers, ids)
+            case Client(name=name):
+                clients[name] = item
+    return Policy(circles, tuple(memberships), tuple(own), rules, providers, ids, clients)

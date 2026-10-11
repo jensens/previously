@@ -7,6 +7,7 @@ Every test builds a `Policy` from values. The function is pure, so there is
 no database to start.
 """
 
+from dataclasses import replace
 from hypothesis import example
 from hypothesis import given
 from hypothesis import strategies as st
@@ -24,6 +25,8 @@ from previously.core.policy import Policy
 from previously.core.policy import Provider
 from previously.core.policy import Rule
 
+import pytest
+
 
 ANTHROPIC = Provider(
     "anthropic",
@@ -32,11 +35,37 @@ ANTHROPIC = Provider(
     30,
     True,
     False,
+    operator="anthropic-pbc",
+    training=False,
+    subprocessors=frozenset({"aws"}),
+    model_origin="us",
 )
+# Mistral declares nothing about subprocessors and trains, and the local
+# provider knows no origin: each restriction meets an unknown or a bad value.
 MISTRAL = Provider(
-    "mistral", (Inference("eu", frozenset({"eu"})),), frozenset({"eu"}), None, False, False
+    "mistral",
+    (Inference("eu", frozenset({"eu"})),),
+    frozenset({"eu"}),
+    None,
+    False,
+    False,
+    operator="mistral-ai",
+    training=True,
+    subprocessors=None,
+    model_origin="fr",
 )
-LOCAL = Provider("local", (Inference("eu", frozenset({"eu"})),), frozenset(), 0, False, True)
+LOCAL = Provider(
+    "local",
+    (Inference("eu", frozenset({"eu"})),),
+    frozenset(),
+    0,
+    False,
+    True,
+    operator="me",
+    training=False,
+    subprocessors=frozenset(),
+    model_origin=None,
+)
 PROVIDERS = (ANTHROPIC, MISTRAL, LOCAL)
 
 CANDIDATES = (
@@ -52,8 +81,21 @@ def rule(
     *,
     days: int | None = None,
     excluded: set[str] | None = None,
+    no_training: bool = False,
+    no_subprocessors: bool = False,
+    operators: set[str] | None = None,
+    origins: set[str] | None = None,
 ) -> Rule:
-    return Rule(scope, frozenset(regions), days, frozenset(excluded or ()))
+    return Rule(
+        scope,
+        frozenset(regions),
+        days,
+        frozenset(excluded or ()),
+        no_training,
+        no_subprocessors,
+        frozenset(operators or ()),
+        frozenset(origins or ()),
+    )
 
 
 def build(
@@ -174,10 +216,16 @@ _RULE_VALUES = st.tuples(
     _REGION_SETS,
     st.none() | st.integers(min_value=0, max_value=60),
     st.frozensets(st.sampled_from(["anthropic", "mistral", "local"])),
+    st.booleans(),
+    st.booleans(),
+    st.frozensets(st.sampled_from(["anthropic-pbc", "mistral-ai", "me"])),
+    st.frozensets(st.sampled_from(["us", "fr"])),
 )
 
 
-type _Values = tuple[frozenset[str], int | None, frozenset[str]]
+type _Values = tuple[
+    frozenset[str], int | None, frozenset[str], bool, bool, frozenset[str], frozenset[str]
+]
 
 
 def _policy_of(
@@ -224,10 +272,20 @@ def _policy_of(
     extra=_RULE_VALUES,
 )
 @example(  # a rule {eu,us} lets mistral and local out; a source rule {us} must not add anthropic
-    circle_rules=[(frozenset({"eu", "us"}), None, frozenset())],
+    circle_rules=[
+        (frozenset({"eu", "us"}), None, frozenset(), False, False, frozenset(), frozenset())
+    ],
     bare=False,
     kind="source",
-    extra=(frozenset({"us"}), None, frozenset()),
+    extra=(frozenset({"us"}), None, frozenset(), False, False, frozenset(), frozenset()),
+)
+@example(  # an operator excluded by one rule stays excluded beside a rule that excludes none
+    circle_rules=[
+        (frozenset({ANY}), None, frozenset(), False, False, frozenset({"me"}), frozenset())
+    ],
+    bare=False,
+    kind="source",
+    extra=(frozenset({ANY}), None, frozenset(), False, False, frozenset(), frozenset()),
 )
 def test_adding_a_rule_never_widens_the_passing_candidates(
     circle_rules: list[_Values], bare: bool, kind: str, extra: _Values
@@ -367,6 +425,148 @@ def test_an_undeclared_provider_is_rejected_by_name() -> None:
 def test_an_excluded_provider_is_rejected() -> None:
     policy = build(rules=(rule("source:email", {ANY}, excluded={"anthropic"}),))
     assert passing(policy, [], "email") == {"mistral", "local"}
+
+
+# --- Unit 4: the processing chain ---
+#
+# One restriction at a time: a candidate that passes it, one that fails it on
+# a known value, and one whose value is unknown, which fails too.
+
+
+def _passes(restriction: Rule, provider: Provider) -> bool:
+    policy = build(rules=(restriction,), providers=(provider,))
+    candidate = Candidate(provider.name, "m", None)
+    decision = decide(policy, identities=[], source="email", candidates=[candidate])
+    return decision.chosen is not None
+
+
+def _chain(
+    *,
+    operator: str | None = "z",
+    training: bool | None = False,
+    subprocessors: frozenset[str] | None = frozenset(),
+    model_origin: str | None = "fr",
+) -> Provider:
+    """A provider whose chain satisfies every restriction below unless told otherwise."""
+    return Provider(
+        "p",
+        (Inference("eu", frozenset({"eu"})),),
+        frozenset(),
+        0,
+        False,
+        False,
+        operator,
+        training,
+        subprocessors,
+        model_origin,
+    )
+
+
+@pytest.mark.parametrize(
+    ("training", "passes"),
+    [(False, True), (True, False), (None, False)],
+    ids=["no", "yes", "unknown"],
+)
+def test_no_training_passes_only_a_declared_no(training: bool | None, passes: bool) -> None:
+    restriction = rule("source:email", {ANY}, no_training=True)
+    assert _passes(restriction, _chain(training=training)) is passes
+
+
+@pytest.mark.parametrize("training", [True, None])
+def test_training_does_not_matter_without_the_restriction(training: bool | None) -> None:
+    assert _passes(rule("source:email", {ANY}), _chain(training=training))
+
+
+@pytest.mark.parametrize(
+    ("subprocessors", "passes"),
+    [(frozenset[str](), True), (frozenset({"aws"}), False), (None, False)],
+    ids=["none", "some", "unknown"],
+)
+def test_no_subprocessors_passes_only_a_declared_none(
+    subprocessors: frozenset[str] | None, passes: bool
+) -> None:
+    restriction = rule("source:email", {ANY}, no_subprocessors=True)
+    assert _passes(restriction, _chain(subprocessors=subprocessors)) is passes
+
+
+@pytest.mark.parametrize(
+    ("operator", "passes"),
+    [("good", True), ("bad", False), (None, False)],
+    ids=["other", "named", "unknown"],
+)
+def test_an_excluded_operator_fails_and_an_unknown_one_fails_too(
+    operator: str | None, passes: bool
+) -> None:
+    restriction = rule("source:email", {ANY}, operators={"bad"})
+    assert _passes(restriction, _chain(operator=operator)) is passes
+
+
+@pytest.mark.parametrize(
+    ("origin", "passes"),
+    [("fr", True), ("cn", False), (None, False)],
+    ids=["other", "named", "unknown"],
+)
+def test_an_excluded_model_origin_fails_and_an_unknown_one_fails_too(
+    origin: str | None, passes: bool
+) -> None:
+    restriction = rule("source:email", {ANY}, origins={"cn"})
+    assert _passes(restriction, _chain(model_origin=origin)) is passes
+
+
+def test_unknown_operator_and_origin_pass_where_nothing_is_excluded() -> None:
+    assert _passes(rule("source:email", {ANY}), _chain(operator=None, model_origin=None))
+
+
+def test_the_reason_names_the_property_that_failed() -> None:
+    cases = [
+        (rule("source:email", {ANY}, no_training=True), _chain(training=True), "trains"),
+        (rule("source:email", {ANY}, no_training=True), _chain(training=None), "training"),
+        (
+            rule("source:email", {ANY}, no_subprocessors=True),
+            _chain(subprocessors=None),
+            "subprocessors",
+        ),
+        (rule("source:email", {ANY}, operators={"bad"}), _chain(operator="bad"), "operator"),
+        (rule("source:email", {ANY}, origins={"cn"}), _chain(model_origin="cn"), "model origin"),
+    ]
+    for restriction, provider, word in cases:
+        policy = build(rules=(restriction,), providers=(provider,))
+        decision = decide(
+            policy, identities=[], source="email", candidates=[Candidate("p", "m", None)]
+        )
+        assert decision.chosen is None
+        assert word in decision.reasons[0]
+
+
+@pytest.mark.parametrize(
+    ("changed", "passes"),
+    [
+        ({}, True),  # control: satisfies both rules
+        ({"training": True}, False),  # one rule demands no training
+        ({"subprocessors": frozenset({"aws"})}, False),  # the other demands none
+        ({"operator": "x"}, False),  # excluded by the first rule only
+        ({"operator": "y"}, False),  # excluded by the second rule only
+        ({"model_origin": "cn"}, False),
+    ],
+    ids=["control", "training", "subprocessors", "operator-x", "operator-y", "origin"],
+)
+def test_rules_merge_strictest_wins_for_the_chain(changed: dict[str, object], passes: bool) -> None:
+    policy = build(
+        circles=("a", "b"),
+        memberships=(("a", "@a.at"), ("b", "@b.at")),
+        rules=(
+            rule("circle:a", {ANY}, no_training=True, operators={"x"}, origins={"cn"}),
+            rule("circle:b", {ANY}, no_subprocessors=True, operators={"y"}),
+        ),
+        providers=(replace(_chain(), **changed),),
+    )
+    decision = decide(
+        policy,
+        identities=who("p@a.at", "q@b.at"),
+        source=None,
+        candidates=[Candidate("p", "m", None)],
+    )
+    assert (decision.chosen is not None) is passes
 
 
 # --- Pilot assertion 6: unknown retention passes no limit ---

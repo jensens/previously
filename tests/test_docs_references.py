@@ -264,36 +264,72 @@ def _quoted_block(page: str, after: str) -> list[str]:
     return [line for line in block.splitlines() if line.strip()]
 
 
-def _static_parts(node: ast.expr) -> list[str]:
+def _static_parts(node: ast.expr, constants: Mapping[str, str] | None = None) -> list[str]:
     """What stays of a string literal once the interpolations are taken out.
 
     A plain literal is one part, an f-string is its `Constant` values in
     order. Only the direct children of the `JoinedStr` count: a literal
     nested inside an interpolation -- `_plural(lag, 'event')` is the case in
     this tree -- is an argument, not text of the message.
+
+    An interpolation of a name in `constants` is text, not a gap: it is a
+    module-level string such as `CURSOR_REFUSED`, and left a gap it would let
+    any wording stand in for it. Measured on 2026-10-11: with the cursor
+    sentence interpolated, `cursor is NOT VALID ANYWHERE; call again without a
+    cursor for the first page` passed for a text the server builds.
     """
     if isinstance(node, ast.Constant):
         return [node.value] if isinstance(node.value, str) else []
-    if isinstance(node, ast.JoinedStr):
-        parts = [
-            value.value
-            for value in node.values
-            if isinstance(value, ast.Constant) and isinstance(value.value, str)
-        ]
-        if not "".join(parts):
-            return []
-        # An interpolation at either end becomes an empty part there, so that
-        # `_is_the_same_sentence` lets the line open or close with whatever
-        # was interpolated: `f"there is no event {event_id}"` ends in a number,
-        # not in `event `. Measured on 2026-10-04, when `redact` brought the
-        # first quoted messages that end in an interpolation and the check
-        # refused every one of them.
-        if not isinstance(node.values[0], ast.Constant):
-            parts.insert(0, "")
-        if not isinstance(node.values[-1], ast.Constant):
-            parts.append("")
-        return parts
-    return []
+    if not isinstance(node, ast.JoinedStr):
+        return []
+    known = constants or {}
+    parts: list[str] = []
+    text: str | None = None
+    for value in node.values:
+        if isinstance(value, ast.Constant) and isinstance(value.value, str):
+            text = (text or "") + value.value
+        elif (
+            isinstance(value, ast.FormattedValue)
+            and isinstance(value.value, ast.Name)
+            and value.value.id in known
+            and value.format_spec is None
+            and value.conversion == -1
+        ):
+            text = (text or "") + known[value.value.id]
+        else:
+            # An interpolation at either end becomes an empty part there, so
+            # that `_is_the_same_sentence` lets the line open or close with
+            # whatever was interpolated: `f"there is no event {event_id}"`
+            # ends in a number, not in `event `. Measured on 2026-10-04, when
+            # `redact` brought the first quoted messages that end in an
+            # interpolation and the check refused every one of them.
+            parts.append(text or "")
+            text = None
+    parts.append(text or "")
+    if not "".join(parts):
+        return []
+    return parts
+
+
+def _module_strings(*paths: pathlib.Path) -> dict[str, str]:
+    """The module-level names of `paths` that are bound to a string literal,
+    or to an f-string made only of literals and such names, by name."""
+    found: dict[str, str] = {}
+    for path in paths:
+        tree = ast.parse(path.read_text(encoding="utf-8"))
+        for statement in tree.body:
+            if isinstance(statement, ast.Assign) and len(statement.targets) == 1:
+                target, value = statement.targets[0], statement.value
+            elif isinstance(statement, ast.AnnAssign) and statement.value is not None:
+                target, value = statement.target, statement.value
+            else:
+                continue
+            if not isinstance(target, ast.Name):
+                continue
+            parts = _static_parts(value, found)
+            if len(parts) == 1:
+                found[target.id] = parts[0]
+    return found
 
 
 def _message_patterns(path: pathlib.Path) -> list[list[str]]:
@@ -1015,6 +1051,7 @@ def test_the_policy_reference_names_the_keys_of_every_statement() -> None:
     """The four common keys, the replacement key of each kind and the keys of
     a rule and of a provider, each held against what `to_payload` writes."""
     from previously.core.policy import Circle
+    from previously.core.policy import Client
     from previously.core.policy import Inference
     from previously.core.policy import key_of
     from previously.core.policy import KINDS
@@ -1030,11 +1067,12 @@ def test_the_policy_reference_names_the_keys_of_every_statement() -> None:
         OwnIdentity("@example.org"),
         Rule("circle:xz", frozenset({"eu"}), None, frozenset()),
         Provider("p", (Inference("eu", frozenset({"eu"})),), frozenset({"eu"}), None, False, True),
+        Client("c", "p", "0" * 64),
     ]
     payloads = [to_payload(item, statement="s") for item in statements]
     common: set[str] = set(payloads[0]).intersection(*(set(payload) for payload in payloads[1:]))
-    assert _policy_cells("## Policy events", "Four keys are common to all five kinds.") == common
-    assert _policy_cells("### The five kinds", "beside the four common ones:") == set(KINDS)
+    assert _policy_cells("## Policy events", "Four keys are common to all six kinds.") == common
+    assert _policy_cells("### The six kinds", "beside the four common ones:") == set(KINDS)
     assert [payload["policy"] for payload in payloads] == list(KINDS)
     page = POLICY_PAGE.read_text(encoding="utf-8")
     for item, payload in zip(statements, payloads, strict=True):
@@ -1049,9 +1087,13 @@ def test_the_policy_reference_names_the_keys_of_every_statement() -> None:
     rule_and_provider = (set(payloads[3]) | set(payloads[4])) - common
     assert (
         _policy_cells(
-            "### The five kinds", "The keys of a `rule` and a `provider`, with their values:"
+            "### The six kinds", "The keys of a `rule` and a `provider`, with their values:"
         )
         == rule_and_provider
+    )
+    assert (
+        _policy_cells("### The six kinds", "The keys of a `client`, with their values:")
+        == set(payloads[5]) - common
     )
 
 
@@ -1099,6 +1141,10 @@ def test_the_policy_reference_example_is_what_the_code_writes() -> None:
             frozenset(example["regions"]),
             None,
             frozenset(example["excluded_providers"]),
+            example["no_training"],
+            example["no_subprocessors"],
+            frozenset(example["excluded_operators"]),
+            frozenset(example["excluded_model_origins"]),
         ),
         statement=example["statement"],
     )
@@ -1119,9 +1165,9 @@ def test_the_policy_reference_holds_the_words_the_gate_writes() -> None:
     from previously.gate.tasks.mail_overview import MailOverview
 
     page = POLICY_PAGE.read_text(encoding="utf-8")
-    names = ", ".join(f"`{name}`" for name in ("redaction", "policy", "model_call"))
-    assert set(KNOWN_ACTIONS) == {"redaction", "policy", "model_call"}
-    assert "`redaction`, `policy` and `model_call`" in page, names
+    names = ", ".join(f"`{name}`" for name in ("redaction", "policy", "model_call", "mcp_access"))
+    assert set(KNOWN_ACTIONS) == {"redaction", "policy", "model_call", "mcp_access"}
+    assert "`redaction`, `policy`, `model_call` and `mcp_access`" in page, names
     assert _policy_cells("### The outcomes", "The outcome of a call is one of these:") == set(
         OUTCOMES
     )
@@ -1137,4 +1183,303 @@ def test_the_policy_reference_holds_the_words_the_gate_writes() -> None:
     assert f"| `reason` | `{NO_RULE}`. |" in page
     assert _policy_cells("### The unit of an `ok` call", "with these keys:") == set(
         MailOverview.model_fields
+    )
+
+
+def test_the_reference_quotes_what_mcp_and_serve_say() -> None:
+    """The two errors of `mcp`, the line and the refused port of `serve`,
+    and the sentence of a 401, as `cli.md` and `configuration.md` quote them,
+    held against the code: the errors against what `cli.py` raises as
+    `PreviouslyError`, the line against what it prints to standard error,
+    and the 401 and both answers of the readiness probe against the
+    constants the HTTP wrapper sends, whole."""
+    from previously.mcp_server.auth import NOT_READY
+    from previously.mcp_server.auth import READY
+    from previously.mcp_server.auth import REFUSAL
+
+    cli = ROOT / "src" / "previously" / "cli.py"
+    raised = _raised_patterns(cli, "PreviouslyError")
+    page = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
+    quoted = _quoted_block(page, "and otherwise returns 2 with one of two sentences")
+    assert len(quoted) == 2, quoted
+    _assert_raised(quoted, raised, "PreviouslyError")
+    port = _quoted_block(page, "A port that isn't a number from 1 to 65535 is refused before")
+    assert len(port) == 1, port
+    _assert_raised(port, raised, "PreviouslyError")
+    (line,) = _quoted_block(page, "On start it prints one line to standard error")
+    assert any(_is_the_same_sentence(parts, line) for parts in _message_patterns(cli)), line
+    assert _quoted_block(page, "and one sentence as its body") == [REFUSAL]
+    assert _quoted_block(page, "with the status 503 and this body") == [NOT_READY]
+    assert "with the status 200 and the body `" + READY + "`," in page
+
+    configuration = (DOCS / "reference" / "configuration.md").read_text(encoding="utf-8")
+    unset = _quoted_block(configuration, "and returns 2 when it's unset or empty")
+    assert len(unset) == 1, unset
+    _assert_raised(unset, raised, "PreviouslyError")
+
+
+# The reference of the MCP server quotes its instructions, an example page,
+# the errors of a call and of one id, the reasons of a withheld event, the
+# notes of a cut event, the footers, the text of both prompts and an access
+# entry, and it names the tools with their arguments, the resource templates
+# and the prompts. What can be produced without a database is produced: the
+# instructions, the example page and the form of the access entry. The rest
+# is matched against the static parts of the string literals of the module
+# that builds it, as the sentences of the command line are above, and the
+# names against the decorators of `mcp_server/server.py`.
+MCP_PAGE = DOCS / "reference" / "mcp-tools.md"
+MCP_PAGE_NAME = "mcp-tools.md"
+MCP_DIR = ROOT / "src" / "previously" / "mcp_server"
+
+
+def _mcp_page() -> str:
+    return MCP_PAGE.read_text(encoding="utf-8")
+
+
+def _mcp_block(after: str, language: str = "text") -> str:
+    """The first code block in `language` after the sentence `after`."""
+    page = _mcp_page()
+    assert after in page, f"{MCP_PAGE_NAME} no longer carries the sentence {after!r}"
+    return page.split(after, 1)[1].split(f"```{language}\n", 1)[1].split("\n```", 1)[0]
+
+
+def _mcp_lines(after: str) -> list[str]:
+    return [line for line in _mcp_block(after).splitlines() if line.strip()]
+
+
+def _literal_patterns(module: str) -> list[list[str]]:
+    """The static parts of every string literal of a module of the server
+    that is no docstring, with at least ten characters of text; a module
+    constant of the server interpolated into one counts as its text."""
+    tree = ast.parse((MCP_DIR / module).read_text(encoding="utf-8"))
+    docstrings = _docstrings(tree)
+    constants = _module_strings(*(MCP_DIR / name for name in ("render.py", "read.py", "server.py")))
+    found = [
+        _static_parts(node, constants)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant | ast.JoinedStr) and id(node) not in docstrings
+    ]
+    return [parts for parts in found if len("".join(parts)) >= 10]
+
+
+def _said(line: str, patterns: list[list[str]], what: str) -> None:
+    assert any(_is_the_same_sentence(parts, line) for parts in patterns), (
+        f"{MCP_PAGE_NAME} quotes {line!r} and {what} builds no such text. "
+        "Either the code's wording changed, or the page's did."
+    )
+
+
+def _decorated(kind: str) -> dict[str, list[str]]:
+    """The functions of `server.py` decorated with `server.<kind>(name=...)`,
+    by that name, each with its parameters but `ctx`."""
+    tree = ast.parse((MCP_DIR / "server.py").read_text(encoding="utf-8"))
+    found: dict[str, list[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if not (
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Attribute)
+                and decorator.func.attr == kind
+            ):
+                continue
+            for keyword in decorator.keywords:
+                if keyword.arg == "name" and isinstance(keyword.value, ast.Constant):
+                    arguments = [*node.args.args, *node.args.kwonlyargs]
+                    found[str(keyword.value.value)] = [
+                        argument.arg for argument in arguments if argument.arg != "ctx"
+                    ]
+    return found
+
+
+def _section_cells(heading: str, end: str) -> set[str]:
+    """The code spans in the first column of the tables between `heading`
+    and the next heading that starts with `end`."""
+    page = _mcp_page()
+    assert heading in page, f"{MCP_PAGE_NAME} no longer has the section {heading!r}"
+    section = page.split(heading, 1)[1].split(end, 1)[0]
+    cells: set[str] = set()
+    for line in section.splitlines():
+        if not line.startswith("| `"):
+            continue
+        first = line.strip("|").split("|", 1)[0].strip()
+        cells.add(first[1:-1])
+    return cells
+
+
+def test_the_mcp_reference_quotes_the_instructions_whole() -> None:
+    from previously.mcp_server.server import INSTRUCTIONS
+
+    assert _mcp_block("It sends these instructions to every client:") == INSTRUCTIONS
+
+
+def test_the_mcp_reference_example_page_is_what_the_renderer_lays_out() -> None:
+    """The example, rendered again from the items its sentence names, with the
+    tag the page shows: the same text, character for character."""
+    from datetime import datetime
+    from datetime import UTC
+    from previously.mcp_server.render import encode_cursor
+    from previously.mcp_server.render import ErasedMark
+    from previously.mcp_server.render import Head
+    from previously.mcp_server.render import render_page
+    from previously.mcp_server.render import Shown
+    from previously.mcp_server.render import WithheldMark
+
+    block = _mcp_block("with one event shown, one withheld and one erased, and more to follow:")
+    tag = re.search(r"<<<customer-content ([0-9a-f]{8})>>>", block)
+    assert tag is not None, "the example shows no fence"
+    filters = {"circle": "huber", "since": "2026-09-01"}
+    head = Head(
+        "previously://event/42",
+        datetime(2026, 9, 12, 9, 14, tzinfo=UTC),
+        "email",
+        "Eva Huber",
+        ("Jens Klein",),
+        None,
+    )
+    units = (
+        (1, "Re: server installation of the foobar connector"),
+        (2, "The server is up; the TLS access is still missing. By Friday?"),
+    )
+    reason = (
+        "circle team has no rule, so only local processing is allowed; "
+        "this client (claude-code) processes with claude-max, which is not local"
+    )
+    items = [
+        Shown(head, units),
+        WithheldMark("previously://event/43", reason),
+        ErasedMark("previously://event/44"),
+    ]
+    ids = [42, 43, 44]
+    page = render_page(
+        "chronicle · circle huber · since 2026-09-01",
+        items,
+        cursor_for=lambda index: encode_cursor(ids[index], filters, page=2),
+        more=True,
+        candidates=iter([tag.group(1)]),
+    )
+    assert page.text == block
+
+
+def test_the_mcp_reference_quotes_what_the_server_says() -> None:
+    """Every error, reason, note, footer and prompt text the page quotes is
+    a text the module that builds it can produce."""
+    server = _literal_patterns("server.py")
+    read = _literal_patterns("read.py")
+    render = _literal_patterns("render.py")
+    for after in (
+        "A call that fails as a whole answers with one sentence after `Error: `, such as these:",
+        "An `event_id` that isn't a whole number in ASCII digits is refused:",
+    ):
+        for line in _mcp_lines(after):
+            prefix, _, message = line.partition(": ")
+            assert prefix == "Error", f"{MCP_PAGE_NAME} quotes {line!r} without `Error: `"
+            _said(message, server, "server.py")
+    for line in _mcp_lines("An id that can't be served gets a line of its own"):
+        prefix, _, rest = line.partition(": ")
+        label, _, message = rest.partition(" — ")
+        assert prefix == "Error", f"{MCP_PAGE_NAME} quotes {line!r} without `Error: `"
+        assert re.fullmatch(r"previously://event/\d+|ids\[\d+\]", label), line
+        _said(message, read, "read.py")
+    for line in _mcp_lines("A note after its fence says where the rest is:"):
+        _said(line, render, "render.py")
+    for line in _mcp_lines("When more follows, the result ends with a footer:"):
+        _said(line, render, "render.py")
+        _, _, hint = line.partition(". More results: ")
+        _said(hint, server + render, "neither server.py nor render.py")
+    for after in (
+        "`chronicle_summary` with `circle` set to `huber` and `since` set to `2026-09-01` returns:",
+        "`whats_open` with `circle` set to `huber` returns:",
+    ):
+        (line,) = _mcp_lines(after)
+        _said(line, server, "server.py")
+
+
+def test_the_mcp_reference_quotes_the_reasons_the_decision_builds() -> None:
+    """The reasons of a withheld event, built by `decide` and `withholding`
+    for the client and the circles the page names, and compared whole: a
+    pattern of the f-string would hold the `rule` reason by its first
+    thirteen characters, `the rules of `, and nothing after them."""
+    from previously.core.decide import Candidate
+    from previously.core.decide import decide
+    from previously.core.policy import Circle
+    from previously.core.policy import Client
+    from previously.core.policy import Inference
+    from previously.core.policy import Membership
+    from previously.core.policy import Policy
+    from previously.core.policy import Provider
+    from previously.core.policy import Rule
+    from previously.mcp_server.read import withholding
+
+    us = frozenset({"us"})
+    policy = Policy(
+        circles={name: Circle(name) for name in ("bauer", "eva", "team")},
+        memberships=(
+            Membership("bauer", "@bauer.example"),
+            Membership("eva", "eva@example.org"),
+            Membership("team", "team@example.org"),
+        ),
+        own=(),
+        rules={"circle:bauer": Rule("circle:bauer", frozenset({"eu"}), None, frozenset())},
+        providers={
+            "claude-max": Provider("claude-max", (Inference("us", us),), us, 30, False, False)
+        },
+        ids={},
+    )
+    client = Client("claude-code", "claude-max", "0" * 64)
+
+    def reason(*addresses: str) -> tuple[str, str]:
+        decision = decide(
+            policy,
+            identities=[{"address": address} for address in addresses],
+            source=None,
+            candidates=(Candidate(client.processor, "", None),),
+        )
+        assert decision.chosen is None
+        return withholding(policy, client, decision)
+
+    no_rule = [reason("team@example.org"), reason("eva@example.org", "team@example.org"), reason()]
+    assert {code for code, _ in no_rule} == {"no_rule"}
+    assert _mcp_lines("and the sentence is one of these:") == [line for _, line in no_rule]
+    code, line = reason("lea@bauer.example")
+    assert code == "rule"
+    assert _mcp_lines("and the sentence ends in the reason the decision gives") == [line]
+
+
+def test_the_mcp_reference_names_every_tool_template_and_prompt() -> None:
+    """The tools with their arguments, the two templates and the prompts,
+    against what `server.py` registers."""
+    from previously.mcp_server.server import CHRONICLE_TEMPLATE
+    from previously.mcp_server.server import EVENT_TEMPLATE
+
+    page = _mcp_page()
+    tools = _decorated("tool")
+    tools_section = page.split("\n## Tools\n", 1)[1].split("\n## ", 1)[0]
+    headings = set(re.findall(r"^### `([a-z_]+)`$", tools_section, re.MULTILINE))
+    assert headings == set(tools), f"{MCP_PAGE_NAME} names the tools {headings}"
+    for name, arguments in tools.items():
+        cells = _section_cells(f"### `{name}`", "\n#")
+        assert cells == set(arguments), f"{MCP_PAGE_NAME} gives {name} the arguments {cells}"
+    assert _section_cells("## Resource templates", "\n## ") == {
+        CHRONICLE_TEMPLATE,
+        EVENT_TEMPLATE,
+    }
+    assert _section_cells("## Prompts", "\n## ") == set(_decorated("prompt"))
+
+
+def test_the_mcp_reference_access_entry_has_the_form_verify_holds() -> None:
+    """The example passes the check `verify` applies, and the two tables
+    name exactly its keys and the keys of its call."""
+    from previously.core.access import access_problem
+
+    example = cast("dict[str, Any]", json.loads(_mcp_block("looks like this:", "json")))
+    assert access_problem(example) is None
+    page = _mcp_page()
+    heading = "## The access entry `mcp_access`"
+    assert _first_cells(page, heading, "The keys of the payload:", name=MCP_PAGE_NAME) == set(
+        example
+    )
+    assert _first_cells(page, heading, "The entry of `call`:", name=MCP_PAGE_NAME) == set(
+        example["call"]
     )

@@ -31,7 +31,9 @@ from dataclasses import dataclass
 from previously.contract.blobs import BlobStore
 from previously.contract.blobs import KeyProvider
 from previously.contract.types import Anchor
+from previously.core.access import access_problem
 from previously.core.action import KNOWN_ACTIONS
+from previously.core.action import MCP_ACCESS
 from previously.core.action import MODEL_CALL
 from previously.core.action import OK
 from previously.core.action import OUTCOMES
@@ -494,6 +496,13 @@ def _form_finding(
             return Finding(event_id, "policy event has units")
     if name == MODEL_CALL and (problem := _model_call_problem(payload, units)) is not None:
         return Finding(event_id, f"model_call has no valid form: {problem}")
+    if name == MCP_ACCESS:
+        # An access holds ids and names and no content, so it has no units; one
+        # that has them did not come through `record_access`.
+        if (problem := access_problem(payload)) is not None:
+            return Finding(event_id, f"mcp_access has no valid form: {problem}")
+        if units:
+            return Finding(event_id, "mcp_access has units")
     return None
 
 

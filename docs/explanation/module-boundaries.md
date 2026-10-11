@@ -3,11 +3,11 @@
 # About the module boundaries
 
 Previously is one code base with one dependency set and one database, divided into modules whose dependencies run one way.
-There are seven of them, and the order is `cli` above `connectors` and `gate`, which share a layer, above `core` and `migrations`, which share a layer, above `storage` above `contract`.
+There are eight of them, and the order is `cli` above `connectors`, `gate` and `mcp_server`, which share a layer, above `core` and `migrations`, which share a layer, above `storage` above `contract`.
 `migrations` joined the others on 2026-10-05, when the Alembic migrations moved from the repository root into the package so that an installed wheel carries them, and `connectors` on 2026-10-06, with the first connector.
-`gate` joined `connectors` on 2026-10-09, with the adapters to the model providers.
+`gate` joined `connectors` on 2026-10-09, with the adapters to the model providers, and `mcp_server` joined both on 2026-10-11, with the MCP server.
 The order isn't a convention somebody is asked to respect.
-It's `import-linter` contracts, eight of them since 2026-10-06, checked by a gate, and the gate prints the contract names, so the names themselves are part of the design rather than labels on it.
+It's `import-linter` contracts, nine of them since 2026-10-11, checked by a gate, and the gate prints the contract names, so the names themselves are part of the design rather than labels on it.
 
 The point of the boundaries is narrow and worth stating before the mechanics.
 `core` is where the hash chain and the idempotency live, and it must stay able to run against a store it didn't import.
@@ -17,6 +17,8 @@ The point of the boundaries is narrow and worth stating before the mechanics.
 `gate` is where a call to a model is made, and it sits beside `connectors` for the same reason: it hands its result to `core` and `core` must not know where it came from.
 The two never import each other, and sharing a layer is what enforces that.
 The adapters under `gate.adapters` are the only modules that import a vendor SDK, which {ref}`the contract for the gate adapters <module-boundaries-gate-adapters>` holds.
+`mcp_server` answers the MCP clients, and it sits in the same layer for the same reason: it reads through `core` and decides with `core.decide`, and `core` must not know who asks.
+Sharing the layer with `gate` keeps a rule of the architecture mechanical: the server never calls a model, because it can't import the module that does.
 Since stage 1b `contract` also holds the row types and the store protocol that `core` is typed against, and both are types in the same sense—no logic, no dependency outside the standard library.
 `migrations` is the Alembic environment and the revisions that build the schema.
 It reads the table metadata from `storage.schema` and nothing from `core`, and `core` reads nothing from it, so it sits beside `core` rather than above or below it.
@@ -25,11 +27,11 @@ It reads the table metadata from `storage.schema` and nothing from `core`, and `
 ## The edges
 
 The diagram shows which module imports which, and since stage 1b there's nothing dashed in it.
-The two arrows that stage 1c added, to `pyrage` and to `boto3`, each have a contract that names the one module allowed to draw them, and so do the arrow to `html2text` that the mapping of a mail added on 2026-10-06, the arrow to `imaplib` that the first connector added the same day, and the two arrows to `anthropic` and `openai` that the adapters of the gate added on 2026-10-09.
+The two arrows that stage 1c added, to `pyrage` and to `boto3`, each have a contract that names the one module allowed to draw them, and so do the arrow to `html2text` that the mapping of a mail added on 2026-10-06, the arrow to `imaplib` that the first connector added the same day, the two arrows to `anthropic` and `openai` that the adapters of the gate added on 2026-10-09, and the three arrows to the MCP SDK, `mcp`, and to its HTTP side, `starlette` and `uvicorn`, that the server added on 2026-10-11.
 The arrows to `sqlalchemy` and `alembic` are held the other way round: their contracts name the modules that mustn't draw them, `core` for both and `contract` for `sqlalchemy`, as the section on the contracts explains.
 
 ```{mermaid}
-:caption: The import edges on 2026-10-09: thirteen between its own modules, and not one of them exempted. Ten arrows leave the package.
+:caption: The import edges on 2026-10-11: sixteen between its own modules, and not one of them exempted. Thirteen arrows leave the package.
 
 graph TD
     cli[cli] --> connectors[connectors]
@@ -55,71 +57,86 @@ graph TD
     gate --> contract
     gate --> anthropic[anthropic]
     gate --> openai[openai]
+    cli --> mcp_server[mcp_server]
+    mcp_server --> core
+    mcp_server --> contract
+    mcp_server --> mcp[mcp]
+    mcp_server --> starlette[starlette]
+    mcp_server --> uvicorn[uvicorn]
 ```
 
 Two things in that picture answer questions the contract names don't.
 
 `contract` has no outgoing edge, and that's the property the layer order rests on.
 A layers contract settles the *order* in which modules may depend on each other; whether an edge exists is a separate question.
-Counted out, the order permits nineteen edges between distinct modules: six from `cli`, four each from `connectors` and `gate`, two each from `core` and `migrations`, one from `storage`.
+Counted out, the order permits twenty-four edges between distinct modules: seven from `cli`, four each from `connectors`, `gate` and `mcp_server`, two each from `core` and `migrations`, one from `storage`.
 None runs between `core` and `migrations`, because modules that share a layer may not import each other.
-Thirteen of the nineteen exist, and the six that don't are `cli → migrations`, `connectors → migrations`, `connectors → storage`, `gate → migrations`, `gate → storage` and `migrations → contract`.
+Sixteen of the twenty-four exist, and the eight that don't are `cli → migrations`, `connectors → migrations`, `connectors → storage`, `gate → migrations`, `gate → storage`, `mcp_server → migrations`, `mcp_server → storage` and `migrations → contract`.
 
 That count was five until stage 1b, and seven until 2026-10-06; the eleventh edge, `gate → core`, arrived on 2026-10-09, because an `AdapterError` is a `PreviouslyError`.
 The twelfth and the thirteenth came the same day with the gate itself: `cli → gate`, because the command line builds the adapters and runs a call, and `gate → contract`, because the answer of a call becomes a unit, a `RawUnit` from `contract`, and the gate reads the event as the row types from there.
+The last three came with the MCP server on 2026-10-11: `cli → mcp_server`, because `mcp` and `serve` start it, `mcp_server → core`, because every call reads the policy, decides and writes its access entry through `core`, and `mcp_server → contract`, because the server reads the log through the store protocol and its row types.
+The server reaches the log through `LogStore` and never through `storage`, the same way `core` does, so `mcp_server → storage` is one of the edges that don't exist.
 `storage` had no edge to `contract` at all, not even though the layer order would have permitted one, and the sixth edge arrived when the row types moved out of `storage/rows.py` into `contract/rows.py`—the store protocol in `contract.store` names those types, and `contract` may import nothing above itself.
 The seventh, `migrations → storage`, is older than the module it starts from: the migrations imported `storage.schema` while they still sat outside the package, where no contract looked, and the edge became countable on 2026-10-05 when they moved in.
 The other three arrived with `connectors` on 2026-10-06: `cli → connectors`, because the command line builds the connector, and `connectors → core` and `connectors → contract`, because the connector hands its bytes over as a `Fetched` from `contract` and raises a `PreviouslyError` from `core`.
-Counted per module, over import statements only, because two modules under `storage` mention `previously.core` in prose rather than in an import, and a count over all text would include them, measured on 2026-10-09:
+Counted per module, over import statements only, because two modules under `storage` mention `previously.core` in prose rather than in an import, and a count over all text would include them, measured on 2026-10-11.
+The pattern takes an underscore since that day: without it, `from previously.mcp_server` reads as `from previously.mcp`.
 
 ```text
-$ grep -rhoE 'from previously\.[a-z]+' src/previously/cli.py | sort -u
+$ grep -rhoE 'from previously\.[a-z_]+' src/previously/cli.py | sort -u
 from previously.connectors
 from previously.contract
 from previously.core
 from previously.gate
+from previously.mcp_server
 from previously.storage
 
-$ grep -rhoE 'from previously\.[a-z]+' src/previously/connectors | sort -u
+$ grep -rhoE 'from previously\.[a-z_]+' src/previously/connectors | sort -u
 from previously.contract
 from previously.core
 
-$ grep -rhoE 'from previously\.[a-z]+' src/previously/gate | sort -u
+$ grep -rhoE 'from previously\.[a-z_]+' src/previously/gate | sort -u
 from previously.contract
 from previously.core
 from previously.gate
 
-$ grep -rhoE 'from previously\.[a-z]+' src/previously/core | sort -u
+$ grep -rhoE 'from previously\.[a-z_]+' src/previously/mcp_server | sort -u
+from previously.contract
+from previously.core
+from previously.mcp_server
+
+$ grep -rhoE 'from previously\.[a-z_]+' src/previously/core | sort -u
 from previously.contract
 from previously.core
 from previously.storage
 
-$ grep -rhoE 'from previously\.[a-z]+' src/previously/migrations | sort -u
+$ grep -rhoE 'from previously\.[a-z_]+' src/previously/migrations | sort -u
 from previously.migrations
 from previously.storage
 
-$ grep -rhoE 'from previously\.[a-z]+' src/previously/storage | sort -u
+$ grep -rhoE 'from previously\.[a-z_]+' src/previously/storage | sort -u
 from previously.contract
 from previously.storage
 
-$ grep -rhoE 'from previously\.[a-z]+' src/previously/contract | sort -u
+$ grep -rhoE 'from previously\.[a-z_]+' src/previously/contract | sort -u
 from previously.contract
 ```
 
-Five target packages for `cli`, two for `connectors`, three for `gate` of which one is itself, three for `core` of which one is itself, two for `migrations` of which one is itself, two for `storage` of which one is itself, and for `contract` nothing but itself.
-That's thirteen edges between distinct modules, and the last line is the layer order's foundation stated as a measurement.
+Six target packages for `cli`, two for `connectors`, three each for `gate` and `mcp_server` of which one is itself, three for `core` of which one is itself, two for `migrations` of which one is itself, two for `storage` of which one is itself, and for `contract` nothing but itself.
+That's sixteen edges between distinct modules, and the last line is the layer order's foundation stated as a measurement.
 
 And `cli` reaches `storage.postgres` directly, for `from_dsn` and the storage type, and it never needed an exemption for that.
 Until stage 1b this page carried two dashed edges from `core` into `storage.postgres`, and `cli` was no inconsistency beside them.
 The exemptions weren't about the edge `core → storage` being forbidden—the layer order allows it—but about what travels along it: `storage.postgres` imports SQLAlchemy, so every module that imports `storage.postgres` reaches SQLAlchemy transitively, and two contracts forbid exactly that for `core`.
 `cli` is no source module of those contracts, so the same edge needs no mention there.
 
-## Eight contracts, and the names are the output
+## Nine contracts, and the names are the output
 
 What `.importlinter` holds, in the words the gate prints:
 
 ```text
-Layers: cli, connectors beside gate, core beside migrations, storage, contract KEPT
+Layers: cli, connectors beside gate and mcp_server, core beside migrations, storage, contract KEPT
 core knows no foreign system and no model KEPT
 core and contract import no sqlalchemy KEPT
 Only the gate adapters import vendor SDKs KEPT (2 ignored imports)
@@ -127,14 +144,16 @@ Only core.sealing imports pyrage KEPT (1 ignored import)
 Only storage.s3 imports boto3 KEPT (2 ignored imports)
 Only core.mail imports html2text KEPT (1 ignored import)
 Only connectors.imap imports imaplib KEPT (1 ignored import)
+Only the MCP server imports the MCP SDK KEPT (4 ignored imports)
 
-Contracts: 8 kept, 0 broken.
+Contracts: 9 kept, 0 broken.
 ```
 
-The output was measured on 2026-10-09.
+The output was measured on 2026-10-11.
+The ninth contract arrived that day with the MCP server, and the first line took its present name with it.
 The seventh contract arrived that day with the mapping of a mail, which turns HTML into text and names the converter's version in the payload; a second module converting HTML would write units the payload doesn't account for.
 The eighth arrived the same day with the first connector, and the first line took its present name with it, when `connectors` came in between `cli` and `core`.
-The first line read `Layers: cli, connectors, core beside migrations, storage, contract` until 2026-10-09, when `gate` came in beside `connectors`.
+The first line read `Layers: cli, connectors beside gate, core beside migrations, storage, contract` until 2026-10-11, when `mcp_server` came in beside both, and `Layers: cli, connectors, core beside migrations, storage, contract` until 2026-10-09, when `gate` came in beside `connectors`.
 Before that it read `Layers: core beside migrations, both above storage, contract below all` from 2026-10-05 until then, and `Layers: core above storage, contract below both` before, until `migrations` joined `core` in the second layer; each time the name followed the layers, because the name is what the gate prints.
 The fourth line read `No vendor SDK in the package` until 2026-10-09, when the adapters of the gate became the first modules to call a model and the contract gained its two named exemptions and its present name.
 The third line read `Only storage imports sqlalchemy` until 2026-10-05, and the move of the migrations made that name false: the migrations import SQLAlchemy, and they're inside the package now.
@@ -207,6 +226,15 @@ The probe that proves the contract goes into `core`, beside `core.mail`, so it s
 `imaplib` may be imported by `connectors.imap` and nowhere else, although it's part of the standard library, which `import-linter` counts among the external packages once `include_external_packages` is on.
 Speaking IMAP is the connector's, and what the connector hands on is bytes, a position, and its own error: a second module with `imaplib` would be a second place where a folder could be changed, or where a password could end up in a message.
 The layers contract keeps `core` from importing `connectors`, so the mapping of a mail can't reach the server either, and stays the pure function {ref}`connectors` asks for.
+
+## A contract for the server
+
+`mcp`, `starlette` and `uvicorn` may be imported by `mcp_server.server`, and `starlette` by `mcp_server.auth` as well, and none of them anywhere else.
+`mcp_types`, the package the types of the SDK live in, may be imported nowhere: the server takes them from `mcp.types`, which re-exports them, so that the SDK reaches the package through one name.
+Speaking MCP is the server's, and what leaves `mcp_server` towards `cli` is a function that serves, never a type of the SDK; the day the bearer token gives way to an authorization server, or the SDK to another one, the change stays inside one package.
+`starlette` and `uvicorn` belong to the contract because they're the HTTP side of the SDK: an HTTP endpoint anywhere else would be a second door, and the token check guards only the one in `mcp_server`.
+The four exemptions are named edges and not a pattern over `mcp_server`, so that a third module of the server that imports the SDK has to be granted on purpose; the tests probe all four packages from `core` and from beside the server, measured on 2026-10-11 to break the contract by name.
+`cli` imports the server inside the two functions that start it, not at its head, for the reason the gate adapters give below: measured on 2026-10-11, the import of `previously.cli` takes 0.67 s with the server and 0.36 s without.
 
 (module-boundaries-gate-adapters)=
 
@@ -352,6 +380,11 @@ Reading it off that way is what keeps the protocol a statement about what `core`
 A protocol copied from the implementation would have carried ten methods and said something false about `core`.
 Stage 1c took it to thirteen, read off the same way from the five modules of `core` that named it then; the command that counts them stands at the top of `contract/store.py`.
 On 2026-10-06 the run of a connector, `core/ingest.py`, became the sixth, and it calls nothing the other five don't, so the count stayed at thirteen, measured that day with the same command and `core/ingest.py` added to its files.
+The command kept naming those six files while more modules of `core` came to name the protocol, eleven by 2026-10-11, so it now takes its files from `grep -rl LogStore` and can't fall behind again.
+That day the MCP server took the protocol to fifteen methods.
+`observations` reads the chronicle for the server, which calls it from `mcp_server` rather than from `core`.
+`actions` reads the actions of one name, so that reading the policy doesn't read every access entry the calls before it wrote; `core.policy` and `core.clients` call it, which made fourteen methods that `core` calls.
+It's also the one method in which the store asks a payload anything, and it asks only for the name that every action carries: whether the payload is sound stays a question for `core`.
 
 The store still has to satisfy the protocol, and that's now a typed claim rather than a guarded one.
 Renaming `count_events` to `count_rows` in `storage/postgres.py`, measured on 2026-10-04, turns `pyright` red at every place a `PostgresStorage` is handed to `append` or `verify`:
