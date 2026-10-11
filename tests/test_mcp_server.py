@@ -5,7 +5,10 @@
 
 Every tool test runs twice: through the in-memory `Client(server)` of the
 current generation and through `Client(server, mode="legacy")`, the
-`initialize` handshake of the older one (unit specification, section 10).
+`initialize` handshake of the older one ({ref}`mcp-generations`).
+The section comments number the assurances
+as §10 of the unit specification does (frozen design record),
+and a review focus is one of the 2026-10-11 MCP read access plan.
 The HTTP tests run against the ASGI app of `previously serve` through the
 ASGI transport of `httpx2`, the HTTP client the SDK depends on.
 
@@ -212,7 +215,7 @@ def _tool(
 def _text(result: CallToolResult) -> str:
     """The one text block of a result, after holding the result to its form:
     exactly one text block, no structured content, no resource link, and no
-    number in the text beyond 2^53 (unit specification, section 10, point 5)."""
+    number in the text beyond 2^53 ({ref}`mcp-text-block`)."""
     assert len(result.content) == 1
     (block,) = result.content
     assert isinstance(block, TextContent)

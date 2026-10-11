@@ -390,8 +390,9 @@ def test_policy_gaps_prints_the_mcp_withholdings_with_their_origin(
 
 @pytest.mark.db
 def test_the_stored_payload_is_the_sketch_of_the_concept(db: Engine) -> None:
-    """The sketch field for field, plus the `reason_code` and `circles` of a
-    withheld entry."""
+    """The sketch in §5 of the concept specification (frozen design record),
+    field for field, plus the `reason_code` and `circles` of a withheld
+    entry."""
     storage = PostgresStorage(db)
     record_access(
         storage,

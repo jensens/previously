@@ -43,13 +43,11 @@ if TYPE_CHECKING:
 
 # 60,000 characters come to about 15,000–20,000 tokens, depending on the
 # language, under the 25,000-token cap that Claude Code puts on the output of
-# one tool call.
-# The figure comes from the unit specification (section 5.1).
-# It has NOT been measured against real mails yet.
-# That measurement is open point 2 of section 13 of the unit specification, and
-# decision 4 of the plan has it done during the build, once the server runs
-# against real mail (Task 5 or the acceptance run).
-# Until then this number is an estimate.
+# one tool call ({ref}`mcp-open-limits`).
+# It has NOT been measured against real mails yet, and until then this number
+# is an estimate: the maintainer's run after the merge is where it gets
+# measured.
+# The figure was set in §5.1 of the unit specification (frozen design record).
 PAGE_CHARS: Final = 60_000
 
 # A heading field longer than this is cut, so that a page can always hold the
@@ -74,7 +72,7 @@ _ESCAPE_SEQUENCE = re.compile(
 _LINE_BREAKS = str.maketrans(dict.fromkeys("\n\t\r  ", " "))
 CURSOR_REFUSED: Final = "cursor is not valid for these filters"
 # The largest integer a result may show: above it, a client that reads JSON
-# numbers as doubles rounds (spec section 6 of the concept, measurement M4).
+# numbers as doubles rounds, measured on 2026-10-10 ({ref}`mcp-text-block`).
 _MAX_SAFE: Final = 2**53 - 1
 _EVENT_ID = re.compile(r"(\d+)$")
 _TAG_BLOCK = range(0xE0000, 0xE0080)
@@ -110,7 +108,7 @@ class Head:
 @dataclass(frozen=True)
 class Shown:
     """An event shown in full: its heading, its units, and what `get_event`
-    adds (spec section 5.2).
+    adds ({ref}`mcp-tools`).
 
     `attachments` are the names of the blobs the event names, never their
     content, and `provenance` the pairs of label and value that say where the

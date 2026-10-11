@@ -176,6 +176,8 @@ def test_heading_fields_are_sanitized_and_cannot_start_a_new_line() -> None:
 
 
 def test_the_heading_reads_like_the_concept_example() -> None:
+    """The heading of the example
+    in §6 of the concept specification (frozen design record)."""
     page = _render(_shown("x"))
     assert (
         "### previously://event/42 · 2026-09-12 09:14 · email · Eva Huber → Jens Klein"

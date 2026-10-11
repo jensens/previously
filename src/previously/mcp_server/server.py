@@ -4,8 +4,8 @@
 """The MCP server: five tools, two resource templates and two prompts.
 
 Every call reads the policy anew, finds its client in it, and writes an
-`mcp_access` after it has read, whatever became of it (unit specification,
-section 7).
+`mcp_access` after it has read, whatever became of it
+({ref}`mcp-access-log`).
 The client is the one `previously mcp` was started for on stdio, or the one
 whose bearer token the HTTP wrapper resolved (`auth.guarded`); a header is
 never an identity.
@@ -13,18 +13,19 @@ A client that is not in force gets an error, and the entry says so.
 
 Every result is one text block, without `structuredContent` and without a
 `resource_link`: measured on 2026-10-10, either costs one of the two clients
-content, Vibe the whole result (measurement M4).
+content, Vibe the whole result ({ref}`mcp-text-block`).
 An error starts with `Error: ` and sets `isError` as well, since Vibe's
 older harness drops the flag.
 
 One code path serves both protocol generations: the SDK answers
 `server/discover` and `initialize` at the same endpoint with
-`stateless_http=True` (measurement M1), and nothing here branches on the
-generation; it is recorded in the access log, nothing more.
+`stateless_http=True`, measured on 2026-10-09, and nothing here branches on
+the generation; it is recorded in the access log, nothing more
+({ref}`mcp-generations`).
 
-The descriptions are declarative and name no customer data
-(concept specification, section 8); a test holds the tool list against a
-checksum, so a change to it is a deliberate one.
+The descriptions are declarative and name no customer data, and a test
+holds the tool list against a checksum, so a change to it is a deliberate
+one ({ref}`mcp-tool-list`).
 """
 
 from contextvars import ContextVar
@@ -414,7 +415,7 @@ class Service[Conn]:
     ) -> HandlerResult:
         """The access entry for a call the SDK refused before it reached one
         of the functions below: an unknown name, or arguments that do not fit
-        the schema. Every call writes one (unit specification, section 7)."""
+        the schema. Every call writes one ({ref}`mcp-access-log`)."""
         kind = _KINDS.get(ctx.method)
         if kind is None or ctx.request_id is None:
             return await call_next(ctx)
@@ -613,7 +614,7 @@ def build_server[Conn](log: LogStore[Conn], *, stdio_client: str | None) -> MCPS
 
 
 def _tools[Conn](server: MCPServer, service: Service[Conn]) -> None:
-    """The five tools (unit specification, section 5)."""
+    """The five tools ({ref}`mcp-tools`)."""
 
     @server.tool(name="previously", description=_CHRONICLE)
     def previously(
@@ -693,7 +694,7 @@ def _tools[Conn](server: MCPServer, service: Service[Conn]) -> None:
 
 
 def _resources[Conn](server: MCPServer, service: Service[Conn]) -> None:
-    """The two resource templates (unit specification, section 6); no
+    """The two resource templates ({ref}`mcp-tools`); no
     resource of its own, so `resources/list` is empty."""
 
     @server.resource(
@@ -733,7 +734,7 @@ def _resources[Conn](server: MCPServer, service: Service[Conn]) -> None:
 
 
 def _prompts[Conn](server: MCPServer, service: Service[Conn]) -> None:
-    """The two prompts (unit specification, section 6): a request to the
+    """The two prompts ({ref}`mcp-tools`): a request to the
     client that names the tools, with no content of its own."""
 
     @server.prompt(

@@ -5,7 +5,7 @@
 
 Every event a call would show passes `decide`, with the people and the source
 of the event and the client's processing chain as the only candidate
-(concept specification, section 3.3).
+({ref}`mcp-client-processor`).
 An event that fails comes back as a placeholder with a reason built from
 policy names only: no subject, no participant, no address, since all of those
 are content.
@@ -57,8 +57,8 @@ if TYPE_CHECKING:
 # fills a page unless a circle filter drops most of the rows; then the loop
 # reads the next batch, and so on until the page is full or the log ends.
 # The bound is per query, not per call: how many rows a sparse circle costs is
-# open point 1 of section 13 of the unit specification (a projection of its
-# own, once reading the log is too slow).
+# an open limit of the pilot, and a derived view of its own waits until
+# reading the log is too slow ({ref}`mcp-open-limits`).
 BATCH: Final = 200
 
 # How much of a page an item is taken to fill before it is rendered: its text

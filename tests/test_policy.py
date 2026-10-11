@@ -533,9 +533,9 @@ def test_a_client_with_an_undeclared_processor_is_refused_but_its_revocation_is_
 def test_a_client_event_with_a_damaged_hash_is_skipped_and_a_lookup_returns_none(
     db: Engine,
 ) -> None:
-    """A hash that is not 64 lower-case hex digits, such as one with a
-    non-ASCII character that `hmac.compare_digest` would raise on, makes the
-    event malformed: the read skips it and a lookup finds no client."""
+    """A hash that is not 64 lower-case hex digits, such as one of
+    non-ASCII characters, makes the event malformed: the read skips it, so a
+    lookup never compares a token against it, and finds no client."""
     from previously.core.clients import client_for_token
     from previously.core.policy import Client
 

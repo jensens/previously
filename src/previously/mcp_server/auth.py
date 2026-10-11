@@ -5,12 +5,12 @@
 
 An ASGI wrapper of its own and not the SDK's `TokenVerifier`: with `auth=`
 the SDK publishes Protected Resource Metadata, which points a client at an
-authorization server, and there is none (concept specification, section 7;
-decision 1 of the 2026-10-11 MCP read access plan, which takes precedence
-over the line of section 9 of the unit specification that names the
-`TokenVerifier`, by ruling R-10 of the 2026-10-11 MCP read access plan).
+authorization server, and there is none ({ref}`mcp-token`).
 Moving to OAuth replaces this wrapper with the SDK's verifier and changes
 nothing else.
+The unit specification named the `TokenVerifier` in its §9 (frozen design record),
+and decision 1 of the 2026-10-11 MCP read access plan took precedence over
+that line, by ruling R-10 of the same plan.
 
 The token is resolved on every request, so a client replaced with a new token
 or revoked is locked out from its next request on.
