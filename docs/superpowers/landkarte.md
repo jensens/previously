@@ -884,6 +884,14 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
   erfüllt das in der Testphase noch nicht: die Probe läuft von Hand, der
   Schlüssel kommt nur für sie in den Cluster (RK). Vor dem regulären Gebrauch
   erfüllt kup6s es oder entscheidet sich bewusst dagegen.
+- Die Rolle in `PREVIOUSLY_DSN` darf Zeilen löschen und ändern, und jeder
+  Prozess, der fremde Inhalte verarbeitet (Aufnahme, Gate, MCP-Server), hält
+  sie. Kette und Anker erkennen ein Löschen, verhindern es nicht. Gebraucht
+  wird je Prozess weniger: die Aufnahme hängt an und schreibt ihre
+  Wasserlinie, der MCP-Server liest und hängt `mcp_access` an, nur `redact`
+  ändert Zeilen. Getrennte Rollen wären eine Forderung an die Umgebung samt
+  einer Aufteilung in Previously, die es heute nicht gibt (gefunden bei der
+  Rückmeldung von kup6s, 2026-10-11).
 - `previously migrate` geht nur vorwärts; ein Zurück im Betrieb ist eine
   Wiederherstellung, kein Kommando (AL §12 Punkt 3; `delivery.md`).
 - Der Container-Weg der Anker-Routine ist für `kubectl exec` ungemessen
