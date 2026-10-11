@@ -1175,3 +1175,223 @@ def test_the_reference_quotes_what_mcp_and_serve_say() -> None:
     unset = _quoted_block(configuration, "and returns 2 when it's unset or empty")
     assert len(unset) == 1, unset
     _assert_raised(unset, raised, "PreviouslyError")
+
+
+# The reference of the MCP server quotes its instructions, an example page,
+# the errors of a call and of one id, the reasons of a withheld event, the
+# notes of a cut event, the footers, the text of both prompts and an access
+# entry, and it names the tools with their arguments, the resource templates
+# and the prompts. What can be produced without a database is produced: the
+# instructions, the example page and the form of the access entry. The rest
+# is matched against the static parts of the string literals of the module
+# that builds it, as the sentences of the command line are above, and the
+# names against the decorators of `mcp_server/server.py`.
+MCP_PAGE = DOCS / "reference" / "mcp-tools.md"
+MCP_PAGE_NAME = "mcp-tools.md"
+MCP_DIR = ROOT / "src" / "previously" / "mcp_server"
+
+
+def _mcp_page() -> str:
+    return MCP_PAGE.read_text(encoding="utf-8")
+
+
+def _mcp_block(after: str, language: str = "text") -> str:
+    """The first code block in `language` after the sentence `after`."""
+    page = _mcp_page()
+    assert after in page, f"{MCP_PAGE_NAME} no longer carries the sentence {after!r}"
+    return page.split(after, 1)[1].split(f"```{language}\n", 1)[1].split("\n```", 1)[0]
+
+
+def _mcp_lines(after: str) -> list[str]:
+    return [line for line in _mcp_block(after).splitlines() if line.strip()]
+
+
+def _literal_patterns(module: str) -> list[list[str]]:
+    """The static parts of every string literal of a module of the server
+    that is no docstring, with at least ten characters of text."""
+    tree = ast.parse((MCP_DIR / module).read_text(encoding="utf-8"))
+    docstrings = _docstrings(tree)
+    found = [
+        _static_parts(node)
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant | ast.JoinedStr) and id(node) not in docstrings
+    ]
+    return [parts for parts in found if len("".join(parts)) >= 10]
+
+
+def _said(line: str, patterns: list[list[str]], what: str) -> None:
+    assert any(_is_the_same_sentence(parts, line) for parts in patterns), (
+        f"{MCP_PAGE_NAME} quotes {line!r} and {what} builds no such text. "
+        "Either the code's wording changed, or the page's did."
+    )
+
+
+def _decorated(kind: str) -> dict[str, list[str]]:
+    """The functions of `server.py` decorated with `server.<kind>(name=...)`,
+    by that name, each with its parameters but `ctx`."""
+    tree = ast.parse((MCP_DIR / "server.py").read_text(encoding="utf-8"))
+    found: dict[str, list[str]] = {}
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for decorator in node.decorator_list:
+            if not (
+                isinstance(decorator, ast.Call)
+                and isinstance(decorator.func, ast.Attribute)
+                and decorator.func.attr == kind
+            ):
+                continue
+            for keyword in decorator.keywords:
+                if keyword.arg == "name" and isinstance(keyword.value, ast.Constant):
+                    arguments = [*node.args.args, *node.args.kwonlyargs]
+                    found[str(keyword.value.value)] = [
+                        argument.arg for argument in arguments if argument.arg != "ctx"
+                    ]
+    return found
+
+
+def _section_cells(heading: str, end: str) -> set[str]:
+    """The code spans in the first column of the tables between `heading`
+    and the next heading that starts with `end`."""
+    page = _mcp_page()
+    assert heading in page, f"{MCP_PAGE_NAME} no longer has the section {heading!r}"
+    section = page.split(heading, 1)[1].split(end, 1)[0]
+    cells: set[str] = set()
+    for line in section.splitlines():
+        if not line.startswith("| `"):
+            continue
+        first = line.strip("|").split("|", 1)[0].strip()
+        cells.add(first[1:-1])
+    return cells
+
+
+def test_the_mcp_reference_quotes_the_instructions_whole() -> None:
+    from previously.mcp_server.server import INSTRUCTIONS
+
+    assert _mcp_block("It sends these instructions to every client:") == INSTRUCTIONS
+
+
+def test_the_mcp_reference_example_page_is_what_the_renderer_lays_out() -> None:
+    """The example, rendered again from the items its sentence names, with the
+    tag the page shows: the same text, character for character."""
+    from datetime import datetime
+    from datetime import UTC
+    from previously.mcp_server.render import encode_cursor
+    from previously.mcp_server.render import ErasedMark
+    from previously.mcp_server.render import Head
+    from previously.mcp_server.render import render_page
+    from previously.mcp_server.render import Shown
+    from previously.mcp_server.render import WithheldMark
+
+    block = _mcp_block("with one event shown, one withheld and one erased, and more to follow:")
+    tag = re.search(r"<<<customer-content ([0-9a-f]{8})>>>", block)
+    assert tag is not None, "the example shows no fence"
+    filters = {"circle": "huber", "since": "2026-09-01"}
+    head = Head(
+        "previously://event/42",
+        datetime(2026, 9, 12, 9, 14, tzinfo=UTC),
+        "email",
+        "Eva Huber",
+        ("Jens Klein",),
+        None,
+    )
+    units = (
+        (1, "Re: server installation of the foobar connector"),
+        (2, "The server is up; the TLS access is still missing. By Friday?"),
+    )
+    reason = (
+        "circle team has no rule, so only local processing is allowed; "
+        "this client (claude-code) processes with claude-max, which is not local"
+    )
+    items = [
+        Shown(head, units),
+        WithheldMark("previously://event/43", reason),
+        ErasedMark("previously://event/44"),
+    ]
+    ids = [42, 43, 44]
+    page = render_page(
+        "chronicle · circle huber · since 2026-09-01",
+        items,
+        cursor_for=lambda index: encode_cursor(ids[index], filters, page=2),
+        more=True,
+        candidates=iter([tag.group(1)]),
+    )
+    assert page.text == block
+
+
+def test_the_mcp_reference_quotes_what_the_server_says() -> None:
+    """Every error, reason, note, footer and prompt text the page quotes is
+    a text the module that builds it can produce."""
+    server = _literal_patterns("server.py")
+    read = _literal_patterns("read.py")
+    render = _literal_patterns("render.py")
+    for after in (
+        "A call that fails as a whole answers with one sentence after `Error: `, such as these:",
+        "An `event_id` that isn't a whole number in ASCII digits is refused:",
+    ):
+        for line in _mcp_lines(after):
+            prefix, _, message = line.partition(": ")
+            assert prefix == "Error", f"{MCP_PAGE_NAME} quotes {line!r} without `Error: `"
+            _said(message, server, "server.py")
+    for line in _mcp_lines("An id that can't be served gets a line of its own"):
+        prefix, _, rest = line.partition(": ")
+        label, _, message = rest.partition(" — ")
+        assert prefix == "Error", f"{MCP_PAGE_NAME} quotes {line!r} without `Error: `"
+        assert re.fullmatch(r"previously://event/\d+|ids\[\d+\]", label), line
+        _said(message, read, "read.py")
+    for after in (
+        "and the sentence is one of these:",
+        "and the sentence ends in the reason the decision gives",
+    ):
+        for line in _mcp_lines(after):
+            _said(line, read, "read.py")
+    for line in _mcp_lines("A note after its fence says where the rest is:"):
+        _said(line, render, "render.py")
+    for line in _mcp_lines("When more follows, the result ends with a footer:"):
+        _said(line, render, "render.py")
+        _, _, hint = line.partition(". More results: ")
+        _said(hint, server + render, "neither server.py nor render.py")
+    for after in (
+        "`chronicle_summary` with `circle` set to `huber` and `since` set to `2026-09-01` returns:",
+        "`whats_open` with `circle` set to `huber` returns:",
+    ):
+        (line,) = _mcp_lines(after)
+        _said(line, server, "server.py")
+
+
+def test_the_mcp_reference_names_every_tool_template_and_prompt() -> None:
+    """The tools with their arguments, the two templates and the prompts,
+    against what `server.py` registers."""
+    from previously.mcp_server.server import CHRONICLE_TEMPLATE
+    from previously.mcp_server.server import EVENT_TEMPLATE
+
+    page = _mcp_page()
+    tools = _decorated("tool")
+    tools_section = page.split("\n## Tools\n", 1)[1].split("\n## ", 1)[0]
+    headings = set(re.findall(r"^### `([a-z_]+)`$", tools_section, re.MULTILINE))
+    assert headings == set(tools), f"{MCP_PAGE_NAME} names the tools {headings}"
+    for name, arguments in tools.items():
+        cells = _section_cells(f"### `{name}`", "\n#")
+        assert cells == set(arguments), f"{MCP_PAGE_NAME} gives {name} the arguments {cells}"
+    assert _section_cells("## Resource templates", "\n## ") == {
+        CHRONICLE_TEMPLATE,
+        EVENT_TEMPLATE,
+    }
+    assert _section_cells("## Prompts", "\n## ") == set(_decorated("prompt"))
+
+
+def test_the_mcp_reference_access_entry_has_the_form_verify_holds() -> None:
+    """The example passes the check `verify` applies, and the two tables
+    name exactly its keys and the keys of its call."""
+    from previously.core.access import access_problem
+
+    example = cast("dict[str, Any]", json.loads(_mcp_block("looks like this:", "json")))
+    assert access_problem(example) is None
+    page = _mcp_page()
+    heading = "## The access entry `mcp_access`"
+    assert _first_cells(page, heading, "The keys of the payload:", name=MCP_PAGE_NAME) == set(
+        example
+    )
+    assert _first_cells(page, heading, "The entry of `call`:", name=MCP_PAGE_NAME) == set(
+        example["call"]
+    )

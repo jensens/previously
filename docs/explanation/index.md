@@ -18,5 +18,6 @@ silent-losses
 delivery
 trust-boundaries
 processing-policy
+mcp-interface
 design-records
 ```

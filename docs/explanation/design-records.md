@@ -2,8 +2,8 @@
 
 # About the frozen design records
 
-Nine German documents under `docs/superpowers/specs/` hold how this project was decided: the design, the architecture, the detailed specification of stage 1a, the one for stage 1b, the one for the external anchor, the one for stage 1c, the one for delivery, the one for taking mail in from an IMAP folder, and the one for the gate and the policy.
-The first three froze on 2026-10-03, the next two on 2026-10-04, two more on 2026-10-05, one on 2026-10-06, and the last on 2026-10-09, and nothing pulls any of them forward again.
+Eleven German documents under `docs/superpowers/specs/` hold how this project was decided: the design, the architecture, the detailed specification of stage 1a, the one for stage 1b, the one for the external anchor, the one for stage 1c, the one for delivery, the one for taking mail in from an IMAP folder, the one for the gate and the policy, the concept of the MCP interface, and the specification of MCP read access.
+The first three froze on 2026-10-03, the next two on 2026-10-04, two more on 2026-10-05, one on 2026-10-06, one on 2026-10-09, and the last two on 2026-10-11, and nothing pulls any of them forward again.
 The reasoning that gets maintained along with the code lives in this quadrant instead, and where a specification and a page disagree, the page is what holds.
 
 Until this documentation existed, those first three documents were the only place a reason was written down, so the code cited them: 72 paragraph references across 21 files in `src/`, `tests/` and `migrations/`, pointing at 20 paragraphs.
@@ -52,6 +52,15 @@ It decided that a policy is an action of the operator and not an assertion, and 
 The build departs from its wording in six places, which the header of the record lists, and the pages hold.
 Its open points went into the map, each under the unit of work it belongs to.
 
+Two records froze together on 2026-10-11: the concept of the MCP interface, dated 2026-10-10, which decides what the interface looks like when it's complete, and the specification of the pilot's fourth unit, dated the same day, which cuts read access out of it.
+The concept is the first record that replaces part of another: the architecture's §8, on the MCP server, is superseded by it.
+What the concept keeps of that paragraph is the protocol revision `2026-07-28`, a server without state, no sampling, idempotent writes, the duty to cite a source through the schemas, and a cockpit that can be exchanged; what it changes is the catalog of tools, a confirmation of every write that works without elicitation, and tasks only as a later addition.
+The architecture's disclosure check in the MCP server, its §8.7, became the processing check of the gate applied to the client.
+{ref}`mcp-interface` carries the reasoning of both records, and {ref}`processing-policy` and {ref}`trust-boundaries` took what they changed about the policy and the places where content leaves; {ref}`mcp-tools` took the tools, the form of a result and the access entry, {ref}`cli-reference` and {ref}`configuration-reference` the commands and their settings, and {ref}`policy-and-model-calls` the client and the processing chain.
+{ref}`connect-claude-code-and-vibe` took the routine, with the dated list of tested configurations the concept asks for, and a fourth handoff, `docs/superpowers/handoffs/2026-10-11-kup6s-mcp.md`, tells whoever runs the Kubernetes environment what the server needs there.
+The build departs from the wording of the two records in places that the header of the specification lists, and the pages hold.
+The open points of both went into the map, each under the unit of work it belongs to.
+
 ## What a frozen record is still good for
 
 Provenance, and it's the one thing no current page can supply.
@@ -67,7 +76,8 @@ Against a maintained page the same citation would turn false, without a word, th
 ## Where each cited paragraph went
 
 The table is the map from a paragraph to the page that carries its reasoning now.
-It has one row per paragraph rather than one per citation, and §4.1, §4.4 and §5 appear twice each, because the architecture and the stage 1a specification both carry a paragraph with that number.
+It has one row per paragraph rather than one per citation, and several numbers appear more than once, because more than one record carries a paragraph with that number.
+The rows of the two MCP records name every paragraph the build cited, including those that its code no longer cites since they froze, so that a reader holding an older checkout finds the page too.
 
 | Paragraph | Document | Where the reasoning lives now |
 |---|---|---|
@@ -94,8 +104,19 @@ It has one row per paragraph rather than one per citation, and §4.1, §4.4 and 
 | §10.2 | stage 1a | nowhere; frozen design record |
 | §11 | stage 1a | nowhere; frozen design record |
 | §12 | stage 1a | nowhere; frozen design record, and no longer cited since stage 1b deleted the test that cited it |
+| §3.3 | MCP concept | {ref}`mcp-client-processor`; no longer cited |
+| §5 | MCP concept | {ref}`mcp-access-payload`; cited by `tests/test_access.py` for the sketch of the payload, which only the frozen record holds |
+| §6 | MCP concept | {ref}`mcp-text-block`; {ref}`mcp-tools` where the citation is about the form of a result; cited by `tests/test_render.py` for the example of a heading |
+| §7 | MCP concept | {ref}`mcp-token`; no longer cited |
+| §8 | MCP concept | {ref}`mcp-tool-list`; no longer cited |
+| §5, §5.2, §6 | MCP read access | {ref}`mcp-tools`; no longer cited |
+| §5.1 | MCP read access | {ref}`mcp-open-limits`; cited by `mcp_server/render.py` for where the limit of a page was set |
+| §7 | MCP read access | {ref}`mcp-access-log`; no longer cited |
+| §9 | MCP read access | nowhere; frozen design record, cited by `mcp_server/auth.py` for the line that the build departed from |
+| §10 | MCP read access | {ref}`mcp-generations` for why every tool test runs in both generations; frozen design record for the numbering of the assurances in `tests/test_mcp_server.py` |
+| §13 | MCP read access | {ref}`mcp-open-limits`, and the map of open points; no longer cited |
 
-The last five rows are answers and not gaps, and they divide into two kinds.
+The five rows of the first three records that say *nowhere* are answers and not gaps, and they divide into two kinds.
 
 Two of them are arguments that no page took over.
 The architecture's §10.1 argues why an append-only store has no use for an object-relational mapper, and {ref}`database-schema` records the outcome—tables declared as SQLAlchemy Core, no mapper—without repeating the argument.

@@ -3,7 +3,7 @@
 # About the processing policy
 
 Before a model reads anything from the log, something has to decide that it may.
-This page explains how that decision is built and why it has the shape it has: two checks instead of one, circles instead of a table of customers, the strictest rule winning, a promise kept apart from a report, a default that stays on the machine, and an audit that lives in the log while its result lives in the units.
+This page explains how that decision is built and why it has the shape it has: two checks instead of one, circles instead of a table of customers, the strictest rule winning, a promise that describes a whole chain and is kept apart from a report, a default that stays on the machine, and an audit that lives in the log while its result lives in the units.
 {ref}`policy-and-model-calls` lists the events and the payload field by field, {ref}`cli-gate` the commands, and {ref}`trust-boundaries` the places this decision guards.
 
 ## Two checks, not one
@@ -21,7 +21,7 @@ That term is gone.
 
 This page and the gate are about the first check, the processing check.
 The second, the check before writing outward, arrives with the first action that writes into a foreign system.
-The MCP server reuses the processing check, because what Claude Code may see is the same question as what a model of the gate may see.
+The MCP server reuses the processing check, because what Claude Code may see is the same question as what a model of the gate may see: a client is a processor, and {ref}`mcp-interface` says how the server treats it as one.
 For that reason the decision lives in `core` and not in `gate`: it needs no model to answer.
 
 ## A circle is a social group, not a customer
@@ -54,7 +54,7 @@ The memberships stay in the log either way, and creating the circle again makes 
 ## The strictest rule wins
 
 When a piece of content belongs to two circles, two rules apply, and so does the rule of its source.
-They're merged, and the merge goes one way: regions by intersection, the retention limit by minimum, the excluded providers by union.
+They're merged, and the merge goes one way: regions by intersection, the retention limit by minimum, the excluded providers, operators and model origins by union, and a ban on training or on subprocessors holds as soon as one rule sets it.
 A conflict between rules never resolves in favor of the looser one.
 
 The reason is the same as for the default below: a decision that errs toward "allowed" looks like working code, and nothing reports it.
@@ -89,6 +89,18 @@ Where the gate sets no region, because the provider has one space only, the ids 
 The gate sets the region that the rules demand, the widest one that fits.
 From the point of view of the EU, `global` and `us` are both outside, so there is no ranking between them to apply, and `us` set without need costs more at Anthropic: 1.1 times the price.
 With the regions `eu` and `us` allowed, Anthropic is eligible with `us`; with `any` it's eligible with `global`; with `eu` alone it's not eligible, because Anthropic has no space in the EU and stores in the United States.
+
+### A promise describes a chain, not a name
+
+A provider's name says too little about where content goes.
+A model of one company can run at another company in another region; a broker hands requests on to subprocessors that change; Claude Code under a Max plan runs under consumer terms and isn't the same chain as the Anthropic API of the gate.
+So a promise names four more properties beside the regions, the storage and the retention: who operates the service, whether it trains on its input, its subprocessors, and the origin of its model.
+A rule can restrict each of them, by forbidding training or subprocessors, or by excluding an operator or a model origin.
+
+A property that wasn't declared is unknown, and an unknown value fails every restriction that concerns it, the way an unknown retention fails a retention limit.
+Guessing in favor of the provider would be the error toward "allowed" that nobody sees.
+The rule holds for a local provider as well: `local` says where the hardware stands, not whether the provider trains, so a local provider that a circle with such a restriction should reach has to declare it.
+Further properties, such as a legal basis or a certification, can join the list when a customer asks for them; none does today.
 
 ## Without a rule, only the machine
 

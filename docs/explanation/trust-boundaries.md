@@ -20,10 +20,9 @@ Every row names a place, what crosses there, who guards it, and the page that ex
 | Backups | The whole database goes out, content included. | Encryption on the client, with a key outside the data path ({ref}`backup-encryption`). |
 | External anchor | One line, the `id` and the hash of the tip, goes out. | The line holds no content, and it's kept where the database's writer can't write ({ref}`external-anchor`). |
 | The gate | The units of an event go to a model provider. | The processing policy, and a `model_call` in the chain for every attempt ({ref}`processing-policy`). |
+| The MCP server | The units of an event go to a client such as Claude Code, and through it to whoever runs the client's model. | The processing policy, decided for every event with the client's chain, a bearer token per client, and an `mcp_access` in the chain for every call ({ref}`mcp-interface`). |
 
-Two more places exist in the design and not yet in the code.
-The MCP server of the pilot's fourth unit will show content to Claude Code, which sends it on to Anthropic.
-It will reuse the decision of the gate, because a decision that lives in `core` can be asked by anything that has to decide what a model may see.
+One more place exists in the design and not yet in the code.
 The first action that writes into a foreign system, such as an issue tracker of a customer, is a separate question: may this content appear where everybody there sees it?
 That check is a different one, at a different place, and it arrives with the first action that needs it ({ref}`processing-policy` says why the two are kept apart).
 
@@ -55,7 +54,7 @@ The anchor is the one boundary on this list that was built to be crossed: it has
 
 ## The gate and its three providers
 
-The gate is the newest place and the one with the most to say, because three providers sit behind it and each promises something different.
+The gate is the place with the most to say, because three providers sit behind it and each promises something different.
 
 | Provider | Where it processes and stores | How long it keeps the request |
 |---|---|---|
@@ -87,9 +86,33 @@ That's a place where content can go elsewhere without a rule or an event saying 
 It's accepted, for the reason the keys are accepted: whoever controls the environment of the process already holds the keys, the database address and the blob identity, and a variable adds no reach beyond those.
 But it belongs on this list, because a deployment that copies an environment from somewhere else copies this variable with it.
 
+## Clients that read the log
+
+The MCP server is the second place where content leaves for a model, and it reuses the decision of the gate rather than having one of its own.
+A client is declared as a processor, because whatever Claude Code reads goes to Anthropic and whatever Vibe reads goes to Mistral, so the same policy decides about each event a call would show, with the client's chain as the only candidate.
+An event that doesn't pass comes back as a placeholder without its subject and its participants.
+
+Four properties of this boundary are worth stating on their own.
+
+The first is that every tool only reads.
+Nothing a client does through the server changes the log, beyond the record of the call itself.
+
+The second is that a client is known by its token and not by the network.
+Over HTTP every request needs the bearer token of a client in force, looked up at every request, and only the SHA-256 of a token is ever stored.
+Over standard input and output, whoever starts the process is the client it names.
+
+The third is that the log holds a record of every call that has a client, a refused one included, and the record holds no content.
+`previously access` answers what a client saw and what it didn't get.
+
+The fourth is the one that isn't a boundary: the fence around the text of a mail.
+It marks foreign text for the model, and a model can still follow what the text says; {ref}`mcp-interface` explains why the pilot relies on read-only tools and the policy instead.
+
+What every client sees regardless of the policy is what the operator stated and what isn't content of a customer: the names of the circles, their rules, the number of members, and the promises of the providers.
+No address of a member is among it.
+
 ## What nobody guards yet
 
-These are the gaps as of 2026-10-09.
+These are the gaps as of 2026-10-11.
 Each is known, each has a place in the map of open points, and none is hidden by a mechanism that looks like a guard.
 
 **The provider's own retention.**
@@ -117,6 +140,16 @@ Writing an event before each call would close the gap and cost a second event fo
 The write can fail after the call succeeded, for example when a provider's request id holds a character the log refuses.
 The call happened and the chain doesn't know.
 
-**MCP and writing outward.**
-Both are ahead.
-When they arrive they cross the boundaries above in new places, and this page gets a row for each.
+**What a client read stays with its provider.**
+The retention of the gate's providers applies to the provider behind a client too: what Claude Code read is at Anthropic under the terms of the account, and no erasure in Previously reaches it.
+
+**Names outside the fence.**
+The heading of an event carries the display names of its sender and recipients, which a mail supplies, outside the fence: up to about 2,200 characters per event, cleaned and kept to one line.
+
+**A call can go unrecorded here too.**
+The `mcp_access` is written after the call has read, so a process that stops between the answer and the write leaves an answer that no event records.
+Over standard input and output the opposite exists as well: a call still running when the input closes writes its entry, and the client never receives the answer.
+
+**Writing outward.**
+It's ahead.
+When it arrives it crosses the boundaries above in a new place, and this page gets a row for it.
