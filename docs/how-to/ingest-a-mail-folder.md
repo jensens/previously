@@ -191,10 +191,8 @@ Then erase these as well:
   Read each with `previously show`, and erase the ones whose quotes hold what has to go.
   A reply that quotes a mail without naming it, such as one written in a new thread, isn't found this way.
 
-- **The mail in the folder, and in the backups of the mailbox.**
-  Previously never changes the folder.
-  Delete the mail there yourself, and in each mail client that keeps a copy.
-  The backups of the mail server keep it until their retention runs out, and that retention is part of any erasure you promise, beside the one of the database and the bucket.
+Previously never changes the folder, so the mail stays there, in the backups of the mail server, and in the mail client of everybody who received it.
+Your erasure doesn't cover any of those, and if you promise it to anybody, say so; {ref}`erase-something` lists what a promise covers.
 
 As long as the mail lies in the folder, an erasure holds only because the log knows its key.
 A restore of the database to a point before the mail was taken in forgets the key, and the next run takes the mail in again; a restore to a point before the erasure brings the content back, as {ref}`restore-from-a-backup` explains.

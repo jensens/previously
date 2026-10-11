@@ -8,66 +8,71 @@ This guide shows you how to check, after a restore, how much of the chain you go
 A restore that was never rehearsed isn't a backup.
 :::
 
-Restoring the data itself runs through your deployment's own backup tooling, and that tooling arrives with a later stage's deployment, not with this repository.
-Performing the restore itself isn't covered here.
+Restoring the data itself runs through the backup system your deployment chose, and performing it isn't covered here.
+{ref}`backup-encryption` says what that system has to meet.
 
-Without the backup's encryption passphrase, the restore can't proceed at all.
-Treat that passphrase with the same care as the data it protects.
+Without the key that opens the backup, the restore can't proceed at all.
+Treat that key with the same care as the data it protects.
 
 Once the restore gives you a running PostgreSQL instance, point `PREVIOUSLY_DSN` at it.
 See {ref}`configuration-reference` for its exact form.
 
 Before you rely on that instance, check it against the anchor file you keep outside the database.
 How to take anchors is in {ref}`verify-the-chain`.
-Which check to run depends on what you restored to.
 
-## Restore to the latest state
+## Check against the anchors as of the backup
 
-If you restored a base backup and replayed the write-ahead log to the latest state, or to any point after the newest anchor, check that the log contains every anchor:
+Check the restored log against the anchor file as it stood at the backup's recovery point: the snapshot of a dump, or the target of a point-in-time recovery.
 
-```shell
-previously verify --anchors anchors.txt
-```
+1.  Find that moment.
+    For a dump that `pg_dump --format=custom` wrote, decrypt it first with the key that opens it, and run `pg_restore --list` on the decrypted file:
 
-Exit code `0` means that up to the newest anchor, nothing is lost and nothing is rewritten.
-Whatever the restored log holds after the newest anchor, this check doesn't vouch for it.
-Whatever it should hold there and doesn't, this check doesn't see.
+    ```shell
+    pg_restore --list previously.dump | grep 'Archive created at'
+    ```
 
-Here, every `anchored event is missing` finding is a loss: the restore stopped short of an anchor, and it failed.
-There's nothing to cut; see *Read the result*.
+    It prints the moment `pg_dump` created the archive, just before it took its snapshot.
+    Use that moment: an anchor file from slightly earlier can only leave out an anchor the dump holds, never add one it lacks.
+    For a point-in-time recovery, the moment is the recovery target you set.
 
-Don't add `--exact` here: it reports any event after the newest anchor as a finding, and that finding says nothing about loss.
-
-## Restore to an earlier point
-
-If you restored on purpose to a point before the newest anchor, check the restore against the last version of the anchor file from before that point.
-
-1.  Get the last version of the anchor file from before the restore point from the place you keep it: under version control, or as a copy or message.
+2.  Get the version of the anchor file from before that moment from the place you keep it: under version control, or as a copy or message.
     The file doesn't date its own lines, so you can't read that version off the current file.
-    Don't take a version recorded after the restore point: it holds anchors from after it, and each of those reads as a loss.
-    Save it as `anchors-restored.txt`.
-    If the file didn't exist yet at that point, or held no anchor line, see *After the check* below.
+    In a Git repository that holds the file as `anchors.txt` on `main`, this takes the last version committed before the moment:
+
+    ```shell
+    rev=$(git rev-list -1 --before='2026-10-11 03:00:00 UTC' main)
+    test -n "$rev" && git show "$rev":anchors.txt > anchors-restored.txt
+    ```
+
+    If `git rev-list` prints no commit, `test` fails and no file is written: the backup predates every anchor, so there's nothing to check against yet.
+    Run `previously verify` without `--anchors` instead, and continue with *After the check* below.
+
+    Don't take a version recorded after the moment: it holds anchors from after it, and each of those reads as a loss.
+    If the backup is newer than the newest anchor, that version is the file as it stands today.
+    If the file didn't exist yet at that moment, or held no anchor line, see *After the check* below.
     If you can't get it, see *If the anchor file has no history* below.
 
-2.  Check against that file:
+3.  Check against that file:
 
     ```shell
     previously verify --anchors anchors-restored.txt
     ```
 
     Exit code `0` means that up to the newest anchor in that file, nothing is lost and nothing is rewritten.
-    As in the first case, the check doesn't vouch for anything after that anchor.
-    An `anchored event is missing` finding against that file is a loss: the restore stopped short of an anchor taken before the point it was meant to reach.
+    Whatever the restored log holds after that anchor, this check doesn't vouch for it.
+    Whatever it should hold there and doesn't, this check doesn't see.
+    An `anchored event is missing` finding against that file is a loss: the restore stopped short of an anchor taken before the backup, and it failed.
 
-3.  If the restore point coincides with the last anchor in that file, add `--exact`:
+4.  If the tip of the restored log is the last anchor in that file, add `--exact`:
 
     ```shell
     previously verify --anchors anchors-restored.txt --exact
     ```
 
     Exit code `0` then means, in addition, that the tip of the restored log is exactly that anchor.
+    Otherwise, don't add `--exact`: it reports any event after the newest anchor as a finding, and that finding says nothing about loss.
 
-Against the anchor file as it stands today, every anchor taken after the restore point reports a finding of this form:
+Against the anchor file as it stands today, every anchor taken after the recovery point reports a finding of this form:
 
 ```text
 FINDING 3: anchored event is missing (the log ends at 2)
@@ -78,7 +83,7 @@ For why a restore looks like this to the anchors, see {ref}`external-anchor`.
 
 ### If the anchor file has no history
 
-If the anchor file was only ever appended to in one place, you can't tell which lines it held at the restore point.
+If the anchor file was only ever appended to in one place, you can't tell which lines it held at the recovery point.
 Then cut it at the tip of the restored log instead, and know its limit before you start.
 The cut shows that nothing up to the last anchor it keeps was rewritten.
 It can't show that the restore reached the point you meant, because the cut comes from the result of the restore itself.
@@ -90,7 +95,7 @@ It can't show that the restore reached the point you meant, because the cut come
     ```
 
     If it reports no `anchored event is missing` finding, whether it exits `0` or reports only other findings, the restore reached the newest anchor and there's nothing to cut.
-    Treat it as the first case, *Restore to the latest state*, and read its result there.
+    Read its result as step 3 of *Check against the anchors as of the backup* says.
 
 2.  Number the lines of the anchor file:
 
@@ -108,7 +113,7 @@ It can't show that the restore reached the point you meant, because the cut come
     head -n 2 anchors.txt > anchors-restored.txt
     ```
 
-4.  Check against the new file, as in steps 2 and 3 above, keeping in mind what the cut can't show.
+4.  Check against the new file, as in steps 3 and 4 of *Check against the anchors as of the backup*, keeping in mind what the cut can't show.
     Exit code `0` there doesn't mean that the restore reached the point you meant.
     Add `--exact` only if the `id` of its last anchor is the tip of the restored log.
 
@@ -116,19 +121,19 @@ It can't show that the restore reached the point you meant, because the cut come
 
 Keep `anchors.txt` unchanged in either case below: it records what the restore gave up.
 
-If no anchor was taken before the restore point, for example because you restored to a point before the first anchor, no anchor describes the restored log.
+If no anchor was taken before the recovery point, for example because the backup is older than the first anchor, no anchor describes the restored log.
 Run `previously verify` without `--anchors`, which checks only that the chain is consistent in itself, as *Read the result* says.
 Then start over with a first anchor in a file of a new name, for example `anchors-new.txt`, never `anchors.txt`.
 Take it as {ref}`verify-the-chain` shows, with that name in place of `anchors.txt`, and run the routine against it from then on.
 
 Otherwise, run the routine from {ref}`verify-the-chain` against `anchors-restored.txt` from now on.
-Against `anchors.txt`, it would raise the alarm on every run.
+Against `anchors.txt`, it would raise the alarm on every run, unless the backup was newer than its newest anchor and the two files are the same.
 
 ## Read the result
 
 If `previously verify` exits `1` against the anchor file that fits your case, the restored instance doesn't hold what the anchors say it should, and the restore failed, even if PostgreSQL itself started without complaint.
 Discard the instance and restore again.
-The one check whose findings you expect is the first step of *If the anchor file has no history*, after a restore on purpose to an earlier point: there, they only give you the tip.
+The one check whose findings you expect is the first step of *If the anchor file has no history*, after a restore to a point before the newest anchor: there, they only give you the tip.
 
 If `previously verify` exits `2`, it didn't check anything: the anchor file is missing or unreadable, holds no anchor line, or holds a line that isn't an anchor line, or storage raised an error.
 The message on standard error names the problem; see {ref}`cli-reference` for what counts as an input error.
@@ -199,4 +204,4 @@ Run `previously redact blob` with its address and a reason: it finds the blob co
 Then run `previously verify --blobs` once more.
 
 An object uploaded after the point you restored to, for a content that no event of the restored log names, stays in the bucket, and no check reports it.
-For why losing the passphrase means losing the backups for good, see {ref}`backup-encryption`.
+For why losing the key that opens the backups means losing them for good, see {ref}`backup-encryption`.

@@ -30,7 +30,7 @@ Solve a specific problem: take in the mail of a folder, set a policy and try a m
 
 **Reference**
 ^^^
-Look up a command, a configuration variable, a column, the hash format, how a mail maps onto an event, what the events of the policy and of a model call hold, or what the tools of the MCP server answer.
+Look up a command, a configuration variable, a column, the hash format, how a mail maps onto an event, what the events of the policy and of a model call hold, what the tools of the MCP server answer, or what Previously requires of its environment.
 :::
 
 :::{grid-item-card}

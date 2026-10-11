@@ -20,7 +20,7 @@ def test_the_downgrade_refuses_once_a_connector_has_a_watermark() -> None:
     with one row it refuses with a sentence, and the database stays at
     `0005_watermark` with the row in place. Without the refusal the next run
     of the connector would find no watermark and read the whole folder again."""
-    with PostgresContainer("postgres:17", driver="psycopg") as container:
+    with PostgresContainer("postgres:18", driver="psycopg") as container:
         engine = create_engine(container.get_connection_url())
         config = Config("alembic.ini")
         config.set_main_option("sqlalchemy.url", container.get_connection_url())

@@ -16,7 +16,8 @@ Pick the smallest target that holds everything that has to go:
   Units can be erased only at events in hash format 2; for an older event, `previously redact units` refuses and names `previously redact event` instead.
 - If it's an attached file that has to go wherever it's attached, erase the **blob**.
 - If it's a mail that `previously ingest imap` took in, erase the **event**, never its units: the subject stands in the payload too, the raw mail is a blob, and the payload's artifact hash confirms a short text that somebody guesses.
-  {ref}`ingest-a-mail-folder` says what else to erase with it, and gives the query that finds most of it: its variants under the same Message-ID, the mails inside it at every depth, the mails that carried it as an attachment, the replies that quote it, and the mail in its folder.
+  {ref}`ingest-a-mail-folder` says what else to erase with it, and gives the query that finds most of it: its variants under the same Message-ID, the mails inside it at every depth, the mails that carried it as an attachment, and the replies that quote it.
+  The mail in its folder belongs to the source, and your erasure doesn't cover it.
 
 Find the event's `id`, the `seq` of each unit, and the address of each blob with `previously show`.
 
@@ -198,6 +199,11 @@ See {ref}`cli-reference` for every refusal and error of `redact`.
 
 An erasure takes the content out of the log and the blob out of the store.
 It stays in every backup of the database, and in every backup or copy of the bucket, until their retention runs out, and a restore to a point before the erasure brings it back; {ref}`restore-from-a-backup` shows what to do then.
+It stays at its source as well, such as the mail server, the folder a mail came from, the backups of either, and the mail clients of the people who received it.
+
+If you promise an erasure to anybody, name what it covers: the database and the retention of its backups, the bucket and the retention of any copy of it, and the retention of each model provider the content reached, whether the gate sent it or an MCP client received it and handed it on.
+Find the clients that received an event with `previously access`; see {ref}`cli-access`.
+Say in the promise that it doesn't cover the source, such as the mail server and its backups.
 The address of a blob, the source key `(source, external_id)` and every hash stay as well.
 An event written before stage 1c, in hash format 1, has no salt, so short erased content stays guessable from its digests; see {ref}`erasure`.
 An erasure of units leaves their wording in a payload that holds it too, as *Erase units* says, and it leaves the payload's `artifact_hash`, which has no salt and so confirms a short erased text that somebody guesses.

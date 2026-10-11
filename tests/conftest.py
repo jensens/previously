@@ -64,7 +64,7 @@ TRUNCATE_ALL = "TRUNCATE " + ", ".join(table.name for table in reversed(metadata
 
 @pytest.fixture(scope="session")
 def engine() -> Iterator[Engine]:
-    with PostgresContainer("postgres:17", driver="psycopg") as container:
+    with PostgresContainer("postgres:18", driver="psycopg") as container:
         db_engine = create_engine(container.get_connection_url())
         config = Config("alembic.ini")
         config.set_main_option("sqlalchemy.url", container.get_connection_url())
@@ -197,7 +197,7 @@ def unmigrated_engine() -> Iterator[Engine]:
     every access to it is supposed to fail, so there is nothing one test could
     spoil for the next.
     """
-    with PostgresContainer("postgres:17", driver="psycopg") as container:
+    with PostgresContainer("postgres:18", driver="psycopg") as container:
         yield create_engine(container.get_connection_url())
 
 
@@ -236,7 +236,7 @@ def s3_settings() -> Iterator[dict[str, str]]:
     One container for the whole run, the way PostgreSQL has one: starting it
     is what costs, and a bucket per test (`blob_store`) keeps the tests apart
     without a second start. The image is named here as a literal, like
-    `postgres:17` above, so that a change of version is a change of this
+    `postgres:18` above, so that a change of version is a change of this
     line.
     """
     container = (

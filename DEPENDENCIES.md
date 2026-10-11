@@ -70,11 +70,28 @@ says they were already checked; this one was checked the same way and on
 the same day, for the same reason it was missing — running the build is
 what surfaced it.
 
+**`postgres:18` is no package, and the one PostgreSQL the project is tested
+against.** `tests/conftest.py` and the three migration tests start it
+through `testcontainers`, and `scripts/smoke-image.sh` runs the image against
+it; each names the tag as a literal. It replaced `postgres:17` on 2026-10-11,
+when the maintainer moved the project to 18 and stopped supporting 17
+officially: the kup6s environment runs 18 throughout and had run every check
+of the delivery and ingest handoffs against it
+(`docs/superpowers/handoffs/2026-10-11-kup6s-feedback-delivery-and-ingest.md`).
+Checked on 2026-10-11: the tag `18` was last pushed to Docker Hub on
+2026-10-07, with the digest `sha256:74935e72…`, which is the digest
+`docker image inspect` reports for the pulled image, PostgreSQL 18.6
+(`PG_VERSION=18.6-1.pgdg13+2`). PostgreSQL's versioning policy page lists 18
+as supported, first released on 2025-09-25, with its final release on
+2030-11-14. The tag follows the minor releases of 18, which is what a test
+of the supported major version wants; the digest is the measurement, not a
+pin.
+
 **`rustfs/rustfs:1.0.1` is no package, and a dependency of the tests all the
 same.** `tests/conftest.py` starts it as the S3 server the blob tests run
 against, through the generic container of the `testcontainers` already
 listed, with no module of its own; the image is named there as a literal, like
-`postgres:17`. Checked on 2026-10-05: the tag was pushed to Docker Hub on
+`postgres:18`. Checked on 2026-10-05: the tag was pushed to Docker Hub on
 2026-10-03; the repository `rustfs/rustfs` is Apache-2.0, pushed 2026-10-04
 and not archived. A release two days old is enough for tests, and measured it
 carries the whole blob path. The store of the operation is a different one —

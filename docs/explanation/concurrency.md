@@ -110,7 +110,8 @@ A row with no predecessor is the genesis entry, the first link of the chain—an
 That's exactly the branching the index exists to prevent, so the index without the clause would guard the whole chain except its one most consequential position.
 
 With the clause, the several `NULL` count as one value and the index admits a single entry without a predecessor.
-The clause arrived in PostgreSQL 15, which is where {ref}`configuration-reference` puts the floor for this project, and the version requirement is therefore not a preference.
+The clause arrived in PostgreSQL 15, so no older version can hold the schema, and that lower bound is a fact about the schema rather than a preference.
+The version the project supports is a narrower choice, the one version it's tested against, which {ref}`configuration-reference` names.
 A side effect of the same clause shows up in {ref}`hash-chain`: a forged genesis-like row with `id = 0` and `prev_hash = NULL` can't be smuggled in at all, because the index already holds that position.
 
 (conflict-classes)=

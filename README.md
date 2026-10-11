@@ -124,7 +124,8 @@ earlier point brings it back. The address of a blob and the source key stay as
 well, and an erasure of units leaves their wording in a payload that holds
 it too, and says so when a string of the payload contains a unit's wording.
 For a mail, it reaches neither the folder the mail came from, nor the backups
-of the mailbox, nor the replies that quote it;
+of the mailbox, nor the replies that quote it, and a promise of erasure never
+covers the source the mail came from;
 [About erasure](docs/explanation/erasure.md) says what an erasure does not
 achieve and why.
 
@@ -158,7 +159,7 @@ The full documentation â€” tutorials, how-to guides, reference and explanation â
 lives under `docs/`. Build it locally with `make -C docs html`, then open
 `docs/_build/html/index.html`. Start with
 [Record your first event](docs/tutorials/record-your-first-event.md): a
-session typed out against a real PostgreSQL 17, from a fresh checkout to a
+session typed out against a real PostgreSQL 18, from a fresh checkout to a
 passing test suite.
 
 The eleven specifications below are **frozen design records**, in German and

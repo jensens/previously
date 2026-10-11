@@ -39,7 +39,7 @@ docker run -d --name previously-db --network previously-blobs \
     -e POSTGRES_USER=previously \
     -e POSTGRES_PASSWORD=previously \
     -e POSTGRES_DB=previously \
-    postgres:17
+    postgres:18
 ```
 
 Export the connection string with the database's name on the network as its host:
@@ -140,6 +140,11 @@ docker run --rm --network previously-blobs --user "$(id -u):$(id -g)" \
 The identity file is readable by its owner only, and the fetched file then belongs to you rather than to user 1000.
 Mount the identities only into the containers of `blob get` and `verify --blobs`, the two commands that read them; `append --attach` needs only the recipient.
 
+Give `--output` a path in a directory the container can write to.
+The image's working directory, `/app`, isn't writable for the user it runs as.
+In a container without a mounted directory, such as a tools pod in a cluster, write to `/tmp` and copy the file out with `kubectl cp`, which works with the image because it has `tar`.
+If the container's root file system is read-only, `/tmp` isn't writable either, so mount a writable volume there, such as an `emptyDir` in a pod.
+
 ## Build the image yourself
 
 Build it from a checkout when you want to try a change before it's released.
@@ -166,7 +171,7 @@ Run the smoke test against the image, from the root of the checkout:
 bash scripts/smoke-image.sh previously:local
 ```
 
-It starts PostgreSQL 17 and an S3 server in containers of its own, runs the image against them, removes them again, and ends with this line:
+It starts PostgreSQL 18 and an S3 server in containers of its own, runs the image against them, removes them again, and ends with this line:
 
 ```text
 smoke test passed: previously:local

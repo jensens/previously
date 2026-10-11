@@ -214,9 +214,33 @@ A blob shared by two mails stays when one of them is erased, because the other s
 Gone from the store isn't gone everywhere.
 Whatever backup or replica of the bucket exists keeps the object for as long as it's kept, and the identity, backed up as the warning above asks, still opens it.
 Whoever promises erasure within a period chooses the retention of the bucket's backups by it, beside that of the database's.
+The promise reaches no further than the copies Previously keeps: a blob that came in with a mail still lies in the mail's source, which no promise of erasure covers ({ref}`erasure`).
 
 The register is what makes that rule cheap to compute.
 An erasure asks it which events use a blob, holds each of them against the redactions, and knows whether the blob still has to lie, without reading a single payload.
+
+(blob-bucket-requirements)=
+
+## Who may reach the bucket
+
+The bucket is where an erasure has to take effect, and that shapes two requirements on whoever provides it.
+They're stated here as what Previously needs; how an environment meets them is its own choice.
+
+**The credentials Previously holds reach its blob bucket and nothing else.**
+The processes that hold them handle foreign content.
+`ingest imap` parses mail that anybody could have sent, `blob get` and `verify --blobs` open what that mail carried, and where an operator's commands share one environment, as in a tools pod, the gate runs beside them.
+A process that handles foreign content is the likeliest to be taken over, and credentials that reach other buckets turn that into a way to delete the backups, or data that doesn't belong to Previously at all.
+Within the bucket, Previously reads, writes and deletes objects, and asks whether one exists; {ref}`environment-requirements` lists the operations.
+
+**No credential other than those Previously holds can delete or overwrite the bucket's objects.**
+An erasure has to be able to delete, so the bucket keeps neither versions nor locked objects, as {ref}`erasure` explains.
+Every backup or copy of the bucket extends each erasure promise by its retention, so a bucket that's meant to make an erasure take effect at once has none.
+Then a blob that somebody else deletes or overwrites is lost for good: `verify --blobs` reports it as missing or as not matching its address, and nothing can bring it back.
+The seal doesn't help here, because encryption protects reading, not deleting.
+
+At Hetzner, where an S3 credential reaches every bucket of a cloud project, one way to meet both is a second project that holds only the blob bucket.
+Another provider may scope a key to one bucket, or not have the problem at all.
+An operator who doesn't meet a requirement decides that consciously and carries the risk named above: blobs lost to a credential that was never meant to reach them, or backups lost to a process that was only meant to read mail.
 
 ## What `verify` checks in the store
 

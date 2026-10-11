@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 #
 # Smoke test of one image: run from the repository root as
-# `scripts/smoke-image.sh IMAGE`. Starts PostgreSQL 17 and RustFS 1.0.1 on a
+# `scripts/smoke-image.sh IMAGE`. Starts PostgreSQL 18 and RustFS 1.0.1 on a
 # network of its own, runs the image against them, and removes everything it
 # started, also when a step fails.
 set -euo pipefail
@@ -26,7 +26,7 @@ SECRET="$(openssl rand -hex 16)"
 docker network create "$NET" > /dev/null
 docker run -d --name "$PG" --network "$NET" \
   -e POSTGRES_USER=previously -e POSTGRES_PASSWORD=previously -e POSTGRES_DB=previously \
-  postgres:17 > /dev/null
+  postgres:18 > /dev/null
 docker run -d --name "$S3" --network "$NET" \
   -e RUSTFS_ACCESS_KEY=smoke -e RUSTFS_SECRET_KEY="$SECRET" \
   rustfs/rustfs:1.0.1 > /dev/null

@@ -166,6 +166,10 @@ The token stays required inside a closed network too.
 The network tells the server that somebody from inside asks; the token tells it which client, and the access log needs exactly that.
 A header that names a client is no identity.
 
+`previously serve` speaks plain HTTP and has no setting for TLS.
+A token on a path that somebody else can read is a token that somebody else holds, so the path from a client to the server has to be encrypted or private: the address `127.0.0.1` of the same machine, a port-forward, a private network, or TLS ended in front of the server.
+Which one is the environment's choice; {ref}`environment-requirements` lists it with the other requirements.
+
 The SDK has a token verifier of its own, and the server doesn't use it.
 With it, the SDK publishes metadata that sends a client to an authorization server, and there is none.
 So a small wrapper of the server's own checks the token, and moving to an authorization server later replaces that wrapper and nothing else.
