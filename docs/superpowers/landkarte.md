@@ -30,7 +30,7 @@ mergt, und dieser Zweig ist es noch nicht:
 
 | Einheit | Inhalt | Spec | Abnahme |
 |---|---|---|---|
-| 4 | MCP-Lesezugang: Clients als Prinzipale mit Token und Verarbeitungskette (`client`); die Zusage um Betreiber, Training, Unterverarbeiter und Herkunft des Modells erweitert, die Regel um die vier passenden Einschränkungen; `previously mcp` (stdio) und `previously serve` (HTTP, beide Generationen); fünf Werkzeuge, zwei Ressourcen-Vorlagen, zwei Prompts, jeder Inhalt nur nach `decide` mit der Kette des Clients; das Zugriffsprotokoll als `mcp_access` und `previously access`; `policy gaps` zählt, was MCP zurückhielt; die Seiten `mcp-interface.md`, `mcp-tools.md` und die Anleitung `connect-claude-code-and-vibe.md`; der Handoff `handoffs/2026-10-11-kup6s-mcp.md` | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, beide eingefroren am 2026-10-11 | Zweig `worktree-mcp-konzept`, noch nicht gemergt; Bedingung 9, der Lauf des Betreuers mit Claude Code und Vibe, folgt dem Merge |
+| 4 | MCP-Lesezugang: Clients als Prinzipale mit Token und Verarbeitungskette (`client`); die Zusage um Betreiber, Training, Unterverarbeiter und Herkunft des Modells erweitert, die Regel um die vier passenden Einschränkungen; `previously mcp` (stdio) und `previously serve` (HTTP, beide Generationen, Bereitschaft über `GET /healthz` ohne Token); fünf Werkzeuge, zwei Ressourcen-Vorlagen, zwei Prompts, jeder Inhalt nur nach `decide` mit der Kette des Clients; das Zugriffsprotokoll als `mcp_access` und `previously access`; `policy gaps` zählt, was MCP zurückhielt; die Seiten `mcp-interface.md`, `mcp-tools.md` und die Anleitung `connect-claude-code-and-vibe.md`; der Handoff `handoffs/2026-10-11-kup6s-mcp.md` | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, beide eingefroren am 2026-10-11 | Zweig `worktree-mcp-konzept`, noch nicht gemergt; Bedingung 9, der Lauf des Betreuers mit Claude Code und Vibe, folgt dem Merge |
 
 Mit Stufe 1c ist Teilprojekt 1 gebaut und abgeschlossen, wie die Architektur
 es in §12.1 zuschneidet: Log, Projektionen, Blobs. Die Auslieferung und die
@@ -669,7 +669,9 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
 - Die Chronik nach Kreis liest das Log in Stapeln von 200 Zeilen, ohne Grenze
   je Aufruf; ein Kreis mit wenigen Treffern liest für eine Seite das ganze Log.
   Eine eigene Projektion, sobald das zu langsam wird, an echter Menge zu messen
-  (ML §5.1, §13 Punkt 1; ruling R-12, P-ML).
+  (ML §5.1, §13 Punkt 1; ruling R-12, P-ML). Der Maßstab: jeder Aufruf bleibt
+  deutlich unter 60 Sekunden, dem Zeitlimit, mit dem Vibe auf einen Aufruf
+  wartet (MK §9); ein dünner Kreis über einem langen Log erreicht es zuerst.
 - Der Rest einer einzelnen Einheit, die allein über die Seitengrenze geht, wird
   im Piloten nicht ausgeliefert; die Kürzung sagt es. Ein Weg dorthin wäre ein
   Argument wie `from_char` (ruling R-5, P-ML).
@@ -679,10 +681,22 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
   Upgrade von `mcp` prüfen (P-ML, Aufgabe 5).
 - Vibe auf `mcp` 2.x: Vibe 2.26.1 spricht `2025-11-25`. Sobald Vibe die neue
   Generation spricht, fallen `stateless_http=True` als Schalter für die alte
-  und der Test mit `mode="legacy"` weg (MK §1.1, §10 Punkt 3).
+  und der Test mit `mode="legacy"` weg (MK §1.1, §10 Punkt 3). Ob
+  `/mcp refresh` in Vibes Standard-Harness neue Werkzeuge holt, ist ungemessen
+  (M); bis dahin nach einem Release `--legacy-harness`, wie die Anleitung sagt.
 - Die Menge der `mcp_access`-Events — eine Handlung je Aufruf, geschätzt einige
   tausend im Monat — beobachten und eine Schwelle nennen, ab der
-  zusammengefasst werden müsste (MK §5, §10 Punkt 2).
+  zusammengefasst werden müsste (MK §5, §10 Punkt 2). Sie bremst jeden Aufruf:
+  jeder liest die Policy, über HTTP zweimal (Token und Aufruf). Bis 2026-10-11
+  las `read_policy` dabei jede Handlung und übersprang die `mcp_access` erst in
+  Python; gemessen am 2026-10-11 mit 6.000 Einträgen 0,341 s je Lesen (die
+  Endprüfung maß am selben Tag 0,425 s). Seitdem holt `LogStore.actions` per
+  SQL-Filter nur die Policy-Handlungen, ohne Migration: 0,010 s bei 6.000
+  Einträgen, am selben Tag gemessen (ruling R-17, P-ML). Die Datenbank besucht
+  weiter jede Handlung; die Zeit wächst langsamer, aber sie wächst.
+- Eine Projektion der Policy, sobald auch das gefilterte Lesen spürbar wird;
+  `previously access`, `policy gaps` und die Lesungen der Tilgung lesen
+  weiterhin jede Handlung (ruling R-17, P-ML).
 - Mehrere Replikate erst, wenn zwei Worker hinter einem Lastverteiler gemessen
   sind; bis dahin eines (MK §2, §10 Punkt 4; der Handoff
   `handoffs/2026-10-11-kup6s-mcp.md`).
@@ -696,11 +710,20 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
   zur Prüfung von Claude Code siehe *Spätere Teilprojekte*).
 - Der Effekt der Einzäunung von Fremdinhalt auf aktuelle Modelle ist
   ungemessen (MK §6, §10 Punkt 8).
-- Ein Aufruf ohne Eintrag, und ein Eintrag ohne Zustellung: hält der Prozess
-  zwischen Antwort und Schreiben an, fehlt das `mcp_access`, wie beim Gate
-  (ML §7); über stdio schreibt ein Aufruf, der noch läuft, wenn stdin schließt,
-  sein `mcp_access`, und die Antwort erreicht den Client nie (ruling R-12,
-  P-ML). Steht auf `trust-boundaries.md`.
+- Ein Eintrag ohne Zustellung: das `mcp_access` wird vor der Antwort
+  geschrieben, also fehlt nie der Eintrag einer Antwort, die ankam. Geht die
+  Antwort danach verloren — stdin geschlossen, HTTP-Verbindung abgebrochen,
+  Prozess beendet —, steht sie im Protokoll als geliefert. Die Lesart von ML §7,
+  ein Abbruch verliere den Eintrag wie beim Gate, trifft hier nicht zu: das Gate
+  ruft erst und schreibt dann, der Server liest, schreibt und antwortet (ruling
+  R-21, P-ML). Steht auf `trust-boundaries.md` und `mcp-interface.md`.
+- Eine Rotation zwischen Tokenprüfung und Aufruf: die Hülle löst den Token zu
+  einem Namen auf, der Aufruf sucht den Client danach im eigenen Lesen der
+  Policy. Ein `client add` desselben Namens dazwischen bedient die eine Anfrage
+  mit dem alten Token unter dem neuen Eintrag, der einen anderen Anbieter
+  nennen kann. Fenster: eine Anfrage. Behebung, wenn nötig: den Hash des Tokens
+  in `scope["state"]` mitgeben und im Schnappschuss des Aufrufs gegen
+  `token_sha256` prüfen (Endprüfung, P-ML). Steht auf `mcp-interface.md`.
 - Kleinkram der Ausführung, benannt und nicht verfolgt (P-ML, Aufgabe 5):
   scheitert `record_access` selbst nach einem erfolgreichen Lesen, bekommt der
   Client die Meldung des SDK `Error executing tool …`, die nicht mit `Error: `

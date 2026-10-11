@@ -48,6 +48,25 @@ an diesen Stellen:
 - **Ein ausgeliefertes Event trägt im `mcp_access` seine Kreise** (`circles`),
   damit `previously access --circle` auch `get_event` findet (Ruling R-3), und
   das Protokoll nennt nur, was auf der Seite stand (Ruling R-9).
+- **Ein zurückgehaltenes Event trägt zusätzlich `uncovered` und `source`**
+  (§7 „die betroffenen Kreise"). `circles` sind alle Kreise des Events, nach
+  denen `previously access --circle` sucht; `uncovered` sind die ohne Regel,
+  und nur sie zählt `policy gaps`. Ein Event ohne Kreis zählt dort unter
+  seiner Quelle, wie beim Gate (Ruling R-16).
+- **Der Eintrag wird vor der Antwort geschrieben** (§7 „Ein Abbruch zwischen
+  Antwort und Schreiben verliert den Eintrag; wie beim Gate"). Das trifft
+  nicht zu: der Server liest, schreibt und antwortet dann. Die benannte Grenze
+  ist die umgekehrte: eine Antwort, die nach dem Schreiben verloren geht
+  (stdin geschlossen, HTTP-Verbindung abgebrochen, Prozess beendet), steht im
+  Protokoll als geliefert; ein gescheitertes Schreiben gibt dem Client den
+  Fehler des SDK und keinen Inhalt (Ruling R-21).
+- **Bereitschaft über `GET /healthz`** (§8 „Bereitschaft über
+  `server/discover`"). Die Route braucht keinen Token, antwortet nach einer
+  trivialen Abfrage mit festem Körper, erreicht kein MCP, zeigt keine Daten
+  und schreibt keinen Eintrag. Ein Token für die Bereitschaft wäre ein voller
+  Client mit Lesezugriff gewesen, und der Grund für den Token, wer fragte,
+  gilt für eine Route ohne Aufruf nicht; `server/discover` mit Token bleibt
+  die Handprobe des Betreuers (Ruling R-18).
 
 Die Seiten `mcp-interface.md` und `mcp-tools.md` tragen den Stand, und sie
 gelten.
