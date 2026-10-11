@@ -201,7 +201,8 @@ An erasure takes the content out of the log and the blob out of the store.
 It stays in every backup of the database, and in every backup or copy of the bucket, until their retention runs out, and a restore to a point before the erasure brings it back; {ref}`restore-from-a-backup` shows what to do then.
 It stays at its source as well, such as the mail server, the folder a mail came from, the backups of either, and the mail clients of the people who received it.
 
-If you promise an erasure to anybody, name what it covers: the database and the retention of its backups, the bucket and the retention of any copy of it, and the retention of each model provider the gate sent the content to.
+If you promise an erasure to anybody, name what it covers: the database and the retention of its backups, the bucket and the retention of any copy of it, and the retention of each model provider the content reached, whether the gate sent it or an MCP client received it and handed it on.
+Find the clients that received an event with `previously access`; see {ref}`cli-access`.
 Say in the promise that it doesn't cover the source, such as the mail server and its backups.
 The address of a blob, the source key `(source, external_id)` and every hash stay as well.
 An event written before stage 1c, in hash format 1, has no salt, so short erased content stays guessable from its digests; see {ref}`erasure`.

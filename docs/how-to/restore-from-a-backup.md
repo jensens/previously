@@ -22,22 +22,30 @@ How to take anchors is in {ref}`verify-the-chain`.
 
 ## Check against the anchors as of the backup
 
-Check the restored log against the anchor file as it stood at the moment of the backup's recovery point: the moment a dump took its snapshot, or the point in time a point-in-time recovery stopped at.
+Check the restored log against the anchor file as it stood at the backup's recovery point: the snapshot of a dump, or the target of a point-in-time recovery.
 
 1.  Find that moment.
-    For a dump that `pg_dump --format=custom` wrote, `pg_restore --list` prints it in its header:
+    For a dump that `pg_dump --format=custom` wrote, decrypt it first with the key that opens it, and run `pg_restore --list` on the decrypted file:
 
     ```shell
     pg_restore --list previously.dump | grep 'Archive created at'
     ```
+
+    It prints the moment `pg_dump` created the archive, just before it took its snapshot.
+    Use that moment: an anchor file from slightly earlier can only leave out an anchor the dump holds, never add one it lacks.
+    For a point-in-time recovery, the moment is the recovery target you set.
 
 2.  Get the version of the anchor file from before that moment from the place you keep it: under version control, or as a copy or message.
     The file doesn't date its own lines, so you can't read that version off the current file.
     In a Git repository that holds the file as `anchors.txt` on `main`, this takes the last version committed before the moment:
 
     ```shell
-    git show "$(git rev-list -1 --before='2026-10-11 03:00:00 UTC' main)":anchors.txt > anchors-restored.txt
+    rev=$(git rev-list -1 --before='2026-10-11 03:00:00 UTC' main)
+    test -n "$rev" && git show "$rev":anchors.txt > anchors-restored.txt
     ```
+
+    If `git rev-list` prints no commit, `test` fails and no file is written: the backup predates every anchor, so there's nothing to check against yet.
+    Run `previously verify` without `--anchors` instead, and continue with *After the check* below.
 
     Don't take a version recorded after the moment: it holds anchors from after it, and each of those reads as a loss.
     If the backup is newer than the newest anchor, that version is the file as it stands today.

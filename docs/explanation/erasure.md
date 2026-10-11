@@ -200,8 +200,11 @@ Whoever reads the log can see the gap between the two, and the check is quiet ag
 
 An erasure takes content out of the log's tables, and that's less than taking it out of the world.
 
-So a promise of erasure says what it covers, and it covers only the data Previously holds: the database and its backups, the bucket and any backup or copy of it, and what the gate sent to a model provider, which only that provider's retention ends.
-It never covers a source system: not the mail server, the folder a mail came from, the backups of either, or the mail clients of the people who received the mail.
+So a promise of erasure says what it covers: what Previously holds, and what Previously itself passed on.
+What it holds is the database and its backups, and the bucket and any backup or copy of it.
+What it passed on went to a model provider by two ways: what the gate sent to a provider, and what an MCP client received and handed on to the provider behind it.
+Both copies stay until that provider's retention ends, which no erasure shortens, and `previously access` is the record of which client received which event ({ref}`cli-access`).
+A promise never covers a source system: not the mail server, the folder a mail came from, the backups of either, or the mail clients of the people who received the mail.
 A promise says that in so many words, because whoever hears that something is erased takes it to be gone everywhere.
 
 **Backups keep it.**

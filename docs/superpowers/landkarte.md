@@ -39,10 +39,11 @@ oben), aber in keinem Betrieb und noch mit keinem echten Client gegen
 In Betrieb ist `0.1.0a2` in kup6s, nach den Handoffs der Auslieferung und
 der Aufnahme: Datenbank, Bucket, Werkzeug-Pod, die CronJobs `project`,
 `anchor` (täglich seit dem 2026-10-06) und `verify`, die Aufnahme des echten
-Ordners mit neun Mails. Jede Prüfung beider Handoffs ist bestanden, und kup6s weicht an vier
-Stellen begründet ab — PostgreSQL 18, verschlüsselte Dumps statt Barman oder
-pgBackRest, Zugangsdaten für das ganze Hetzner-Projekt, die Ankerdatei in Git
-bei keinem Dritten (RK). Das Log dort ist eine Probe: die Daten werden vor dem
+Ordners mit neun Mails. Jede Prüfung beider Handoffs ist bestanden, und
+kup6s weicht an fünf Stellen begründet ab — PostgreSQL 18, verschlüsselte
+Dumps statt Barman oder pgBackRest, Zugangsdaten für das ganze
+Hetzner-Projekt, die Ankerdatei in Git bei keinem Dritten, die Restore-Probe
+von Hand (RK). Das Log dort ist eine Probe: die Daten werden vor dem
 regulären Gebrauch zurückgesetzt, das dauerhafte Log beginnt danach.
 
 Nicht gebaut: die Suche, jede
@@ -85,8 +86,9 @@ Reihenfolge: der Merge dieses Zweigs; die Handoffs
 der zweite mit der Antwort auf die Rückmeldung, zusammen an den Agenten in
 kup6s; Bedingung 9 der Einheit 4, der Lauf des Betreuers mit Claude Code und
 Vibe gegen `previously serve` (ML §12); in kup6s Einheit 2 nach den beiden
-Handoffs; und als nächste Einheit mit Spec Einheit 5, die Feststellungen. Was die Aufnahme offen lässt, steht unten
-unter *Aufnahme aus IMAP* und an den Einheiten, zu denen es gehört.
+Handoffs; und als nächste Einheit mit Spec Einheit 5, die Feststellungen.
+Was die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an
+den Einheiten, zu denen es gehört.
 
 Der Weg dorthin hatte zwei Umwege, und sie stehen hier, damit die Reihenfolge
 nicht wie ein Versehen aussieht: der Prüfpunkt empfahl zuerst den Einwurf mit
@@ -1144,7 +1146,6 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
   `0 appended`, die Flags im Ordner blieben unverändert (RK), Commit
   `3465fb1`. Gemessen am 2026-10-06 im Image: 529 bis 531 MiB für eine Mail
   von 49,5 MiB (P-PI, Aufgabe 6).
-
 - ~~Bedingung 10 der Abnahme von Gate und Policy~~ (PG §10) — der Lauf des
   Betreuers am 2026-10-09, lokal, aus `main` nach PR #9, gegen die echten APIs
   und Ollama mit `qwen3:4b`, in einer Probe mit zehn Mails aus dem Ordner

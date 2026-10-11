@@ -61,7 +61,7 @@ Either is acceptable, as long as it's stated, because what a restore loses is ev
 For the log, that's every event since the recovery point.
 The mail the ingest took in comes back without anybody's help.
 The connector's watermark lives in the same database as the log, and it's written only after the batch it covers is appended, so a backup never holds a watermark ahead of its log; {ref}`connectors` explains the order.
-After a restore, the next run of `ingest imap` reads the folder from the restored watermark and takes in again what the restore gave up, under new `id` values.
+After a restore, the next run of `ingest imap` reads the folder from the restored watermark and takes in again what the restore gave up, as new events whose `id` values may repeat those the restore gave up.
 It appends nothing twice: a mail the restored log holds already, because the backup fell between an append and the watermark that followed it, is found under its source key and counted as known.
 That holds only for what the folder still holds: a mail taken in after the recovery point and removed from the folder since is gone with the restore.
 
