@@ -812,7 +812,14 @@ previously policy gaps [--since TIME]
 
 A form that writes prints the statement as a JSON object, asks `write? [y/N]` and reads the answer from standard input.
 `y` and `yes`, in any case, write the event and print `policy event ID`.
-Any other answer, or an input that ends, writes nothing, prints `nothing written` to standard error and returns 1.
+Any other answer writes nothing, prints `nothing written` to standard error and returns 1.
+An input that ends before an answer, such as under `kubectl exec` without `-i`, does the same after one more line:
+
+```text
+no answer: the input ended before one came; --yes writes without asking
+nothing written
+```
+
 `--yes` skips the question.
 
 A statement the write path refuses is an input error: one sentence on standard error, return code 2, no question asked and nothing written.
@@ -912,6 +919,14 @@ An erased event is denied with the reason `the event is erased`.
 An event that isn't an observation, such as a policy event, a redaction or a `model_call`, is denied with the reason `the event is not an observation`.
 Where the built-in rule `local_only` acted and the decision chose the local model, `gate explain` writes the `processed locally` line of `gate try` to standard error, after the table; a denial gets no such line.
 
+Where the decision allows no candidate and the provider of at least one has no declaration, `gate explain` writes one more line to standard error, after the table, naming those providers in the order of the candidates:
+
+```text
+undeclared: anthropic, mistral, local — the gate chooses among its own providers, each declared with previously policy provider NAME …, apart from the provider of an MCP client
+```
+
+The gate calls only the providers its task names, and a provider declared for an MCP client, such as `claude-max`, is none of them.
+
 ### `gate try`
 
 Runs the task over the event, and records the call as an event of the kind `action` with `payload.action` set to `model_call`, whatever became of it.
@@ -950,6 +965,7 @@ alarm: inference_geo requested us, reported global
 schema_invalid: the answer of anthropic/claude-haiku-5-5 does not match the schema of mail_overview
 Error: anthropic: the provider is not configured — set ANTHROPIC_API_KEY
 Error: local: call failed (APIConnectionError): Connection error. — the local model server is http://localhost:11434/v1
+undeclared: local — the gate chooses among its own providers, each declared with previously policy provider NAME …, apart from the provider of an MCP client
 ```
 
 The first comes before everything else, one line per circle without a rule, or for the source when no rule applied at all; under a real rule there's no such line.
@@ -957,6 +973,7 @@ It's written only where the local model answered: a call denied because no local
 The second is an alarm: the provider reported another inference region than the one requested, and the call returns 3.
 The third is an answer that isn't JSON, lacks a field, or has a field too many; the gate checks every answer itself, even where the provider enforces the schema.
 The fourth names the setting that's missing, and the fifth the address of the local model server that didn't answer.
+The sixth follows a denial where the provider of a candidate has no declaration, as for `gate explain`.
 A call that failed prints the sentence of the client, after the provider and the class of the error, and never the key.
 What the provider said doesn't go into the event: the event names the provider, the class of the error and the HTTP status.
 

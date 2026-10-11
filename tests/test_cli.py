@@ -4133,13 +4133,19 @@ def test_policy_circle_asks_and_a_y_writes(
     assert _action_count(db) == 1
 
 
+# What a command that asks says when its input ends without an answer, as
+# under `kubectl exec` without `-i`: the `n` above says `nothing written` alone.
+_NO_ANSWER = "no answer: the input ended before one came; --yes writes without asking\n"
+
+
 @pytest.mark.db
-def test_policy_without_an_answer_writes_nothing(
+def test_policy_without_an_answer_writes_nothing_and_names_yes(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     _setup(db, monkeypatch)
     _answer(monkeypatch, "")
     assert main(["policy", "circle", "xz", "--statement", "s"]) == 1
+    assert capsys.readouterr().err == _NO_ANSWER + "nothing written\n"
     assert _action_count(db) == 0
 
 
@@ -4483,8 +4489,16 @@ def test_client_add_without_an_answer_writes_nothing(
     assert main(argv) == 1
     out, err = capsys.readouterr()
     assert "token" not in out
-    assert "nothing written" in err
+    assert err == _NO_ANSWER + "nothing written\n"
     assert _action_count(db) == before
+
+    # The same for `revoke`, the third command that asks.
+    assert main([*argv, "--yes"]) == 0
+    capsys.readouterr()
+    _answer(monkeypatch, "")
+    assert main(["client", "revoke", "claude-code", "--statement", "gone"]) == 1
+    assert capsys.readouterr().err == _NO_ANSWER + "nothing written\n"
+    assert _action_count(db) == before + 1
 
 
 @pytest.mark.db

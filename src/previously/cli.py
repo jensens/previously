@@ -1518,12 +1518,21 @@ def _policy_statement(args: argparse.Namespace) -> Statement:
 
 def _confirmed(args: argparse.Namespace) -> bool:
     """Asks on the terminal unless `--yes`; an answer that never comes (the
-    input ended) is a no."""
+    input ended) is a no, and says so.
+
+    The input ends without an answer where nobody can give one, such as
+    under `kubectl exec` without `-i`, where kup6s found on 2026-10-11 that
+    `client add` printed no token. `nothing written` alone, which the caller
+    prints after this, says neither why nor what to do instead."""
     if args.yes:
         return True
     try:
         answer = input("write? [y/N] ")
     except EOFError:
+        print(
+            "no answer: the input ended before one came; --yes writes without asking",
+            file=sys.stderr,
+        )
         return False
     return answer.strip().lower() in {"y", "yes"}
 
@@ -1718,6 +1727,30 @@ def _fallback_lines(storage: PostgresStorage, decision: Decision, event_id: int)
     return [_fallback_line(escape_field(scope)) for scope in scopes]
 
 
+def _undeclared_lines(decision: Decision) -> list[str]:
+    """`_undeclared_line` as a list of none or one."""
+    line = _undeclared_line(decision)
+    return [] if line is None else [line]
+
+
+def _undeclared_line(decision: Decision) -> str | None:
+    """One line where the decision chose nothing and a candidate of the task
+    failed because its provider has no declaration: the providers, and that
+    the gate's are declared apart from an MCP client's.
+
+    kup6s's maintainer met it on 2026-10-11 after setting up a client: the
+    client's chain declared, a rule for the circle, and `gate explain` said
+    `denied`, which read like the client's view of the circle. A decision
+    that chose a provider gets no line, since nothing was denied."""
+    if decision.chosen is not None or not decision.undeclared:
+        return None
+    names = ", ".join(escape_field(name) for name in decision.undeclared)
+    return (
+        f"undeclared: {names} — the gate chooses among its own providers, each declared "
+        "with previously policy provider NAME …, apart from the provider of an MCP client"
+    )
+
+
 def _fallback_line(scope: str) -> str:
     return f"processed locally: no rule for {scope} — set one with previously policy rule {scope} …"
 
@@ -1770,7 +1803,7 @@ def _cmd_gate_explain(args: argparse.Namespace) -> int:
         fallback = _fallback_lines(storage, decision, args.event)
     for line in _explain_lines(decision, rule_ids):
         print(line)
-    for line in fallback:
+    for line in [*fallback, *_undeclared_lines(decision)]:
         print(line, file=sys.stderr)
     return 0
 
@@ -1828,7 +1861,8 @@ def _cmd_gate_try(args: argparse.Namespace) -> int:
         reported = escape_controls(called.reported_geo or "nothing")
         print(f"alarm: inference_geo requested {requested}, reported {reported}", file=sys.stderr)
     if called.outcome != "ok":
-        print(_failure_line(called, adapters), file=sys.stderr)
+        for line in [_failure_line(called, adapters), *_undeclared_lines(called.decision)]:
+            print(line, file=sys.stderr)
         return 2
     if called.erased_by is not None:
         print(f"erased: {called.message}; the answer is erased with it", file=sys.stderr)

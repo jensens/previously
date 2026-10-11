@@ -1727,8 +1727,9 @@ def test_gate_explain_says_no_fallback_for_a_denial(
     db: Engine, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     """`local_only` acts and no local provider is declared: the table says
-    both, and standard error stays empty, since nothing would be processed
-    locally."""
+    both, and standard error says no `processed locally`, since nothing would
+    be processed locally. It names `local` as undeclared, the one provider
+    whose declaration is missing."""
     storage = PostgresStorage(db)
     event_id = append_mail(storage)
     declare(storage, ANTHROPIC, MISTRAL)
@@ -1741,6 +1742,74 @@ def test_gate_explain_says_no_fallback_for_a_denial(
     assert lines[1] == "rules\tlocal_only"
     assert lines[5] == "candidate\t-\tno local provider is declared"
     assert lines[-1] == "decision\tdenied"
+    assert err == _undeclared("local")
+
+
+# The client's chain of `connect-claude-code-and-vibe.md`: a provider that the
+# gate never calls, since no candidate of the task names it.
+CLAUDE_MAX = Provider(
+    "claude-max", (Inference("us", frozenset({"us"})),), frozenset({"us"}), 30, False, False
+)
+
+
+def _undeclared(names: str) -> str:
+    return (
+        f"undeclared: {names} — the gate chooses among its own providers, each declared "
+        "with previously policy provider NAME …, apart from the provider of an MCP client\n"
+    )
+
+
+@pytest.mark.db
+def test_gate_says_which_of_its_providers_are_undeclared_when_that_denies(
+    db: Engine,
+    model_server: ModelServer,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """What kup6s's maintainer met on 2026-10-11: the chain of an MCP client
+    declared, a rule for the circle, and `gate explain` denied, which read
+    like the client's view. Both forms name the gate's providers that have
+    no declaration; the hint stands where `cli.md` quotes it."""
+    storage = PostgresStorage(db)
+    event_id = append_mail(storage)
+    declare(storage, CLAUDE_MAX)
+    circle_xz(storage)
+    set_rule(storage, "circle:xz", "eu", "us")
+    _env(monkeypatch, db, model_server)
+
+    assert main(["gate", "explain", str(event_id)]) == 0
+    out, err = capsys.readouterr()
+    assert out.splitlines()[-1] == "decision\tdenied"
+    assert err == _undeclared("anthropic, mistral, local")
+    assert err.rstrip("\n") in quoted("`gate explain` writes one more line to standard error")
+
+    assert main(["gate", "try", str(event_id)]) == 2
+    out, err = capsys.readouterr()
+    (row,) = model_calls(storage)
+    assert out == f"model_call: event {row.id}\n"
+    denied, hint = err.splitlines(keepends=True)
+    assert denied.startswith("denied: anthropic/claude-haiku-5-5: no declaration for the provider")
+    assert hint == _undeclared("anthropic, mistral, local")
+    assert model_server.requests == []
+
+
+@pytest.mark.db
+def test_gate_says_nothing_of_declarations_where_a_declared_provider_is_chosen(
+    db: Engine, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The control: `anthropic` has no declaration and is passed over, and
+    `mistral` is chosen. Nothing is denied, so nothing is said."""
+    storage = PostgresStorage(db)
+    event_id = append_mail(storage)
+    declare(storage, MISTRAL, LOCAL)
+    circle_xz(storage)
+    set_rule(storage, "circle:xz", "eu")
+    monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
+
+    assert main(["gate", "explain", str(event_id)]) == 0
+    out, err = capsys.readouterr()
+    assert "rejected: anthropic/claude-haiku-5-5: no declaration" in out
+    assert out.splitlines()[-1] == "decision\tmistral/mistral-small-2603, inference_geo -"
     assert err == ""
 
 

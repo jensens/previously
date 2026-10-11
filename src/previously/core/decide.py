@@ -58,6 +58,10 @@ class Decision:
     inference_geo: str | None  # None where the provider has no selectable space
     fallback: Fallback | None
     reasons: tuple[str, ...]  # one sentence per rejected candidate
+    # The providers of the candidates rejected for want of a declaration, in
+    # the order of the candidates, so that a caller can say which ones to
+    # declare without reading it out of the sentences.
+    undeclared: tuple[str, ...] = ()
 
 
 def _matches(member: str, address: str) -> bool:
@@ -255,6 +259,7 @@ def decide(
     rule_keys = tuple(rule.scope for rule in rules) + ((LOCAL_ONLY,) if local_only else ())
 
     reasons: list[str] = []
+    undeclared: list[str] = []
     if local_only and not any(p.local for p in policy.providers.values()):
         reasons.append(NO_LOCAL_PROVIDER)
     chosen: Candidate | None = None
@@ -271,6 +276,8 @@ def decide(
         )
         if sentence is not None:
             reasons.append(sentence)
+            if candidate.provider not in policy.providers:
+                undeclared.append(candidate.provider)
         else:
             chosen, geo = candidate, space
             break
@@ -285,4 +292,5 @@ def decide(
         inference_geo=geo,
         fallback=Fallback(NO_RULE, without_rule) if local_only else None,
         reasons=tuple(reasons),
+        undeclared=tuple(undeclared),
     )
