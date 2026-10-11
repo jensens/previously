@@ -1,7 +1,56 @@
 # Previously — Pilot, Einheit 4: der MCP-Lesezugang
 
+> **Eingefrorener Entwurfsbericht, Stand 2026-10-11.**
+> Dieses Dokument wird nicht mehr nachgezogen.
+> Es hält fest, **wie und warum** entschieden wurde, und bleibt dafür im
+> Repository. Die lebende Begründung steht in der Dokumentation unter
+> `docs/` — soweit sie dort steht; wo sie fehlt, ist dieses Dokument die
+> einzige Quelle. Weicht es von der Doku ab, gilt die Doku.
+>
+> Ein neuer Spec für eine neue Stufe entsteht wieder auf Deutsch — das ist
+> die Sprache, in der die Absicht formuliert wird. Er friert ein, sobald
+> seine Explanation-Seiten stehen. Das Einfrieren als **Ablauf**, und die
+> Karte von jedem zitierten Paragraphen zu seiner Seite, stehen in
+> [About the frozen design records](../../explanation/design-records.md).
+
 **Datum:** 2026-10-10
-**Status:** Entwurf, vom Betreuer am 2026-10-11 durchgesehen („ok für den Plan"), Grundlage des Plans
+**Status:** eingefroren am 2026-10-11, zusammen mit dem Konzept; zuvor Entwurf,
+vom Betreuer am 2026-10-11 durchgesehen („ok für den Plan"), Grundlage des Plans
+`docs/superpowers/plans/2026-10-11-pilot-mcp-lesezugang.md`. Bedingung 9 aus
+§12 folgt dem Merge. Wo der Bau vom Wortlaut abweicht, steht es im Plan und im
+Ausführungsprotokoll (`docs/superpowers/sdd/2026-10-11-pilot-mcp-lesezugang/`),
+an diesen Stellen:
+
+- **Kein `TokenVerifier`** (§9). Der Token wird in einer eigenen ASGI-Hülle
+  geprüft (`mcp_server/auth.py`), weil das SDK mit `auth=` Protected Resource
+  Metadata veröffentlicht und es keinen Autorisierungsserver gibt (K §7;
+  Planentscheidung 1, Ruling R-10).
+- **Die Vorlage heißt `previously://event/{event_id}`** (§6), nicht `{id}`:
+  der Name `id` hätte eine Lint-Unterdrückung verlangt; die URIs bleiben
+  `previously://event/<n>` (Ruling R-11).
+- **Der Cursor trägt keine Zeit** (§5.1 „kodiert die letzte Stelle
+  (`occurred_at`, `id`)“). Er trägt die ID des letzten verbrauchten Elements,
+  die Filter und die Seite; die Zeit schlägt der Server im Log nach, weil die
+  Zeit eines zurückgehaltenen Events Inhalt ist (Ruling R-13).
+- **Eine einzelne Einheit über der Seitengrenze** (§5.1 „verweist auf
+  `get_event`“) endet mit dem Vermerk, dass ihr Rest im Piloten nicht
+  ausgeliefert wird; ein Verweis auf dieselbe Einheit lieferte dieselbe
+  Kürzung (Ruling R-5).
+- **Die Grenze von 60.000 Zeichen** (§5.1 „im Bau an echten Mails
+  nachgemessen“) ist im Bau nicht gemessen worden; die Messung gehört zu
+  Bedingung 9.
+- **Die Meldung für ein Event, das keine Wahrnehmung ist** (§5.2), lautet
+  `Error: previously://event/<id> — the event is not an observation but an
+  <kind>; get_event serves observations`.
+- **„Auch ein abgewiesener“ Aufruf** (§7) heißt: ein bekannter, nicht mehr
+  gültiger Client. Eine Anfrage ohne gültigen Token schreibt kein
+  `mcp_access`, weil es keinen Prinzipal gibt (Ruling R-12).
+- **Ein ausgeliefertes Event trägt im `mcp_access` seine Kreise** (`circles`),
+  damit `previously access --circle` auch `get_event` findet (Ruling R-3), und
+  das Protokoll nennt nur, was auf der Seite stand (Ruling R-9).
+
+Die Seiten `mcp-interface.md` und `mcp-tools.md` tragen den Stand, und sie
+gelten.
 
 Detail-Spec für die vierte Einheit des Piloten. Er schneidet aus dem Konzept
 `specs/2026-10-10-mcp-schnittstelle.md` („K" mit Abschnitt) den Lesezugang und
@@ -10,7 +59,7 @@ Recherche: `recherche/2026-10-10-mcp-messungen.md` („M"),
 `recherche/2026-10-09-mcp-stand-und-designgrundlagen.md` („R").
 
 Dieser Spec friert ein, sobald seine Explanation-Seiten stehen (`CLAUDE.md`);
-mit ihm friert das Konzept ein.
+mit ihm friert das Konzept ein. Das geschah am 2026-10-11.
 
 ---
 
@@ -297,6 +346,11 @@ Abgenommen ist die Arbeit mit dem Merge nach `main`; Bedingung 9 folgt ihm.
 ---
 
 ## 13. Was offen bleibt
+
+Gepflegt, solange der Spec lebte; beim Einfrieren am 2026-10-11 gingen die
+Punkte in die Landkarte (`docs/superpowers/landkarte.md`), unter *MCP-Lesezugang
+(Pilot, Einheit 4)*, zusammen mit denen aus K §10 und dem, was die Ausführung
+offen ließ. Die Liste hier ist der Stand dieses Tages.
 
 1. **Eine eigene Projektion für die Chronik nach Kreis**, sobald das Lesen des
    Logs zu langsam wird (§5.1); zu messen an echter Menge.

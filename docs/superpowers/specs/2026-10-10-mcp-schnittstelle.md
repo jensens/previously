@@ -1,7 +1,41 @@
 # Previously — die MCP-Schnittstelle als Ganzes
 
+> **Eingefrorener Entwurfsbericht, Stand 2026-10-11.**
+> Dieses Dokument wird nicht mehr nachgezogen.
+> Es hält fest, **wie und warum** entschieden wurde, und bleibt dafür im
+> Repository. Die lebende Begründung steht in der Dokumentation unter
+> `docs/` — soweit sie dort steht; wo sie fehlt, ist dieses Dokument die
+> einzige Quelle. Weicht es von der Doku ab, gilt die Doku.
+>
+> Ein neuer Spec für eine neue Stufe entsteht wieder auf Deutsch — das ist
+> die Sprache, in der die Absicht formuliert wird. Er friert ein, sobald
+> seine Explanation-Seiten stehen. Das Einfrieren als **Ablauf**, und die
+> Karte von jedem zitierten Paragraphen zu seiner Seite, stehen in
+> [About the frozen design records](../../explanation/design-records.md).
+
 **Datum:** 2026-10-10
-**Status:** Entwurf, vom Betreuer am 2026-10-11 durchgesehen („ok für den Plan"), Grundlage des Plans
+**Status:** eingefroren am 2026-10-11, zusammen mit dem Spec der Einheit 4
+(`specs/2026-10-10-pilot-mcp-lesezugang.md`); zuvor Entwurf, vom Betreuer am
+2026-10-11 durchgesehen („ok für den Plan"), Grundlage des Plans
+`docs/superpowers/plans/2026-10-11-pilot-mcp-lesezugang.md`. Es löst §8 der
+Architektur ab; `design-records.md` vermerkt es. Gebaut ist davon der
+Lesezugang. Wo der Bau vom Wortlaut abweicht:
+
+- **Kein `TokenVerifier`** (§7): eine eigene ASGI-Hülle prüft den Token, weil
+  das SDK mit seinem Verifier Protected Resource Metadata veröffentlicht; der
+  Wechsel zu OAuth tauscht die Hülle gegen den Verifier.
+- **Das Beispiel in §6** steht so nicht im Code: der Kopf nennt `page N` ohne
+  Gesamtzahl, der Betreff steht als Einheit 1 im Zaun und nicht darüber
+  (Ruling R-4 des Plans), die Einheiten stehen unter `#unit-<n>` (Ruling R-7),
+  der Tag hat acht Hexzeichen.
+- **Der Grund im Platzhalter** (§3.3) nennt Regeln und Kette mit eigenen Sätzen,
+  etwa `circle team has no rule, so only local processing is allowed; this
+  client (claude-code) processes with claude-max, which is not local`.
+- **Ein ausgeliefertes Event trägt im `mcp_access` seine Kreise** (§5), ein
+  zurückgehaltenes dazu `reason_code`, und `era` ist Pflicht, `null` erlaubt.
+
+Die Seiten `mcp-interface.md` und `mcp-tools.md` tragen den Stand, und sie
+gelten.
 
 Konzept für das Hauptinterface von Previously. Es **löst §8 der Architektur
 ab** (`specs/2026-10-01-architektur.md`, eingefroren) und entscheidet, wie die
@@ -18,7 +52,7 @@ die Messungen vom 2026-10-10 (`recherche/2026-10-10-mcp-messungen.md`, „M" mit
 Abschnitt), das Gespräch mit dem Betreuer am 2026-10-10 und die Landkarte.
 
 Dieser Spec friert ein, sobald seine Explanation-Seiten stehen (`CLAUDE.md`);
-die stehen mit Einheit 4.
+die stehen mit Einheit 4, und eingefroren ist er am 2026-10-11.
 
 ---
 
@@ -381,6 +415,12 @@ Der Server steht, es fehlt noch der TLS-Zugang. Bis Freitag?
 ---
 
 ## 10. Was offen bleibt
+
+Gepflegt, solange der Spec lebte; beim Einfrieren am 2026-10-11 gingen die
+Punkte in die Landkarte (`docs/superpowers/landkarte.md`), jeder unter die
+Einheit, zu der er gehört: die Projekte (Punkt 1) unter *Feststellungen und
+Entitäten*, die übrigen unter *MCP-Lesezugang (Pilot, Einheit 4)*. Die Liste
+hier ist der Stand dieses Tages.
 
 1. **Wie Projekte entworfen werden.** Die Idee des Betreuers: ein Projekt als
    „Kreis von Kreisen", rekursiv aufgelöst, mit Unterprojekten — „sind

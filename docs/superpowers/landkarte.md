@@ -23,24 +23,27 @@ Gebaut und abgenommen, auf `main`:
 | 1c | Hash-Format v=2 mit Salz; Tilgung von Event, Einheiten und Blob als Event der Art `action`, mit Anordnung und Vollzug in `verify`; Projektionen folgen einer Tilgung; Blobs im Format `age` auf S3, `append --attach`, `blob get`, `verify --blobs`; `redact` | `specs/2026-10-04-stufe-1c-blobs-und-tilgung.md` | PR #5, `d16f3fc` |
 | Auslieferung | Die Migrationen im Paket und `previously migrate` unter einer Advisory-Sperre; `PREVIOUSLY_DSN` nach einer eigenen Grammatik gelesen; ein Image aus dem Paket auf PyPI, mit Smoke-Test; `release.yml`: Test-PyPI bei jedem Push auf `main`, PyPI und Image für zwei Plattformen bei einem veröffentlichten Release; der Handoff an kup6s | `specs/2026-10-05-auslieferung.md` | PR #6, `fd3e17f`; veröffentlicht als `0.1.0a1`, wie der Spec der Aufnahme festhält |
 | Aufnahme | `RawEvent` trägt `artifact_hash` und `channel_identities`, `append` vergleicht die Inhaltsidentität und weist Abweichendes mit `ArtifactChanged` ab; eine Mail als Event (`core/mail.py`), mit Rohmail und Anhängen als Blobs und einer Mail im Anhang als eigenem Event; `Connector`, `Fetched`, `Watermark`, `WatermarkStore` in `contract`, die Tabelle `watermark` (Migration `0005_watermark`); der Lauf (`core/ingest.py`), der das Wasserzeichen erst nach dem Anfügen schreibt; `connectors/imap.py` und `previously ingest imap`; der Handoff `handoffs/2026-10-06-kup6s-ingest.md` | `specs/2026-10-06-pilot-imap-aufnahme.md` | PR #7, `009c669`; Bedingung 11, der Lauf des Betreuers gegen seinen echten Mailu-Ordner, bestanden am 2026-10-09; veröffentlicht als `v0.1.0a2` am 2026-10-09, der Handoff `handoffs/2026-10-06-kup6s-ingest.md` am selben Tag an den Agenten in kup6s übergeben |
+| Einheit 3 | Gate und Policy: Kreise, Mitgliedschaften, eigene Identitäten, Regeln und die Zusagen der Anbieter als Handlungen im Log (`policy`); die Entscheidung als reine Funktion in `core/decide.py`, die strengste Regel gewinnt, ohne Regel nur lokal, und der Rückfall wird sichtbar (`policy gaps`); `gate` mit den Adaptern für Anthropic, Mistral und ein lokales Modell, der Aufgabe `mail_overview`, einer Preisdatei und dem Audit als `model_call` mit der Kaskade der Tilgung und den Prüfungen in `verify`; die Chronik zeigt nur Wahrnehmungen; die Seiten `trust-boundaries.md`, `processing-policy.md`, `policy-and-model-calls.md` und die Anleitung; der Handoff `handoffs/2026-10-09-kup6s-gate.md` | `specs/2026-10-09-pilot-gate-und-policy.md` | PR #9, `d75c4b3`; Bedingung 10, der Lauf des Betreuers gegen die echten APIs, bestanden am 2026-10-09 |
 
 Gebaut, aber nicht abgenommen — abgenommen ist, was der Betreuer nach `main`
 mergt, und dieser Zweig ist es noch nicht:
 
 | Einheit | Inhalt | Spec | Abnahme |
 |---|---|---|---|
-| 3 | Gate und Policy: Kreise, Mitgliedschaften, eigene Identitäten, Regeln und die Zusagen der Anbieter als Handlungen im Log (`policy`); die Entscheidung als reine Funktion in `core/decide.py`, die strengste Regel gewinnt, ohne Regel nur lokal, und der Rückfall wird sichtbar (`policy gaps`); `gate` mit den Adaptern für Anthropic, Mistral und ein lokales Modell, der Aufgabe `mail_overview`, einer Preisdatei und dem Audit als `model_call` mit der Kaskade der Tilgung und den Prüfungen in `verify`; die Chronik zeigt nur Wahrnehmungen; die Seiten `trust-boundaries.md`, `processing-policy.md`, `policy-and-model-calls.md` und die Anleitung; der Handoff `handoffs/2026-10-09-kup6s-gate.md` | `specs/2026-10-09-pilot-gate-und-policy.md` | PR #9, `d75c4b3`; Bedingung 10, der Lauf des Betreuers gegen die echten APIs, bestanden am 2026-10-09 |
+| 4 | MCP-Lesezugang: Clients als Prinzipale mit Token und Verarbeitungskette (`client`); die Zusage um Betreiber, Training, Unterverarbeiter und Herkunft des Modells erweitert, die Regel um die vier passenden Einschränkungen; `previously mcp` (stdio) und `previously serve` (HTTP, beide Generationen); fünf Werkzeuge, zwei Ressourcen-Vorlagen, zwei Prompts, jeder Inhalt nur nach `decide` mit der Kette des Clients; das Zugriffsprotokoll als `mcp_access` und `previously access`; `policy gaps` zählt, was MCP zurückhielt; die Seiten `mcp-interface.md`, `mcp-tools.md` und die Anleitung `connect-claude-code-and-vibe.md`; der Handoff `handoffs/2026-10-11-kup6s-mcp.md` | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, beide eingefroren am 2026-10-11 | Zweig `worktree-mcp-konzept`, noch nicht gemergt; Bedingung 9, der Lauf des Betreuers mit Claude Code und Vibe, folgt dem Merge |
 
 Mit Stufe 1c ist Teilprojekt 1 gebaut und abgeschlossen, wie die Architektur
 es in §12.1 zuschneidet: Log, Projektionen, Blobs. Die Auslieferung und die
 Aufnahme sind die Einheiten 0 und 1 des Piloten (unten).
 
 Das Gate ist gebaut (Einheit 3, oben) und am 2026-10-09 gegen alle drei
-Anbieter gelaufen (Bedingung 10), aber noch in keinem Betrieb.
+Anbieter gelaufen (Bedingung 10), aber noch in keinem Betrieb. Der
+MCP-Lesezugang ist gebaut (Einheit 4, oben), aber weder gemergt noch in einem
+Betrieb, und noch mit keinem echten Client gegen `previously serve` gelaufen.
 
 Nicht gebaut: die Suche, jede
-Feststellung und jede Entität, MCP-Server, KI-Schicht, jeder Konnektor
-außer dem für IMAP — und kein Betrieb: es gibt ein Paket und ein Image,
+Feststellung und jede Entität, jedes schreibende MCP-Werkzeug, KI-Schicht,
+jeder Konnektor außer dem für IMAP — und kein Betrieb: es gibt ein Paket und ein Image,
 betrieben wird es noch nirgends; das System hat **noch kein einziges echtes
 Event** gehalten, das bleibt. Die Probe der Bedingung 11 wird verworfen, das
 dauerhafte Log beginnt im Cluster.
@@ -66,13 +69,17 @@ Alpha-Release mit `ingest imap`, `v0.1.0a2`, ist am 2026-10-09 veröffentlicht,
 und der Handoff der Aufnahme ist am selben Tag an den Agenten in kup6s
 übergeben. Einheit 3, Gate und Policy, ist abgenommen (PR #9, `d75c4b3`).
 Bedingung 10, der Lauf des Betreuers gegen die echten APIs, ist bestanden
-(unten unter *Erledigt*). Was jetzt kommt, in dieser Reihenfolge: das
-Alpha-Release mit dem Gate und
-sein Handoff `handoffs/2026-10-09-kup6s-gate.md`; in kup6s Einheit 2 nach den
-Handoffs — die erste Aufnahme des echten Ordners geschieht dort; und als
-nächste Einheit mit Spec Einheit 4, der MCP-Lesezugang. Was
-die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an den
-Einheiten, zu denen es gehört.
+(unten unter *Erledigt*). Einheit 4, der MCP-Lesezugang, ist gebaut (oben);
+der Handoff des Gates wurde zurückgehalten, damit Gate und MCP-Server mit
+einem Release kommen. Was jetzt kommt, in dieser Reihenfolge: der Merge von
+Einheit 4; das Alpha-Release `v0.1.0a3` mit Gate und MCP-Lesezugang;
+Bedingung 9 der Einheit 4, der Lauf des Betreuers mit Claude Code und Vibe
+gegen `previously serve` (ML §12); die Handoffs
+`handoffs/2026-10-09-kup6s-gate.md` und `handoffs/2026-10-11-kup6s-mcp.md`
+zusammen an den Agenten in kup6s; in kup6s Einheit 2 nach den Handoffs — die
+erste Aufnahme des echten Ordners geschieht dort; und als nächste Einheit mit
+Spec Einheit 5, die Feststellungen. Was die Aufnahme offen lässt, steht unten
+unter *Aufnahme aus IMAP* und an den Einheiten, zu denen es gehört.
 
 Der Weg dorthin hatte zwei Umwege, und sie stehen hier, damit die Reihenfolge
 nicht wie ein Versehen aussieht: der Prüfpunkt empfahl zuerst den Einwurf mit
@@ -104,9 +111,9 @@ Spec:
 |---|---|---|---|
 | 0 | Auslieferung: Migrationen im Paket, `previously migrate`, Image, Release-Weg, Handoff an kup6s | ein Image, aus dem kup6s alles startet | `specs/2026-10-05-auslieferung.md`, eingefroren am 2026-10-05; abgenommen mit PR #6 (oben) |
 | 1 | Aufnahme aus dem IMAP-Ordner, mit dem Einwurf- und dem Konnektor-Vertrag | Chronik des Kunden; echte Post im Log | `specs/2026-10-06-pilot-imap-aufnahme.md`, eingefroren am 2026-10-06; abgenommen mit PR #7 (oben). Er ersetzt den Entwurf vom 2026-10-04 auf dem Zweig `worktree-pilot-imap-aufnahme` (`9b493f0`) |
-| 2 | Betrieb in kup6s: Datenbank mit Sicherung, Restore-Probe, Bucket, Werkzeug-Pod, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | beginnt beim Image aus Einheit 0; gebaut wird er vom Agenten in kup6s, nie von hier. Was er braucht, sagen die Handoffs `handoffs/2026-10-05-kup6s-delivery.md` und, für die Aufnahme, `handoffs/2026-10-06-kup6s-ingest.md` und, für das Gate, `handoffs/2026-10-09-kup6s-gate.md`, englisch; die ersten beiden liegen dort, das dritte folgt mit dem Merge |
+| 2 | Betrieb in kup6s: Datenbank mit Sicherung, Restore-Probe, Bucket, Werkzeug-Pod, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | beginnt beim Image aus Einheit 0; gebaut wird er vom Agenten in kup6s, nie von hier. Was er braucht, sagen die Handoffs `handoffs/2026-10-05-kup6s-delivery.md` und, für die Aufnahme, `handoffs/2026-10-06-kup6s-ingest.md` und, für das Gate, `handoffs/2026-10-09-kup6s-gate.md` und, für den MCP-Server, `handoffs/2026-10-11-kup6s-mcp.md`, englisch; die ersten beiden liegen dort, die beiden anderen folgen zusammen mit dem Release `v0.1.0a3` |
 | 3 | Gate und Policy: Kreise statt Organisationsprofil, drei Anbieter-Adapter, Audit, die Verarbeitungsprüfung (nicht mehr „Offenlegungsprüfung“: PG §1.2) | die Grenze, hinter der ein Modell Inhalt sieht | `specs/2026-10-09-pilot-gate-und-policy.md`, eingefroren am 2026-10-09; abgenommen mit PR #9 (oben) |
-| 4 | MCP-Lesezugang, mit der Verarbeitungsprüfung davor (die Entscheidung aus Einheit 3, wiederverwendet) | Claude Code fragt das Log | — |
+| 4 | MCP-Lesezugang, mit der Verarbeitungsprüfung davor (die Entscheidung aus Einheit 3, wiederverwendet) | Claude Code fragt das Log | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, das §8 der Architektur ablöst; beide eingefroren am 2026-10-11; gebaut, nicht abgenommen (oben) |
 | 5 | Feststellungen: Schreibweg, Verpflichtung und Entscheidung, Projektionen, Freigabe | was festgestellt ist, mit Quelle und Verantwortung | — |
 | 6 | KI-Schicht: Vorschläge hinter dem Gate | Protokoll und offene Punkte | — |
 | 7 | Nextcloud-Ordner mit Textextraktion | Dokumente | — |
@@ -114,8 +121,8 @@ Spec:
 Für Einheit 2 beantwortet, mit der Auslieferung: kup6s arbeitet mit cdk8s,
 ArgoCD und dem CloudNativePG-Operator; das Image kommt von `ghcr.io`; was dort
 entsteht, baut der Agent in kup6s nach dem Handoff (Betreuer, 2026-10-05). Der
-Zugang vom Arbeitsplatz ist bis zum MCP-Server `kubectl exec` in den
-Werkzeug-Pod.
+Zugang vom Arbeitsplatz ist `kubectl exec` in den Werkzeug-Pod, bis der
+MCP-Server in kup6s läuft.
 
 ## Was vor was kommen muss
 
@@ -169,6 +176,11 @@ Spec der Pilot-Einheit 1 mit Abschnitt, **P-PI** ihr Ausführungsprotokoll
 **PG** der Spec der Pilot-Einheit 3 mit Abschnitt, **P-PG** ihr
 Ausführungsprotokoll (`sdd/2026-10-09-pilot-gate-und-policy/`, folgt mit der
 Endprüfung) mit dem Ruling oder der Aufgabe,
+**MK** das Konzept der MCP-Schnittstelle (`specs/2026-10-10-mcp-schnittstelle.md`)
+mit Abschnitt, **ML** der Spec der Pilot-Einheit 4, des MCP-Lesezugangs, mit
+Abschnitt, **P-ML** dessen Ausführungsprotokoll
+(`sdd/2026-10-11-pilot-mcp-lesezugang/`, folgt mit der Endprüfung) mit dem
+Ruling oder der Aufgabe,
 **PP** der Prüfpunkt vom 2026-10-04 mit der Zeile seines Belegberichts.
 
 ### Einwurf-Vertrag (`contract`, Teilprojekt 2)
@@ -222,6 +234,17 @@ Endprüfung) mit dem Ruling oder der Aufgabe,
 - Projekt als Geltungsbereich einer Regel: `project:<name>` ist vorgesehen,
   und der Schreibweg weist es ab, bis es eine Zuordnung von Events zu
   Projekten gibt (PG §2.3, §11 Punkt 3; Einheit 5).
+- Wie Projekte entworfen werden, zu entscheiden mit Einheit 5 (MK §4.1, §10
+  Punkt 1). Die Idee des Betreuers: ein Projekt als „Kreis von Kreisen“,
+  rekursiv aufgelöst, mit Unterprojekten — „sind Projekte nur Mengenlehre über
+  Identitäten?“ **Die Gegenthese** aus dem Gespräch vom 2026-10-10: Kreise in
+  Kreisen tragen (die Policy erbt die strengste Regel, die Chronik umfasst die
+  Unterkreise); ein Projekt ist aber keine Menge von Identitäten — dieselben
+  drei Leute arbeiten an zwei Projekten —, sondern eine Zuordnung von Events
+  (eine Feststellung), die einen Kreis als stärkstes Signal hat, mit einem
+  Ziel und einem Zeitraum; Unterprojekte über Projekte, die auf Projekte
+  zeigen. In der MCP-Schnittstelle sind `project` und `matter` als Parameter
+  des Werkzeugs `previously` reserviert.
 - Ein zweiter Schreibweg neben `append` für `assertion` und `action`; ihre
   Idempotenz ist heute „Sache des Aufrufers" (PP, A1 S1 und Zeile 19).
 - `verify` prüft Regeln je Art erst für `action` (eine Handlung braucht eine
@@ -628,6 +651,64 @@ was die Ausführung offen ließ (P-PG).
   Neuversuch von `append_action` gibt es keinen eigenen Test, er ist über
   `redact` abgedeckt.
 
+### MCP-Lesezugang (Pilot, Einheit 4)
+
+Die Punkte aus MK §10 und ML §13, soweit sie nicht zu einer anderen Einheit
+gehören (die Projekte stehen unter *Feststellungen und Entitäten*), und was die
+Ausführung offen ließ (P-ML). Die benannten Grenzen, die keiner Arbeit bedürfen,
+stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
+
+- Bedingung 9 der Abnahme (ML §12): der Lauf des Betreuers nach dem Merge, mit
+  Claude Code **und** Vibe gegen `previously serve` mit seiner
+  Probe-Datenbank — zwei Clients mit eigener Kette, ein Kreis mit einer Regel
+  für beide, einer mit einer Regel für einen, einer ohne Regel; die Frage aus
+  MK §1 an beide; danach `previously access`.
+- Die Grenze von 60.000 Zeichen je Seite (`PAGE_CHARS` in
+  `mcp_server/render.py`) ist geschätzt, nicht an echten Mails gemessen;
+  fällig mit Bedingung 9 (ML §5.1, §13 Punkt 2).
+- Die Chronik nach Kreis liest das Log in Stapeln von 200 Zeilen, ohne Grenze
+  je Aufruf; ein Kreis mit wenigen Treffern liest für eine Seite das ganze Log.
+  Eine eigene Projektion, sobald das zu langsam wird, an echter Menge zu messen
+  (ML §5.1, §13 Punkt 1; ruling R-12, P-ML).
+- Der Rest einer einzelnen Einheit, die allein über die Seitengrenze geht, wird
+  im Piloten nicht ausgeliefert; die Kürzung sagt es. Ein Weg dorthin wäre ein
+  Argument wie `from_char` (ruling R-5, P-ML).
+- Die Middleware, die vom SDK abgewiesene Aufrufe ins Zugriffsprotokoll
+  schreibt, nutzt eine Schnittstelle, die `mcp` 2.3.0 vorläufig nennt
+  („Provisional - the signature may change in a 2.x minor release“); bei jedem
+  Upgrade von `mcp` prüfen (P-ML, Aufgabe 5).
+- Vibe auf `mcp` 2.x: Vibe 2.26.1 spricht `2025-11-25`. Sobald Vibe die neue
+  Generation spricht, fallen `stateless_http=True` als Schalter für die alte
+  und der Test mit `mode="legacy"` weg (MK §1.1, §10 Punkt 3).
+- Die Menge der `mcp_access`-Events — eine Handlung je Aufruf, geschätzt einige
+  tausend im Monat — beobachten und eine Schwelle nennen, ab der
+  zusammengefasst werden müsste (MK §5, §10 Punkt 2).
+- Mehrere Replikate erst, wenn zwei Worker hinter einem Lastverteiler gemessen
+  sind; bis dahin eines (MK §2, §10 Punkt 4; der Handoff
+  `handoffs/2026-10-11-kup6s-mcp.md`).
+- OAuth mit einem Autorisierungsserver, wenn mehr als ein Mensch zugreift; der
+  Wechsel tauscht die eigene ASGI-Hülle in `mcp_server/auth.py` gegen den
+  `TokenVerifier` des SDK (MK §7, §10 Punkt 5).
+- Elicitation als Aufwertung der Bestätigung eines schreibenden Aufrufs, wo ein
+  Client sie meldet, mit dem ersten schreibenden Werkzeug (MK §4.3, §10
+  Punkt 6).
+- Tasks für lange Läufe, wenn das SDK und ein Client sie haben (MK §10 Punkt 7;
+  zur Prüfung von Claude Code siehe *Spätere Teilprojekte*).
+- Der Effekt der Einzäunung von Fremdinhalt auf aktuelle Modelle ist
+  ungemessen (MK §6, §10 Punkt 8).
+- Ein Aufruf ohne Eintrag, und ein Eintrag ohne Zustellung: hält der Prozess
+  zwischen Antwort und Schreiben an, fehlt das `mcp_access`, wie beim Gate
+  (ML §7); über stdio schreibt ein Aufruf, der noch läuft, wenn stdin schließt,
+  sein `mcp_access`, und die Antwort erreicht den Client nie (ruling R-12,
+  P-ML). Steht auf `trust-boundaries.md`.
+- Kleinkram der Ausführung, benannt und nicht verfolgt (P-ML, Aufgabe 5):
+  scheitert `record_access` selbst nach einem erfolgreichen Lesen, bekommt der
+  Client die Meldung des SDK `Error executing tool …`, die nicht mit `Error: `
+  beginnt — geschlossen gescheitert, nichts wurde geliefert; eine ID außerhalb
+  des Bereichs, die nicht mehr auf die Seite passt, fehlt in `ids=[…]` des
+  Fußes; `withholding` sagt bei einem lokalen Anbieter, der unter `local_only`
+  scheitert, „the built-in rule local_only do not allow“.
+
 ### Nextcloud-Ordner (Pilot, Einheit 7)
 
 - Mails als Dateien: eine `.eml`-Datei ist dieselbe Mail nach RFC 822, die
@@ -924,7 +1005,11 @@ was die Ausführung offen ließ (P-PG).
 
 ### Spätere Teilprojekte, unverändert offen
 
-- Teilprojekt 3, MCP-Server: MRTR und Tasks in Claude Code prüfen (A §13);
+- Teilprojekt 3, MCP-Server: der Lesezugang ist gebaut (Einheit 4, oben unter
+  *MCP-Lesezugang*), und das Konzept `specs/2026-10-10-mcp-schnittstelle.md`
+  löst §8 der Architektur ab. MRTR und Tasks in Claude Code prüfen (A §13;
+  gemessen am 2026-10-10 meldete Claude Code 2.1.289 `roots` und
+  `elicitation`, keine Tasks);
   Pydantic kam am 2026-10-09 mit dem Gate (Ausgabeschema von `mail_overview`,
   `DEPENDENCIES.md`). Mit dem MCP-Server kommt der
   Zugang ohne `kubectl exec`; bis dahin ist der Werkzeug-Pod der Zugang (AL
@@ -932,6 +1017,8 @@ was die Ausführung offen ließ (P-PG).
   sagt es Claude Code, Claude Code ruft über MCP ein Werkzeug mit festem
   Schema, `previously` zeigt die Struktur, der Betreuer bestätigt; Einheit 3
   baut den strukturierten Schreibweg, auf den er aufsetzt (PG §11 Punkt 2).
+  Das Konzept nennt das Werkzeug `write_policy`, mit Vorschau und Bestätigung
+  über einen versiegelten Handle, nach Einheit 4 (MK §4.3).
 - Teilprojekt 4, Gate: Trace-Verknüpfung über OpenTelemetry (A §13). Die
   Verarbeitungsräume der Anbieter (E §16) stehen unten unter *Erledigt*.
 - Teilprojekt 5, KI-Schicht und Triage: die Batch API für Masse, mit der
