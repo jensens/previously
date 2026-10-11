@@ -72,14 +72,14 @@ _ESCAPE_SEQUENCE = re.compile(
     r"|\x1b[ -/]*[0-~]"  # two-character sequences
 )
 _LINE_BREAKS = str.maketrans(dict.fromkeys("\n\t\r  ", " "))
-_CURSOR_REFUSED: Final = "cursor is not valid for these filters"
+CURSOR_REFUSED: Final = "cursor is not valid for these filters"
 # The largest integer a result may show: above it, a client that reads JSON
 # numbers as doubles rounds (spec section 6 of the concept, measurement M4).
 _MAX_SAFE: Final = 2**53 - 1
 _EVENT_ID = re.compile(r"(\d+)$")
 _TAG_BLOCK = range(0xE0000, 0xE0080)
 # Invisible characters outside the category `Cf`, removed by ruling R-6 of the
-# 2026-10-11 pilot plan.
+# 2026-10-11 MCP read access plan, each for the reason beside it.
 _INVISIBLE: Final = frozenset(
     [
         # Variation selectors: 16 + 240 = 256 values, a smuggling channel
@@ -285,7 +285,7 @@ def _cut_unit_note(uri: str, unit: int, following: int | None) -> str:
     """Note for a unit cut inside; it never points back at that unit.
 
     `get_event` would serve the same cut again, so the pilot serves no more of
-    such a unit (ruling R-5 of the 2026-10-11 pilot plan).
+    such a unit (ruling R-5 of the 2026-10-11 MCP read access plan).
     """
     note = f"… truncated — the rest of unit {unit} is not served in the pilot"
     if following is None:
@@ -508,24 +508,27 @@ def render_error(message: str) -> str:
 
 @dataclass(frozen=True)
 class Position:
-    """Where a cursor resumes: after `after`, on page `page`."""
+    """Where a cursor resumes: after the event `after`, on page `page`."""
 
-    after: tuple[datetime, int]
+    after: int
     page: int
 
 
-def encode_cursor(after: tuple[datetime, int], filters: Mapping[str, str], *, page: int = 2) -> str:
-    """Encode the last position, the filters and the number of the page the
-    cursor opens as an opaque, URL-safe string.
+def encode_cursor(after: int, filters: Mapping[str, str], *, page: int = 2) -> str:
+    """Encode the id of the last item a page consumed, the filters and the
+    number of the page the cursor opens as an opaque, URL-safe string.
 
     The cursor is not sealed: it releases nothing, because every call checks
     access again.
+    It names an id and no time.
+    The last item can be a withheld or an erased event, whose time is content
+    of it like its subject, and a cursor is one base64 decode away from
+    whoever holds it; the server looks the time up in the log instead
+    (ruling R-13 of the 2026-10-11 MCP read access plan).
+    What stays visible is the order of placeholders between visible events,
+    which the pages show anyway.
     """
-    payload = {
-        "after": [after[0].isoformat(), after[1]],
-        "filters": dict(filters),
-        "page": page,
-    }
+    payload = {"after": after, "filters": dict(filters), "page": page}
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return base64.urlsafe_b64encode(raw.encode()).decode().rstrip("=")
 
@@ -538,30 +541,29 @@ def decode_position(cursor: str, filters: Mapping[str, str]) -> Position:
     """Decode a cursor; raise `ValueError` if it is malformed or not for `filters`.
 
     A cursor is the caller's input like any other argument, so whatever it
-    holds is checked before it reaches a query: a moment with a zone, and an
-    id and a page number inside the range a result may show.
+    holds is checked before it reaches a query: an id and a page number
+    inside the range a result may show.
+    Whether the id names an observation is the caller's to check, against
+    the log.
     """
     try:
         padded = cursor + "=" * (-len(cursor) % 4)
         payload = json.loads(base64.urlsafe_b64decode(padded.encode()))
-        moment, event_id = payload["after"]
+        event_id = payload["after"]
         recorded = payload["filters"]
         page = payload.get("page", 2)
-        if not isinstance(moment, str) or not _whole(event_id) or not _whole(page) or page < 2:
+        if not _whole(event_id) or not _whole(page) or page < 2:
             raise ValueError("unexpected types")
-        when = datetime.fromisoformat(moment)
-        if when.tzinfo is None:
-            raise ValueError("no zone")
     except (ValueError, KeyError, TypeError, AttributeError) as error:
         # One fixed message: the parser's own wording would leak internals to
         # whoever echoes it.
-        raise ValueError(_CURSOR_REFUSED) from error
+        raise ValueError(CURSOR_REFUSED) from error
     if recorded != dict(filters):
-        raise ValueError(_CURSOR_REFUSED)
-    return Position((when, event_id), page)
+        raise ValueError(CURSOR_REFUSED)
+    return Position(event_id, page)
 
 
-def decode_cursor(cursor: str, filters: Mapping[str, str]) -> tuple[datetime, int]:
-    """Decode a cursor's position; raise `ValueError` if it is malformed or
-    not for `filters`."""
+def decode_cursor(cursor: str, filters: Mapping[str, str]) -> int:
+    """Decode the id a cursor resumes after; raise `ValueError` if it is
+    malformed or not for `filters`."""
     return decode_position(cursor, filters).after

@@ -21,6 +21,8 @@ dependencies = [
     "pydantic>=2.14",
     "mcp>=2.3",
     "uvicorn>=0.31",
+    "starlette>=0.48",
+    "botocore>=1.43",
 ]
 
 [project.scripts]
@@ -34,6 +36,8 @@ test = [
     "coverage[toml]>=7.16",
     "testcontainers[postgres]>=4.15",
     "hypothesis>=6.168",
+    "anyio>=4.10",
+    "httpx2>=2.10",
 ]
 dev = [
     "ruff>=0.16",

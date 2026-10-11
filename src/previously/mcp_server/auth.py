@@ -8,7 +8,7 @@ the SDK publishes Protected Resource Metadata, which points a client at an
 authorization server, and there is none (concept specification, section 7;
 decision 1 of the 2026-10-11 MCP read access plan, which takes precedence
 over the line of section 9 of the unit specification that names the
-`TokenVerifier`, by ruling R-10 of that plan).
+`TokenVerifier`, by ruling R-10 of the 2026-10-11 MCP read access plan).
 Moving to OAuth replaces this wrapper with the SDK's verifier and changes
 nothing else.
 
@@ -24,7 +24,7 @@ write it for.
 from typing import Final
 from typing import TYPE_CHECKING
 
-import anyio.to_thread
+import asyncio
 
 
 if TYPE_CHECKING:
@@ -83,7 +83,7 @@ def guarded(app: ASGIApp, *, resolve: Callable[[str], str | None]) -> ASGIApp:
             # No websocket route exists, and nothing unauthenticated passes.
             return
         token = bearer_token(scope)
-        name = None if token is None else await anyio.to_thread.run_sync(resolve, token)
+        name = None if token is None else await asyncio.to_thread(resolve, token)
         if name is None:
             await _refuse(send)
             return

@@ -27,11 +27,11 @@ It reads the table metadata from `storage.schema` and nothing from `core`, and `
 ## The edges
 
 The diagram shows which module imports which, and since stage 1b there's nothing dashed in it.
-The two arrows that stage 1c added, to `pyrage` and to `boto3`, each have a contract that names the one module allowed to draw them, and so do the arrow to `html2text` that the mapping of a mail added on 2026-10-06, the arrow to `imaplib` that the first connector added the same day, the two arrows to `anthropic` and `openai` that the adapters of the gate added on 2026-10-09, and the four arrows to the MCP SDK, `mcp` and `mcp_types`, and to its HTTP side, `starlette` and `uvicorn`, that the server added on 2026-10-11.
+The two arrows that stage 1c added, to `pyrage` and to `boto3`, each have a contract that names the one module allowed to draw them, and so do the arrow to `html2text` that the mapping of a mail added on 2026-10-06, the arrow to `imaplib` that the first connector added the same day, the two arrows to `anthropic` and `openai` that the adapters of the gate added on 2026-10-09, and the three arrows to the MCP SDK, `mcp`, and to its HTTP side, `starlette` and `uvicorn`, that the server added on 2026-10-11.
 The arrows to `sqlalchemy` and `alembic` are held the other way round: their contracts name the modules that mustn't draw them, `core` for both and `contract` for `sqlalchemy`, as the section on the contracts explains.
 
 ```{mermaid}
-:caption: The import edges on 2026-10-11: sixteen between its own modules, and not one of them exempted. Fourteen arrows leave the package.
+:caption: The import edges on 2026-10-11: sixteen between its own modules, and not one of them exempted. Thirteen arrows leave the package.
 
 graph TD
     cli[cli] --> connectors[connectors]
@@ -61,7 +61,6 @@ graph TD
     mcp_server --> core
     mcp_server --> contract
     mcp_server --> mcp[mcp]
-    mcp_server --> mcp_types[mcp_types]
     mcp_server --> starlette[starlette]
     mcp_server --> uvicorn[uvicorn]
 ```
@@ -145,7 +144,7 @@ Only core.sealing imports pyrage KEPT (1 ignored import)
 Only storage.s3 imports boto3 KEPT (2 ignored imports)
 Only core.mail imports html2text KEPT (1 ignored import)
 Only connectors.imap imports imaplib KEPT (1 ignored import)
-Only the MCP server imports the MCP SDK KEPT (5 ignored imports)
+Only the MCP server imports the MCP SDK KEPT (4 ignored imports)
 
 Contracts: 9 kept, 0 broken.
 ```
@@ -230,10 +229,11 @@ The layers contract keeps `core` from importing `connectors`, so the mapping of 
 
 ## A contract for the server
 
-`mcp`, `mcp_types`, `starlette` and `uvicorn` may be imported by `mcp_server.server`, and `starlette` by `mcp_server.auth` as well, and none of them anywhere else.
+`mcp`, `starlette` and `uvicorn` may be imported by `mcp_server.server`, and `starlette` by `mcp_server.auth` as well, and none of them anywhere else.
+`mcp_types`, the package the types of the SDK live in, may be imported nowhere: the server takes them from `mcp.types`, which re-exports them, so that the SDK reaches the package through one name.
 Speaking MCP is the server's, and what leaves `mcp_server` towards `cli` is a function that serves, never a type of the SDK; the day the bearer token gives way to an authorization server, or the SDK to another one, the change stays inside one package.
 `starlette` and `uvicorn` belong to the contract because they're the HTTP side of the SDK: an HTTP endpoint anywhere else would be a second door, and the token check guards only the one in `mcp_server`.
-The five exemptions are named edges and not a pattern over `mcp_server`, so that a third module of the server that imports the SDK has to be granted on purpose; the tests probe all four packages from `core` and from beside the server, measured on 2026-10-11 to break the contract by name.
+The four exemptions are named edges and not a pattern over `mcp_server`, so that a third module of the server that imports the SDK has to be granted on purpose; the tests probe all four packages from `core` and from beside the server, measured on 2026-10-11 to break the contract by name.
 `cli` imports the server inside the two functions that start it, not at its head, for the reason the gate adapters give below: measured on 2026-10-11, the import of `previously.cli` takes 0.67 s with the server and 0.36 s without.
 
 (module-boundaries-gate-adapters)=

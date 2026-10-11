@@ -23,9 +23,9 @@ from datetime import datetime
 from datetime import UTC
 from mcp.client.client import Client
 from mcp.client.streamable_http import streamable_http_client
-from mcp_types import CallToolResult
-from mcp_types import TextContent
-from mcp_types import TextResourceContents
+from mcp.types import CallToolResult
+from mcp.types import TextContent
+from mcp.types import TextResourceContents
 from previously.contract.types import BlobRef
 from previously.core.access import AccessRow
 from previously.core.access import read_access
@@ -53,9 +53,11 @@ from typing import cast
 from typing import TYPE_CHECKING
 
 import anyio
+import base64
 import hashlib
 import httpx2
 import json
+import logging
 import mailfiles
 import pytest
 import re
@@ -341,7 +343,7 @@ def test_every_call_writes_an_access_with_the_era_and_the_ids_of_the_policy(
         ("tool", "policy_gaps"),
         ("tool", "get_event"),
         ("resource", "previously://circle/{name}/chronicle"),
-        ("resource", "previously://event/{id}"),
+        ("resource", "previously://event/{event_id}"),
         ("prompt", "whats_open"),
         ("prompt", "chronicle_summary"),
     ]
@@ -453,11 +455,29 @@ def test_a_client_revoked_while_the_stdio_server_runs_is_refused_from_its_next_c
 
 
 @pytest.mark.db
-def test_no_token_stands_in_the_log(world: World) -> None:
+def test_no_token_stands_in_the_log_or_the_server_log(
+    world: World, caplog: pytest.LogCaptureFixture
+) -> None:
+    # Calls that carry a token first: one served, one refused, a rotation,
+    # a revocation. Then neither the log nor what the server logged holds a
+    # token.
+    caplog.set_level(logging.DEBUG)
+    old = world.tokens["claude-code"]
+    assert not _over_http(world, old, "auto", "whoami", {}).is_error
+    assert _post(world, {"Authorization": "Bearer not-a-token"}).status_code == 401
+    _, new = add_client(
+        world.storage, "claude-code", processor="claude-max", statement="rotated", recorded_at=T0
+    )
+    assert _post(world, {"Authorization": f"Bearer {old}"}).status_code == 401
+    assert not _over_http(world, new, "legacy", "list_circles", {}).is_error
+    revoke_client(world.storage, "claude-code", statement="gone", recorded_at=T0)
+    assert _post(world, {"Authorization": f"Bearer {new}"}).status_code == 401
+    assert [row.access.client for row in _accesses(world)] == ["claude-code", "claude-code"]
     with world.storage.begin() as conn:
         everything = json.dumps([row.payload for row in world.storage.read_by_kind(conn, "action")])
-    for token in world.tokens.values():
+    for token in (*world.tokens.values(), new, "not-a-token"):
         assert token not in everything
+        assert token not in caplog.text
 
 
 # --- assurance 5: one text block, nothing else -----------------------------------------
@@ -543,7 +563,8 @@ def test_control_characters_are_removed_and_counted_and_the_stored_bytes_stay(
     assert verify(world.storage) == []
 
 
-# --- assurance 8, review focus 4 and ruling R-9: pages ---------------------------------
+# --- assurance 8, review focus 4, and the access log naming only what a page shows
+# (ruling R-9 of the 2026-10-11 MCP read access plan): pages ---------------------
 
 
 def _long_mail(number: int, paragraphs: int, size: int) -> bytes:
@@ -590,8 +611,9 @@ def test_the_cursor_walks_the_chronicle_without_gap_or_double(world: World, mode
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_a_mail_over_the_page_is_cut_and_get_event_serves_the_rest(world: World, mode: str) -> None:
-    # Review focus 4 and ruling R-9: the access names exactly the units the
-    # page shows, and not the second mail, which did not fit.
+    # Review focus 4 and ruling R-9 of the 2026-10-11 MCP read access plan:
+    # the access names exactly the units the page shows, and not the second
+    # mail, which did not fit, since the model never saw what is not on it.
     big = _take_in(world.storage, _long_mail(1, 80, 60))
     after = _take_in(world.storage, _long_mail(2, 2, 10))
     page = _text(
@@ -751,7 +773,10 @@ def test_the_resources_are_templates_and_read_like_the_tools(world: World, mode:
         return uris, len(listed.resources), texts[0], texts[1]
 
     templates, listed, one, circle = _session(server, mode, read)
-    assert sorted(templates) == ["previously://circle/{name}/chronicle", "previously://event/{id}"]
+    assert sorted(templates) == [
+        "previously://circle/{name}/chronicle",
+        "previously://event/{event_id}",
+    ]
     assert listed == 0
     assert "Scanned document, 3 pages." in one
     assert _shown_ids(circle) == [event, world.ids["attachments_only"]]
@@ -939,12 +964,14 @@ def test_without_a_valid_token_http_answers_401_with_one_sentence(
 
 @pytest.mark.db
 def test_no_protected_resource_metadata_is_published(world: World) -> None:
-    async def use(http: httpx2.AsyncClient) -> int:
+    async def use(http: httpx2.AsyncClient) -> tuple[int, int]:
+        path = "/.well-known/oauth-protected-resource"
         headers = {"Authorization": f"Bearer {world.tokens['claude-code']}"}
-        response = await http.get("/.well-known/oauth-protected-resource", headers=headers)
-        return response.status_code
+        with_token = (await http.get(path, headers=headers)).status_code
+        return with_token, (await http.get(path)).status_code
 
-    assert _http(world, use) == 404
+    # As cli.md says: 404 with a valid token, 401 without one.
+    assert _http(world, use) == (404, 401)
 
 
 @pytest.mark.db
@@ -957,16 +984,25 @@ def test_with_a_token_http_serves_the_client_it_names(world: World, mode: str) -
 
 
 @pytest.mark.db
-def test_a_header_naming_a_client_is_no_identity(world: World) -> None:
-    async def use(http: httpx2.AsyncClient) -> int:
-        headers = {
-            **_JSON,
-            "X-Previously-Client": "claude-code",
-            "Previously-Client": "claude-code",
-        }
+@pytest.mark.parametrize("mode", MODES)
+def test_a_header_naming_a_client_is_no_identity(world: World, mode: str) -> None:
+    # The token of `local-harness`, and headers that name `claude-code`: the
+    # token decides.
+    async def use(http: httpx2.AsyncClient) -> CallToolResult:
+        http.headers["Authorization"] = f"Bearer {world.tokens['local-harness']}"
+        http.headers["X-Previously-Client"] = "claude-code"
+        http.headers["Mcp-Client"] = "claude-code"
+        async with Client(streamable_http_client(URL, http_client=http), mode=mode) as session:
+            return await session.call_tool("whoami", {})
+
+    assert _text(_http(world, use)).splitlines()[2] == "client local-harness"
+    assert _last_access(world).access.client == "local-harness"
+
+    async def without_token(http: httpx2.AsyncClient) -> int:
+        headers = {**_JSON, "X-Previously-Client": "claude-code", "Mcp-Client": "claude-code"}
         return (await http.post("/mcp", json=_INITIALIZE, headers=headers)).status_code
 
-    assert _http(world, use) == 401
+    assert _http(world, without_token) == 401
 
 
 @pytest.mark.db
@@ -1096,3 +1132,70 @@ def test_the_window_and_the_source_narrow_the_chronicle(world: World, mode: str)
     assert _text(refused) == (
         "Error: since has no zone; give a date, or a moment such as 2026-09-01T09:00+02:00"
     )
+
+
+def _team_mail(number: int) -> bytes:
+    """A mail of the circle `team`, which has no rule: withheld from
+    `claude-code`."""
+    return mailfiles.DATE_WITHOUT_ZONE.replace(
+        b"<build-1234@example.org>", f"<team-{number}@example.org>".encode()
+    ).replace(
+        b"Mon, 05 Oct 2026 23:00:00 -0000", f"Tue, 06 Oct 2026 10:{number:02d}:30 +0000".encode()
+    )
+
+
+def _decoded(cursor: str) -> bytes:
+    return base64.urlsafe_b64decode(cursor + "=" * (-len(cursor) % 4))
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_cursor_after_a_placeholder_tells_no_time(world: World, mode: str) -> None:
+    # Ruling R-13 of the 2026-10-11 MCP read access plan: the time of a
+    # withheld event is content of it, and a cursor is one decode away from
+    # whoever holds it, so the cursor names the id of the last item and no
+    # time. Three long mails of `huber`, each followed by one of `team`: a
+    # page holds two long mails, and the placeholder after the second is the
+    # last item it consumes.
+    for number in range(3):
+        _take_in(world.storage, _long_mail(number * 2, 10, 150))
+        _take_in(world.storage, _team_mail(number * 2))
+    arguments = {"since": "2026-10-06T10:00:00+00:00", "until": "2026-10-07"}
+    page = _text(_tool(world, mode, "previously", arguments))
+    body = page.split("\n\nEnd of page 1.")[0]
+    assert body.rsplit("\n\n", 1)[1].startswith("[withheld: previously://event/")
+    found = re.search(r"call again with cursor=(\S+)$", page)
+    assert found is not None
+    decoded = json.loads(_decoded(found.group(1)))
+    # The filters are the client's own arguments, echoed; nothing else in the
+    # cursor may carry a time.
+    assert decoded.pop("filters") == arguments
+    assert re.search(r"\d{4}-\d{2}-\d{2}|\d{2}:\d{2}", json.dumps(decoded)) is None, decoded
+    rest = _text(_tool(world, mode, "previously", {**arguments, "cursor": found.group(1)}))
+    shown = [int(n) for n in _ITEM.findall(page)] + [int(n) for n in _ITEM.findall(rest)]
+    assert len(shown) == len(set(shown)) == 6
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_cursor_that_does_not_lead_on_is_an_error(world: World, mode: str) -> None:
+    for number in range(30):
+        _take_in(world.storage, _long_mail(number, 4, 60))
+    page = _text(_tool(world, mode, "previously", {"circle": "huber"}))
+    found = re.search(r"call again with cursor=(\S+)$", page)
+    assert found is not None
+    message = (
+        "Error: cursor is not valid for these filters; call again without a cursor for the "
+        "first page"
+    )
+    other = _tool(world, mode, "previously", {"circle": "office", "cursor": found.group(1)})
+    assert other.is_error
+    assert _text(other) == message
+
+    def forged(event_id: int) -> str:
+        raw = json.dumps({"after": event_id, "filters": {}, "page": 2}).encode()
+        return base64.urlsafe_b64encode(raw).decode()
+
+    for event_id in (world.policy_event, 999_999):
+        assert _text(_tool(world, mode, "previously", {"cursor": forged(event_id)})) == message
+    assert _accesses(world)[-1].access.outcome == "error"

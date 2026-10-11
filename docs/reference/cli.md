@@ -1102,7 +1102,7 @@ Error: a valid bearer token is required
 ```
 
 No `mcp_access` is written for such a request, since no client is known.
-The server publishes no Protected Resource Metadata, so `/.well-known/oauth-protected-resource` answers 404.
+The server publishes no Protected Resource Metadata: `/.well-known/oauth-protected-resource` answers 404 to a request with a valid token, and 401 without one, like every other path.
 
 The `Host` header of a request has to name `127.0.0.1`, `localhost`, `[::1]` or a name in `PREVIOUSLY_MCP_ALLOWED_HOSTS`, with any port, or the request gets the status 421.
 An `Origin` header has to name one of those hosts too, with `http` or `https`, or the request gets the status 403.

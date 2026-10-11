@@ -181,7 +181,6 @@ forbidden_modules =
     uvicorn
 ignore_imports =
     previously.mcp_server.server -> mcp
-    previously.mcp_server.server -> mcp_types
     previously.mcp_server.server -> starlette
     previously.mcp_server.server -> uvicorn
     previously.mcp_server.auth -> starlette

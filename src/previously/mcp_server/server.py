@@ -36,8 +36,8 @@ from importlib.metadata import version
 from mcp.server.mcpserver import Context
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp_types import CallToolResult
-from mcp_types import TextContent
+from mcp.types import CallToolResult
+from mcp.types import TextContent
 from previously.core.access import Access
 from previously.core.access import ACCESS_ERROR
 from previously.core.access import ACCESS_OK
@@ -59,8 +59,10 @@ from previously.mcp_server.read import circle_verdict
 from previously.mcp_server.read import events
 from previously.mcp_server.read import logged
 from previously.mcp_server.read import MAX_IDS
+from previously.mcp_server.read import resume_point
 from previously.mcp_server.read import rule_ids
 from previously.mcp_server.read import source_verdict
+from previously.mcp_server.render import CURSOR_REFUSED
 from previously.mcp_server.render import decode_position
 from previously.mcp_server.render import encode_cursor
 from previously.mcp_server.render import render_error
@@ -75,8 +77,7 @@ from typing import cast
 from typing import Final
 from typing import TYPE_CHECKING
 
-import anyio
-import anyio.to_thread
+import asyncio
 import logging
 import uvicorn
 
@@ -102,7 +103,7 @@ logger = logging.getLogger(__name__)
 CLIENT_VARIABLE: Final = "PREVIOUSLY_MCP_CLIENT"
 SERVER_NAME: Final = "previously"
 CHRONICLE_TEMPLATE: Final = "previously://circle/{name}/chronicle"
-EVENT_TEMPLATE: Final = "previously://event/{id}"
+EVENT_TEMPLATE: Final = "previously://event/{event_id}"
 MARKDOWN: Final = "text/markdown"
 
 INSTRUCTIONS: Final = (
@@ -163,6 +164,10 @@ _NO_CLIENT: Final = (
     "this server has no client for the call; over HTTP it needs a bearer token, "
     f"over stdio the variable {CLIENT_VARIABLE}"
 )
+# One sentence for every cursor that does not lead on: malformed, for other
+# filters, or naming no observation. Which of the three it was would tell a
+# forger which ids exist.
+_CURSOR_AGAIN: Final = f"{CURSOR_REFUSED}; call again without a cursor for the first page"
 _FAILED: Final = "the call failed inside the server; its log says why, this result cannot"
 
 # What the access log keeps of a caller's arguments: text cut to this length,
@@ -419,13 +424,13 @@ class Service[Conn]:
             result = await call_next(ctx)
         except Exception:
             if not mark.recorded:
-                await anyio.to_thread.run_sync(self.net, ctx, kind, None)
+                await asyncio.to_thread(self.net, ctx, kind, None)
             raise
         finally:
             _CALL.reset(token)
         if mark.recorded:
             return result
-        replaced = await anyio.to_thread.run_sync(self.net, ctx, kind, _first_text(result))
+        replaced = await asyncio.to_thread(self.net, ctx, kind, _first_text(result))
         return replaced if replaced is not None else result
 
     # --- the tools ---------------------------------------------------------------
@@ -449,8 +454,11 @@ class Service[Conn]:
             try:
                 position = decode_position(cursor, filters)
             except ValueError as error:
-                raise Refused(f"{error}; call again without a cursor for the first page") from error
-            after, page = position.after, position.page
+                raise Refused(_CURSOR_AGAIN) from error
+            after = resume_point(self.log, conn, position.after)
+            if after is None:
+                raise Refused(_CURSOR_AGAIN)
+            page = position.page
         seen = chronicle(
             self.log,
             conn,
@@ -464,8 +472,7 @@ class Service[Conn]:
         )
 
         def cursor_for(index: int) -> str:
-            position = cast("tuple[datetime, int]", seen.reads[index].position)
-            return encode_cursor(position, filters, page=page + 1)
+            return encode_cursor(cast("int", seen.reads[index].event), filters, page=page + 1)
 
         title = " · ".join(["chronicle", *(f"{key} {value}" for key, value in filters.items())])
         rendered = render_page(title, seen.items, cursor_for=cursor_for, page=page, more=seen.more)
@@ -711,16 +718,16 @@ def _resources[Conn](server: MCPServer, service: Service[Conn]) -> None:
         description="One event in full, as the tool get_event gives it.",
         mime_type=MARKDOWN,
     )
-    def event(id: str, ctx: Context) -> str:  # noqa: A002 — the name of the URI template's variable
-        def body(conn: Any, policy: Policy, client: Client) -> Answer:
-            if not (id.isascii() and id.isdigit()):
+    def event(event_id: str, ctx: Context) -> str:
+        def body(conn: Conn, policy: Policy, client: Client) -> Answer:
+            if not (event_id.isascii() and event_id.isdigit()):
                 raise Refused("an event id is a whole number, such as previously://event/42")
-            return service.event_page(conn, policy, client, [int(id)], None)
+            return service.event_page(conn, policy, client, [int(event_id)], None)
 
         return service.answer(
             ctx.request_context.request,
             ctx.protocol_version,
-            ("resource", EVENT_TEMPLATE, {"id": id}),
+            ("resource", EVENT_TEMPLATE, {"event_id": event_id}),
             body,
         ).text
 
@@ -739,7 +746,7 @@ def _prompts[Conn](server: MCPServer, service: Service[Conn]) -> None:
     def chronicle_summary(
         circle: str, ctx: Context, since: str | None = None, until: str | None = None
     ) -> str:
-        def body(_conn: Any, _policy: Policy, _client: Client) -> Answer:
+        def body(_conn: Conn, _policy: Policy, _client: Client) -> Answer:
             name = _said(circle)
             window = "".join(
                 f", {key}={_said(value)}"
@@ -769,7 +776,7 @@ def _prompts[Conn](server: MCPServer, service: Service[Conn]) -> None:
         ),
     )
     def whats_open(circle: str, ctx: Context) -> str:
-        def body(_conn: Any, _policy: Policy, _client: Client) -> Answer:
+        def body(_conn: Conn, _policy: Policy, _client: Client) -> Answer:
             name = _said(circle)
             return Answer(
                 f"List what is open in the circle {name}: questions without an answer, "
@@ -830,7 +837,7 @@ def build_app[Conn](log: LogStore[Conn], *, allowed_hosts: Sequence[str]) -> Sta
 
 def run_stdio[Conn](log: LogStore[Conn], client: str) -> None:
     """Serves MCP over stdin and stdout for `client` until stdin closes."""
-    anyio.run(build_server(log, stdio_client=client).run_stdio_async)
+    asyncio.run(build_server(log, stdio_client=client).run_stdio_async())
 
 
 def run_http[Conn](

@@ -17,7 +17,6 @@ server writes the access log from what reached the page (`logged`).
 
 from dataclasses import dataclass
 from dataclasses import replace
-from datetime import datetime
 from previously.contract.rows import EventRow
 from previously.core.access import Delivered
 from previously.core.access import NO_RULE
@@ -45,6 +44,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from collections.abc import Sequence
+    from datetime import datetime
     from previously.contract.rows import UnitRow
     from previously.contract.store import LogStore
     from previously.core.decide import Decision
@@ -80,12 +80,11 @@ def event_uri(event_id: int) -> str:
 @dataclass(frozen=True)
 class Read:
     """One item a call read: what it shows, what the access log gets if it
-    reaches the page (`None` for an error), where it stands in time order,
-    the ids of the rule events its decision applied, and the event id."""
+    reaches the page (`None` for an error), the ids of the rule events its
+    decision applied, and the event id."""
 
     item: Item
     entry: Delivered | Withheld | None
-    position: tuple[datetime, int] | None
     rules: tuple[int, ...] = ()
     # The id the item stands for, where it may be written: `None` for an id
     # out of range.
@@ -262,12 +261,11 @@ class _Pending:
 def _decided(
     policy: Policy, client: Client, row: EventRow, key: tuple[str, str] | None
 ) -> _Pending:
-    position = (row.occurred_at, row.id)
     payload = row.payload
     if payload is None:
         entry = Delivered(row.id, (), ())
         mark = ErasedMark(event_uri(row.id))
-        return _Pending(row, key, Read(mark, entry, position, event=row.id))
+        return _Pending(row, key, Read(mark, entry, event=row.id))
     source = key[0] if key is not None else None
     decision = _verdict(policy, client, _identities(payload), source)
     rules = _rules_of(policy, decision)
@@ -275,7 +273,7 @@ def _decided(
         code, reason = withholding(policy, client, decision)
         mark = WithheldMark(event_uri(row.id), reason)
         entry = Withheld(row.id, code, decision.circles, reason)
-        return _Pending(row, key, Read(mark, entry, position, rules, row.id))
+        return _Pending(row, key, Read(mark, entry, rules, row.id))
     return _Pending(row, key, None, decision.circles, rules)
 
 
@@ -297,7 +295,7 @@ def _shown(
         provenance=_provenance(payload, pending.key) if full else (),
     )
     entry = Delivered(row.id, tuple(seq for seq, _ in texts), pending.circles)
-    return Read(item, entry, (row.occurred_at, row.id), pending.rules, row.id)
+    return Read(item, entry, pending.rules, row.id)
 
 
 def _weight(read: Read) -> int:
@@ -358,6 +356,18 @@ def chronicle[Conn](
         position = (rows[-1].occurred_at, rows[-1].id)
 
 
+def resume_point[Conn](
+    log: LogStore[Conn], conn: Conn, event_id: int
+) -> tuple[datetime, int] | None:
+    """Where the chronicle goes on after the event a cursor names: its
+    `(occurred_at, id)` out of the log, or `None` when no observation has
+    that id. The cursor carries the id alone (`render.encode_cursor`)."""
+    row = next(iter(log.read(conn, event_id, 1)), None)
+    if row is None or row.id != event_id or row.kind != "observation":
+        return None
+    return row.occurred_at, row.id
+
+
 # --- single events ------------------------------------------------------------------
 
 
@@ -384,18 +394,18 @@ def events[Conn](
             # The id itself may not appear: a number beyond 2^53 is rounded
             # by a client that reads JSON numbers as doubles.
             message = "the id is out of range: an event id is a whole number from 1 to 2^53 - 1"
-            reads.append(Read(ErrorMark(f"ids[{index}]", message), None, None))
+            reads.append(Read(ErrorMark(f"ids[{index}]", message), None))
             continue
         row = next(iter(log.read(conn, event_id, 1)), None)
         uri = event_uri(event_id)
         if row is None or row.id != event_id:
-            reads.append(Read(ErrorMark(uri, "no event has this id"), None, None, event=event_id))
+            reads.append(Read(ErrorMark(uri, "no event has this id"), None, event=event_id))
             continue
         if row.kind != "observation":
             message = (
                 f"the event is not an observation but an {row.kind}; get_event serves observations"
             )
-            reads.append(Read(ErrorMark(uri, message), None, None, event=event_id))
+            reads.append(Read(ErrorMark(uri, message), None, event=event_id))
             continue
         key = log.source_keys(conn, [event_id]).get(event_id)
         pending = _decided(policy, client, row, key)
@@ -408,7 +418,7 @@ def events[Conn](
         ):
             last = max((unit.seq for unit in units), default=0)
             message = f"the event has no unit {from_unit} or later to show; its last unit is {last}"
-            reads.append(Read(ErrorMark(uri, message), None, None, event=event_id))
+            reads.append(Read(ErrorMark(uri, message), None, event=event_id))
             continue
         reads.append(_shown(pending, units, full=True, from_unit=from_unit))
     return Seen(tuple(reads))

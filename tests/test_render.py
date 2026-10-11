@@ -375,13 +375,13 @@ def test_a_page_with_removed_characters_stays_within_the_limit() -> None:
 
 def test_a_cursor_comes_back_as_it_went_in() -> None:
     filters = {"circle": "h_da", "source": "email"}
-    cursor = encode_cursor((_MOMENT, 42), filters)
-    assert decode_cursor(cursor, filters) == (_MOMENT, 42)
+    cursor = encode_cursor(42, filters)
+    assert decode_cursor(cursor, filters) == 42
     assert re.fullmatch(r"[A-Za-z0-9_-]+", cursor)
 
 
 def test_a_cursor_with_other_filters_is_refused() -> None:
-    cursor = encode_cursor((_MOMENT, 42), {"circle": "h_da"})
+    cursor = encode_cursor(42, {"circle": "h_da"})
     with pytest.raises(ValueError, match="cursor is not valid for these filters"):
         decode_cursor(cursor, {"circle": "other"})
     with pytest.raises(ValueError, match="cursor is not valid for these filters"):
@@ -600,7 +600,7 @@ def test_more_gives_the_last_page_a_cursor_after_its_last_item() -> None:
     assert page.text.endswith("call again with cursor=after-0")
 
 
-def test_without_more_and_without_items_no_cursor_follows() -> None:
+def test_more_without_items_gives_no_cursor() -> None:
     page = render_page("t", [], cursor_for=_cursor_for, more=True)
     assert page.next_cursor is None
 
@@ -621,9 +621,14 @@ def test_a_next_hint_words_the_footer_and_keeps_the_cursor_out_of_the_header() -
 
 
 def test_a_cursor_carries_the_number_of_the_page_it_opens() -> None:
-    cursor = encode_cursor((_MOMENT, 42), {"circle": "h_da"}, page=3)
+    cursor = encode_cursor(42, {"circle": "h_da"}, page=3)
     position = decode_position(cursor, {"circle": "h_da"})
-    assert (position.after, position.page) == ((_MOMENT, 42), 3)
+    assert (position.after, position.page) == (42, 3)
+
+
+def test_a_cursor_carries_an_id_and_no_time() -> None:
+    raw = base64.urlsafe_b64decode(encode_cursor(42, {}) + "==")
+    assert json.loads(raw) == {"after": 42, "filters": {}, "page": 2}
 
 
 def _forged(payload: object) -> str:
@@ -634,11 +639,13 @@ def _forged(payload: object) -> str:
 @pytest.mark.parametrize(
     "payload",
     [
-        {"after": ["2026-09-12T09:14:00", 42], "filters": {}, "page": 2},
-        {"after": ["2026-09-12T09:14:00+00:00", 2**60], "filters": {}, "page": 2},
-        {"after": ["2026-09-12T09:14:00+00:00", -1], "filters": {}, "page": 2},
-        {"after": ["2026-09-12T09:14:00+00:00", 42], "filters": {}, "page": 1},
-        {"after": ["2026-09-12T09:14:00+00:00", 42], "filters": {}, "page": True},
+        {"after": ["2026-09-12T09:14:00+00:00", 42], "filters": {}, "page": 2},
+        {"after": "42", "filters": {}, "page": 2},
+        {"after": 2**60, "filters": {}, "page": 2},
+        {"after": -1, "filters": {}, "page": 2},
+        {"after": True, "filters": {}, "page": 2},
+        {"after": 42, "filters": {}, "page": 1},
+        {"after": 42, "filters": {}, "page": True},
         [1, 2],
     ],
 )
@@ -648,7 +655,7 @@ def test_a_cursor_with_a_value_no_query_should_get_is_refused(payload: object) -
 
 
 def test_a_forged_cursor_inside_the_ranges_is_accepted() -> None:
-    cursor = _forged({"after": ["2026-09-12T09:14:00+00:00", 42], "filters": {}, "page": 7})
+    cursor = _forged({"after": 42, "filters": {}, "page": 7})
     assert decode_position(cursor, {}).page == 7
 
 
