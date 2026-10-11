@@ -4444,3 +4444,25 @@ def test_the_help_of_client_names_what_it_does(capsys: pytest.CaptureFixture[str
         main(["client", "--help"])
     out = capsys.readouterr().out
     assert "add" in out and "revoke" in out and "list" in out
+
+
+@pytest.mark.db
+def test_client_add_prints_the_summary_then_the_two_lines_and_the_page_says_so(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from pathlib import Path
+
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    argv = ["client", "add", "a\tb", "--processor", "local", "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    lines = capsys.readouterr().out.splitlines()
+    # The tab of the name is escaped like in every other line, so the summary
+    # stays two fields; the token line carries the same escaped name.
+    assert lines[0] == "client a\\tb\tprocessor local"
+    assert lines[1].startswith("client a\\tb: token ")
+    assert lines[2] == "shown once; store it now"
+    assert len(lines) == 3
+    page = (Path(__file__).parent.parent / "docs/reference/cli.md").read_text(encoding="utf-8")
+    assert "`client NAME` and `processor PROVIDER`, separated by a tab" in page
+    assert "prints nothing after the two lines" in page

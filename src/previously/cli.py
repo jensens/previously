@@ -1823,7 +1823,7 @@ def _cmd_client_add(args: argparse.Namespace) -> int:
             statement=args.statement,
             recorded_at=datetime.now(UTC),
         )
-    print(f"client {args.name}: token {token}")
+    print(f"client {escape_field(args.name)}: token {token}")
     print("shown once; store it now")
     return 0
 

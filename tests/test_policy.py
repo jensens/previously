@@ -527,3 +527,25 @@ def test_a_client_with_an_undeclared_processor_is_refused_but_its_revocation_is_
     set_policy(storage, ANTHROPIC, statement="gone", revoked=True, recorded_at=T2)
     set_policy(storage, client, statement="gone", revoked=True, recorded_at=T2)
     assert _read(storage).clients == {}
+
+
+@pytest.mark.db
+def test_a_client_event_with_a_damaged_hash_is_skipped_and_a_lookup_returns_none(
+    db: Engine,
+) -> None:
+    """A hash that is not 64 lower-case hex digits, such as one with a
+    non-ASCII character that `hmac.compare_digest` would raise on, makes the
+    event malformed: the read skips it and a lookup finds no client."""
+    from previously.core.clients import client_for_token
+    from previously.core.policy import Client
+
+    storage = PostgresStorage(db)
+    set_policy(storage, ANTHROPIC, statement="declared", recorded_at=T0)
+    good = Client("good", "anthropic", "0" * 64)
+    set_policy(storage, good, statement="s", recorded_at=T0)
+    damaged = to_payload(Client("bad", "anthropic", "0" * 64), statement="s")
+    damaged["token_sha256"] = "é" * 64
+    append_action(storage, damaged, (), recorded_at=T1)
+    policy = _read(storage)
+    assert policy.clients == {"good": good}
+    assert client_for_token(policy, "any token") is None

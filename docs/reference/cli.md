@@ -974,7 +974,8 @@ previously client list
 | `--statement TEXT` | Yes, for `add` and `revoke` | — | The sentence the statement was set with. It stays in the log. |
 | `--yes` | No | off | Write without asking. |
 
-`add` asks `write? [y/N]` first, the way `policy` does, and then prints the token on standard output in two lines:
+`add` prints a summary of two fields on standard output, `client NAME` and `processor PROVIDER`, separated by a tab.
+It then asks `write? [y/N]` the way `policy` does, and after the write prints the token on standard output in two lines:
 
 ```text
 client NAME: token TOKEN
@@ -988,7 +989,7 @@ Nothing can bring it back, so a lost token means adding the client again.
 `add` for a name that already belongs to a client replaces it: a new token is made, and the old one stops matching from the next lookup.
 It says `client NAME exists: this replaces it, and its token stops working` on standard error before the question.
 `revoke` lifts the client, and its token matches nothing from then on.
-`revoke` prints `policy event ID`, and `add` prints nothing but the two lines.
+`revoke` prints `policy event ID`, and `add` prints nothing after the two lines.
 
 `list` prints one line per client in force, sorted by name, the three fields separated by a tab: the name, the processor and the time of the event that set it.
 It never prints the hash.
