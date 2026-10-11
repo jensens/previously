@@ -113,6 +113,31 @@ It marks foreign text for the model, and a model can still follow what the text 
 What every client sees regardless of the policy is what the operator stated and what isn't content of a customer: the names of the circles, their rules, the number of members, and the promises of the providers.
 No address of a member is among it.
 
+(network-ways-out)=
+
+## Only the governed ways lead out
+
+Two of the places above hand readable content of the log to somebody outside: the gate, to a model provider, and the MCP server, to a client and the provider behind it.
+Both decide with the policy, and both write a record of every attempt.
+That's what makes them boundaries: a call nobody allowed doesn't happen, and a call that happened can be found.
+
+Every other process of Previously reaches no more than its commands need.
+`ingest imap` reaches the mail server and the bucket, and the blob commands reach the bucket, which only ever receives sealed content.
+`gate try` reaches the providers its adapters call, and the local model server.
+`previously serve` answers requests and sends none of its own.
+All of them reach the database, and every other command reaches the database alone.
+
+That holds for the code as it's written, and the code isn't all that runs.
+The ingest parses mail anybody could have sent, through a mail parser and an HTML converter it didn't write; the gate and the server run the clients of their vendors; and any of them could be taken over by a flaw in that code, or by a dependency that changes.
+A process that holds the database connection and can reach any host is then a way out that no rule decides and no record shows: what it sends leaves no `model_call` and no `mcp_access` behind.
+
+So the network has to say what the code says, and that's a requirement on the environment ({ref}`environment-requirements`): each process of Previously reaches the hosts its commands need, and nothing else on the internet.
+The environment chooses how.
+In a Kubernetes cluster, network policies that deny every connection to and from a pod of Previously, except DNS, the database and the hosts that pod's commands name, are one way; on a single host, a firewall for the user the commands run as is another.
+
+The network can't do it alone.
+The gate's adapters call whatever address the environment of the process names for them, as `ANTHROPIC_BASE_URL` shows above, and a rule that lets a process reach a host is a rule about the host, not about what the process sends there.
+
 ## What nobody guards yet
 
 These are the gaps as of 2026-10-11.
