@@ -463,7 +463,13 @@ Beim Einfrieren in die Landkarte, je unter seine Einheit:
 - **Der Identitätsgraph:** Personen und Organisationen als Projektionen,
   Zuordnungen tragfähiger Verweise (`address:` → `person:`), `circle:` →
   Organisation, und wer `human:operator` ist. `name:` gehört nicht dazu: es
-  wird je Verpflichtung durch eine neue Fassung präzisiert (§2.1).
+  wird je Verpflichtung durch eine neue Fassung präzisiert (§2.1). **Mit dem
+  Graphen fragt das System zurück** (Betreuer, 2026-10-12): ein `name:`, den es
+  keiner Person zuordnen kann, wird eine Rückfrage — „welche Frau Huber ist in
+  Verpflichtung 42 gemeint?" —, mit den Kandidaten aus dem Graphen, die einen
+  Bezug zu den Kreisen der Quellen haben; die Antwort ist eine neue, direkte
+  Fassung mit dem richtigen Verweis (`list_triage`, `write_triage_answer`,
+  K §4.2–§4.3).
 - **Automatische Feststellung mit Rückfrage** — Einheit 6: sie muss Inhalt,
   Organisation und in Folge Projekt herausfinden und im Zweifel fragen
   (`list_triage`, `write_triage_answer`, K §4.2–§4.3).
