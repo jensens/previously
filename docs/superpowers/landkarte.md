@@ -94,10 +94,12 @@ Kubernetes für einen Service setzt — und Hinweisen für Doku und Meldungen.
 Der Betreuer hat den Lauf von kup6s als Bedingung 9 der Einheit 4 genommen
 (unten unter *Erledigt*). Der Zweig `worktree-gate-mcp-rueckmeldung` setzt
 die Antwort um: die Adress-Einstellungen, die Meldungen, die Anforderung an
-das Netz, der Handoff `handoffs/2026-10-11-kup6s-settings.md`. Was jetzt
-kommt, in dieser Reihenfolge: der Merge dieses Zweigs; das Release nach
-`v0.1.0a3`, mit dem Handoff der Einstellungen an den Agenten in kup6s; und als
-nächste Einheit mit Spec Einheit 5, die Feststellungen.
+das Netz, der Handoff `handoffs/2026-10-11-kup6s-settings.md`; er ist
+gemergt (PR #14, `347c37b`), `v0.1.0a4` ist am 2026-10-12 veröffentlicht, und
+der Handoff der Einstellungen ist übergeben. Was jetzt kommt, in dieser
+Reihenfolge: 1..n IMAP-Ordner als Eingang (Betreuer, 2026-10-12; unter
+*Aufnahme aus IMAP*), dann als nächste Einheit mit Spec Einheit 5, die
+Feststellungen.
 Was die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an
 den Einheiten, zu denen es gehört.
 
@@ -131,7 +133,7 @@ Spec:
 |---|---|---|---|
 | 0 | Auslieferung: Migrationen im Paket, `previously migrate`, Image, Release-Weg, Handoff an kup6s | ein Image, aus dem kup6s alles startet | `specs/2026-10-05-auslieferung.md`, eingefroren am 2026-10-05; abgenommen mit PR #6 (oben) |
 | 1 | Aufnahme aus dem IMAP-Ordner, mit dem Einwurf- und dem Konnektor-Vertrag | Chronik des Kunden; echte Post im Log | `specs/2026-10-06-pilot-imap-aufnahme.md`, eingefroren am 2026-10-06; abgenommen mit PR #7 (oben). Er ersetzt den Entwurf vom 2026-10-04 auf dem Zweig `worktree-pilot-imap-aufnahme` (`9b493f0`) |
-| 2 | Betrieb in kup6s: Datenbank mit Sicherung, Restore-Probe, Bucket, Werkzeug-Pod, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | beginnt beim Image aus Einheit 0; gebaut wird er vom Agenten in kup6s, nie von hier. Was er braucht, sagen die Handoffs `handoffs/2026-10-05-kup6s-delivery.md` und, für die Aufnahme, `handoffs/2026-10-06-kup6s-ingest.md` und, für das Gate, `handoffs/2026-10-09-kup6s-gate.md` und, für den MCP-Server, `handoffs/2026-10-11-kup6s-mcp.md`, englisch; alle vier liegen dort und stehen, wie die Rückmeldungen vom 2026-10-11 sagen (RK, RG), bis auf den Modellserver und das Tailnet; für das Release nach `v0.1.0a3` folgt `handoffs/2026-10-11-kup6s-settings.md` |
+| 2 | Betrieb in kup6s: Datenbank mit Sicherung, Restore-Probe, Bucket, Werkzeug-Pod, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | beginnt beim Image aus Einheit 0; gebaut wird er vom Agenten in kup6s, nie von hier. Was er braucht, sagen die Handoffs `handoffs/2026-10-05-kup6s-delivery.md` und, für die Aufnahme, `handoffs/2026-10-06-kup6s-ingest.md` und, für das Gate, `handoffs/2026-10-09-kup6s-gate.md` und, für den MCP-Server, `handoffs/2026-10-11-kup6s-mcp.md`, englisch; alle vier liegen dort und stehen, wie die Rückmeldungen vom 2026-10-11 sagen (RK, RG), bis auf den Modellserver und das Tailnet; mit `v0.1.0a4` ist am 2026-10-12 `handoffs/2026-10-11-kup6s-settings.md` übergeben |
 | 3 | Gate und Policy: Kreise statt Organisationsprofil, drei Anbieter-Adapter, Audit, die Verarbeitungsprüfung (nicht mehr „Offenlegungsprüfung“: PG §1.2) | die Grenze, hinter der ein Modell Inhalt sieht | `specs/2026-10-09-pilot-gate-und-policy.md`, eingefroren am 2026-10-09; abgenommen mit PR #9 (oben) |
 | 4 | MCP-Lesezugang, mit der Verarbeitungsprüfung davor (die Entscheidung aus Einheit 3, wiederverwendet) | Claude Code fragt das Log | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, das §8 der Architektur ablöst; beide eingefroren am 2026-10-11; abgenommen mit PR #12 (oben) |
 | 5 | Feststellungen: Schreibweg, Verpflichtung und Entscheidung, Projektionen, Freigabe | was festgestellt ist, mit Quelle und Verantwortung | — |
@@ -492,8 +494,15 @@ ebenso.
   liest, entscheidet kup6s; ob ein Job je Ordner oder ein Sammelordner, ist
   auf beiden Seiten offen (RG). Mehrere Ordner in einem Lauf stehen im
   nächsten Punkt.
-- Mehrere Ordner, mehrere Postfächer in einem Lauf; einer je Lauf genügt dem
-  Piloten (PI §11 Punkt 3).
+- 1..n IMAP-Ordner als Eingang: vom Betreuer am 2026-10-12 verlangt, „es ist
+  wichtig, dass wir uns nicht auf einen IMAP-Ordner einschränken"; wie sie im
+  Einzelnen genutzt werden (gesendete Mails, Sammelordner, Filter), wird
+  später entschieden. Heute liest ein Lauf einen Ordner eines Postfachs; die
+  Wasserlinie ist je `imap:<user>@<host>/<folder>` geführt, und dieselbe Mail
+  in zwei Ordnern ist über die Message-ID ein Event — mehrere Ordner in
+  mehreren Läufen gingen also im Prinzip schon, getestet und beschrieben ist
+  es nicht. Der nächste Schritt vor Einheit 5. PI §11 Punkt 3 hatte einen
+  Ordner je Lauf für den Piloten genügen lassen.
 - `IDLE`, Aufnahme ohne Zeitgeber, mit dem MCP-Dienst denkbar (PI §1,
   §11 Punkt 5).
 - Eine Weiterleitung als zitierter Text bleibt Text der äußeren Mail; sie zu
