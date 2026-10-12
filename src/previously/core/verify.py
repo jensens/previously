@@ -39,6 +39,13 @@ from previously.core.action import OK
 from previously.core.action import OUTCOMES
 from previously.core.action import POLICY
 from previously.core.action import REDACTION
+from previously.core.assertion import assertion_problem
+from previously.core.assertion import DecisionBody
+from previously.core.assertion import OPEN
+from previously.core.assertion import parse_statement
+from previously.core.assertion import REJECTION
+from previously.core.assertions import ASSERTION
+from previously.core.assertions import stands_on_erased
 from previously.core.blob import fetch_blob
 from previously.core.canonical import canonical
 from previously.core.chain import read_references
@@ -75,6 +82,8 @@ if TYPE_CHECKING:
     from previously.contract.rows import EventRow
     from previously.contract.rows import UnitRow
     from previously.contract.store import LogStore
+    from previously.core.assertion import Source
+    from previously.core.assertion import Statement
     from previously.core.hashing import HashableUnit
     from previously.core.redaction import Redaction
 
@@ -397,6 +406,7 @@ class _Erasures:
         # read: (id, [(event, units, blobs)]). The ones whose units are all
         # gone keep nothing and are not remembered.
         self._calls: list[tuple[int, list[tuple[int, list[int], list[str]]]]] = []
+        self._assertions = _Assertions()
 
     @property
     def redactions(self) -> RedactionIndex:
@@ -420,6 +430,8 @@ class _Erasures:
         # nothing, whoever ordered the erasure.
         if row.hash_version == HASH_VERSION_1 and 0 < len(erased) < len(units):
             self._partial.append(row.id)
+        if row.kind == ASSERTION:
+            return self._assertions.observe(row, units)
         if row.kind != "action" or row.payload is None:
             return []
         try:
@@ -464,6 +476,7 @@ class _Erasures:
             for call_id, read in self._calls
             if any(_erased(index, event, units, blobs) for event, units, blobs in read)
         )
+        findings.extend(self._assertions.reconcile(storage, conn, index))
         return findings
 
     def _register_findings(self) -> list[Finding]:
@@ -478,6 +491,160 @@ class _Erasures:
                 continue
             if frozenset(bytes.fromhex(sha256) for sha256 in redaction.blobs) != registered:
                 findings.append(Finding(event_id, "blob register does not match the payload"))
+        return findings
+
+
+@dataclass(frozen=True)
+class _Joined:
+    """A version of an obligation or a decision that stands in its thread:
+    its kind, the name of its thread, and its responsibility."""
+
+    kind: str
+    thread: int
+    responsibility: str
+
+
+class _Assertions:
+    """The assertions one pass has seen, and the findings about them
+    ({ref}`erasure`).
+
+    It follows the fold of `core/assertion.py` row by row: a version joins
+    its thread, an approval or a rejection marks its proposal. What the fold
+    passes over in silence is a finding here, so that a version that came
+    around the write path does not just disappear from every list.
+
+    What it keeps is one small entry per assertion, and the sources of every
+    assertion that stands, to be held against the erasures and the units of
+    their events once the pass has ended.
+    """
+
+    def __init__(self) -> None:
+        self._erased: set[int] = set()
+        self._joined: dict[int, _Joined] = {}
+        self._threads: dict[int, str] = {}  # name -> kind
+        self._approved: set[int] = set()
+        self._rejected: set[int] = set()
+        self._standing: list[tuple[int, tuple[Source, ...]]] = []
+
+    def observe(self, row: EventRow, units: Sequence[UnitRow]) -> list[Finding]:
+        """The finding about the form of an assertion or about what it names,
+        if any; remembers the rest."""
+        if row.payload is None:
+            self._erased.add(row.id)
+            return []
+        problem = assertion_problem(row.payload)
+        if problem is not None:
+            return [Finding(row.id, f"assertion has no valid form: {problem}")]
+        findings: list[Finding] = []
+        # An assertion says in its payload what it says, and the payload is
+        # what an erasure takes; units would stay behind.
+        if units:
+            findings.append(Finding(row.id, "assertion has units"))
+        statement = cast("Statement", parse_statement(row.payload))
+        if any(source.event >= row.id for source in statement.sources):
+            findings.append(
+                Finding(row.id, "assertion names a source that does not stand before it")
+            )
+        else:
+            self._standing.append((row.id, statement.sources))
+        # What it names is checked either way, as the fold reads it either way.
+        reason = (
+            self._rejection(statement)
+            if statement.kind == REJECTION
+            else self._version(row.id, statement)
+        )
+        if reason is not None:
+            findings.append(Finding(row.id, reason))
+        return findings
+
+    def _named(self, event_id: int) -> _Joined | None:
+        return self._joined.get(event_id)
+
+    def _open(self, proposal: _Joined | None) -> bool:
+        return proposal is not None and proposal.responsibility == OPEN
+
+    def _answered(self, proposal_id: int) -> bool:
+        return proposal_id in self._approved or proposal_id in self._rejected
+
+    def _rejection(self, statement: Statement) -> str | None:
+        proposal_id = cast("int", statement.of)
+        if proposal_id in self._erased:
+            return None  # its kind is gone; the fold passes it over
+        if not self._open(self._named(proposal_id)):
+            return "rejection names no open proposal"
+        if self._answered(proposal_id):
+            return "rejection of a proposal that is already approved or rejected"
+        self._rejected.add(proposal_id)
+        return None
+
+    def _version(self, event_id: int, statement: Statement) -> str | None:
+        """The first thing wrong with what a version names, or `None`, and
+        then it joins its thread."""
+        subject = event_id if statement.subject is None else statement.subject
+        kind = self._threads.get(subject)
+        if statement.subject is not None:
+            if kind is None and subject not in self._erased:
+                return "assertion has a subject that names no earlier obligation or decision"
+            if kind is not None and kind != statement.kind:
+                return "assertion has a subject of another kind"
+        replaces = statement.body.replaces if isinstance(statement.body, DecisionBody) else None
+        if (
+            replaces is not None
+            and replaces not in self._erased
+            and self._threads.get(replaces) != "decision"
+        ):
+            return "decision replaces no earlier decision"
+        approves = statement.approves
+        if approves is not None and approves not in self._erased:
+            proposal = self._named(approves)
+            if not self._open(proposal) or cast("_Joined", proposal).thread != subject:
+                return "approval names no open proposal of its subject"
+            if self._answered(approves):
+                return "approval of a proposal that is already approved or rejected"
+            self._approved.add(approves)
+        self._threads.setdefault(subject, statement.kind)
+        self._joined[event_id] = _Joined(statement.kind, subject, statement.responsibility)
+        return None
+
+    def reconcile[Conn](
+        self, storage: LogStore[Conn], conn: Conn, index: RedactionIndex
+    ) -> list[Finding]:
+        """The sources against what the log holds: each an observation, each
+        cited unit there, and nothing the assertion rests on erased while it
+        stands.
+
+        One read per distinct source event for its kind, and one for the
+        units of all of them: the sources are read by `id`, as the targets of
+        the redactions are, because keeping the kind of every row of the
+        pass would cost memory in proportion to the log.
+        """
+        events = sorted({s.event for _, sources in self._standing for s in sources})
+        kinds: dict[int, str] = {}
+        for event_id in events:
+            row = next(iter(storage.read(conn, from_id=event_id, limit=1)), None)
+            if row is not None and row.id == event_id:
+                kinds[event_id] = row.kind
+        cited = sorted(
+            {s.event for _, sources in self._standing for s in sources if s.units is not None}
+        )
+        held = storage.units_by_event(conn, cited)
+        findings: list[Finding] = []
+        for assertion_id, sources in self._standing:
+            if any(kinds.get(source.event) != "observation" for source in sources):
+                findings.append(
+                    Finding(assertion_id, "assertion names a source that is not an observation")
+                )
+                continue
+            seqs = {
+                source.event: {unit.seq for unit in held.get(source.event, [])}
+                for source in sources
+            }
+            if any(seq not in seqs[s.event] for s in sources for seq in s.units or ()):
+                findings.append(
+                    Finding(assertion_id, "assertion names a unit its source does not have")
+                )
+            if stands_on_erased(index, assertion_id, sources):
+                findings.append(Finding(assertion_id, "assertion stands on an erased source"))
         return findings
 
 

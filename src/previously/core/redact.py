@@ -53,6 +53,16 @@ at that lock, and once it holds its locks it reads the calls again: the gate
 has committed by then, and the call it wrote is found and locked in a second
 round. A call found there was not committed when the first read ran, so its
 id is above every row of the first round, and the order stays ascending.
+
+An assertion goes the same way, and further: it says in its own words what
+its sources said, so an erasure of the source event, of a unit the assertion
+cites, or of any unit of an event it cites whole, erases its payload, by a
+redaction of the whole assertion in the same transaction
+(`assertions.stands_on_erased` decides, the question `verify` asks too). The
+assertions are found and locked with the calls, in the same round and the
+same second read; the write path of assertions holds the lock on every source
+until it commits, which is the gate's side of the race for assertions. A blob
+erasure erases neither a payload nor a unit, so it reaches no assertion.
 """
 
 from collections.abc import Mapping
@@ -62,6 +72,9 @@ from previously.core.action import MODEL_CALL
 from previously.core.action import REDACTION
 from previously.core.action import retrying
 from previously.core.action import write_action
+from previously.core.assertions import ASSERTION
+from previously.core.assertions import sources_named
+from previously.core.assertions import stands_on_erased
 from previously.core.errors import InvalidPayload
 from previously.core.errors import RedactionRefused
 from previously.core.hashing import HASH_VERSION_1
@@ -126,10 +139,14 @@ class Redacted:
     # erased; that is a fact about the target, and the command line says what
     # follows from it.
     payload_holds_wording: bool = False
-    # The `model_call` events whose units this erasure erased with it, because
-    # the call read what was erased. Empty when no call did, or when the
-    # units of every such call were gone already.
+    # The events this erasure erased with it, ascending: the `model_call`
+    # events whose units it erased because the call read what was erased, and
+    # the assertions whose payload it erased because they rest on it. Empty
+    # when none did, or when every one of them was erased already.
     cascaded: tuple[int, ...] = ()
+    # The assertions among `cascaded`, so that a caller can tell them from
+    # the calls.
+    cascaded_assertions: tuple[int, ...] = ()
 
 
 def _check_input(reason: str, recorded_at: datetime) -> None:
@@ -170,26 +187,43 @@ def _lock_ascending[Conn](
     return {event_id: eraser.lock_event(conn, event_id) for event_id in sorted(set(event_ids))}
 
 
+# What `_lock_round` locked: every row, the calls among them, and the
+# assertions among them.
+type _Round = tuple[dict[int, EventRow | None], list[int], list[int]]
+
+
 def _lock_round[Conn](
     log: LogStore[Conn],
     eraser: RedactionStore[Conn],
     conn: Conn,
     targets: Iterable[int],
     wanted: Callable[[Mapping[str, object]], bool],
-) -> tuple[dict[int, EventRow | None], list[int]]:
-    """Locks the targets and the `model_call` events that read what
-    `wanted` accepts, and returns the locked rows and the calls.
+    *,
+    erased: int | None,
+) -> _Round:
+    """Locks the targets, the `model_call` events that read what `wanted`
+    accepts, and the assertions that cite the event `erased` as a source,
+    and returns the locked rows, the calls and the assertions. `erased` is
+    `None` for an erasure that erases no payload and no unit.
 
-    The calls are read twice: once before the lock, so that they are locked
-    in one ascending round with the targets, and once after it, for a call
-    the gate wrote while this erasure waited at the lock of its input. The
-    gate holds that lock until it commits, so the second read finds the call,
-    and locks it in a round of its own (see the module docstring)."""
-    calls = _calls(log, conn, wanted)
-    rows = _lock_ascending(eraser, conn, [*targets, *calls])
-    late = [call_id for call_id in _calls(log, conn, wanted) if call_id not in rows]
-    rows.update(_lock_ascending(eraser, conn, late))
-    return rows, [*calls, *late]
+    The calls and the assertions are read twice: once before the lock, so
+    that they are locked in one ascending round with the targets, and once
+    after it, for one written while this erasure waited at the lock of its
+    input. The gate and the write path of assertions hold that lock until
+    they commit, so the second read finds what they wrote, and locks it in a
+    round of its own (see the module docstring)."""
+
+    def found() -> tuple[list[int], list[int]]:
+        cited = [] if erased is None else _assertions(log, conn, erased)
+        return _calls(log, conn, wanted), cited
+
+    calls, assertions = found()
+    rows = _lock_ascending(eraser, conn, [*targets, *calls, *assertions])
+    late_calls, late_assertions = found()
+    late_calls = [event_id for event_id in late_calls if event_id not in rows]
+    late_assertions = [event_id for event_id in late_assertions if event_id not in rows]
+    rows.update(_lock_ascending(eraser, conn, [*late_calls, *late_assertions]))
+    return rows, [*calls, *late_calls], [*assertions, *late_assertions]
 
 
 def _unerased(index: RedactionIndex, sha256: str, event_ids: Iterable[int]) -> tuple[int, ...]:
@@ -241,6 +275,53 @@ def _calls[Conn](
         and row.payload.get("action") == MODEL_CALL
         and _reads(row.payload, wanted)
     ]
+
+
+def _assertions[Conn](log: LogStore[Conn], conn: Conn, event_id: int) -> list[int]:
+    """The ids of the standing assertions that name `event_id` as a source,
+    ascending. Found by reading every assertion, as `_calls` reads every
+    action, and not under a lock either."""
+    return [
+        row.id
+        for row in log.read_by_kind(conn, ASSERTION)
+        if row.payload is not None
+        and any(source.event == event_id for source in sources_named(row.payload))
+    ]
+
+
+def _cascade_assertions[Conn](
+    log: LogStore[Conn],
+    eraser: RedactionStore[Conn],
+    conn: Conn,
+    rows: Mapping[int, EventRow | None],
+    assertions: Iterable[int],
+    index: RedactionIndex,
+    *,
+    trigger: int,
+    recorded_at: datetime,
+) -> tuple[int, ...]:
+    """Erases the assertions of the round that rest on what `index` says is
+    erased, the redaction of this erasure included, and returns their ids.
+
+    One redaction of the whole event per assertion, as `redact event` writes
+    it; an assertion has no blobs and no units, and its units are erased all
+    the same in case one has, so that the redaction is carried out as
+    `verify` reads it. The payload is the one of the locked row, so an
+    assertion a second erasure finds erased already gets nothing.
+    """
+    erased: list[int] = []
+    for assertion_id in sorted(set(assertions)):
+        row = rows.get(assertion_id)
+        if row is None or row.payload is None:
+            continue
+        if not stands_on_erased(index, assertion_id, sources_named(row.payload)):
+            continue
+        payload = event_payload(assertion_id, blobs=(), reason=f"cascade of redaction {trigger}")
+        write_action(log, conn, payload, (), recorded_at=recorded_at)
+        eraser.erase_payload(conn, assertion_id)
+        eraser.erase_units(conn, assertion_id, _seqs(log, conn, assertion_id))
+        erased.append(assertion_id)
+    return tuple(erased)
 
 
 def _cascade[Conn](
@@ -367,8 +448,13 @@ def redact_event[Conn](
         sharing = [
             e for sha256 in registered for e in log.events_by_blob(conn, bytes.fromhex(sha256))
         ]
-        rows, calls = _lock_round(
-            log, eraser, conn, [event_id, *sharing], lambda entry: _entry_event(entry) == event_id
+        rows, calls, cited = _lock_round(
+            log,
+            eraser,
+            conn,
+            [event_id, *sharing],
+            lambda entry: _entry_event(entry) == event_id,
+            erased=event_id,
         )
         _target(rows[event_id], event_id)
         # After the lock, never before: a second erasure of this target has
@@ -385,14 +471,20 @@ def redact_event[Conn](
             redaction_id = covering.id
         eraser.erase_payload(conn, event_id)
         eraser.erase_units(conn, event_id, _seqs(log, conn, event_id))
-        cascaded = _cascade(log, eraser, conn, calls, trigger=redaction_id, recorded_at=recorded_at)
+        erased_calls = _cascade(
+            log, eraser, conn, calls, trigger=redaction_id, recorded_at=recorded_at
+        )
+        assertions = _cascade_assertions(
+            log, eraser, conn, rows, cited, index, trigger=redaction_id, recorded_at=recorded_at
+        )
         obsolete, kept = _blobs_after(log, conn, index, registered)
         return Redacted(
             redaction_id=redaction_id,
             written=covering is None,
             obsolete_blobs=obsolete,
             kept_blobs=kept,
-            cascaded=cascaded,
+            cascaded=tuple(sorted((*erased_calls, *assertions))),
+            cascaded_assertions=assertions,
         )
 
     # `retrying` is `append`'s policy ({ref}`concurrency`). The position is
@@ -428,7 +520,7 @@ def redact_units[Conn](
         raise RedactionRefused("a redaction of units needs at least one unit")
 
     def once(conn: Conn) -> Redacted:
-        rows, calls = _lock_round(
+        rows, calls, cited = _lock_round(
             log,
             eraser,
             conn,
@@ -437,6 +529,7 @@ def redact_units[Conn](
                 _entry_event(entry) == event_id
                 and any(seq in _entry_list(entry, "units") for seq in wanted)
             ),
+            erased=event_id,
         )
         target = _target(rows[event_id], event_id)
         # Version 1 attests all units of an event in one digest, so the units
@@ -479,16 +572,23 @@ def redact_units[Conn](
         if fresh:
             payload = units_payload(event_id, fresh, reason=reason)
             redaction_id = write_action(log, conn, payload, (), recorded_at=recorded_at)
+            index.add(parse(redaction_id, payload))
         else:
             redaction_id = max(by.id for by in covering.values() if by is not None)
         eraser.erase_units(conn, event_id, wanted)
-        cascaded = _cascade(log, eraser, conn, calls, trigger=redaction_id, recorded_at=recorded_at)
+        erased_calls = _cascade(
+            log, eraser, conn, calls, trigger=redaction_id, recorded_at=recorded_at
+        )
+        assertions = _cascade_assertions(
+            log, eraser, conn, rows, cited, index, trigger=redaction_id, recorded_at=recorded_at
+        )
         return Redacted(
             redaction_id=redaction_id,
             written=bool(fresh),
             skipped_units=skipped,
             payload_holds_wording=_holds_any(target.payload, wordings),
-            cascaded=cascaded,
+            cascaded=tuple(sorted((*erased_calls, *assertions))),
+            cascaded_assertions=assertions,
         )
 
     return retrying(log, once)
@@ -525,8 +625,15 @@ def redact_blob[Conn](
         # against the events this redaction names, so a call that read the
         # blob through an event whose reference is erased already is erased
         # again, never one that read it and keeps its result.
-        _, calls = _lock_round(
-            log, eraser, conn, users, lambda entry: sha256 in _entry_list(entry, "blobs")
+        # `erased=None`: a blob erasure erases no payload and no unit, so no
+        # assertion rests on what it erases.
+        _, calls, _ = _lock_round(
+            log,
+            eraser,
+            conn,
+            users,
+            lambda entry: sha256 in _entry_list(entry, "blobs"),
+            erased=None,
         )
         index = read_index(log, conn)
         fresh = _unerased(index, sha256, users)

@@ -359,7 +359,16 @@ For each such call it prints one more line to standard output, after the first:
 cascaded: model_call 43
 ```
 
-A target that no call read prints no such line, and neither does a repeat of an erasure whose cascade stands.
+When an assertion rests on what's erased, `redact` erases the assertion with it, by a redaction of the whole assertion with the same reason.
+An assertion rests on an event it names as a source, on a unit it cites, and on every unit of an event it cites whole that's erased after the assertion was written.
+For each such assertion it prints a line of the same form, and the lines of calls and assertions come in ascending order of `id`:
+
+```text
+cascaded: assertion 44
+```
+
+An erasure of a blob erases no payload and no unit, so it takes no assertion with it.
+A target that no call read and no assertion rests on prints no such line, and neither does a repeat of an erasure whose cascade stands.
 `redact` refuses a redaction as a target and accepts every other action, a policy event and a `model_call` included.
 
 `redact` works in this order: it records the redaction and sets the tombstones in one transaction, deletes the blobs that no longer have to lie, and brings every projection up to the tip of the log, the way `project` does.

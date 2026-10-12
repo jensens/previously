@@ -1317,8 +1317,9 @@ def _cmd_redact(args: argparse.Namespace) -> int:
         _notice_payload(result, args)
         raise _unfinished(result.redaction_id, ", and ".join(left))
     print(_redacted_line(result))
-    for call_id in result.cascaded:
-        print(f"cascaded: model_call {call_id}")
+    for event_id in result.cascaded:
+        kind = "assertion" if event_id in result.cascaded_assertions else "model_call"
+        print(f"cascaded: {kind} {event_id}")
     for seq in result.skipped_units:
         print(f"unit {seq} was already erased", file=sys.stderr)
     for address, users in result.kept_blobs.items():
