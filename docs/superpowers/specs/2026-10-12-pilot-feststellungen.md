@@ -28,8 +28,11 @@ es im Plan und im Ausführungsprotokoll
   die Kreise hängen an der Policy von heute, und der MCP-Server liest nur den
   Log. Vom Betreuer am 2026-10-12 vor dem Bau bestätigt („schauen wir mal, ob
   wir ohne Projektionstabellen auskommen — das kann man notfalls
-  nachliefern"; Planentscheidung 1). Die Endprüfung misst die Lesezeit bei
-  5 000 Feststellungen.
+  nachliefern"; Planentscheidung 1). Die Endprüfung hat die Lesezeit bei
+  5 000 Feststellungen gemessen (2026-10-12): das Falten trägt, die gefilterten
+  Listen trugen erst, nachdem die Quellen eines Aufrufs gesammelt gelesen
+  wurden (Kommandozeile mit Kreis 2 824 → 193 ms, MCP-Seite 941 → 225 ms;
+  Ruling F-16); die Zahlen stehen auf `explanation/assertions.md`.
 - **Die Form des Handles** (§6.1 „HMAC über Inhalt, Client und Ablauf"):
   `base64url(kanonisches JSON {client, digest, expires, nonce})` und, nach
   einem Punkt, `base64url(HMAC-SHA256)`; `digest` ist der SHA-256 der
