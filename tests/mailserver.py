@@ -200,7 +200,7 @@ class Relay:
             except OSError:
                 return
             upstream = socket.create_connection(self._target)
-            # Counted, unless an earlier connection was the first.
+            # Counted; with `first_only`, only the first connection is.
             counted = not (self.first_only and len(self._sockets) > 1)
             self._sockets += [client, upstream]
             self._start(self._pump, client, upstream, False)

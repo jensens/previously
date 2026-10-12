@@ -68,8 +68,8 @@ merely described.
   paragraphs as units, its raw bytes and every attachment as blobs, and a mail
   forwarded as an attachment an event of its own. A mail is recognized by an
   identity of its content, so a second copy, the same mail in a second
-  folder or a folder read again writes nothing, and a changed mail under a known Message-ID becomes a variant
-  instead of being lost; see
+  folder or a folder read again writes nothing, and a changed mail under a
+  known Message-ID becomes a variant instead of being lost; see
   [About connectors](docs/explanation/connectors.md) and
   [How to take in the mail of a folder](docs/how-to/ingest-a-mail-folder.md)
 - **the gate and the processing policy** (`policy`, `gate`): circles of people,

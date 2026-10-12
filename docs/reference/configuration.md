@@ -126,6 +126,7 @@ Error: PREVIOUSLY_IMAP_FOLDER is not set
 The host, the user and the folder make the name of the watermark, `imap:<user>@<host>/<folder>`, and the port doesn't.
 The host stands there as the address spells it, without the brackets of an IPv6 address.
 Each folder has a watermark of its own, and a folder given with `--folder` has the same one as the same folder in `PREVIOUSLY_IMAP_FOLDER`.
+The watermark goes by the name exactly as written: spell a folder the way it was spelled before, `INBOX` and not `inbox`, or it's read from the start again, and every mail in it comes back as known.
 A change to any of the three starts another watermark, and the folder is read from the start; every mail in the log counts as known.
 
 `PREVIOUSLY_IMAP_FOLDER` and `--folder` take the name the server gives the folder, which for a folder at the top level is the name a mail client shows.

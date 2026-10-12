@@ -95,7 +95,7 @@ A mail that lies in two folders becomes one event, and the folder read later cou
 
 If a folder fails, such as one whose name you mistyped, the run prints a line on standard error that starts with `Error: folder` and the folder's name, goes on with the next folder, and returns 2.
 Check the name of that folder, and run the command again.
-A refused login or a server out of reach stops the run at the first folder, because every other folder would meet the same error.
+A refused login or a server out of reach stops the run at the folder where it happens, because every folder after it would meet the same error.
 
 ## Take in several mailboxes
 
@@ -122,7 +122,7 @@ After an error, run the command again once the cause is gone: the run moves its 
 
 ## Run it on a schedule
 
-Run `ingest imap` and then `project` every 5 to 15 minutes, and never two runs of `ingest imap` for the same mailbox at once.
+Run `ingest imap` and then `project` every 5 to 15 minutes, and never two runs of `ingest imap` that read the same folder at once.
 
 On a host with Docker, put the settings into a file that only root can read, such as `/etc/previously/ingest.env`, one `NAME=value` per line and without quotes, since `--env-file` takes a value as it stands, and add a line like this one with `crontab -e`, as root:
 

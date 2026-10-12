@@ -1153,7 +1153,8 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
 ## Erledigt, seit es auf einer Liste stand
 
 - ~~1..n IMAP-Ordner als Eingang~~ (Betreuer, 2026-10-12; PI §11 Punkt 3
-  hatte einen Ordner je Lauf für den Piloten genügen lassen) — auf dem Zweig `worktree-imap-ordner`, Commit `5626f98`:
+  hatte einen Ordner je Lauf für den Piloten genügen lassen) — auf dem Zweig
+  `worktree-imap-ordner`, Commit `5626f98`:
   `ingest imap --folder NAME`, wiederholbar, ohne die Option weiter
   `PREVIOUSLY_IMAP_FOLDER`; je Ordner die Wasserlinie unter dem bisherigen
   Namen `imap:<user>@<host>/<folder>` und eine Zeile, die den Ordner nennt;
