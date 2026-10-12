@@ -503,9 +503,9 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     five restrictions below" with a row missing. Deriving the payloads from
     the code is the fix and it is not built yet.
 
-    The second half holds the seventeen standard-error sentences, the two
+    The second half holds the twenty-two standard-error sentences, the two
     lines of `redact` and the three of `migrate` on standard output that
-    `cli.md` quotes, in thirteen blocks, against the literals in `cli.py` — not
+    `cli.md` quotes, in fifteen blocks, against the literals in `cli.py` — not
     the line `blob get` prints on success, which `_message_patterns` does
     not collect, since it reads standard-error sentences and returned lines
     only; the seven refusals of `redact` against the messages
@@ -519,7 +519,8 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     unfinished redaction against the messages `cli.py` raises as
     `PreviouslyError` or `InvalidPayload` and `core/blob.py` raises as
     `BlobError`;
-    the refused port of `ingest imap` against `cli.py`, its twelve errors
+    the refused address and the renamed host of `ingest imap` against
+    `cli.py`, its twelve errors
     against the messages `connectors/imap.py` raises as `ImapError`, and
     its line on standard output against the f-string `cli.py` prints it
     with;
@@ -575,7 +576,9 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         ("When every reference to the blob is erased, `blob get` returns 1", 1),
         ("For each variant, one notice goes to standard error", 1),
         ("When no call fell back, standard output stays empty, and one notice goes", 1),
-        ("`gate try` writes these lines to standard error as well", 5),
+        ("`gate try` writes these lines to standard error as well", 6),
+        ("`gate explain` writes one more line to standard error", 2),
+        ("does the same after one more line", 2),
     ):
         notices = _quoted_block(page, after)
         assert len(notices) == expected, f"{after!r}: {notices}"
@@ -662,16 +665,15 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
             )
     assert quoted == 9, quoted
 
-    # `ingest imap`: the refused port out of `cli.py`, the errors of the
+    # `ingest imap`: the refused address and the renamed host out of
+    # `cli.py`, the errors of the
     # server and the connection out of `connectors/imap.py`, raised as
     # `ImapError` and held against that module alone, and the line on
     # standard output against the one f-string in `cli.py` that says
     # `appended`, since `_message_patterns` reads standard error only.
-    _assert_raised(
-        _quoted_block(page, "A port that isn't a number from 1 to 65535 is refused the same way"),
-        from_cli,
-        "PreviouslyError",
-    )
+    refused = _quoted_block(page, "is refused the same way, and so is a `PREVIOUSLY_IMAP_HOST`")
+    assert len(refused) == 2, refused
+    _assert_raised(refused, from_cli, "PreviouslyError")
     quoted_imap = _quoted_block(page, "Errors of the IMAP server and of the connection")
     assert len(quoted_imap) == 12, quoted_imap
     _assert_raised(quoted_imap, _imap_errors(), "ImapError")
@@ -1187,7 +1189,7 @@ def test_the_policy_reference_holds_the_words_the_gate_writes() -> None:
 
 
 def test_the_reference_quotes_what_mcp_and_serve_say() -> None:
-    """The two errors of `mcp`, the line and the refused port of `serve`,
+    """The two errors of `mcp`, the line and the two refusals of `serve`,
     and the sentence of a 401, as `cli.md` and `configuration.md` quote them,
     held against the code: the errors against what `cli.py` raises as
     `PreviouslyError`, the line against what it prints to standard error,
@@ -1203,9 +1205,9 @@ def test_the_reference_quotes_what_mcp_and_serve_say() -> None:
     quoted = _quoted_block(page, "and otherwise returns 2 with one of two sentences")
     assert len(quoted) == 2, quoted
     _assert_raised(quoted, raised, "PreviouslyError")
-    port = _quoted_block(page, "A port that isn't a number from 1 to 65535 is refused before")
-    assert len(port) == 1, port
-    _assert_raised(port, raised, "PreviouslyError")
+    address = _quoted_block(page, "without the address that took its place, are refused before")
+    assert len(address) == 2, address
+    _assert_raised(address, raised, "PreviouslyError")
     (line,) = _quoted_block(page, "On start it prints one line to standard error")
     assert any(_is_the_same_sentence(parts, line) for parts in _message_patterns(cli)), line
     assert _quoted_block(page, "and one sentence as its body") == [REFUSAL]
@@ -1216,6 +1218,15 @@ def test_the_reference_quotes_what_mcp_and_serve_say() -> None:
     unset = _quoted_block(configuration, "and returns 2 when it's unset or empty")
     assert len(unset) == 1, unset
     _assert_raised(unset, raised, "PreviouslyError")
+    # The address settings: both renamed hosts, and the refusal of each form.
+    for after, count in (
+        ("is set, it returns 2 with a sentence that names the new setting", 1),
+        ("is set, `serve` returns 2 before it listens anywhere", 1),
+        ("names the setting and the form, and quotes the value", 3),
+    ):
+        quoted = _quoted_block(configuration, after)
+        assert len(quoted) == count, quoted
+        _assert_raised(quoted, raised, "PreviouslyError")
 
 
 # The reference of the MCP server quotes its instructions, an example page,

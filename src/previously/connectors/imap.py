@@ -96,7 +96,9 @@ class ImapConnector:
         self._folder = folder
         self._context = ssl_context
         self._timeout = timeout
-        self._server = f"{host}:{port}"
+        # An IPv6 host in brackets, as an address is written: `::1:993` would
+        # read as an address without a port.
+        self._server = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
 
     def fetch(self, since: Watermark | None) -> Iterator[Fetched]:
         imap = self._connect()

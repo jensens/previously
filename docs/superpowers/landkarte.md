@@ -24,26 +24,32 @@ Gebaut und abgenommen, auf `main`:
 | Auslieferung | Die Migrationen im Paket und `previously migrate` unter einer Advisory-Sperre; `PREVIOUSLY_DSN` nach einer eigenen Grammatik gelesen; ein Image aus dem Paket auf PyPI, mit Smoke-Test; `release.yml`: Test-PyPI bei jedem Push auf `main`, PyPI und Image für zwei Plattformen bei einem veröffentlichten Release; der Handoff an kup6s | `specs/2026-10-05-auslieferung.md` | PR #6, `fd3e17f`; veröffentlicht als `0.1.0a1`, wie der Spec der Aufnahme festhält |
 | Aufnahme | `RawEvent` trägt `artifact_hash` und `channel_identities`, `append` vergleicht die Inhaltsidentität und weist Abweichendes mit `ArtifactChanged` ab; eine Mail als Event (`core/mail.py`), mit Rohmail und Anhängen als Blobs und einer Mail im Anhang als eigenem Event; `Connector`, `Fetched`, `Watermark`, `WatermarkStore` in `contract`, die Tabelle `watermark` (Migration `0005_watermark`); der Lauf (`core/ingest.py`), der das Wasserzeichen erst nach dem Anfügen schreibt; `connectors/imap.py` und `previously ingest imap`; der Handoff `handoffs/2026-10-06-kup6s-ingest.md` | `specs/2026-10-06-pilot-imap-aufnahme.md` | PR #7, `009c669`; Bedingung 11, der Lauf des Betreuers gegen seinen echten Mailu-Ordner, bestanden am 2026-10-09; veröffentlicht als `v0.1.0a2` am 2026-10-09, der Handoff `handoffs/2026-10-06-kup6s-ingest.md` am selben Tag an den Agenten in kup6s übergeben |
 | Einheit 3 | Gate und Policy: Kreise, Mitgliedschaften, eigene Identitäten, Regeln und die Zusagen der Anbieter als Handlungen im Log (`policy`); die Entscheidung als reine Funktion in `core/decide.py`, die strengste Regel gewinnt, ohne Regel nur lokal, und der Rückfall wird sichtbar (`policy gaps`); `gate` mit den Adaptern für Anthropic, Mistral und ein lokales Modell, der Aufgabe `mail_overview`, einer Preisdatei und dem Audit als `model_call` mit der Kaskade der Tilgung und den Prüfungen in `verify`; die Chronik zeigt nur Wahrnehmungen; die Seiten `trust-boundaries.md`, `processing-policy.md`, `policy-and-model-calls.md` und die Anleitung; der Handoff `handoffs/2026-10-09-kup6s-gate.md` | `specs/2026-10-09-pilot-gate-und-policy.md` | PR #9, `d75c4b3`; Bedingung 10, der Lauf des Betreuers gegen die echten APIs, bestanden am 2026-10-09 |
-| Einheit 4 | MCP-Lesezugang: Clients als Prinzipale mit Token und Verarbeitungskette (`client`); die Zusage um Betreiber, Training, Unterverarbeiter und Herkunft des Modells erweitert, die Regel um die vier passenden Einschränkungen; `previously mcp` (stdio) und `previously serve` (HTTP, beide Generationen, Bereitschaft über `GET /healthz` ohne Token); fünf Werkzeuge, zwei Ressourcen-Vorlagen, zwei Prompts, jeder Inhalt nur nach `decide` mit der Kette des Clients; das Zugriffsprotokoll als `mcp_access` und `previously access`; `policy gaps` zählt, was MCP zurückhielt; die Seiten `mcp-interface.md`, `mcp-tools.md` und die Anleitung `connect-claude-code-and-vibe.md`; der Handoff `handoffs/2026-10-11-kup6s-mcp.md` | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, beide eingefroren am 2026-10-11 | PR #12, `ffa28fb`; veröffentlicht als `v0.1.0a3` am 2026-10-11; Bedingung 9, der Lauf des Betreuers mit Claude Code und Vibe, steht aus |
+| Einheit 4 | MCP-Lesezugang: Clients als Prinzipale mit Token und Verarbeitungskette (`client`); die Zusage um Betreiber, Training, Unterverarbeiter und Herkunft des Modells erweitert, die Regel um die vier passenden Einschränkungen; `previously mcp` (stdio) und `previously serve` (HTTP, beide Generationen, Bereitschaft über `GET /healthz` ohne Token); fünf Werkzeuge, zwei Ressourcen-Vorlagen, zwei Prompts, jeder Inhalt nur nach `decide` mit der Kette des Clients; das Zugriffsprotokoll als `mcp_access` und `previously access`; `policy gaps` zählt, was MCP zurückhielt; die Seiten `mcp-interface.md`, `mcp-tools.md` und die Anleitung `connect-claude-code-and-vibe.md`; der Handoff `handoffs/2026-10-11-kup6s-mcp.md` | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, beide eingefroren am 2026-10-11 | PR #12, `ffa28fb`; veröffentlicht als `v0.1.0a3` am 2026-10-11; Bedingung 9 erledigt am 2026-10-11, nach Entscheidung des Betreuers auf den Lauf von kup6s (RG), ohne Vibe und ohne die drei Kreise |
 
 Mit Stufe 1c ist Teilprojekt 1 gebaut und abgeschlossen, wie die Architektur
 es in §12.1 zuschneidet: Log, Projektionen, Blobs. Die Auslieferung und die
 Aufnahme sind die Einheiten 0 und 1 des Piloten (unten).
 
 Das Gate ist gebaut (Einheit 3, oben) und am 2026-10-09 gegen alle drei
-Anbieter gelaufen (Bedingung 10), aber noch in keinem Betrieb. Der
-MCP-Lesezugang ist abgenommen und mit `v0.1.0a3` veröffentlicht (Einheit 4,
-oben), aber in keinem Betrieb und noch mit keinem echten Client gegen
-`previously serve` gelaufen.
+Anbieter gelaufen (Bedingung 10). Der MCP-Lesezugang ist abgenommen und mit
+`v0.1.0a3` veröffentlicht (Einheit 4, oben). Beide laufen seit dem
+2026-10-11 in kup6s (RG).
 
-In Betrieb ist `0.1.0a2` in kup6s, nach den Handoffs der Auslieferung und
-der Aufnahme: Datenbank, Bucket, Werkzeug-Pod, die CronJobs `project`,
-`anchor` (täglich seit dem 2026-10-06) und `verify`, die Aufnahme des echten
-Ordners mit neun Mails. Jede Prüfung beider Handoffs ist bestanden, und
-kup6s weicht an fünf Stellen begründet ab — PostgreSQL 18, verschlüsselte
-Dumps statt Barman oder pgBackRest, Zugangsdaten für das ganze
-Hetzner-Projekt, die Ankerdatei in Git bei keinem Dritten, die Restore-Probe
-von Hand (RK). Das Log dort ist eine Probe: die Daten werden vor dem
+In Betrieb ist `v0.1.0a3` in kup6s, nach den Handoffs der Auslieferung, der
+Aufnahme, des Gates und des MCP-Servers: Datenbank, Bucket, Werkzeug-Pod, die
+CronJobs `project`, `anchor` (täglich seit dem 2026-10-06) und `verify`, die
+Aufnahme des echten Ordners mit neun Mails (RK); dazu die beiden Schlüssel des
+Gates nur im Werkzeug-Pod, der allein `api.anthropic.com` und `api.mistral.ai`
+erreicht, und das Deployment `previously-mcp` mit einem Replikat, das nur die
+Datenbank erreicht. Seit dieser Rückmeldung verbieten Netzwerk-Richtlinien
+jedem Pod von Previously alles außer DNS, der Datenbank und den Hosts seiner
+Kommandos (RG). Jede Prüfung der Handoffs ist bestanden, und kup6s weicht an
+fünf Stellen begründet ab — PostgreSQL 18, verschlüsselte Dumps statt Barman
+oder pgBackRest, Zugangsdaten für das ganze Hetzner-Projekt, die Ankerdatei in
+Git bei keinem Dritten, die Restore-Probe von Hand (RK). Nicht gebaut sind
+dort der Modellserver — das Gate lehnt ab, wo nur ein lokales Modell darf —
+und das Tailnet (Stufe A2); der Zugang zum MCP-Server ist `kubectl
+port-forward` (RG). Das Log dort ist eine Probe: die Daten werden vor dem
 regulären Gebrauch zurückgesetzt, das dauerhafte Log beginnt danach.
 
 Nicht gebaut: die Suche, jede
@@ -80,13 +86,18 @@ daraufhin vier Dinge entschieden: Sicherungen sind Anforderungen, das System
 wählt der Betrieb; eine Tilgungszusage deckt nie die Quellsysteme; PostgreSQL
 18 ist die getestete und unterstützte Version, 17 nicht mehr; Ablageort der
 Anker und Rückgabecode auf leerem Log sind für den Piloten hingenommen. Der
-Zweig `worktree-betrieb-rueckmeldung` setzt das um. Was jetzt kommt, in dieser
-Reihenfolge: der Merge dieses Zweigs; die Handoffs
-`handoffs/2026-10-09-kup6s-gate.md` und `handoffs/2026-10-11-kup6s-mcp.md`,
-der zweite mit der Antwort auf die Rückmeldung, zusammen an den Agenten in
-kup6s; Bedingung 9 der Einheit 4, der Lauf des Betreuers mit Claude Code und
-Vibe gegen `previously serve` (ML §12); in kup6s Einheit 2 nach den beiden
-Handoffs; und als nächste Einheit mit Spec Einheit 5, die Feststellungen.
+Zweig `worktree-betrieb-rueckmeldung` hat das umgesetzt (PR #13, `d97f9ed`),
+und die Handoffs des Gates und des MCP-Servers sind übergeben. Noch am
+2026-10-11 hat kup6s auf beide geantwortet (RG): alles steht, mit einem
+Fehler von uns — `PREVIOUSLY_MCP_PORT` kollidierte mit den Variablen, die
+Kubernetes für einen Service setzt — und Hinweisen für Doku und Meldungen.
+Der Betreuer hat den Lauf von kup6s als Bedingung 9 der Einheit 4 genommen
+(unten unter *Erledigt*). Der Zweig `worktree-gate-mcp-rueckmeldung` setzt
+die Antwort um: die Adress-Einstellungen, die Meldungen, die Anforderung an
+das Netz, der Handoff `handoffs/2026-10-11-kup6s-settings.md`. Was jetzt
+kommt, in dieser Reihenfolge: der Merge dieses Zweigs; das Release nach
+`v0.1.0a3`, mit dem Handoff der Einstellungen an den Agenten in kup6s; und als
+nächste Einheit mit Spec Einheit 5, die Feststellungen.
 Was die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an
 den Einheiten, zu denen es gehört.
 
@@ -120,7 +131,7 @@ Spec:
 |---|---|---|---|
 | 0 | Auslieferung: Migrationen im Paket, `previously migrate`, Image, Release-Weg, Handoff an kup6s | ein Image, aus dem kup6s alles startet | `specs/2026-10-05-auslieferung.md`, eingefroren am 2026-10-05; abgenommen mit PR #6 (oben) |
 | 1 | Aufnahme aus dem IMAP-Ordner, mit dem Einwurf- und dem Konnektor-Vertrag | Chronik des Kunden; echte Post im Log | `specs/2026-10-06-pilot-imap-aufnahme.md`, eingefroren am 2026-10-06; abgenommen mit PR #7 (oben). Er ersetzt den Entwurf vom 2026-10-04 auf dem Zweig `worktree-pilot-imap-aufnahme` (`9b493f0`) |
-| 2 | Betrieb in kup6s: Datenbank mit Sicherung, Restore-Probe, Bucket, Werkzeug-Pod, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | beginnt beim Image aus Einheit 0; gebaut wird er vom Agenten in kup6s, nie von hier. Was er braucht, sagen die Handoffs `handoffs/2026-10-05-kup6s-delivery.md` und, für die Aufnahme, `handoffs/2026-10-06-kup6s-ingest.md` und, für das Gate, `handoffs/2026-10-09-kup6s-gate.md` und, für den MCP-Server, `handoffs/2026-10-11-kup6s-mcp.md`, englisch; die ersten beiden liegen dort und stehen, wie die Rückmeldung vom 2026-10-11 sagt (RK); die beiden anderen folgen mit dem Zweig `worktree-betrieb-rueckmeldung`, nach seinem Merge, für das Release `v0.1.0a3` |
+| 2 | Betrieb in kup6s: Datenbank mit Sicherung, Restore-Probe, Bucket, Werkzeug-Pod, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | beginnt beim Image aus Einheit 0; gebaut wird er vom Agenten in kup6s, nie von hier. Was er braucht, sagen die Handoffs `handoffs/2026-10-05-kup6s-delivery.md` und, für die Aufnahme, `handoffs/2026-10-06-kup6s-ingest.md` und, für das Gate, `handoffs/2026-10-09-kup6s-gate.md` und, für den MCP-Server, `handoffs/2026-10-11-kup6s-mcp.md`, englisch; alle vier liegen dort und stehen, wie die Rückmeldungen vom 2026-10-11 sagen (RK, RG), bis auf den Modellserver und das Tailnet; für das Release nach `v0.1.0a3` folgt `handoffs/2026-10-11-kup6s-settings.md` |
 | 3 | Gate und Policy: Kreise statt Organisationsprofil, drei Anbieter-Adapter, Audit, die Verarbeitungsprüfung (nicht mehr „Offenlegungsprüfung“: PG §1.2) | die Grenze, hinter der ein Modell Inhalt sieht | `specs/2026-10-09-pilot-gate-und-policy.md`, eingefroren am 2026-10-09; abgenommen mit PR #9 (oben) |
 | 4 | MCP-Lesezugang, mit der Verarbeitungsprüfung davor (die Entscheidung aus Einheit 3, wiederverwendet) | Claude Code fragt das Log | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, das §8 der Architektur ablöst; beide eingefroren am 2026-10-11; abgenommen mit PR #12 (oben) |
 | 5 | Feststellungen: Schreibweg, Verpflichtung und Entscheidung, Projektionen, Freigabe | was festgestellt ist, mit Quelle und Verantwortung | — |
@@ -130,8 +141,9 @@ Spec:
 Für Einheit 2 beantwortet, mit der Auslieferung: kup6s arbeitet mit cdk8s,
 ArgoCD und dem CloudNativePG-Operator; das Image kommt von `ghcr.io`; was dort
 entsteht, baut der Agent in kup6s nach dem Handoff (Betreuer, 2026-10-05). Der
-Zugang vom Arbeitsplatz ist `kubectl exec` in den Werkzeug-Pod, bis der
-MCP-Server in kup6s läuft.
+Zugang vom Arbeitsplatz ist `kubectl exec` in den Werkzeug-Pod für die
+Kommandos und, seit dem 2026-10-11, `kubectl port-forward` zu
+`previously-mcp` für die Clients; das Tailnet (Stufe A2) steht noch aus (RG).
 
 ## Was vor was kommen muss
 
@@ -193,7 +205,9 @@ Abschnitt, **P-ML** dessen Ausführungsprotokoll
 **RK** die Rückmeldung des Agenten in kup6s vom 2026-10-11 auf die Handoffs
 der Auslieferung und der Aufnahme
 (`handoffs/2026-10-11-kup6s-feedback-delivery-and-ingest.md`), englisch, wie
-erhalten.
+erhalten, **RG** seine Rückmeldung vom selben Tag auf die Handoffs des Gates
+und des MCP-Servers (`handoffs/2026-10-11-kup6s-feedback-gate-and-mcp.md`),
+ebenso.
 
 ### Einwurf-Vertrag (`contract`, Teilprojekt 2)
 
@@ -220,7 +234,10 @@ erhalten.
 - Der Einwurf per Prompt, der Drop-Ordner mit Textextraktion und OCR, „Quelle
   verlinken" (E §11.4).
 - Textextraktion aus Blobs, und damit ihr Inhalt in Einheiten (1c §12 Punkt 8);
-  für die Anhänge einer Mail mit Einheit 7 (PI §11 Punkt 8).
+  für die Anhänge einer Mail mit Einheit 7 (PI §11 Punkt 8). Am 2026-10-11 das
+  Erste, was ein Leser der Chronik vermisste: Claude Code fasste über MCP die
+  Mails eines Kreises zusammen und konnte die Word- und Excel-Dateien, die die
+  Substanz trugen, nur beim Namen nennen (RG).
 - Der Quellschlüssel überlebt jede Tilgung: `source` und `external_id` stehen
   im Event-Hash, und eine Message-ID trägt eine Domain (1c §4.5, §12 Punkt 4).
 - Nach einer Wiederherstellung kann ein getilgtes Event, das mit ihr verloren
@@ -467,6 +484,14 @@ erhalten.
 
 ### Aufnahme aus IMAP (Pilot, Einheit 1)
 
+- Die Aufnahme hält nur den Posteingang: im Testordner in kup6s stehen nur
+  empfangene Mails, und Claude Code bemerkte, dass keine Antwort des Betreuers
+  im Log ist. Für den regulären Gebrauch will der Betreuer den größten Teil
+  seines Posteingangs und alles Gesendete, Spam und Belangloses
+  herausgefiltert. Wie die Mail in das eine Postfach kommt, das die Aufnahme
+  liest, entscheidet kup6s; ob ein Job je Ordner oder ein Sammelordner, ist
+  auf beiden Seiten offen (RG). Mehrere Ordner in einem Lauf stehen im
+  nächsten Punkt.
 - Mehrere Ordner, mehrere Postfächer in einem Lauf; einer je Lauf genügt dem
   Piloten (PI §11 Punkt 3).
 - `IDLE`, Aufnahme ohne Zeitgeber, mit dem MCP-Dienst denkbar (PI §1,
@@ -597,7 +622,8 @@ was die Ausführung offen ließ (P-PG).
   deklarieren (PG §2.4, §11 Punkt 8).
 - Die Aufbewahrung bei Mistral nachsehen und deklarieren; bis dahin steht dort
   „unbekannt“, und eine Regel mit Grenze lässt Mistral nicht durch (PG §2.4,
-  §11 Punkt 9).
+  §11 Punkt 9). kup6s hat danach gefragt; der Handoff der Einstellungen
+  antwortet, dass es die Zusage `retention_days` des Betreuers ist (RG).
 - Die Preisdatei pflegt sich nicht selbst; ein veralteter Preis macht nur die
   Schätzung falsch. Sie bildet auch den Aufschlag für Prompts über 100.000
   Tokens bei Haiku 5.5 nicht ab (PG §3.4, §11 Punkt 11; Kopf von
@@ -679,14 +705,14 @@ gehören (die Projekte stehen unter *Feststellungen und Entitäten*), und was di
 Ausführung offen ließ (P-ML). Die benannten Grenzen, die keiner Arbeit bedürfen,
 stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
 
-- Bedingung 9 der Abnahme (ML §12): der Lauf des Betreuers nach dem Merge, mit
-  Claude Code **und** Vibe gegen `previously serve` mit seiner
-  Probe-Datenbank — zwei Clients mit eigener Kette, ein Kreis mit einer Regel
-  für beide, einer mit einer Regel für einen, einer ohne Regel; die Frage aus
-  MK §1 an beide; danach `previously access`.
 - Die Grenze von 60.000 Zeichen je Seite (`PAGE_CHARS` in
   `mcp_server/render.py`) ist geschätzt, nicht an echten Mails gemessen;
-  fällig mit Bedingung 9 (ML §5.1, §13 Punkt 2).
+  der Lauf der Bedingung 9 meldet dazu nichts, sie bleibt ungemessen (ML §5.1,
+  §13 Punkt 2; RG).
+- `previously-mcp` unter Last ist ungemessen: gesetzt sind 50m CPU und 128 MiB
+  angefordert, 1 CPU und 512 MiB als Grenze, gebraucht im Leerlauf 3m CPU und
+  98 MiB (RG). Eine Messung unter Last, etwa mit mehreren Clients, die die
+  Chronik eines langen Logs lesen, steht aus.
 - Die Chronik nach Kreis liest das Log in Stapeln von 200 Zeilen, ohne Grenze
   je Aufruf; ein Kreis mit wenigen Treffern liest für eine Seite das ganze Log.
   Eine eigene Projektion, sobald das zu langsam wird, an echter Menge zu messen
@@ -1124,6 +1150,28 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
 
 ## Erledigt, seit es auf einer Liste stand
 
+- ~~Bedingung 9 der Abnahme des MCP-Lesezugangs: der Lauf des Betreuers mit
+  Claude Code und Vibe gegen `previously serve`~~ (ML §12) — erledigt durch
+  Entscheidung des Betreuers am 2026-10-11 („mir reicht der Lauf") auf den
+  Lauf von kup6s: Claude Code über `kubectl port-forward` gegen
+  `previously-mcp`, `whoami` beantwortet und von `previously access`
+  gelistet; mit einer Regel für `circle:ana-u` fasste Claude Code die drei
+  Mails des Kreises mit Belegen zusammen, alles andere blieb Platzhalter (RG).
+  **Nicht gelaufen:** Vibe, und die drei Kreise der Bedingung — einer mit
+  einer Regel für beide Clients, einer mit einer für einen, einer ohne — und
+  damit die Frage aus MK §1 an zwei Clients. Commit `8b93549`, die
+  Rückmeldung im Repository.
+- ~~Die Hinweise der Rückmeldung RG an Code, Doku und Meldungen~~ (RG) — auf
+  dem Zweig `worktree-gate-mcp-rueckmeldung`: keine Einstellung trägt mehr
+  einen Namen, den Kubernetes für einen Service setzt,
+  `PREVIOUSLY_MCP_ADDRESS` und `PREVIOUSLY_IMAP_ADDRESS` statt der vier
+  `_HOST`/`_PORT`, mit einem Test über jeden Namen der Quelle, Commit
+  `07aa93e`; eine Frage ohne Antwort nennt `--yes`, eine Ablehnung nennt die
+  Anbieter des Gates ohne Zusage, die Anleitung sagt, wie ein Kopf ohne
+  `Bearer ` aussieht, Commit `52fac0f`; dass jeder Prozess nur erreicht, was
+  seine Kommandos brauchen, ist eine Anforderung in `environment.md`, Commit
+  `aa7d5dd`; der Handoff `handoffs/2026-10-11-kup6s-settings.md`, Commit
+  `b9b1003`.
 - ~~Das Alpha-Release `v0.1.0a3` mit Gate und MCP-Lesezugang~~ (unter *Was
   als Nächstes kommt*) — veröffentlicht am 2026-10-11 aus `ffa28fb`, dem Merge
   von PR #12. Die Handoffs des Gates und des MCP-Servers kamen nicht mit ihm,

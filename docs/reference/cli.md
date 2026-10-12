@@ -6,8 +6,8 @@
 It has eighteen subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, `gate`, `client`, `access`, `mcp`, and `serve`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
 `append --attach`, `ingest imap`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
-`ingest imap` alone reads the five `PREVIOUSLY_IMAP_*` settings, and `gate try` alone reads `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `PREVIOUSLY_LOCAL_MODEL_URL` and `PREVIOUSLY_PRICES`.
-`mcp` alone reads `PREVIOUSLY_MCP_CLIENT`, and `serve` alone reads `PREVIOUSLY_MCP_HOST`, `PREVIOUSLY_MCP_PORT` and `PREVIOUSLY_MCP_ALLOWED_HOSTS`.
+`ingest imap` alone reads the four `PREVIOUSLY_IMAP_*` settings, and `gate try` alone reads `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `PREVIOUSLY_LOCAL_MODEL_URL` and `PREVIOUSLY_PRICES`.
+`mcp` alone reads `PREVIOUSLY_MCP_CLIENT`, and `serve` alone reads `PREVIOUSLY_MCP_ADDRESS` and `PREVIOUSLY_MCP_ALLOWED_HOSTS`.
 A missing setting is an input error that names the first variable missing, in the form `Error: PREVIOUSLY_BLOB_BUCKET is not set`.
 An error sentence prints every control character but a tab and a line feed as `\xNN`, such as `\x1b` for the escape character, because a key it quotes can be the Message-ID of a mail.
 A transaction the database aborts in a conflict with a concurrent one, a deadlock or a lock not granted in time, is a storage error with exit code 2, in the form `Error: the database aborted the operation in a conflict with a concurrent one; run the command again`.
@@ -69,7 +69,7 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `client` | The client was added and its token printed, revoked, or listed, even when none exists. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the processor isn't declared, no such client exists to revoke, or storage raised an error. |
 | `access` | The access log was printed, even when no call matches. | Not used. | The input was invalid, or storage raised an error. |
 | `mcp` | Standard input closed, and the server ended. | Not used. | `PREVIOUSLY_MCP_CLIENT` is unset or names no client in force, or storage raised an error. |
-| `serve` | The server was stopped with an interrupt, such as Ctrl+C. | Not used. | `PREVIOUSLY_MCP_PORT` isn't a port number, or storage raised an error. |
+| `serve` | The server was stopped with an interrupt, such as Ctrl+C. | Not used. | `PREVIOUSLY_MCP_ADDRESS` isn't an address, `PREVIOUSLY_MCP_HOST` is set without it, or storage raised an error. |
 | `gate` | `explain` printed the decision, whether it allows a call or denies it; `try` made the call, got an answer that matches the schema, and recorded it. | Not used. | The event doesn't exist, the price file can't be read, storage raised an error, or `try` recorded a call that was denied, failed, refused by the model, or answered against the schema. |
 
 `gate try` returns 3 when the call was made and recorded with an answer that matches the schema, and the provider reported another inference region than the one requested; the code differs from 0 so that a script doesn't read past the alarm.
@@ -202,13 +202,14 @@ It has one form, and takes no arguments:
 previously ingest imap
 ```
 
-`ingest imap` reads the five `PREVIOUSLY_IMAP_*` settings, `PREVIOUSLY_BLOB_RECIPIENT`, `PREVIOUSLY_DSN` and the five settings of the blob store, in that order; see {ref}`configuration-reference`.
+`ingest imap` reads the four `PREVIOUSLY_IMAP_*` settings, `PREVIOUSLY_BLOB_RECIPIENT`, `PREVIOUSLY_DSN` and the five settings of the blob store, in that order; see {ref}`configuration-reference`.
 It doesn't read `PREVIOUSLY_BLOB_IDENTITIES`.
 It reads every setting and checks the recipient before it connects to anything, and a missing one is an input error in the form `Error: PREVIOUSLY_IMAP_PASSWORD is not set`.
-A port that isn't a number from 1 to 65535 is refused the same way:
+An address outside {ref}`the address form <address-form>` is refused the same way, and so is a `PREVIOUSLY_IMAP_HOST` without the address that took its place:
 
 ```text
-Error: PREVIOUSLY_IMAP_PORT is not a port number: 'imaps'
+Error: PREVIOUSLY_IMAP_ADDRESS is not host or host:port, with an IPv6 host in brackets: 'mail.example.org:imaps'
+Error: PREVIOUSLY_IMAP_HOST is not read any more: set PREVIOUSLY_IMAP_ADDRESS to host or host:port
 ```
 
 `ingest imap` connects over TLS only, and verifies the server's certificate and host name against the trust store of the system; no setting turns that off.
@@ -216,7 +217,7 @@ OpenSSL reads a certificate file named in `SSL_CERT_FILE` in place of the system
 A socket operation that waits longer than 60 seconds ends the run.
 It opens the folder read-only and reads every mail with `BODY.PEEK[]`, so no mail is marked as read and nothing in the folder changes.
 
-The watermark belongs to `imap:<user>@<host>/<folder>`, with the host as `PREVIOUSLY_IMAP_HOST` spells it and without the port.
+The watermark belongs to `imap:<user>@<host>/<folder>`, with the host as `PREVIOUSLY_IMAP_ADDRESS` spells it and without the port.
 Its position is the folder's `UIDVALIDITY` and the UID of the last mail taken in.
 The run fetches the mails above that UID, oldest first and one at a time, maps each onto its events, stores the raw mail and every attachment as a blob, and appends the events in batches; after each batch, it moves the watermark to the last mail the batch covered.
 A folder with another `UIDVALIDITY` than the watermark's, such as one deleted and created again, is read from the start, and so is a folder under another name or host; a mail whose events are in the log already counts as known.
@@ -811,7 +812,14 @@ previously policy gaps [--since TIME]
 
 A form that writes prints the statement as a JSON object, asks `write? [y/N]` and reads the answer from standard input.
 `y` and `yes`, in any case, write the event and print `policy event ID`.
-Any other answer, or an input that ends, writes nothing, prints `nothing written` to standard error and returns 1.
+Any other answer writes nothing, prints `nothing written` to standard error and returns 1.
+An input that ends before an answer, such as under `kubectl exec` without `-i`, does the same after one more line:
+
+```text
+no answer: the input ended before one came; --yes writes without asking
+nothing written
+```
+
 `--yes` skips the question.
 
 A statement the write path refuses is an input error: one sentence on standard error, return code 2, no question asked and nothing written.
@@ -911,6 +919,17 @@ An erased event is denied with the reason `the event is erased`.
 An event that isn't an observation, such as a policy event, a redaction or a `model_call`, is denied with the reason `the event is not an observation`.
 Where the built-in rule `local_only` acted and the decision chose the local model, `gate explain` writes the `processed locally` line of `gate try` to standard error, after the table; a denial gets no such line.
 
+Where the decision allows no candidate and the provider of at least one has no declaration, `gate explain` writes one more line to standard error, after the table:
+
+```text
+undeclared: anthropic, mistral, local — the gate chooses among its own providers, each declared with previously policy provider NAME …, apart from the provider of an MCP client
+only local: the built-in rule local_only acted, so only a provider declared with --local can be chosen — set a rule with previously policy rule SCOPE …, or declare one with previously policy provider NAME … --local
+```
+
+The first names those providers in the order of the candidates, each once, and stands where rules applied.
+The gate calls only the providers its task names, and a provider declared for an MCP client, such as `claude-max`, is none of them.
+The second stands where the built-in rule `local_only` acted, and names no provider: only one declared with `--local` can be chosen there, and whether a provider is local is what its declaration says.
+
 ### `gate try`
 
 Runs the task over the event, and records the call as an event of the kind `action` with `payload.action` set to `model_call`, whatever became of it.
@@ -949,6 +968,7 @@ alarm: inference_geo requested us, reported global
 schema_invalid: the answer of anthropic/claude-haiku-5-5 does not match the schema of mail_overview
 Error: anthropic: the provider is not configured — set ANTHROPIC_API_KEY
 Error: local: call failed (APIConnectionError): Connection error. — the local model server is http://localhost:11434/v1
+undeclared: local — the gate chooses among its own providers, each declared with previously policy provider NAME …, apart from the provider of an MCP client
 ```
 
 The first comes before everything else, one line per circle without a rule, or for the source when no rule applied at all; under a real rule there's no such line.
@@ -956,6 +976,7 @@ It's written only where the local model answered: a call denied because no local
 The second is an alarm: the provider reported another inference region than the one requested, and the call returns 3.
 The third is an answer that isn't JSON, lacks a field, or has a field too many; the gate checks every answer itself, even where the provider enforces the schema.
 The fourth names the setting that's missing, and the fifth the address of the local model server that didn't answer.
+The sixth follows a denial where the provider of a candidate has no declaration, as for `gate explain`, and reads `only local: …` where `local_only` acted.
 A call that failed prints the sentence of the client, after the provider and the class of the error, and never the key.
 What the provider said doesn't go into the event: the event names the provider, the class of the error and the HTTP status.
 
@@ -1080,18 +1101,21 @@ The tools, resources and prompts are the same as over HTTP; every call writes an
 
 Serves MCP over HTTP under the path `/mcp`, with answers as JSON and without a session.
 A client of the protocol revision `2026-07-28` and one of an earlier revision are served at the same address.
-`serve` takes no options, and reads `PREVIOUSLY_MCP_HOST`, `PREVIOUSLY_MCP_PORT` and `PREVIOUSLY_MCP_ALLOWED_HOSTS` ({ref}`configuration-reference`).
+`serve` takes no options, and reads `PREVIOUSLY_MCP_ADDRESS` and `PREVIOUSLY_MCP_ALLOWED_HOSTS` ({ref}`configuration-reference`).
 On start it prints one line to standard error, and then runs until it's stopped:
 
 ```text
 serving MCP over HTTP on http://127.0.0.1:8765/mcp
 ```
 
-A port that isn't a number from 1 to 65535 is refused before anything connects, with exit code 2:
+An address outside {ref}`the address form <address-form>`, and a `PREVIOUSLY_MCP_HOST` without the address that took its place, are refused before anything connects, with exit code 2:
 
 ```text
-Error: PREVIOUSLY_MCP_PORT is not a port number: 'http'
+Error: PREVIOUSLY_MCP_ADDRESS is not host:port, with an IPv6 host in brackets: 'tcp://10.43.0.5:8765'
+Error: PREVIOUSLY_MCP_HOST is not read any more: set PREVIOUSLY_MCP_ADDRESS to host:port
 ```
+
+`serve` doesn't read `PREVIOUSLY_MCP_PORT`, which Kubernetes sets in every pod of a namespace with a Service named `previously-mcp`.
 
 Every request but the readiness probe below needs the header `Authorization: Bearer TOKEN`, with the token that `client add` printed for a client in force.
 The token is checked against the policy at every request, so a token that a later `client add` for the same name replaced, or that `client revoke` lifted, stops working with the next request.

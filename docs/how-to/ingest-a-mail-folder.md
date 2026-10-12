@@ -27,17 +27,16 @@ A mail forwarded as quoted text stays the text of the forward, and its original 
 
 ## Set the settings
 
-Export the five settings of the folder, with the values of your server and mailbox:
+Export the four settings of the folder, with the values of your server and mailbox:
 
 ```shell
-export PREVIOUSLY_IMAP_HOST=mail.example.org
-export PREVIOUSLY_IMAP_PORT=993
+export PREVIOUSLY_IMAP_ADDRESS=mail.example.org
 export PREVIOUSLY_IMAP_USER=previously@example.org
 export PREVIOUSLY_IMAP_PASSWORD=YOUR-MAILBOX-PASSWORD
 export PREVIOUSLY_IMAP_FOLDER="Kunde Müller"
 ```
 
-Write the host as the server's certificate names it, and the folder by its full name on the server, umlauts as they are.
+Write the host as the server's certificate names it, followed by `:` and the port if the server doesn't speak IMAP over TLS on 993, and the folder by its full name on the server, umlauts as they are.
 For a folder inside another folder, see {ref}`configuration-reference`.
 
 Export `PREVIOUSLY_DSN`, the five settings of the blob store and `PREVIOUSLY_BLOB_RECIPIENT` as well, as {ref}`attach-and-fetch-a-file` shows.

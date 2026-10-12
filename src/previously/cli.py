@@ -92,6 +92,7 @@ from typing import TYPE_CHECKING
 
 import argparse
 import io
+import ipaddress
 import json
 import mimetypes
 import os
@@ -307,6 +308,85 @@ def _setting(name: str) -> str:
     if not value:
         raise PreviouslyError(f"{name} is not set")
     return value
+
+
+# --- Addresses ({ref}`configuration-reference`) --------------------------------
+#
+# A host and its port stand in one setting, `…_ADDRESS`, and never in a setting
+# that ends in `_PORT` or `_HOST`. Kubernetes gives every container of a
+# namespace variables named after each Service in it: `X_SERVICE_HOST`,
+# `X_SERVICE_PORT`, `X_PORT` and `X_PORT_<n>_<PROTO>` with `_PROTO`, `_PORT`
+# and `_ADDR` after it, as the Kubernetes documentation lists them under
+# "Environment variables" on its page "Service", and `X_SERVICE_PORT_<NAME>`
+# for every named port, which the kubelet's `FromServices` adds; `X` is the
+# Service's name upper-cased, with `-` as `_`. Until 2026-10-11, `serve` read
+# `PREVIOUSLY_MCP_PORT`, and a Service named `previously-mcp` set it to
+# `tcp://<cluster IP>:8765` in the tools pod, where `serve` then refused to
+# start. `tests/test_settings.py` holds every name the source reads against
+# those patterns.
+
+# A host name as `PREVIOUSLY_DSN` takes one: labels of 1 to 63 characters, an
+# optional final dot. An empty label is refused here for the reason the DSN
+# refuses it (`storage/postgres.py`): measured on 2026-10-11,
+# `imaplib.IMAP4_SSL("a..b", 993)` raises `UnicodeEncodeError` out of the
+# `idna` codec, which no handler of `ingest` catches, so the run would end in
+# a traceback.
+_HOST_LABEL = r"[A-Za-z0-9_\-]{1,63}"
+_ADDRESS = re.compile(
+    rf"(?:(?P<name>{_HOST_LABEL}(?:\.{_HOST_LABEL})*\.?)|\[(?P<ipv6>[0-9A-Fa-f:.]+)\])"
+    r"(?::(?P<port>[0-9]{1,5}))?"
+)
+
+
+def parse_address(name: str, text: str, *, default_port: int | None) -> tuple[str, int]:
+    """The host and the port of the setting `name`, whose value is `text`.
+
+    The host is a host name, an IPv4 address, or an IPv6 address in brackets,
+    and comes back without the brackets, as a socket takes it. The port is a
+    number from 1 to 65535; `default_port` is the port where the address may
+    leave it out, and `None` where it may not.
+
+    The refusal quotes the value from its last `@` on. An address holds no
+    `@`, and the likely mistake that puts one there is a URL with a user and
+    a password in front of the host, such as `imaps://user:password@host`;
+    the setting stands beside the password in the same secret, and a value
+    quoted whole would print it. What is left can still hold a secret
+    written anywhere else in the value, as any quotation of a mistyped
+    setting can.
+
+    Public because a test calls it directly, as for `escape_field`.
+    """
+    # Two sentences written out rather than one with the form interpolated:
+    # `tests/test_docs_references.py` holds the pages' quotations against the
+    # literal parts, and an interpolated form would let any wording pass.
+    _before, at, after = text.rpartition("@")
+    shown = f"…@{after}" if at else text
+    if default_port is None:
+        refusal = PreviouslyError(
+            f"{name} is not host:port, with an IPv6 host in brackets: {shown!r}"
+        )
+    else:
+        refusal = PreviouslyError(
+            f"{name} is not host or host:port, with an IPv6 host in brackets: {shown!r}"
+        )
+    match = _ADDRESS.fullmatch(text)
+    if match is None:
+        raise refusal
+    host = match["name"]
+    if host is None:
+        try:
+            ipaddress.IPv6Address(match["ipv6"])
+        except ValueError:
+            raise refusal from None
+        host = match["ipv6"]
+    if match["port"] is None:
+        if default_port is None:
+            raise refusal
+        return host, default_port
+    port = int(match["port"])
+    if not 0 < port < 65536:
+        raise refusal
+    return host, port
 
 
 @contextmanager
@@ -565,17 +645,31 @@ def _ingest_arguments(parser: argparse.ArgumentParser) -> None:
     sources.add_parser("imap", help=sentence, description=sentence)
 
 
-def _imap_port() -> int:
-    """`PREVIOUSLY_IMAP_PORT`, or the port of IMAP over TLS when it is unset
-    or empty, like every other setting that is empty."""
-    text = os.environ.get("PREVIOUSLY_IMAP_PORT") or str(IMAP_PORT)
-    if not (text.isascii() and text.isdigit() and 0 < int(text) < 65536):
-        raise PreviouslyError(f"PREVIOUSLY_IMAP_PORT is not a port number: {text!r}")
-    return int(text)
+def _imap_address() -> tuple[str, int]:
+    """`PREVIOUSLY_IMAP_ADDRESS`, with the port of IMAP over TLS where it
+    names none. The host is what the certificate is checked against, and
+    what the name of the watermark carries."""
+    # `PREVIOUSLY_IMAP_HOST` and `PREVIOUSLY_MCP_HOST` held the host until
+    # 2026-10-11, and are read now only to be refused where the address is
+    # unset: a deployment of the release before would otherwise run on
+    # without the host it named, and `serve` would listen on the loopback
+    # address inside its pod, with nothing to say why no probe reaches it.
+    # Kubernetes never sets a name that ends in `_HOST` without `_SERVICE`
+    # before it. The old `_PORT` is never read, not even for this: Kubernetes
+    # sets it.
+    text = os.environ.get("PREVIOUSLY_IMAP_ADDRESS")
+    if not text:
+        if os.environ.get("PREVIOUSLY_IMAP_HOST"):
+            raise PreviouslyError(
+                "PREVIOUSLY_IMAP_HOST is not read any more: "
+                "set PREVIOUSLY_IMAP_ADDRESS to host or host:port"
+            )
+        raise PreviouslyError("PREVIOUSLY_IMAP_ADDRESS is not set")
+    return parse_address("PREVIOUSLY_IMAP_ADDRESS", text, default_port=IMAP_PORT)
 
 
 def _imap_connector() -> ImapConnector:
-    """The folder out of its five settings, read before anything connects.
+    """The folder out of its four settings, read before anything connects.
 
     The certificate is verified against the system's trust store, and so is
     the host name: `ssl.create_default_context()`, with no setting that turns
@@ -583,9 +677,10 @@ def _imap_connector() -> ImapConnector:
     OpenSSL trusts anything, through `SSL_CERT_FILE` or the trust store, not
     through a switch of this command.
     """
+    host, port = _imap_address()
     return ImapConnector(
-        host=_setting("PREVIOUSLY_IMAP_HOST"),
-        port=_imap_port(),
+        host=host,
+        port=port,
         user=_setting("PREVIOUSLY_IMAP_USER"),
         password=_setting("PREVIOUSLY_IMAP_PASSWORD"),
         folder=_setting("PREVIOUSLY_IMAP_FOLDER"),
@@ -597,7 +692,7 @@ def _cmd_ingest(_args: argparse.Namespace) -> int:
     """Takes in what the folder holds above its watermark ({ref}`cli-reference`).
 
     Every setting is read, and the recipient checked, before anything
-    connects: the folder's five, the recipient, `PREVIOUSLY_DSN` and the
+    connects: the folder's four, the recipient, `PREVIOUSLY_DSN` and the
     store's five, in that order. The directory of identities is not among
     them: taking in seals and opens nothing.
 
@@ -1432,12 +1527,21 @@ def _policy_statement(args: argparse.Namespace) -> Statement:
 
 def _confirmed(args: argparse.Namespace) -> bool:
     """Asks on the terminal unless `--yes`; an answer that never comes (the
-    input ended) is a no."""
+    input ended) is a no, and says so.
+
+    The input ends without an answer where nobody can give one, such as
+    under `kubectl exec` without `-i`, where kup6s found on 2026-10-11 that
+    `client add` printed no token. `nothing written` alone, which the caller
+    prints after this, says neither why nor what to do instead."""
     if args.yes:
         return True
     try:
         answer = input("write? [y/N] ")
     except EOFError:
+        print(
+            "no answer: the input ended before one came; --yes writes without asking",
+            file=sys.stderr,
+        )
         return False
     return answer.strip().lower() in {"y", "yes"}
 
@@ -1632,6 +1736,44 @@ def _fallback_lines(storage: PostgresStorage, decision: Decision, event_id: int)
     return [_fallback_line(escape_field(scope)) for scope in scopes]
 
 
+def _undeclared_lines(decision: Decision) -> list[str]:
+    """`_undeclared_line` as a list of none or one."""
+    line = _undeclared_line(decision)
+    return [] if line is None else [line]
+
+
+def _undeclared_line(decision: Decision) -> str | None:
+    """One line where the decision chose nothing and a candidate of the task
+    failed because its provider has no declaration.
+
+    kup6s's maintainer met it on 2026-10-11 after setting up a client: the
+    client's chain declared, a rule for the circle, and `gate explain` said
+    `denied`, which read like the client's view of the circle. Under a rule,
+    the line names the providers and says that the gate's are declared apart
+    from an MCP client's.
+
+    Under the built-in rule `local_only` it names none. Only a provider
+    declared with `--local` can be chosen there, and naming `anthropic` sent
+    the reader to declare it and then meet `not local, and only local
+    applies`. Which undeclared provider would be local is what its
+    declaration says, so the line says what can be chosen instead of
+    guessing from a name. A decision that chose a provider gets no line,
+    since nothing was denied."""
+    if decision.chosen is not None or not decision.undeclared:
+        return None
+    if decision.local_only:
+        return (
+            "only local: the built-in rule local_only acted, so only a provider declared with "
+            "--local can be chosen — set a rule with previously policy rule SCOPE …, or declare "
+            "one with previously policy provider NAME … --local"
+        )
+    names = ", ".join(escape_field(name) for name in decision.undeclared)
+    return (
+        f"undeclared: {names} — the gate chooses among its own providers, each declared "
+        "with previously policy provider NAME …, apart from the provider of an MCP client"
+    )
+
+
 def _fallback_line(scope: str) -> str:
     return f"processed locally: no rule for {scope} — set one with previously policy rule {scope} …"
 
@@ -1684,7 +1826,7 @@ def _cmd_gate_explain(args: argparse.Namespace) -> int:
         fallback = _fallback_lines(storage, decision, args.event)
     for line in _explain_lines(decision, rule_ids):
         print(line)
-    for line in fallback:
+    for line in [*fallback, *_undeclared_lines(decision)]:
         print(line, file=sys.stderr)
     return 0
 
@@ -1742,7 +1884,8 @@ def _cmd_gate_try(args: argparse.Namespace) -> int:
         reported = escape_controls(called.reported_geo or "nothing")
         print(f"alarm: inference_geo requested {requested}, reported {reported}", file=sys.stderr)
     if called.outcome != "ok":
-        print(_failure_line(called, adapters), file=sys.stderr)
+        for line in [_failure_line(called, adapters), *_undeclared_lines(called.decision)]:
+            print(line, file=sys.stderr)
         return 2
     if called.erased_by is not None:
         print(f"erased: {called.message}; the answer is erased with it", file=sys.stderr)
@@ -1914,8 +2057,7 @@ def _cmd_client(args: argparse.Namespace) -> int:
 
 # Where `previously serve` listens unless told otherwise: the loopback address,
 # so that nothing outside the machine reaches it without a decision.
-MCP_HOST = "127.0.0.1"
-MCP_PORT = 8765
+MCP_ADDRESS = "127.0.0.1:8765"
 
 
 def _cmd_mcp(_args: argparse.Namespace) -> int:
@@ -1951,12 +2093,17 @@ def _cmd_mcp(_args: argparse.Namespace) -> int:
     return 0
 
 
-def _mcp_port() -> int:
-    """`PREVIOUSLY_MCP_PORT`, or 8765 when it is unset or empty."""
-    text = os.environ.get("PREVIOUSLY_MCP_PORT") or str(MCP_PORT)
-    if not (text.isascii() and text.isdigit() and 0 < int(text) < 65536):
-        raise PreviouslyError(f"PREVIOUSLY_MCP_PORT is not a port number: {text!r}")
-    return int(text)
+def _mcp_address() -> tuple[str, int]:
+    """`PREVIOUSLY_MCP_ADDRESS`, or `MCP_ADDRESS` when it is unset or empty.
+    `PREVIOUSLY_MCP_HOST` is refused for the reason `_imap_address` gives."""
+    text = os.environ.get("PREVIOUSLY_MCP_ADDRESS")
+    if not text:
+        if os.environ.get("PREVIOUSLY_MCP_HOST"):
+            raise PreviouslyError(
+                "PREVIOUSLY_MCP_HOST is not read any more: set PREVIOUSLY_MCP_ADDRESS to host:port"
+            )
+        text = MCP_ADDRESS
+    return parse_address("PREVIOUSLY_MCP_ADDRESS", text, default_port=None)
 
 
 def _cmd_serve(_args: argparse.Namespace) -> int:
@@ -1970,11 +2117,11 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
     """
     from previously.mcp_server.server import run_http
 
-    host = os.environ.get("PREVIOUSLY_MCP_HOST") or MCP_HOST
-    port = _mcp_port()
+    host, port = _mcp_address()
     allowed = (os.environ.get("PREVIOUSLY_MCP_ALLOWED_HOSTS") or "").replace(",", " ").split()
+    where = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
     with _storage() as storage:
-        print(f"serving MCP over HTTP on http://{host}:{port}/mcp", file=sys.stderr)
+        print(f"serving MCP over HTTP on http://{where}/mcp", file=sys.stderr)
         run_http(storage, host=host, port=port, allowed_hosts=allowed)
     return 0
 

@@ -30,6 +30,10 @@ previously policy provider vibe-free --inference eu=eu --storage eu \
 Write what your account and its terms say, and not what the examples above say.
 The statement is your source for the values, and it stays in the log.
 
+These declarations are the clients' and not the gate's.
+`previously gate` calls only the providers its task names, `anthropic`, `mistral` and `local`, and each of them needs a declaration of its own, even when a client of the same company is declared already.
+A `gate explain` that says `denied` after a client's setup names on standard error the gate's providers that have no declaration, or, where no rule applies, says that only a provider declared with `--local` can be chosen; {ref}`set-a-policy-and-try-a-call` declares them.
+
 A harness against a local model is declared with `--local`.
 Declare it with `--training no --subprocessors none` as well: without them it fails every rule that forbids training or subprocessors, and a circle with such a rule stays withheld from it.
 
@@ -53,6 +57,9 @@ Add the client with the provider you declared for it:
 previously client add claude-code --processor claude-max \
     --statement "Claude Code on my laptop" --yes
 ```
+
+The command asks before it writes, and `--yes` answers for you.
+Keep `--yes` where nobody can answer, such as in `kubectl exec` without `-i`: there the question gets no input, and the command writes nothing and prints no token.
 
 The command prints the token once:
 
@@ -85,6 +92,10 @@ Add the server with the token as a header:
 claude mcp add --transport http previously http://127.0.0.1:8765/mcp \
     --header "Authorization: Bearer TOKEN"
 ```
+
+Write `Bearer ` before the token, with the space.
+A header without it, `Authorization: TOKEN`, gets the status 401 from the server, and Claude Code says no more than that the server failed, in the list that `/mcp` shows.
+If `/mcp` lists the server as failed, remove it with `claude mcp remove previously` and add it again with `Bearer ` in the header.
 
 To let Claude Code start the server itself over standard input and output instead, on a machine that reaches the database, add it as a command:
 
@@ -141,12 +152,14 @@ previously client revoke claude-code --statement "laptop lost" --yes
 
 ## Tested configurations
 
-These configurations were measured on 2026-10-10, against a test server on the MCP SDK `mcp` 2.3.0 that accepted a static bearer token, and not against `previously serve`:
+The first two configurations were measured on 2026-10-10, against a test server on the MCP SDK `mcp` 2.3.0 that accepted a static bearer token, and not against `previously serve`; the third was measured against `previously serve` itself:
 
 - **Claude Code 2.1.289**, which speaks the protocol revision `2026-07-28`, added with `claude mcp add --transport http … --header "Authorization: Bearer …"`: the token was sent and accepted.
 - **Mistral Vibe 2.26.1**, which speaks `2025-11-25`, with the server in `.vibe/config.toml`: `headers` with `Authorization` was sent and accepted, and the static `api_key_env` sent no header.
   The default harness didn't see two tools that the restarted server offered, and `--legacy-harness` called them.
+- **Claude Code against `previously serve`** in a Kubernetes cluster, through `kubectl port-forward`, on 2026-10-11, in a version nobody wrote down: `whoami` answered, `previously access` listed the call, and Claude Code summarized the mails of a circle with a rule and nothing of the circles without one.
+  The same run found the header without `Bearer ` that the section on Claude Code describes.
 
-The form of a result that the server uses, one text block, arrived whole in both.
+The form of a result that the server uses, one text block, arrived whole in the first two.
 The measurement recorded the key `headers` of the Vibe entry and not the rest of it; `name`, `transport` and `url` above follow [Vibe's documentation of MCP servers](https://docs.mistral.ai/vibe/code/cli/mcp-servers).
-Nothing else on this page was measured with a real client: not the form with standard input and output, and not either client against `previously serve`.
+Nothing else on this page was measured with a real client: not the form with standard input and output, and not Vibe against `previously serve`.
