@@ -363,6 +363,60 @@ def _prepare(payloads: Sequence[Mapping[str, object]], recorded_at: datetime) ->
         raise AssertionRefused(f"a statement cannot be written: {error}") from error
 
 
+def _repeated(
+    below: Sequence[tuple[int, datetime, Mapping[str, object] | None]], handle: str | None
+) -> tuple[int, ...]:
+    """The ids of the assertions below the tip that carry `handle`."""
+    if handle is None:
+        return ()
+    return tuple(
+        event_id
+        for event_id, _at, payload in below
+        if payload is not None and payload.get("handle") == handle
+    )
+
+
+def _check_all[Conn](
+    log: LogStore[Conn],
+    conn: Conn,
+    rows: Mapping[int, EventRow | None],
+    below: Sequence[tuple[int, datetime, Mapping[str, object] | None]],
+    statements: Sequence[Statement],
+    top: int,
+) -> None:
+    """The checks the write path runs under its locks and `check_statements`
+    runs without: the sources, then the references against what stands below
+    the tip and what the batch adds."""
+    _check_sources(log, conn, rows, statements)
+    _check_references(fold(below), statements, top + 1)
+
+
+def check_statements[Conn](
+    log: LogStore[Conn], conn: Conn, statements: Sequence[Statement]
+) -> None:
+    """Refuses with `AssertionRefused` a batch that `write_statements` would
+    refuse now, with the same sentence, and writes and locks nothing.
+
+    For a preview, so that nobody confirms what cannot be written. It is no
+    promise: an erasure can still fall between this check and the write, and
+    the write path checks again under its locks. A batch whose handle an
+    assertion in the log carries is a repeat, which `write_statements`
+    answers with the ids and does not refuse, so it passes here too.
+    """
+    _check_batch(statements)
+    events = sorted({source.event for statement in statements for source in statement.sources})
+    rows: dict[int, EventRow | None] = {}
+    for event_id in events:
+        row = next(iter(log.read(conn, event_id, 1)), None)
+        rows[event_id] = row if row is not None and row.id == event_id else None
+    tip = log.tip(conn)
+    top = 0 if tip is None else tip.id
+    below = _rows(log, conn, up_to=top)
+    if _repeated(below, statements[0].handle):
+        return
+    _check_all(log, conn, rows, below, statements, top)
+
+
 def write_statements[Conn](
     log: LogStore[Conn],
     locker: RedactionStore[Conn],
@@ -411,16 +465,10 @@ def write_statements[Conn](
         # remove. The final review of the plan measures it at 5 000
         # assertions.
         below = _rows(log, conn, up_to=top)
-        if handle is not None:
-            repeated = tuple(
-                event_id
-                for event_id, _at, payload in below
-                if payload is not None and payload.get("handle") == handle
-            )
-            if repeated:
-                return repeated
-        _check_sources(log, conn, rows, statements)
-        _check_references(fold(below), statements, top + 1)
+        repeated = _repeated(below, handle)
+        if repeated:
+            return repeated
+        _check_all(log, conn, rows, below, statements, top)
         ids: list[int] = []
         prev_hash = None if tip is None else tip.hash
         for ready in prepared:

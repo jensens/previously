@@ -1127,10 +1127,10 @@ previously assert decision --what TEXT --by REF [--by REF ...] --on DATE [--stat
 | `--debtor REF`, `--creditor REF` | Yes, without `--subject` | — | A reference: `own`, `circle:NAME`, `address:ADDRESS` or `name:TEXT`. |
 | `--by REF` | Yes, without `--subject` | — | Who decided, a reference. May repeat. |
 | `--what TEXT` | Yes, without `--subject` | — | The text of the obligation or the decision. |
-| `--due DATE` | No | none | By when, written `YYYY-MM-DD`. A date in the past is allowed, and the obligation is overdue at once. |
+| `--due DATE` | No | none | By when, written `YYYY-MM-DD`, or `none` to clear the date of the version that stands. A date in the past is allowed, and the obligation is overdue at once. |
 | `--on DATE` | Yes, without `--subject` | — | When it was decided, written `YYYY-MM-DD`. |
 | `--state STATE` | No | `open`, or `valid` | One of `open`, `fulfilled`, `cancelled` for an obligation, `valid` or `revoked` for a decision. |
-| `--replaces ID` | No | none | The decision this one replaces. |
+| `--replaces ID` | No | none | The decision this one replaces, or `none` to clear it on the version that stands. |
 | `--subject ID` | No | none | The obligation or decision to write a further version of. |
 | `--reason TEXT` | No | none | Why this version, for the history. |
 | `--source SOURCE` | Yes, without `--subject` | — | An event it rests on: `EVENT` for the whole event, or `EVENT:SEQ,SEQ` for units of it, in ascending order. May repeat. |
@@ -1161,7 +1161,8 @@ Error: --subject 5 names no obligation that stands
 ```
 
 A reference without a known prefix is refused as `Error: --debtor: the reference has no known prefix: use own, circle:, address: or name:`, and the other form errors of an assertion come from its checks.
-What only the log knows is refused after the question, with the sentence of the write path: a source that isn't an event, isn't an observation or is erased, or a unit that doesn't exist.
+What only the log knows is checked before the question as well, with the sentence of the write path: a source that isn't an event, isn't an observation or is erased, a unit that doesn't exist or is erased, and a `--subject`, `--replaces` or proposal that names nothing that stands.
+The write path checks again under its locks, so a refusal can still follow the question when an erasure comes in between.
 
 ### `approve` and `reject`
 
@@ -1173,8 +1174,10 @@ previously reject ID [--reason TEXT] [--yes]
 `approve` makes proposals the operator's own.
 Each becomes a direct version of the same obligation or decision, with the content, the sources and the author of the proposal, and `approves` naming it.
 The reason of the proposal stays unless `--reason` gives another.
+An id named twice is approved once.
 `reject` writes a rejection with the sources of the proposal.
-Both show one payload per statement, ask, and print `assertion ID` for each event written.
+Both show one payload per statement, with DEL and the C1 control characters written as `\u00NN`.
+They then ask, and print `assertion ID` for each event written.
 
 A proposal that can't be answered is refused before the question, with exit code 2:
 
@@ -1212,7 +1215,7 @@ Each line holds seven tab-separated fields, ordered by id:
 7. `K proposals`, the open proposals that are pending.
 
 Every field that comes from outside is escaped as `chronicle` escapes its fields.
-The words are plural for one as well.
+The words are singular for one: `1 version`, `1 proposal`.
 
 ### `obligation` and `decision`
 
@@ -1226,12 +1229,13 @@ The first line is `obligation ID` or `decision ID`, with `(proposal)` behind it 
 A value that isn't set reads `(none)`.
 Each pending proposal adds one line per field it changes, with six tab-separated fields: `proposal`, its id, its author, the field, the old value and the new one, or a line of three fields when it changes nothing.
 
-`--history` prints instead the first line `obligation ID: N versions` and then, in chain order, each version and each rejection.
+`--history` prints instead the first line `obligation ID: N versions`, or `1 version`, and then, in chain order, each version and each rejection.
 A version is a line `version`, its id, the time, the responsibility, the author, and when it applies `rejected`, `approved` or `approves ID`, then `sources` and `reason`.
 The first version adds a `set` line per field; each later one adds a `change` line per field that differs from the version before it, with the old and the new value.
 A rejection is a line `rejection`, its id, the time, its author and `rejects ID`, then `reason`.
 
-When no obligation or decision of that kind stands under the id, the command prints `no obligation stands under event ID` to standard error, with `decision` for a decision, and returns 1.
+`--history` also answers for an entry whose versions are all rejected proposals.
+When no obligation or decision of that kind stands under the id, or none of its versions wins and `--history` is absent, the command prints `no obligation stands under event ID` to standard error, with `decision` for a decision, and returns 1.
 
 (cli-mcp)=
 

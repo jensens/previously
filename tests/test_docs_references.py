@@ -31,12 +31,14 @@ from typing import TYPE_CHECKING
 import ast
 import json
 import pathlib
+import pytest
 import re
 
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from previously.contract.types import RawEvent
+    from sqlalchemy import Engine
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SOURCE_DIRS = ["src", "tests"]
@@ -1542,3 +1544,133 @@ def test_the_mcp_reference_access_entry_has_the_form_verify_holds() -> None:
     assert _first_cells(page, heading, "The entry of `call`:", name=MCP_PAGE_NAME) == set(
         example["call"]
     )
+
+
+# --- the assertions section of cli.md -----------------------------------------------
+
+
+def _assertions_section() -> str:
+    page = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
+    return page.split("\n## Assertions\n", 1)[1].split("\n(cli-mcp)=", 1)[0]
+
+
+def test_the_assertions_reference_quotes_only_sentences_the_code_says() -> None:
+    """Every `Error: ` the "Assertions" section of `cli.md` quotes, in a block
+    or inline, is a message `cli.py` raises or, behind an option name, one
+    that `core/assertion.py` returns; and the hint is the sentence `cli.py`
+    builds. A sentence changed on the page alone, or in the code alone, fails.
+
+    Measured on 2026-10-12: with `already approved` turned into `already
+    answered` on the page, this test goes red; the unchanged page is the
+    control. Patterns shorter than ten characters are left out, or the bare
+    `{option}: {problem}` would stand in for any sentence with a colon.
+    """
+    section = _assertions_section()
+    quoted = re.findall(r"^Error: (.+)$", section, re.MULTILINE)
+    quoted += re.findall(r"`Error: ([^`]+)`", section)
+    assert len(quoted) >= 8, quoted
+    source = ROOT / "src" / "previously"
+    own = [
+        parts
+        for parts in _raised_patterns(source / "cli.py", "PreviouslyError")
+        if len("".join(parts)) >= 10
+    ]
+    core = _message_patterns(source / "core" / "assertion.py")
+    for sentence in quoted:
+        behind_option = re.sub(r"^--[a-z-]+: ", "", sentence)
+        assert any(_is_the_same_sentence(parts, sentence) for parts in own) or (
+            behind_option != sentence
+            and any(_is_the_same_sentence(parts, behind_option) for parts in core)
+        ), f"cli.md quotes {sentence!r} and neither cli.py nor core/assertion.py says it"
+    hints = re.findall(r"^hint: (.+)$", section, re.MULTILINE)
+    assert len(hints) == 1
+    code = (source / "cli.py").read_text(encoding="utf-8")
+    assert hints[0].partition(" ")[2] in code.replace('"\n        "', "")
+
+
+@pytest.mark.db
+def test_the_assertions_reference_names_every_label_the_commands_print(
+    db: Engine, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The first word of every line of the page of an entry and of its
+    history, and the seven fields of a list line, are named on the page. A
+    label the code prints and the page leaves out fails; the page's `seven`
+    is held against the list line the command prints."""
+    from previously.cli import main
+
+    monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
+    decide = ["assert", "decision", "--what", "d", "--by", "own", "--on", "2026-10-30"]
+    owe = ["assert", "obligation", "--debtor", "own", "--creditor", "name:x", "--what", "w"]
+    run = [
+        ["append", "--source", "s", "--external-id", "1", "--text", "One. Two."],
+        [*owe, "--due", "2020-01-01", "--source", "1", "--yes"],
+        ["assert", "obligation", "--subject", "2", "--state", "fulfilled", "--yes"],
+        [*decide, "--source", "1", "--yes"],
+        [*decide, "--source", "1", "--replaces", "4", "--yes"],
+    ]
+    for argv in run:
+        assert main(argv) == 0
+    _write_proposals(db)
+    assert main(["reject", "6", "--reason", "no", "--yes"]) == 0
+    assert main(["approve", "7", "--yes"]) == 0
+    section = _assertions_section()
+    prose = re.sub(r"```.*?```", "", section, flags=re.DOTALL)
+    spans = set(re.findall(r"`([^`]+)`", prose))
+    printed: set[str] = set()
+    for argv in (
+        ["obligation", "2"],
+        ["obligation", "2", "--history"],
+        ["decision", "4"],
+        ["obligation", "6", "--history"],
+    ):
+        capsys.readouterr()
+        assert main(argv) == 0
+        for line in capsys.readouterr().out.splitlines():
+            label = line.split("\t")[0]
+            printed.add(
+                label.split(" ")[0] if label.startswith(("obligation", "decision")) else label
+            )
+    for label in printed - {"obligation", "decision"}:
+        base = label.removesuffix(" ID")
+        assert any(span == base or span.startswith(base + " ") for span in spans), (
+            f"the command prints the label {label!r} and the Assertions section names no `{label}`"
+        )
+    capsys.readouterr()
+    assert main(["obligations"]) == 0
+    fields = capsys.readouterr().out.splitlines()[0].split("\t")
+    assert len(fields) == 7
+    assert "Each line holds seven tab-separated fields" in section
+
+
+def _write_proposals(db: Engine) -> None:
+    from datetime import date
+    from datetime import datetime
+    from datetime import UTC
+    from previously.core.assertion import model_author
+    from previously.core.assertion import OBLIGATION
+    from previously.core.assertion import ObligationBody
+    from previously.core.assertion import OPEN
+    from previously.core.assertion import Source
+    from previously.core.assertion import Statement
+    from previously.core.assertions import write_statements
+    from previously.storage.postgres import PostgresStorage
+
+    def proposal(what: str, subject: int | None) -> Statement:
+        body = ObligationBody("own", "name:x", what, date(2026, 12, 1), "open")
+        return Statement(
+            OBLIGATION,
+            model_author("claude-code"),
+            OPEN,
+            (Source(1, None),),
+            None,
+            None,
+            subject,
+            None,
+            None,
+            body,
+        )
+
+    storage = PostgresStorage(db)
+    now = datetime(2026, 11, 1, tzinfo=UTC)
+    write_statements(storage, storage, [proposal("p", None)], recorded_at=now)  # 6
+    write_statements(storage, storage, [proposal("q", 2)], recorded_at=now)  # 7

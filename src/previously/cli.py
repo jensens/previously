@@ -49,6 +49,7 @@ from previously.core.assertion import REJECTION
 from previously.core.assertion import Source as AssertionSource
 from previously.core.assertion import Statement as AssertionStatement
 from previously.core.assertions import ASSERTION
+from previously.core.assertions import check_statements
 from previously.core.assertions import read_threads
 from previously.core.assertions import source_identities
 from previously.core.assertions import thread_circles
@@ -251,12 +252,12 @@ def escape_controls(text: str) -> str:
     return _CONTROLS.sub(lambda match: f"\\x{ord(match.group()):02x}", text)
 
 
-def _json_line(payload: Mapping[str, object]) -> str:
-    """The payload as one line of JSON, with sorted keys, and DEL and the
-    C1 controls as `\\u00NN`, which is JSON for the same character: the line
-    stays valid JSON and says the same, and no control reaches a terminal
-    raw."""
-    line = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+def _json_line(payload: Mapping[str, object], *, indent: int | None = None) -> str:
+    """The payload as JSON, one line unless `indent` is given, with sorted
+    keys, and DEL and the C1 controls as `\\u00NN`, which is JSON for the same
+    character: the text stays valid JSON and says the same, and no control
+    reaches a terminal raw."""
+    line = json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=indent)
     return _JSON_CONTROLS.sub(lambda match: f"\\u{ord(match.group()):04x}", line)
 
 
@@ -2052,15 +2053,16 @@ class Command:
 # --- assertions ------------------------------------------------------------------
 #
 # An assertion states an obligation or a decision, with its sources and who
-# stands for it. The command line is the operator's own
-# way to write one, so its author is `human:operator` and its responsibility
-# is direct. Nothing here asks the policy: whoever has the command line is the
-# operator, as with `chronicle`.
+# stands for it. The command line is the operator's own way to write one, so
+# its author is `human:operator` and its responsibility is direct. Nothing
+# here asks the policy: whoever has the command line is the operator, as with
+# `chronicle`.
 
 _SOURCE_FORM = re.compile(r"(\d{1,16})(?::(\d{1,16}(?:,\d{1,16})*))?", re.ASCII)
 _DAY_FORM = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
 _NO_VALUE = "(none)"
 _NAME_PREFIX = "name:"
+_CLEARED = "none"
 _BLANK_OBLIGATION = ObligationBody("", "", "", None, "open")
 _BLANK_DECISION = DecisionBody("", (), date.min, "valid", None)
 
@@ -2120,6 +2122,20 @@ def _base_of(
     return (thread.winner() or thread.versions[-1]).statement
 
 
+def _due(text: str) -> date | None:
+    """`none` clears the due date; anything else is a date."""
+    return None if text == _CLEARED else _parse_day("--due", text)
+
+
+def _parse_replaces(text: str) -> int | None:
+    """`none` clears `replaces`; anything else is an event id."""
+    if text == _CLEARED:
+        return None
+    if re.fullmatch(r"\d{1,16}", text, re.ASCII) is None:
+        raise PreviouslyError(f"--replaces is neither an event id nor {_CLEARED}: {text!r}")
+    return int(text)
+
+
 def _obligation_body(
     args: argparse.Namespace, base: AssertionStatement | None
 ) -> tuple[ObligationBody, list[str]]:
@@ -2138,7 +2154,7 @@ def _obligation_body(
         old.debtor if args.debtor is None else _reference("--debtor", args.debtor),
         old.creditor if args.creditor is None else _reference("--creditor", args.creditor),
         old.what if args.what is None else args.what,
-        old.due if args.due is None else _parse_day("--due", args.due),
+        old.due if args.due is None else _due(args.due),
         old.state if args.state is None else args.state,
     ), absent
 
@@ -2162,7 +2178,7 @@ def _decision_body(
         tuple(_reference("--by", by) for by in args.by) if args.by else old.by,
         old.on if args.on is None else _parse_day("--on", args.on),
         old.state if args.state is None else args.state,
-        old.replaces if args.replaces is None else args.replaces,
+        old.replaces if args.replaces is None else _parse_replaces(args.replaces),
     ), absent
 
 
@@ -2216,8 +2232,8 @@ def _name_hints(
 ) -> list[str]:
     """One hint per address that a source of the statement shows next to a
     display name containing the text of a `name:` reference, case-insensitive.
-    A name is a label and an address is a reference that holds
-    (a reference to a name is a label); this tells the operator, and forbids nothing."""
+    A name is a label and an address is a reference that holds; the hint tells
+    the operator so, and forbids nothing."""
     needles = [
         reference.removeprefix(_NAME_PREFIX).casefold()
         for reference in _references(statement)
@@ -2253,7 +2269,7 @@ def _change_lines(lead: str, before: AssertionStatement, after: AssertionStateme
 
 def _preview(statements: Sequence[AssertionStatement]) -> None:
     for statement in statements:
-        print(json.dumps(payload_of(statement), indent=2, sort_keys=True, ensure_ascii=False))
+        print(_json_line(payload_of(statement), indent=2))
 
 
 def _write_asked(
@@ -2279,6 +2295,7 @@ def _cmd_assert(args: argparse.Namespace) -> int:
         with storage.snapshot() as conn:
             base = _base_of(read_threads(storage, conn), args.subject, kind)
             statement = _asserted(args, kind, base)
+            check_statements(storage, conn, [statement])
             hints = _name_hints(storage, conn, statement)
         for hint in hints:
             print(hint, file=sys.stderr)
@@ -2309,24 +2326,26 @@ def _proposal_of(threads: Mapping[int, Thread], event_id: int) -> tuple[Thread, 
 
 def _cmd_approve(args: argparse.Namespace) -> int:
     """Makes each proposal the operator's own: a direct version with the
-    content, sources and author of the proposal, pointing at it."""
+    content, sources and author of the proposal, pointing at it. An id named
+    twice is approved once."""
     with _storage() as storage:
         with storage.snapshot() as conn:
             threads = read_threads(storage, conn)
-        statements: list[AssertionStatement] = []
-        for event_id in args.ids:
-            thread, version = _proposal_of(threads, event_id)
-            proposal = version.statement
-            statements.append(
-                replace(
-                    proposal,
-                    responsibility=DIRECT,
-                    reason=proposal.reason if args.reason is None else args.reason,
-                    handle=None,
-                    subject=thread.subject,
-                    approves=version.id,
+            statements: list[AssertionStatement] = []
+            for event_id in dict.fromkeys(args.ids):
+                thread, version = _proposal_of(threads, event_id)
+                proposal = version.statement
+                statements.append(
+                    replace(
+                        proposal,
+                        responsibility=DIRECT,
+                        reason=proposal.reason if args.reason is None else args.reason,
+                        handle=None,
+                        subject=thread.subject,
+                        approves=version.id,
+                    )
                 )
-            )
+            check_statements(storage, conn, statements)
         _preview(statements)
         return _write_asked(args, storage, statements)
 
@@ -2335,18 +2354,19 @@ def _cmd_reject(args: argparse.Namespace) -> int:
     with _storage() as storage:
         with storage.snapshot() as conn:
             _thread, version = _proposal_of(read_threads(storage, conn), args.id)
-        statement = AssertionStatement(
-            REJECTION,
-            OPERATOR,
-            DIRECT,
-            version.statement.sources,
-            args.reason,
-            None,
-            None,
-            None,
-            version.id,
-            None,
-        )
+            statement = AssertionStatement(
+                REJECTION,
+                OPERATOR,
+                DIRECT,
+                version.statement.sources,
+                args.reason,
+                None,
+                None,
+                None,
+                version.id,
+                None,
+            )
+            check_statements(storage, conn, [statement])
         _preview([statement])
         return _write_asked(args, storage, [statement])
 
@@ -2373,7 +2393,7 @@ def _assert_arguments(parser: argparse.ArgumentParser) -> None:
     )
     obligation.add_argument("--creditor", help="who is owed: a reference, as for --debtor")
     obligation.add_argument("--what", help="what is owed")
-    obligation.add_argument("--due", help="by when, YYYY-MM-DD; may lie in the past")
+    obligation.add_argument("--due", help="by when, YYYY-MM-DD, or none; may lie in the past")
     obligation.add_argument("--state", choices=OBLIGATION_STATES, help="open unless --subject")
     _asserting(obligation)
     decision = form.add_parser("decision", help="state a decision", description=sentence)
@@ -2381,7 +2401,7 @@ def _assert_arguments(parser: argparse.ArgumentParser) -> None:
     decision.add_argument("--by", action="append", help="who decided, a reference; may repeat")
     decision.add_argument("--on", help="when it was decided, YYYY-MM-DD")
     decision.add_argument("--state", choices=DECISION_STATES, help="valid unless --subject")
-    decision.add_argument("--replaces", type=int, help="the id of the decision it replaces")
+    decision.add_argument("--replaces", help="the id of the decision it replaces, or none")
     _asserting(decision)
 
 
@@ -2423,14 +2443,17 @@ def _kept(body: ObligationBody | DecisionBody, args: argparse.Namespace, today: 
 
 
 def _entries(
-    storage: PostgresStorage, conn: Connection, args: argparse.Namespace, kind: str
+    threads: Mapping[int, Thread],
+    storage: PostgresStorage,
+    conn: Connection,
+    args: argparse.Namespace,
+    kind: str,
 ) -> list[tuple[Thread, Version]]:
     """The threads a list shows, each with the version that stands for it, in
     order of their ids. Without `--proposals`, only an entry with a direct
     winner; with it, only one that has a pending proposal or stands as one.
     A proposal never passes for a valid entry."""
     today = _utc_today()
-    threads = read_threads(storage, conn)
     policy = read_policy(storage, conn) if args.circle is not None else None
     entries: list[tuple[Thread, Version]] = []
     for subject in sorted(threads):
@@ -2496,8 +2519,8 @@ def _list_line(thread: Thread, winner: Version, today: date, replaced_by: int | 
             _day(when, "-"),
             _parties(body),
             escape_field("" if body is None else body.what),
-            f"{len(thread.versions)} versions",
-            f"{len(thread.pending())} proposals",
+            _plural(len(thread.versions), "version"),
+            _plural(len(thread.pending()), "proposal"),
         )
     )
 
@@ -2509,8 +2532,9 @@ def _list_assertions(args: argparse.Namespace, kind: str) -> int:
         _reference("--owed-to", args.owed_to)
     today = _utc_today()
     with _storage() as storage, storage.snapshot() as conn:
-        entries = _entries(storage, conn, args, kind)
-        replaced = _replaced_by(read_threads(storage, conn))
+        threads = read_threads(storage, conn)
+        entries = _entries(threads, storage, conn, args, kind)
+        replaced = _replaced_by(threads)
     for thread, winner in entries:
         print(_list_line(thread, winner, today, replaced.get(thread.subject)))
     return 0
@@ -2601,7 +2625,7 @@ def _history_lines(
 ) -> list[str]:
     """Every version in chain order, each with its difference to the one
     standing before it, and the rejections among them."""
-    lines = [f"{thread.kind} {thread.subject}: {len(thread.versions)} versions"]
+    lines = [f"{thread.kind} {thread.subject}: {_plural(len(thread.versions), 'version')}"]
     shown: list[tuple[int, list[str]]] = []
     for position, version in enumerate(thread.versions):
         statement = version.statement
@@ -2662,11 +2686,12 @@ def _show_assertion(args: argparse.Namespace, kind: str) -> int:
     with _storage() as storage, storage.snapshot() as conn:
         threads = read_threads(storage, conn)
         thread = threads.get(args.id)
-        winner = None if thread is None or thread.kind != kind else thread.winner()
-        if thread is None or winner is None:
+        winner = None if thread is None else thread.winner()
+        # A history exists while a version stands, whether or not one wins.
+        if thread is None or thread.kind != kind or (winner is None and not args.history):
             print(f"no {kind} stands under event {args.id}", file=sys.stderr)
             return 1
-        if args.history:
+        if args.history or winner is None:
             lines = _history_lines(thread, _rejections_of(storage, conn, thread))
         else:
             lines = _entry_lines(thread, winner, today, _replaced_by(threads).get(thread.subject))

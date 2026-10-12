@@ -5264,12 +5264,12 @@ def test_a_due_in_the_past_is_written_and_the_obligation_is_overdue_at_once(
     capsys.readouterr()
     assert main(["obligations"]) == 0
     assert capsys.readouterr().out == (
-        f"3\topen overdue\t{yesterday}\town -> {_THE_OFFER}\t{_WHAT}\t1 versions\t0 proposals\n"
-        f"4\topen\t{tomorrow}\town -> {_THE_OFFER}\t{_WHAT}\t1 versions\t0 proposals\n"
+        f"3\topen overdue\t{yesterday}\town -> {_THE_OFFER}\t{_WHAT}\t1 version\t0 proposals\n"
+        f"4\topen\t{tomorrow}\town -> {_THE_OFFER}\t{_WHAT}\t1 version\t0 proposals\n"
     )
     assert main(["obligations", "--overdue"]) == 0
     assert capsys.readouterr().out.splitlines() == [
-        f"3\topen overdue\t{yesterday}\town -> {_THE_OFFER}\t{_WHAT}\t1 versions\t0 proposals"
+        f"3\topen overdue\t{yesterday}\town -> {_THE_OFFER}\t{_WHAT}\t1 version\t0 proposals"
     ]
 
 
@@ -5469,7 +5469,7 @@ def test_assert_decision_writes_a_decision_and_the_list_shows_it(
     assert payload["replaces"] is None
     assert main(["decisions"]) == 0
     assert capsys.readouterr().out == (
-        "3\tvalid\t2026-10-30\tcircle:huber, own\tuse slate\t1 versions\t0 proposals\n"
+        "3\tvalid\t2026-10-30\tcircle:huber, own\tuse slate\t1 version\t0 proposals\n"
     )
 
 
@@ -5484,8 +5484,8 @@ def test_a_decision_that_is_replaced_says_so_in_the_list_and_in_its_page(
     capsys.readouterr()
     assert main(["decisions"]) == 0
     assert capsys.readouterr().out == (
-        "3\tvalid replaced by 4\t2026-10-30\town\tuse slate\t1 versions\t0 proposals\n"
-        "4\tvalid\t2026-10-30\town\tuse tiles\t1 versions\t0 proposals\n"
+        "3\tvalid replaced by 4\t2026-10-30\town\tuse slate\t1 version\t0 proposals\n"
+        "4\tvalid\t2026-10-30\town\tuse tiles\t1 version\t0 proposals\n"
     )
     assert main(["decisions", "--state", "revoked"]) == 0
     assert capsys.readouterr().out == ""
@@ -5644,13 +5644,13 @@ def test_a_list_shows_proposals_as_proposals_and_only_when_asked(
     capsys.readouterr()
     assert main(["obligations"]) == 0
     assert capsys.readouterr().out == (
-        f"3\topen\t2026-11-30\town -> {_THE_OFFER}\t{_WHAT}\t2 versions\t1 proposals\n"
+        f"3\topen\t2026-11-30\town -> {_THE_OFFER}\t{_WHAT}\t2 versions\t1 proposal\n"
     )
     assert main(["obligations", "--proposals"]) == 0
     assert capsys.readouterr().out == (
-        f"3\topen\t2026-11-30\town -> {_THE_OFFER}\t{_WHAT}\t2 versions\t1 proposals\n"
+        f"3\topen\t2026-11-30\town -> {_THE_OFFER}\t{_WHAT}\t2 versions\t1 proposal\n"
         f"{alone}\tproposed open\t2026-11-30\town -> {_THE_OFFER}\tproposed alone"
-        "\t1 versions\t0 proposals\n"
+        "\t1 version\t0 proposals\n"
     )
     assert pending == 5
 
@@ -5741,7 +5741,7 @@ def test_a_field_from_outside_is_escaped_in_the_lists(
     capsys.readouterr()
     assert main(["obligations"]) == 0
     assert capsys.readouterr().out == (
-        "3\topen\t-\town -> name:Anna\ttwo\\nli\\tnes\\\\\t1 versions\t0 proposals\n"
+        "3\topen\t-\town -> name:Anna\ttwo\\nli\\tnes\\\\\t1 version\t0 proposals\n"
     )
 
 
@@ -5852,3 +5852,180 @@ def test_the_history_lists_every_version_with_the_difference_and_the_rejections(
         "reason\t(none)\n"
     )
     assert first == 3 and rejected == 4 and approved == 5
+
+
+@pytest.mark.db
+def test_the_preview_of_an_approval_escapes_the_controls_of_a_proposal(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A proposal is text a model wrote from a stranger's mail. U+009B is
+    `ESC [` for a terminal and DEL is none to read; neither may come out
+    raw. The control is the plain text beside them, which stays as it was."""
+    storage = _assertion_log(db, monkeypatch)
+    (proposal_id,) = _propose(storage, _debt(what="plain\x9b[2Jmore\x7fend"))
+    assert main(["approve", str(proposal_id), "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert "\x9b" not in out
+    assert "\x7f" not in out
+    assert '"what": "plain\\u009b[2Jmore\\u007fend"' in out
+    assert '"assertion": "obligation"' in out
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("change", "sentence"),
+    [
+        ("99", "there is no event 99 to rest on"),
+        ("2", "event 2 is erased and cannot be a source"),
+        ("1:9", "event 1 has no unit 9"),
+    ],
+)
+def test_a_source_the_log_refuses_is_refused_before_the_question(
+    change: str,
+    sentence: str,
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Rulings F-10 of the 2026-10-12 plan: nobody confirms what the write
+    path will refuse. Nothing is shown, nothing is asked, nothing is written;
+    the control is the same command with a source that stands."""
+    storage = _assertion_log(db, monkeypatch)
+    redact_event(storage, storage, 2, reason="r", recorded_at=datetime.now(UTC))
+    _answer(monkeypatch, "y\n")
+    argv = _assert_obligation()
+    argv[argv.index("--source") + 1 :] = [change]
+    assert main(argv) == 2
+    assert capsys.readouterr() == ("", f"Error: {sentence}\n")
+    assert _standing(db) == []
+    argv[argv.index("--source") + 1 :] = ["1:1"]
+    _answer(monkeypatch, "y\n")
+    assert main(argv) == 0
+
+
+@pytest.mark.db
+def test_a_replaced_decision_that_does_not_stand_is_refused_before_the_question(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assertion_log(db, monkeypatch)
+    argv = ["assert", "decision", "--what", "x", "--by", "own", "--on", "2026-10-30"]
+    assert main([*argv, "--source", "1", "--replaces", "1"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        "Error: replaces names 1, which is no decision that stands\n",
+    )
+    assert main([*argv, "--source", "1", "--replaces", "x"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        "Error: --replaces is neither an event id nor none: 'x'\n",
+    )
+
+
+@pytest.mark.db
+def test_due_none_and_replaces_none_clear_what_a_subject_would_fill(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control is the same command without `none`, which keeps the value."""
+    _assertion_log(db, monkeypatch)
+    assert main(_assert_obligation("--yes")) == 0
+    capsys.readouterr()
+    assert main(["assert", "obligation", "--subject", "3", "--what", "again", "--yes"]) == 0
+    assert "change\tdue" not in capsys.readouterr().out
+    assert main(["assert", "obligation", "--subject", "3", "--due", "none", "--yes"]) == 0
+    assert "change\tdue\t2026-11-30\t(none)\n" in capsys.readouterr().out
+    assert _standing(db)[-1][1]["due"] is None
+    base = ["assert", "decision", "--what", "x", "--by", "own", "--on", "2026-10-30"]
+    assert main([*base, "--source", "1", "--yes"]) == 0  # 6
+    assert main([*base, "--source", "1", "--replaces", "6", "--yes"]) == 0  # 7
+    assert main(["assert", "decision", "--subject", "7", "--what", "y", "--yes"]) == 0
+    assert _standing(db)[-1][1]["replaces"] == 6
+    assert main(["assert", "decision", "--subject", "7", "--replaces", "none", "--yes"]) == 0
+    assert _standing(db)[-1][1]["replaces"] is None
+
+
+@pytest.mark.db
+def test_approving_an_id_named_twice_approves_it_once(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _assertion_log(db, monkeypatch)
+    first, second = _propose(storage, _debt(what="a"), _debt(what="b"))
+    assert main(["approve", str(second), str(first), str(second), "--yes"]) == 0
+    assert capsys.readouterr().out.endswith("assertion 5\nassertion 6\n")
+    assert [payload["approves"] for _id, payload in _standing(db)[2:]] == [second, first]
+
+
+@pytest.mark.db
+def test_every_field_that_comes_from_outside_is_escaped_on_the_page_and_in_the_history(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Measured by mutation: with `escape_field` dropped from the `reason`
+    line of the history, a newline in a reason splits the line and this test
+    goes red."""
+    _assertion_log(db, monkeypatch)
+    argv = ["assert", "obligation", "--debtor", "own", "--creditor", "name:back\\slash"]
+    assert main([*argv, "--what", "w\tx", "--reason", "why\ny\x1b", "--source", "1", "--yes"]) == 0
+    assert (
+        main(
+            [
+                "assert",
+                "obligation",
+                "--subject",
+                "3",
+                "--what",
+                "w\ty",
+                "--reason",
+                "r\tz",
+                "--yes",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert main(["obligation", "3"]) == 0
+    page = capsys.readouterr().out.splitlines()
+    assert "what\tw\ty" not in page
+    assert "what\tw\\ty" in page
+    assert "creditor\tname:back\\\\slash" in page
+    assert "reason\tr\\tz" in page
+    assert main(["obligation", "3", "--history"]) == 0
+    history = capsys.readouterr().out.splitlines()
+    assert "reason\twhy\\ny\\x1b" in history
+    assert "set\twhat\tw\\tx" in history
+    assert "set\tcreditor\tname:back\\\\slash" in history
+    assert "change\twhat\tw\\tx\tw\\ty" in history
+    assert all(line.count("\t") <= 5 for line in history)
+
+
+@pytest.mark.db
+def test_the_hint_names_only_the_address_whose_name_matches(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A name in another source than the matching address draws no hint for
+    that address. Event 3 shows Bob Meier, event 1 Anna Huber."""
+    storage = _assertion_log(db, monkeypatch)
+    append(storage, [_assertion_mail("m3", ("bob@x.example", "Bob Meier"))], recorded_at=_ASSERT_AT)
+    argv = _assert_obligation("--yes")
+    argv[argv.index("--creditor") + 1] = "name:meier"
+    argv[argv.index("1:1,2")] = "1"
+    assert main(argv) == 0
+    assert capsys.readouterr().err == ""
+    argv += ["--source", "3"]
+    assert main(argv) == 0
+    assert capsys.readouterr().err == (
+        "hint: bob@x.example appears in the sources; address: is a reference that holds\n"
+    )
+
+
+@pytest.mark.db
+def test_the_history_of_an_entry_without_a_winner_is_shown_and_its_page_is_not(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _assertion_log(db, monkeypatch)
+    (proposal_id,) = _propose(storage, _debt())
+    assert main(["reject", str(proposal_id), "--yes"]) == 0
+    capsys.readouterr()
+    assert main(["obligation", str(proposal_id), "--history"]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == "obligation 3: 1 version"
+    assert main(["obligation", str(proposal_id)]) == 1
+    assert capsys.readouterr().err == "no obligation stands under event 3\n"
+    assert main(["obligation", "99", "--history"]) == 1

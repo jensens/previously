@@ -36,6 +36,7 @@ from previously.core.assertion import Thread
 from previously.core.assertion import Version
 from previously.core.assertions import assertion_verdict
 from previously.core.assertions import AssertionRefused
+from previously.core.assertions import check_statements
 from previously.core.assertions import read_threads
 from previously.core.assertions import source_identities
 from previously.core.assertions import thread_circles
@@ -722,3 +723,49 @@ def test_a_direct_version_by_a_model_is_refused(db: Engine) -> None:
         message
         == "a statement has no valid form: a version by a model is direct only as an approval"
     )
+
+
+@pytest.mark.db
+def test_check_statements_refuses_what_the_write_path_refuses_with_its_sentence_and_writes_nothing(
+    db: Engine,
+) -> None:
+    """Ruling F-10 of the 2026-10-12 plan: the preview of a command and of a
+    tool can ask this before it asks anyone. The cases are the ones the
+    write path refuses by source, by unit and by reference; the control is a
+    batch that stands, which both accept."""
+    storage = _setup(db, mails=3)
+    redact_event(storage, storage, 3, reason="wrong", recorded_at=NOW)
+    (first,) = _write(storage, obligation())
+    cases = (
+        obligation(Source(9, None)),
+        obligation(Source(3, None)),
+        obligation(Source(1, (4,))),
+        obligation(subject=99),
+        decision(replaces=1),
+        approval(proposal(), 99, first),
+    )
+    before = _count(storage)
+    for statement in cases:
+        with storage.begin() as conn, pytest.raises(AssertionRefused) as checked:
+            check_statements(storage, conn, [statement])
+        assert str(checked.value) == _refused(storage, statement)
+    assert _count(storage) == before
+    good = obligation(Source(1, (1, 2)), subject=first)
+    with storage.begin() as conn:
+        check_statements(storage, conn, [good])
+    assert len(_write(storage, good)) == 1
+
+
+@pytest.mark.db
+def test_check_statements_lets_a_repeated_handle_pass_as_the_write_path_does(db: Engine) -> None:
+    """A batch whose handle is in the log is a repeat, answered with the ids;
+    it must not be refused for what it did the first time (here, a proposal
+    that is answered by now)."""
+    storage = _setup(db)
+    (first,) = _write(storage, proposal(handle="h-1"))
+    (approved,) = _write(storage, approval(proposal(handle="h-1"), first, first))
+    assert approved == first + 1
+    with storage.begin() as conn:
+        check_statements(storage, conn, [proposal(handle="h-1")])
+        with pytest.raises(AssertionRefused):
+            check_statements(storage, conn, [approval(proposal(), first, first)])
