@@ -56,13 +56,19 @@ id is above every row of the first round, and the order stays ascending.
 
 An assertion goes the same way, and further: it says in its own words what
 its sources said, so an erasure of the source event, of a unit the assertion
-cites, or of any unit of an event it cites whole, erases its payload, by a
-redaction of the whole assertion in the same transaction
+cites, or of any unit of an event it cites whole that is erased after the
+assertion was written, erases its payload, by a redaction of the whole
+assertion in the same transaction
 (`assertions.stands_on_erased` decides, the question `verify` asks too). The
 assertions are found and locked with the calls, in the same round and the
 same second read; the write path of assertions holds the lock on every source
-until it commits, which is the gate's side of the race for assertions. A blob
-erasure erases neither a payload nor a unit, so it reaches no assertion.
+until it commits, which is the gate's side of the race for assertions.
+
+`redact_blob` and `append_call` take no assertion with them. A blob erasure
+erases neither a payload nor a unit, and an assertion names no blob: it
+rests on events and their units. `append_call` erases only the units of the
+call it writes, and a model call is no source, because the sources of an
+assertion are observations.
 """
 
 from collections.abc import Mapping
@@ -440,8 +446,8 @@ def redact_event[Conn](
         # erasing that {ref}`concurrency` names, which no lock here prevents.
         # A later `redact event` or `redact blob` that touches that event
         # locks every user of the blob, this target included, so those two
-        # meet on a shared row; `redact units` locks only its target and the calls, and
-        # erases no reference.
+        # meet on a shared row; `redact units` locks only its target, the
+        # calls and the assertions on the target, and erases no reference.
         registered = [
             sha256.hex() for sha256 in log.blobs_by_event(conn, [event_id]).get(event_id, [])
         ]

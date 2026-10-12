@@ -867,3 +867,33 @@ def _forge(storage: PostgresStorage, payload: Mapping[str, object]) -> int:
         row, units = link(prepared, event_id=tip.id + 1, prev_hash=tip.hash, recorded_at=NOW)
         storage.insert_event(conn, row, units, None)
     return row.id
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("through", ["proposal", "source"])
+def test_an_approval_stands_when_its_proposal_is_erased_on_its_own(
+    db: Engine, through: str
+) -> None:
+    """Ruling F-5 of the 2026-10-12 assertion plan: erasing the proposal on
+    its own leaves the approval as the direct winner. The control erases the
+    source they share, and the approval goes with the proposal."""
+    storage = _setup(db)
+    proposed = _owed(Source(1, None), responsibility=OPEN)
+    (first,) = _assert(storage, proposed)
+    (approved,) = _assert(
+        storage, replace(proposed, responsibility=DIRECT, subject=first, approves=first)
+    )
+
+    target = first if through == "proposal" else 1
+    redact_event(storage, storage, target, reason="wrong", recorded_at=LATER)
+
+    thread = _thread(storage, first)
+    assert verify(storage) == []
+    if through == "source":
+        assert thread is None
+        return
+    assert thread is not None
+    winner = thread.winner()
+    assert winner is not None
+    assert winner.id == approved
+    assert winner.statement.responsibility == DIRECT

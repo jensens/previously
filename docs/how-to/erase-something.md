@@ -162,7 +162,8 @@ The call stays in the log with its payload, and its units are erased by a redact
 Nothing more is needed: `previously verify` holds the cascade to the same rules as any other redaction.
 A call that read only other units, or another event, is left alone, and a target that no call read prints no `cascaded` line.
 
-An obligation or a decision that rests on the target goes with it too, for an event and for its units, and the command prints `cascaded: assertion` with its `id`.
+An assertion that rests on the target goes with it too, for an event and for its units, and the command prints `cascaded: assertion` with its `id`.
+That covers every assertion: an obligation, a decision, a proposal, an approval and a rejection.
 An assertion that cites only other units of the event stays.
 
 The cascade doesn't reach the provider.

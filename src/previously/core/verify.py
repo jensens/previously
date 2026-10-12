@@ -44,6 +44,7 @@ from previously.core.assertion import DecisionBody
 from previously.core.assertion import OPEN
 from previously.core.assertion import parse_statement
 from previously.core.assertion import REJECTION
+from previously.core.assertion import Source
 from previously.core.assertions import ASSERTION
 from previously.core.assertions import stands_on_erased
 from previously.core.blob import fetch_blob
@@ -82,7 +83,6 @@ if TYPE_CHECKING:
     from previously.contract.rows import EventRow
     from previously.contract.rows import UnitRow
     from previously.contract.store import LogStore
-    from previously.core.assertion import Source
     from previously.core.assertion import Statement
     from previously.core.hashing import HashableUnit
     from previously.core.redaction import Redaction
@@ -497,11 +497,13 @@ class _Erasures:
 @dataclass(frozen=True)
 class _Joined:
     """A version of an obligation or a decision that stands in its thread:
-    its kind, the name of its thread, and its responsibility."""
+    its kind, the name of its thread, its responsibility, and its sources,
+    which an approval or a rejection of it has to take unchanged."""
 
     kind: str
     thread: int
     responsibility: str
+    sources: tuple[Source, ...]
 
 
 class _Assertions:
@@ -525,6 +527,9 @@ class _Assertions:
         self._approved: set[int] = set()
         self._rejected: set[int] = set()
         self._standing: list[tuple[int, tuple[Source, ...]]] = []
+        # Erased versions an approval named, with the subject it named them
+        # under: one named under another subject was no thread.
+        self._placed: dict[int, int] = {}
 
     def observe(self, row: EventRow, units: Sequence[UnitRow]) -> list[Finding]:
         """The finding about the form of an assertion or about what it names,
@@ -570,12 +575,28 @@ class _Assertions:
         proposal_id = cast("int", statement.of)
         if proposal_id in self._erased:
             return None  # its kind is gone; the fold passes it over
-        if not self._open(self._named(proposal_id)):
+        proposal = self._named(proposal_id)
+        if proposal is None or not self._open(proposal):
             return "rejection names no open proposal"
         if self._answered(proposal_id):
             return "rejection of a proposal that is already approved or rejected"
         self._rejected.add(proposal_id)
+        # The fold counts it all the same; what differs is that it would
+        # outlive the erasure of a source it left out, with its reason.
+        if statement.sources != proposal.sources:
+            return "rejection does not take the sources of its proposal"
         return None
+
+    def _no_thread(self, subject: int) -> bool:
+        """Whether `subject` names nothing a version can join: no thread
+        that stands, and no erased assertion that may have been one. An
+        erased assertion keeps no `subject`, so it counts as a thread unless
+        an approval named it under another subject."""
+        if subject in self._threads:
+            return False
+        if subject not in self._erased:
+            return True
+        return self._placed.get(subject, subject) != subject
 
     def _version(self, event_id: int, statement: Statement) -> str | None:
         """The first thing wrong with what a version names, or `None`, and
@@ -583,7 +604,7 @@ class _Assertions:
         subject = event_id if statement.subject is None else statement.subject
         kind = self._threads.get(subject)
         if statement.subject is not None:
-            if kind is None and subject not in self._erased:
+            if self._no_thread(subject):
                 return "assertion has a subject that names no earlier obligation or decision"
             if kind is not None and kind != statement.kind:
                 return "assertion has a subject of another kind"
@@ -594,17 +615,30 @@ class _Assertions:
             and self._threads.get(replaces) != "decision"
         ):
             return "decision replaces no earlier decision"
+        reason: str | None = None
         approves = statement.approves
-        if approves is not None and approves not in self._erased:
-            proposal = self._named(approves)
-            if not self._open(proposal) or cast("_Joined", proposal).thread != subject:
-                return "approval names no open proposal of its subject"
+        if approves is not None:
+            if approves in self._erased:
+                # Ruling F-5: an approval of a proposal erased on its own
+                # stands, and nothing of the proposal is left to compare.
+                self._placed.setdefault(approves, subject)
+            else:
+                proposal = self._named(approves)
+                if proposal is None or not self._open(proposal) or proposal.thread != subject:
+                    return "approval names no open proposal of its subject"
+                # The fold counts it all the same; what differs is that it
+                # would outlive the erasure of a source it left out, with the
+                # proposal's content.
+                if statement.sources != proposal.sources:
+                    reason = "approval does not take the sources of its proposal"
             if self._answered(approves):
                 return "approval of a proposal that is already approved or rejected"
             self._approved.add(approves)
         self._threads.setdefault(subject, statement.kind)
-        self._joined[event_id] = _Joined(statement.kind, subject, statement.responsibility)
-        return None
+        self._joined[event_id] = _Joined(
+            statement.kind, subject, statement.responsibility, statement.sources
+        )
+        return reason
 
     def reconcile[Conn](
         self, storage: LogStore[Conn], conn: Conn, index: RedactionIndex

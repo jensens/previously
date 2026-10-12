@@ -334,6 +334,14 @@ def _version_problem(payload: Mapping[str, object]) -> str | None:
         return "an approval needs a subject"
     if approves is not None and payload["responsibility"] != DIRECT:
         return "an approval is direct"
+    # A model proposes; what it writes is direct only when it is an approval,
+    # which makes the operator's choice its own. Otherwise a proposal that
+    # came around the MCP tool would outrank the operator's direct version.
+    # A rejection is not a version and is exempt: `write_reject` writes it
+    # direct with the author of its way.
+    author = cast("str", payload["author"])
+    if author.startswith(MODEL_PREFIX) and payload["responsibility"] == DIRECT and approves is None:
+        return "a version by a model is direct only as an approval"
     return None
 
 
@@ -522,6 +530,23 @@ class _Draft:
     approved: set[int] = field(default_factory=lambda: set[int]())
 
 
+def _approvable(draft: _Draft, approves: int, erased: set[int]) -> bool:
+    """Whether an approval of `approves` joins the thread of `draft`: the
+    proposal is not answered yet, and it is an open version of the thread,
+    or erased.
+
+    An approval of a proposal erased on its own stands: it is a whole
+    statement with its own sources, checked when it was written. One whose
+    proposal went through a source went with it.
+    """
+    if approves in draft.approved or approves in draft.rejected:
+        return False
+    if approves in erased:
+        return True
+    proposal = next((v for v in draft.versions if v.id == approves), None)
+    return proposal is not None and proposal.statement.responsibility == OPEN
+
+
 def fold(
     rows: Iterable[tuple[int, datetime, Mapping[str, object] | None]],
 ) -> dict[int, Thread]:
@@ -530,10 +555,12 @@ def fold(
     Erased rows (payload None) and rows with a form fault are skipped. A thread
     lives as long as one of its versions stands: it keeps the id of its first
     version as its name even when that version is erased, and takes its kind
-    from the first version that stands. Also skipped, because `verify` reports
-    them: a version whose `subject` names nothing, a rejection whose `of`
-    names no standing version, and an approval of a proposal that is not open
-    or is already approved or rejected.
+    from the first version that stands. Also skipped: a version whose
+    `subject` names nothing, a rejection whose `of` names no standing version,
+    and an approval of a proposal that is not open or is already approved or
+    rejected. `verify` reports each of them, except a rejection of an erased
+    proposal, which says nothing that still stands. An approval of an erased
+    proposal stands.
     """
     drafts: dict[int, _Draft] = {}
     thread_of: dict[int, int] = {}  # standing version id -> subject of its thread
@@ -557,16 +584,11 @@ def fold(
         draft = drafts.get(subject) or _Draft(statement.kind)  # kept only once a version joins
         if draft.kind != statement.kind:
             continue
-        if statement.approves is not None:
-            proposal = next((v for v in draft.versions if v.id == statement.approves), None)
-            if (
-                proposal is None
-                or proposal.statement.responsibility != OPEN
-                or proposal.id in draft.approved
-                or proposal.id in draft.rejected
-            ):
+        approves = statement.approves
+        if approves is not None:
+            if not _approvable(draft, approves, erased):
                 continue
-            draft.approved.add(proposal.id)
+            draft.approved.add(approves)
         draft.versions.append(Version(row_id, recorded_at, statement))
         drafts[subject] = draft
         thread_of[row_id] = subject

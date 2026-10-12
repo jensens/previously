@@ -6,6 +6,7 @@
 Pure functions, so there is no database to start.
 """
 
+from dataclasses import replace
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
@@ -81,9 +82,11 @@ def make_decision(
     state: str = "valid",
     replaces: int | None = None,
 ) -> Statement:
+    # A model writes a direct version only as an approval (ruling F-6 of the
+    # 2026-10-12 assertion plan), so a direct decision here is the operator's.
     return Statement(
         DECISION,
-        model_author("claude"),
+        OPERATOR if responsibility == DIRECT else model_author("claude"),
         responsibility,
         (Source(7, (1, 2)),),
         "agreed by mail",
@@ -692,6 +695,17 @@ def build_rows(
     return rows
 
 
+def counts(
+    approves: int, versions: Mapping[int, Statement], answered: set[int], gone: set[int]
+) -> bool:
+    """Whether an approval counts: its proposal is unanswered, and open or
+    erased (ruling F-5 of the 2026-10-12 assertion plan)."""
+    if approves in answered:
+        return False
+    proposal = versions.get(approves)
+    return approves in gone or (proposal is not None and proposal.responsibility == OPEN)
+
+
 @given(steps=ops, erased=erasures)
 def test_the_winner_is_the_latest_direct_else_the_latest_unanswered_open(
     steps: list[tuple[str, int]], erased: set[int]
@@ -703,6 +717,7 @@ def test_the_winner_is_the_latest_direct_else_the_latest_unanswered_open(
     versions: list[tuple[int, Statement]] = []
     rejected: set[int] = set()
     approved: set[int] = set()
+    gone = {row_id for row_id, _at, payload in rows if payload is None}
     for row_id, _at, payload in rows:
         statement = parse_statement(payload) if payload is not None else None
         if statement is None:
@@ -712,12 +727,7 @@ def test_the_winner_is_the_latest_direct_else_the_latest_unanswered_open(
                 rejected.add(statement.of)
             continue
         if statement.approves is not None:
-            proposal = dict(versions).get(statement.approves)
-            if (
-                proposal is None
-                or proposal.responsibility != OPEN
-                or statement.approves in approved | rejected
-            ):
+            if not counts(statement.approves, dict(versions), approved | rejected, gone):
                 continue
             approved.add(statement.approves)
         versions.append((row_id, statement))
@@ -808,3 +818,50 @@ def due_body(due: date | None, state: str = "open") -> ObligationBody:
 )
 def test_overdue(due: date | None, state: str, late: bool) -> None:
     assert overdue(due_body(due, state), TODAY) is late
+
+
+# --- A model writes a direct version only as an approval -----------------------
+
+
+def test_a_direct_version_by_a_model_is_a_form_fault() -> None:
+    """Ruling F-6 of the 2026-10-12 assertion plan: otherwise a proposal that
+    took another way in would outrank the operator's direct version."""
+    model = model_author("claude")
+    direct = payload_of(make_obligation(author=model))
+    decided = payload_of(replace(make_decision(), author=model))
+
+    assert assertion_problem(direct) == "a version by a model is direct only as an approval"
+    assert assertion_problem(decided) == "a version by a model is direct only as an approval"
+
+
+def test_a_model_may_approve_propose_and_reject() -> None:
+    """The controls: an approval and a proposal by a model, and a direct
+    rejection by a model, which `write_reject` writes."""
+    model = model_author("claude")
+    approval = make_obligation(author=model, subject=1, approves=2)
+    proposal = make_obligation(author=model, responsibility=OPEN)
+    rejection = replace(make_rejection(2), author=model)
+
+    for statement in (approval, proposal, rejection):
+        assert assertion_problem(payload_of(statement)) is None
+
+
+def test_an_approval_stands_when_its_proposal_was_erased() -> None:
+    """Ruling F-5 of the 2026-10-12 assertion plan: the approval is a whole
+    statement with its own sources, checked when it was written."""
+    rows = [
+        row(1, make_obligation()),
+        row(
+            2, make_obligation(responsibility=OPEN, subject=1, due=date(2026, 12, 24)), erased=True
+        ),
+        row(3, make_obligation(subject=1, approves=2, due=date(2026, 12, 24))),
+        row(4, make_obligation(subject=1, approves=2, due=date(2026, 12, 25))),
+    ]
+
+    thread = fold(rows)[1]
+
+    assert [version.id for version in thread.versions] == [1, 3]
+    winner = thread.winner()
+    assert winner is not None
+    assert winner.id == 3
+    assert thread.approved == frozenset({2})

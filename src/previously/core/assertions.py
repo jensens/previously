@@ -378,6 +378,18 @@ def write_statements[Conn](
     stand: confirming twice is harmless (decision 9 of the plan). The module
     docstring says in which order the rest happens and why.
 
+    The handle lives in the payload, and an erasure takes the payload, so a
+    batch whose assertions were all erased since is written again when its
+    handle comes back. That is accepted (ruling F-7 of the 2026-10-12
+    assertion plan): the operator erased them, decision 9 lets a handle live
+    ten minutes at most, and the client holds the text anyway. A source key would survive
+    the erasure, and would be a second truth beside the payload. Where only
+    some of the batch were erased, the ids of the ones that stand come back.
+
+    The caller guarantees that one handle means one content: the lookup
+    compares the handle and nothing else. Decision 9 has the MCP server seal
+    the digest of the payloads into the handle, which binds the two.
+
     Two parameters for one store, the way `redact_event` takes them: the
     store that holds the log is the store that locks its rows.
     """

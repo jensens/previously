@@ -704,3 +704,21 @@ def test_an_erased_source_adds_no_identity(db: Engine) -> None:
 
     assert [identity["address"] for identity in identities] == [ADDRESS]
     assert sources == ("email",)
+
+
+@pytest.mark.db
+def test_a_direct_version_by_a_model_is_refused(db: Engine) -> None:
+    """Ruling F-6 of the 2026-10-12 assertion plan: a model's version is
+    direct only as an approval. The control, a model's approval, is
+    `test_an_approval_makes_the_proposal_direct`."""
+    storage = _setup(db)
+    (owned,) = _write(storage, obligation())
+
+    message = _refused(
+        storage, obligation(subject=owned, author=model_author("claude-code"), what="other")
+    )
+
+    assert (
+        message
+        == "a statement has no valid form: a version by a model is direct only as an approval"
+    )

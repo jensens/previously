@@ -1679,3 +1679,89 @@ def test_a_rejection_of_a_proposal_erased_by_itself_is_no_finding(db: Engine) ->
     redact_event(storage, storage, proposed, reason="wrong", recorded_at=NOW)
 
     assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_a_direct_version_by_a_model_without_an_approval_is_a_finding(db: Engine) -> None:
+    """Ruling F-6 of the 2026-10-12 assertion plan, for a row that came
+    around the write path."""
+    storage = _with_mail(db)
+    (owned,) = _asserted(storage, _owed())
+    forged = _forged(
+        storage, payload_of(replace(_owed(subject=owned), author=model_author("claude-code")))
+    )
+
+    assert verify(storage) == [
+        Finding(
+            forged,
+            "assertion has no valid form: a version by a model is direct only as an approval",
+        )
+    ]
+
+
+@pytest.mark.db
+def test_an_approval_or_rejection_without_the_sources_of_its_proposal_is_a_finding(
+    db: Engine,
+) -> None:
+    """Ruling F-9 of the 2026-10-12 assertion plan: one that left a source
+    out would outlive the erasure of that source with the proposal's
+    content. The approval and the rejection still count, as the fold reads
+    them."""
+    storage = _with_mail(db)
+    proposal = _owed(responsibility=OPEN)
+    first, second = _asserted(storage, proposal, proposal)
+    approval = _forged(
+        storage,
+        payload_of(
+            replace(
+                proposal,
+                responsibility=DIRECT,
+                subject=first,
+                approves=first,
+                sources=(Source(1, (1,)),),
+            )
+        ),
+    )
+    rejection = _forged(
+        storage, payload_of(replace(_turned_down(second), sources=(Source(1, (1,)),)))
+    )
+    again = _forged(storage, payload_of(_turned_down(second)))
+
+    assert verify(storage) == [
+        Finding(approval, "approval does not take the sources of its proposal"),
+        Finding(rejection, "rejection does not take the sources of its proposal"),
+        Finding(again, "rejection of a proposal that is already approved or rejected"),
+    ]
+
+
+@pytest.mark.db
+def test_a_subject_that_was_no_thread_is_a_finding(db: Engine) -> None:
+    """Ruling F-9 of the 2026-10-12 assertion plan: a subject names the
+    first version of a thread. A later version, a rejection and an erased
+    observation are none. An erased later version is known as one when an
+    approval named it under another subject; an erased assertion nothing
+    names that way cannot be told from an erased first version, since its
+    `subject` went with its payload."""
+    storage = _with_mail(db)
+    append(storage, [_event("n")], recorded_at=NOW)
+    redact_event(storage, storage, 2, reason="wrong", recorded_at=NOW)
+    proposal = _owed(responsibility=OPEN)
+    (owned,) = _asserted(storage, _owed())
+    later, proposed = _asserted(storage, _owed(subject=owned), replace(proposal, subject=owned))
+    (turned,) = _asserted(storage, _turned_down(_asserted(storage, proposal)[0]))
+    _asserted(storage, replace(proposal, responsibility=DIRECT, subject=owned, approves=proposed))
+    redact_event(storage, storage, proposed, reason="wrong", recorded_at=NOW)
+    on_later = _forged(storage, payload_of(_owed(subject=later)))
+    on_rejection = _forged(storage, payload_of(_owed(subject=turned)))
+    on_observation = _forged(storage, payload_of(_owed(subject=2)))
+    on_erased_version = _forged(storage, payload_of(_owed(subject=proposed)))
+    on_thread = _forged(storage, payload_of(_owed(subject=owned)))
+
+    no_thread = "assertion has a subject that names no earlier obligation or decision"
+    assert verify(storage) == [
+        Finding(on_later, no_thread),
+        Finding(on_rejection, no_thread),
+        Finding(on_observation, no_thread),
+        Finding(on_erased_version, no_thread),
+    ]
+    assert on_thread == on_erased_version + 1
