@@ -91,9 +91,10 @@ merely described.
   what each client saw and what was withheld; see
   [About the client interface](docs/explanation/mcp-interface.md) and
   [How to connect Claude Code and Mistral Vibe](docs/how-to/connect-claude-code-and-vibe.md)
-- the eighteen commands `migrate`, `append`, `ingest`, `redact`, `log`,
+- the twenty-five commands `migrate`, `append`, `ingest`, `redact`, `log`,
   `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`,
-  `policy`, `gate`, `client`, `access`, `mcp` and `serve`
+  `policy`, `gate`, `client`, `access`, `assert`, `approve`, `reject`,
+  `obligations`, `obligation`, `decisions`, `decision`, `mcp` and `serve`
 - the schema as Alembic migrations inside the package, applied by
   `previously migrate`
 

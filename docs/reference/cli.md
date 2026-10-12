@@ -3,7 +3,7 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has eighteen subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, `gate`, `client`, `access`, `mcp`, and `serve`.
+It has twenty-five subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, `gate`, `client`, `access`, `assert`, `approve`, `reject`, `obligations`, `obligation`, `decisions`, `decision`, `mcp`, and `serve`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
 `append --attach`, `ingest imap`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
 `ingest imap` alone reads the `PREVIOUSLY_IMAP_*` settings, and `gate try` alone reads `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `PREVIOUSLY_LOCAL_MODEL_URL` and `PREVIOUSLY_PRICES`.
@@ -68,6 +68,11 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `policy` | The statement was written, `show` printed the policy, or `gaps` printed what fell back, even when nothing did. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the statement was refused, or storage raised an error. |
 | `client` | The client was added and its token printed, revoked, or listed, even when none exists. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the processor isn't declared, no such client exists to revoke, or storage raised an error. |
 | `access` | The access log was printed, even when no call matches. | Not used. | The input was invalid, or storage raised an error. |
+| `assert` | The version was written. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, including a date that isn't one, a malformed `--source` and a reference without a known prefix, the write path refused the version, or storage raised an error. |
+| `approve` | Every proposal was made the operator's own. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, a proposal is none, is direct, or is already approved or rejected, the write path refused the batch, or storage raised an error. |
+| `reject` | The rejection was written. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the proposal is none, is direct, or is already approved or rejected, the write path refused the rejection, or storage raised an error. |
+| `obligations`, `decisions` | The list was printed, even when no entry matches. | Not used. | The input was invalid, or storage raised an error. |
+| `obligation`, `decision` | The entry was printed. | No entry of that kind stands under the id. | Storage raised an error. |
 | `mcp` | Standard input closed, and the server ended. | Not used. | `PREVIOUSLY_MCP_CLIENT` is unset or names no client in force, or storage raised an error. |
 | `serve` | The server was stopped with an interrupt, such as Ctrl+C. | Not used. | `PREVIOUSLY_MCP_ADDRESS` isn't an address, `PREVIOUSLY_MCP_HOST` is set without it, or storage raised an error. |
 | `gate` | `explain` printed the decision, whether it allows a call or denies it; `try` made the call, got an answer that matches the schema, and recorded it. | Not used. | The event doesn't exist, the price file can't be read, storage raised an error, or `try` recorded a call that was denied, failed, refused by the model, or answered against the schema. |
@@ -1102,6 +1107,131 @@ no access matches
 
 `verify` holds every `mcp_access` to its form: known fields only, at every level, a client, a policy, a call with a known kind (`tool`, `resource` or `prompt`), a name and arguments, lists `delivered` and `withheld` whose every entry is an object with exactly its fields, an event, and its circles as a list of names (and its units as a list of numbers), a known reason code on every withheld entry, an outcome of `ok` or `error`, and no units.
 A break of that form is a finding of the form `FINDING 12: mcp_access has no valid form: it has no outcome`, and an `mcp_access` with units is `FINDING 12: mcp_access has units`.
+
+## Assertions
+
+`assert`, `approve`, `reject`, `obligations`, `obligation`, `decisions` and `decision` write and read assertions: obligations and decisions, each with the events it rests on and who stands for it.
+An obligation or a decision is named after the event of its first version, and `ID` below is that number.
+Every later version says everything that holds after it and carries the name in `subject`; the newest direct version stands, and a direct version beats an open one.
+The command line is the operator's tool, so it writes `human:operator` as the author and `direct` as the responsibility, and it checks no policy.
+
+### `assert`
+
+```text
+previously assert obligation --debtor REF --creditor REF --what TEXT [--due DATE] [--state STATE] [--subject ID] [--reason TEXT] --source SOURCE [--source SOURCE ...] [--yes]
+previously assert decision --what TEXT --by REF [--by REF ...] --on DATE [--state STATE] [--replaces ID] [--subject ID] [--reason TEXT] --source SOURCE [--source SOURCE ...] [--yes]
+```
+
+| Option | Required | Default | Description |
+|---|---|---|---|
+| `--debtor REF`, `--creditor REF` | Yes, without `--subject` | — | A reference: `own`, `circle:NAME`, `address:ADDRESS` or `name:TEXT`. |
+| `--by REF` | Yes, without `--subject` | — | Who decided, a reference. May repeat. |
+| `--what TEXT` | Yes, without `--subject` | — | The text of the obligation or the decision. |
+| `--due DATE` | No | none | By when, written `YYYY-MM-DD`. A date in the past is allowed, and the obligation is overdue at once. |
+| `--on DATE` | Yes, without `--subject` | — | When it was decided, written `YYYY-MM-DD`. |
+| `--state STATE` | No | `open`, or `valid` | One of `open`, `fulfilled`, `cancelled` for an obligation, `valid` or `revoked` for a decision. |
+| `--replaces ID` | No | none | The decision this one replaces. |
+| `--subject ID` | No | none | The obligation or decision to write a further version of. |
+| `--reason TEXT` | No | none | Why this version, for the history. |
+| `--source SOURCE` | Yes, without `--subject` | — | An event it rests on: `EVENT` for the whole event, or `EVENT:SEQ,SEQ` for units of it, in ascending order. May repeat. |
+| `--yes` | No | off | Write without asking. |
+
+With `--subject`, every option left out takes its value from the version that stands, a proposal included, and the new version is direct.
+`--reason` is never taken over.
+Without `--subject`, a missing option is refused as `Error: an obligation needs --creditor, --what and --source unless --subject names the one to change`, and `a decision` for a decision.
+
+The command shows the payload as `policy` does, indented, with sorted keys.
+With `--subject`, one line per field that differs from the version that stands follows, with four tab-separated fields: `change`, the field, the old value and the new one.
+It then asks `write? [y/N]`, and after the write prints `assertion ID` for the event written.
+
+A `name:` reference is a label and not an identity.
+When a source of the version shows an address whose display name contains the text of a `name:` reference, ignoring case, one notice per address goes to standard error before the question, and the command goes on:
+
+```text
+hint: anna@huber.example appears in the sources; address: is a reference that holds
+```
+
+The input is checked before the question, and when it fails nothing is written:
+
+```text
+Error: --due is not a date written YYYY-MM-DD
+Error: --on is not a date written YYYY-MM-DD
+Error: --source is not EVENT or EVENT:SEQ,SEQ: 'abc'
+Error: --subject 5 names no obligation that stands
+```
+
+A reference without a known prefix is refused as `Error: --debtor: the reference has no known prefix: use own, circle:, address: or name:`, and the other form errors of an assertion come from its checks.
+What only the log knows is refused after the question, with the sentence of the write path: a source that isn't an event, isn't an observation or is erased, or a unit that doesn't exist.
+
+### `approve` and `reject`
+
+```text
+previously approve ID [ID ...] [--reason TEXT] [--yes]
+previously reject ID [--reason TEXT] [--yes]
+```
+
+`approve` makes proposals the operator's own.
+Each becomes a direct version of the same obligation or decision, with the content, the sources and the author of the proposal, and `approves` naming it.
+The reason of the proposal stays unless `--reason` gives another.
+`reject` writes a rejection with the sources of the proposal.
+Both show one payload per statement, ask, and print `assertion ID` for each event written.
+
+A proposal that can't be answered is refused before the question, with exit code 2:
+
+```text
+Error: event 99 is no proposal that stands
+Error: the version 6 is no proposal: it is direct
+Error: the proposal 3 is already approved
+Error: the proposal 4 is already rejected
+```
+
+### `obligations` and `decisions`
+
+```text
+previously obligations [--circle NAME] [--owed-by REF] [--owed-to REF] [--state STATE] [--overdue] [--proposals]
+previously decisions [--circle NAME] [--state STATE] [--proposals]
+```
+
+| Option | Description |
+|---|---|
+| `--circle NAME` | Only entries that concern the circle: by the circles of their sources, by a `circle:` party, or by the circles of an `address:` party, as the policy in force names them. |
+| `--owed-by REF`, `--owed-to REF` | Only this debtor or creditor. A `name:` reference is searched in the text of a name, ignoring case; any other must be equal. |
+| `--state STATE` | Only this state of the version that stands. |
+| `--overdue` | Only obligations that are open and due before today, the UTC date. |
+| `--proposals` | Only entries with a proposal pending, or that stand as a proposal because no direct version exists. |
+
+Without `--proposals`, only entries with a direct version appear, and a proposal never passes for one that stands.
+Each line holds seven tab-separated fields, ordered by id:
+
+1. The id.
+2. The state, with `proposed` in front when the entry stands as a proposal, `overdue` behind an open obligation past its date, and `replaced by ID` behind a decision that a standing decision replaces.
+3. The due date of an obligation or the day of a decision, or `-` for no date.
+4. `DEBTOR -> CREDITOR`, or the deciders separated by a comma and a space.
+5. The text.
+6. `N versions`, the versions that stand, proposals and rejected ones included.
+7. `K proposals`, the open proposals that are pending.
+
+Every field that comes from outside is escaped as `chronicle` escapes its fields.
+The words are plural for one as well.
+
+### `obligation` and `decision`
+
+```text
+previously obligation ID [--history]
+previously decision ID [--history]
+```
+
+Prints the version that stands as lines of a name, a tab and a value: `version` with the id of that version, `state`, `overdue` with `yes` only for an overdue obligation, `replaced by` only for a replaced decision, then `due`, `debtor`, `creditor` and `what`, or `on`, `by`, `what` and `replaces`, then `sources`, `reason`, `author`, `responsibility`, `versions` and `proposals`.
+The first line is `obligation ID` or `decision ID`, with `(proposal)` behind it when the version that stands is a proposal.
+A value that isn't set reads `(none)`.
+Each pending proposal adds one line per field it changes, with six tab-separated fields: `proposal`, its id, its author, the field, the old value and the new one, or a line of three fields when it changes nothing.
+
+`--history` prints instead the first line `obligation ID: N versions` and then, in chain order, each version and each rejection.
+A version is a line `version`, its id, the time, the responsibility, the author, and when it applies `rejected`, `approved` or `approves ID`, then `sources` and `reason`.
+The first version adds a `set` line per field; each later one adds a `change` line per field that differs from the version before it, with the old and the new value.
+A rejection is a line `rejection`, its id, the time, its author and `rejects ID`, then `reason`.
+
+When no obligation or decision of that kind stands under the id, the command prints `no obligation stands under event ID` to standard error, with `decision` for a decision, and returns 1.
 
 (cli-mcp)=
 

@@ -13,6 +13,8 @@ from collections.abc import Generator
 from contextlib import contextmanager
 from contextlib import ExitStack
 from dataclasses import dataclass
+from dataclasses import replace
+from datetime import date
 from datetime import datetime
 from datetime import UTC
 from pathlib import Path
@@ -28,6 +30,29 @@ from previously.core.anchor import format_anchor
 from previously.core.anchor import parse_anchors
 from previously.core.append import append
 from previously.core.append import check_units
+from previously.core.assertion import assertion_problem
+from previously.core.assertion import changes
+from previously.core.assertion import DECISION
+from previously.core.assertion import DECISION_STATES
+from previously.core.assertion import DecisionBody
+from previously.core.assertion import DIRECT
+from previously.core.assertion import OBLIGATION
+from previously.core.assertion import OBLIGATION_STATES
+from previously.core.assertion import ObligationBody
+from previously.core.assertion import OPEN
+from previously.core.assertion import OPERATOR
+from previously.core.assertion import overdue
+from previously.core.assertion import parse_statement
+from previously.core.assertion import payload_of
+from previously.core.assertion import reference_problem
+from previously.core.assertion import REJECTION
+from previously.core.assertion import Source as AssertionSource
+from previously.core.assertion import Statement as AssertionStatement
+from previously.core.assertions import ASSERTION
+from previously.core.assertions import read_threads
+from previously.core.assertions import source_identities
+from previously.core.assertions import thread_circles
+from previously.core.assertions import write_statements
 from previously.core.blob import fetch_blob
 from previously.core.blob import store_blob
 from previously.core.chain import read_references
@@ -92,6 +117,7 @@ from previously.storage.postgres import from_dsn
 from previously.storage.postgres import PostgresStorage
 from previously.storage.s3 import from_settings
 from previously.storage.s3 import S3BlobStore
+from typing import cast
 from typing import TYPE_CHECKING
 
 import argparse
@@ -115,6 +141,8 @@ if TYPE_CHECKING:
     from previously.contract.blobs import KeyProvider
     from previously.contract.rows import EventRow
     from previously.contract.types import Anchor
+    from previously.core.assertion import Thread
+    from previously.core.assertion import Version
     from previously.core.decide import Decision
     from previously.core.policy import Policy
     from previously.core.policy import Statement
@@ -125,6 +153,7 @@ if TYPE_CHECKING:
     from previously.core.verify import Finding
     from previously.gate.adapters import Adapter
     from previously.gate.gate import Called
+    from sqlalchemy import Connection
     from types import FrameType
     from typing import BinaryIO
 
@@ -2020,6 +2049,670 @@ class Command:
     arguments: Callable[[argparse.ArgumentParser], None] = _no_arguments
 
 
+# --- assertions ------------------------------------------------------------------
+#
+# An assertion states an obligation or a decision, with its sources and who
+# stands for it. The command line is the operator's own
+# way to write one, so its author is `human:operator` and its responsibility
+# is direct. Nothing here asks the policy: whoever has the command line is the
+# operator, as with `chronicle`.
+
+_SOURCE_FORM = re.compile(r"(\d{1,16})(?::(\d{1,16}(?:,\d{1,16})*))?", re.ASCII)
+_DAY_FORM = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
+_NO_VALUE = "(none)"
+_NAME_PREFIX = "name:"
+_BLANK_OBLIGATION = ObligationBody("", "", "", None, "open")
+_BLANK_DECISION = DecisionBody("", (), date.min, "valid", None)
+
+
+def _parse_source(text: str) -> AssertionSource:
+    """`EVENT` for the whole event, `EVENT:SEQ,SEQ` for units of it. Strict:
+    anything else, white space around a number included, is refused."""
+    found = _SOURCE_FORM.fullmatch(text)
+    if found is None:
+        raise PreviouslyError(f"--source is not EVENT or EVENT:SEQ,SEQ: {text!r}")
+    units = found[2]
+    return AssertionSource(
+        int(found[1]), None if units is None else tuple(int(seq) for seq in units.split(","))
+    )
+
+
+def _parse_day(option: str, text: str) -> date:
+    """A date written `YYYY-MM-DD` and nothing else: `date.fromisoformat`
+    alone would also take `20261130`, and the payload carries one spelling."""
+    if _DAY_FORM.fullmatch(text) is None:
+        raise PreviouslyError(f"{option} is not a date written YYYY-MM-DD")
+    try:
+        return date.fromisoformat(text)
+    except ValueError as error:
+        raise PreviouslyError(f"{option} is not a date written YYYY-MM-DD") from error
+
+
+def _reference(option: str, text: str) -> str:
+    problem = reference_problem(text)
+    if problem is not None:
+        raise PreviouslyError(f"{option}: {problem}")
+    return text
+
+
+def _joined(names: Sequence[str]) -> str:
+    if len(names) == 1:
+        return names[0]
+    return f"{', '.join(names[:-1])} and {names[-1]}"
+
+
+def _utc_today() -> date:
+    """The day `overdue` is judged on: the UTC date of now, passed in."""
+    return datetime.now(UTC).date()
+
+
+def _base_of(
+    threads: Mapping[int, Thread], subject: int | None, kind: str
+) -> AssertionStatement | None:
+    """The statement that stands under `--subject`, from which a version
+    fills what it leaves out: the winner, a proposal included, and for a
+    thread with no winner left (every proposal rejected) its latest version."""
+    if subject is None:
+        return None
+    thread = threads.get(subject)
+    if thread is None or thread.kind != kind:
+        raise PreviouslyError(f"--subject {subject} names no {kind} that stands")
+    return (thread.winner() or thread.versions[-1]).statement
+
+
+def _obligation_body(
+    args: argparse.Namespace, base: AssertionStatement | None
+) -> tuple[ObligationBody, list[str]]:
+    old = base.body if base is not None and isinstance(base.body, ObligationBody) else None
+    absent = [
+        flag
+        for flag, value in (
+            ("--debtor", args.debtor),
+            ("--creditor", args.creditor),
+            ("--what", args.what),
+        )
+        if value is None
+    ]
+    old = old or _BLANK_OBLIGATION
+    return ObligationBody(
+        old.debtor if args.debtor is None else _reference("--debtor", args.debtor),
+        old.creditor if args.creditor is None else _reference("--creditor", args.creditor),
+        old.what if args.what is None else args.what,
+        old.due if args.due is None else _parse_day("--due", args.due),
+        old.state if args.state is None else args.state,
+    ), absent
+
+
+def _decision_body(
+    args: argparse.Namespace, base: AssertionStatement | None
+) -> tuple[DecisionBody, list[str]]:
+    old = base.body if base is not None and isinstance(base.body, DecisionBody) else None
+    absent = [
+        flag
+        for flag, missing in (
+            ("--what", args.what is None),
+            ("--by", not args.by),
+            ("--on", args.on is None),
+        )
+        if missing
+    ]
+    old = old or _BLANK_DECISION
+    return DecisionBody(
+        old.what if args.what is None else args.what,
+        tuple(_reference("--by", by) for by in args.by) if args.by else old.by,
+        old.on if args.on is None else _parse_day("--on", args.on),
+        old.state if args.state is None else args.state,
+        old.replaces if args.replaces is None else args.replaces,
+    ), absent
+
+
+def _asserted(
+    args: argparse.Namespace, kind: str, base: AssertionStatement | None
+) -> AssertionStatement:
+    """The version `assert` writes: what the options say, and for the rest
+    what stands under `--subject`. The form is checked here, before any
+    question is asked."""
+    sources = tuple(_parse_source(text) for text in args.source or ())
+    if kind == OBLIGATION:
+        body, absent = _obligation_body(args, base)
+    else:
+        body, absent = _decision_body(args, base)
+    if not sources:
+        absent.append("--source")
+    if base is None and absent:
+        article = "an" if kind == OBLIGATION else "a"
+        raise PreviouslyError(
+            f"{article} {kind} needs {_joined(absent)} unless --subject names the one to change"
+        )
+    statement = AssertionStatement(
+        kind,
+        OPERATOR,
+        DIRECT,
+        sources or (base.sources if base is not None else ()),
+        args.reason,
+        None,
+        args.subject,
+        None,
+        None,
+        body,
+    )
+    problem = assertion_problem(payload_of(statement))
+    if problem is not None:
+        raise PreviouslyError(problem)
+    return statement
+
+
+def _references(statement: AssertionStatement) -> tuple[str, ...]:
+    body = statement.body
+    if isinstance(body, ObligationBody):
+        return (body.debtor, body.creditor)
+    if isinstance(body, DecisionBody):
+        return body.by
+    return ()
+
+
+def _name_hints(
+    storage: PostgresStorage, conn: Connection, statement: AssertionStatement
+) -> list[str]:
+    """One hint per address that a source of the statement shows next to a
+    display name containing the text of a `name:` reference, case-insensitive.
+    A name is a label and an address is a reference that holds
+    (a reference to a name is a label); this tells the operator, and forbids nothing."""
+    needles = [
+        reference.removeprefix(_NAME_PREFIX).casefold()
+        for reference in _references(statement)
+        if reference.startswith(_NAME_PREFIX)
+    ]
+    found: set[str] = set()
+    for source in statement.sources if needles else ():
+        row = next(iter(storage.read(conn, source.event, 1)), None)
+        if row is None or row.id != source.event or row.payload is None:
+            continue
+        listed = row.payload.get("channel_identities")
+        for identity in cast("list[object]", listed) if isinstance(listed, list) else ():
+            entry = cast("dict[str, object]", identity) if isinstance(identity, dict) else {}
+            address, name = entry.get("address"), entry.get("name")
+            if (
+                isinstance(address, str)
+                and isinstance(name, str)
+                and any(needle in name.casefold() for needle in needles)
+            ):
+                found.add(address)
+    return [
+        f"hint: {escape_field(address)} appears in the sources; address: is a reference that holds"
+        for address in sorted(found)
+    ]
+
+
+def _change_lines(lead: str, before: AssertionStatement, after: AssertionStatement) -> list[str]:
+    return [
+        f"{lead}\t{escape_field(name)}\t{escape_field(old)}\t{escape_field(new)}"
+        for name, old, new in changes(before, after)
+    ]
+
+
+def _preview(statements: Sequence[AssertionStatement]) -> None:
+    for statement in statements:
+        print(json.dumps(payload_of(statement), indent=2, sort_keys=True, ensure_ascii=False))
+
+
+def _write_asked(
+    args: argparse.Namespace, storage: PostgresStorage, statements: Sequence[AssertionStatement]
+) -> int:
+    """Asks, writes and prints `assertion <id>` for each statement written.
+    `write_statements` refuses with one sentence, which `main` prints."""
+    if not _confirmed(args):
+        print("nothing written", file=sys.stderr)
+        return 1
+    ids = write_statements(storage, storage, statements, recorded_at=datetime.now(UTC))
+    for event_id in ids:
+        print(f"assertion {event_id}")
+    return 0
+
+
+def _cmd_assert(args: argparse.Namespace) -> int:
+    """Shows the version in full, asks, and writes it. With `--subject` the
+    gaps are filled from the winner and the preview adds how the new version
+    differs from it."""
+    kind = OBLIGATION if args.form == "obligation" else DECISION
+    with _storage() as storage:
+        with storage.snapshot() as conn:
+            base = _base_of(read_threads(storage, conn), args.subject, kind)
+            statement = _asserted(args, kind, base)
+            hints = _name_hints(storage, conn, statement)
+        for hint in hints:
+            print(hint, file=sys.stderr)
+        _preview([statement])
+        if base is not None:
+            for line in _change_lines("change", base, statement):
+                print(line)
+        return _write_asked(args, storage, [statement])
+
+
+def _proposal_of(threads: Mapping[int, Thread], event_id: int) -> tuple[Thread, Version]:
+    """The open version `event_id` names, or the sentence that says why it is
+    none. The write path refuses the same cases; asking first spares the
+    question."""
+    for thread in threads.values():
+        for version in thread.versions:
+            if version.id != event_id:
+                continue
+            if version.statement.responsibility != OPEN:
+                raise PreviouslyError(f"the version {event_id} is no proposal: it is direct")
+            if event_id in thread.approved:
+                raise PreviouslyError(f"the proposal {event_id} is already approved")
+            if event_id in thread.rejected:
+                raise PreviouslyError(f"the proposal {event_id} is already rejected")
+            return thread, version
+    raise PreviouslyError(f"event {event_id} is no proposal that stands")
+
+
+def _cmd_approve(args: argparse.Namespace) -> int:
+    """Makes each proposal the operator's own: a direct version with the
+    content, sources and author of the proposal, pointing at it."""
+    with _storage() as storage:
+        with storage.snapshot() as conn:
+            threads = read_threads(storage, conn)
+        statements: list[AssertionStatement] = []
+        for event_id in args.ids:
+            thread, version = _proposal_of(threads, event_id)
+            proposal = version.statement
+            statements.append(
+                replace(
+                    proposal,
+                    responsibility=DIRECT,
+                    reason=proposal.reason if args.reason is None else args.reason,
+                    handle=None,
+                    subject=thread.subject,
+                    approves=version.id,
+                )
+            )
+        _preview(statements)
+        return _write_asked(args, storage, statements)
+
+
+def _cmd_reject(args: argparse.Namespace) -> int:
+    with _storage() as storage:
+        with storage.snapshot() as conn:
+            _thread, version = _proposal_of(read_threads(storage, conn), args.id)
+        statement = AssertionStatement(
+            REJECTION,
+            OPERATOR,
+            DIRECT,
+            version.statement.sources,
+            args.reason,
+            None,
+            None,
+            None,
+            version.id,
+            None,
+        )
+        _preview([statement])
+        return _write_asked(args, storage, [statement])
+
+
+def _asserting(form: argparse.ArgumentParser) -> None:
+    form.add_argument(
+        "--subject", type=int, help="the id of the one to change; fills what is left out"
+    )
+    form.add_argument("--reason", help="why this version, for the history")
+    form.add_argument(
+        "--source",
+        action="append",
+        help="an event it rests on, EVENT or EVENT:SEQ,SEQ; may repeat",
+    )
+    form.add_argument("--yes", action="store_true", help="write without asking")
+
+
+def _assert_arguments(parser: argparse.ArgumentParser) -> None:
+    sentence = "state an obligation or a decision"
+    form = parser.add_subparsers(dest="form", required=True)
+    obligation = form.add_parser("obligation", help="state an obligation", description=sentence)
+    obligation.add_argument(
+        "--debtor", help="who owes: own, circle:NAME, address:ADDRESS or name:TEXT"
+    )
+    obligation.add_argument("--creditor", help="who is owed: a reference, as for --debtor")
+    obligation.add_argument("--what", help="what is owed")
+    obligation.add_argument("--due", help="by when, YYYY-MM-DD; may lie in the past")
+    obligation.add_argument("--state", choices=OBLIGATION_STATES, help="open unless --subject")
+    _asserting(obligation)
+    decision = form.add_parser("decision", help="state a decision", description=sentence)
+    decision.add_argument("--what", help="what was decided")
+    decision.add_argument("--by", action="append", help="who decided, a reference; may repeat")
+    decision.add_argument("--on", help="when it was decided, YYYY-MM-DD")
+    decision.add_argument("--state", choices=DECISION_STATES, help="valid unless --subject")
+    decision.add_argument("--replaces", type=int, help="the id of the decision it replaces")
+    _asserting(decision)
+
+
+def _approve_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("ids", metavar="ID", type=int, nargs="+", help="a proposal")
+    parser.add_argument("--reason", help="why; the reason of the proposal stays if left out")
+    parser.add_argument("--yes", action="store_true", help="write without asking")
+
+
+def _reject_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("id", metavar="ID", type=int, help="a proposal")
+    parser.add_argument("--reason", help="why the proposal is not taken")
+    parser.add_argument("--yes", action="store_true", help="write without asking")
+
+
+def _refers_to(actor: str, wanted: str) -> bool:
+    """Whether `actor` is the reference `wanted`. A `name:` is a label, not an
+    identity, so a list searches the text of one, ignoring case, and never
+    treats two names as the same actor."""
+    if wanted.startswith(_NAME_PREFIX):
+        return actor.startswith(_NAME_PREFIX) and (
+            wanted.removeprefix(_NAME_PREFIX).casefold()
+            in actor.removeprefix(_NAME_PREFIX).casefold()
+        )
+    return actor == wanted
+
+
+def _kept(body: ObligationBody | DecisionBody, args: argparse.Namespace, today: date) -> bool:
+    """The filters of the list that look at the body of the winner."""
+    if args.state is not None and body.state != args.state:
+        return False
+    if not isinstance(body, ObligationBody):
+        return True
+    return (
+        (args.owed_by is None or _refers_to(body.debtor, args.owed_by))
+        and (args.owed_to is None or _refers_to(body.creditor, args.owed_to))
+        and (not args.overdue or overdue(body, today))
+    )
+
+
+def _entries(
+    storage: PostgresStorage, conn: Connection, args: argparse.Namespace, kind: str
+) -> list[tuple[Thread, Version]]:
+    """The threads a list shows, each with the version that stands for it, in
+    order of their ids. Without `--proposals`, only an entry with a direct
+    winner; with it, only one that has a pending proposal or stands as one.
+    A proposal never passes for a valid entry."""
+    today = _utc_today()
+    threads = read_threads(storage, conn)
+    policy = read_policy(storage, conn) if args.circle is not None else None
+    entries: list[tuple[Thread, Version]] = []
+    for subject in sorted(threads):
+        thread = threads[subject]
+        winner = thread.winner()
+        if thread.kind != kind or winner is None or winner.statement.body is None:
+            continue
+        proposed = winner.statement.responsibility == OPEN
+        listed = (proposed or bool(thread.pending())) if args.proposals else not proposed
+        if not listed or not _kept(winner.statement.body, args, today):
+            continue
+        if policy is not None:
+            identities, _sources = source_identities(storage, conn, thread)
+            if args.circle not in thread_circles(policy, identities, winner.statement):
+                continue
+        entries.append((thread, winner))
+    return entries
+
+
+def _replaced_by(threads: Mapping[int, Thread]) -> dict[int, int]:
+    """Which decision a decision that stands directly replaces, by id."""
+    replaced: dict[int, int] = {}
+    for subject, thread in sorted(threads.items()):
+        winner = thread.winner()
+        if winner is None or winner.statement.responsibility != DIRECT:
+            continue
+        body = winner.statement.body
+        if isinstance(body, DecisionBody) and body.replaces is not None:
+            replaced[body.replaces] = subject
+    return replaced
+
+
+def _state_text(thread: Thread, winner: Version, today: date, replaced_by: int | None) -> str:
+    body = winner.statement.body
+    words = ["proposed"] if winner.statement.responsibility == OPEN else []
+    words.append("" if body is None else body.state)
+    if isinstance(body, ObligationBody) and overdue(body, today):
+        words.append("overdue")
+    if replaced_by is not None:
+        words.append(f"replaced by {replaced_by}")
+    return " ".join(words)
+
+
+def _parties(body: ObligationBody | DecisionBody | None) -> str:
+    if isinstance(body, ObligationBody):
+        return f"{escape_field(body.debtor)} -> {escape_field(body.creditor)}"
+    if isinstance(body, DecisionBody):
+        return ", ".join(escape_field(by) for by in body.by)
+    return ""
+
+
+def _day(day: date | None, none: str) -> str:
+    return none if day is None else day.isoformat()
+
+
+def _list_line(thread: Thread, winner: Version, today: date, replaced_by: int | None) -> str:
+    body = winner.statement.body
+    when = body.due if isinstance(body, ObligationBody) else body.on if body else None
+    return "\t".join(
+        (
+            str(thread.subject),
+            _state_text(thread, winner, today, replaced_by),
+            _day(when, "-"),
+            _parties(body),
+            escape_field("" if body is None else body.what),
+            f"{len(thread.versions)} versions",
+            f"{len(thread.pending())} proposals",
+        )
+    )
+
+
+def _list_assertions(args: argparse.Namespace, kind: str) -> int:
+    if args.owed_by is not None:
+        _reference("--owed-by", args.owed_by)
+    if args.owed_to is not None:
+        _reference("--owed-to", args.owed_to)
+    today = _utc_today()
+    with _storage() as storage, storage.snapshot() as conn:
+        entries = _entries(storage, conn, args, kind)
+        replaced = _replaced_by(read_threads(storage, conn))
+    for thread, winner in entries:
+        print(_list_line(thread, winner, today, replaced.get(thread.subject)))
+    return 0
+
+
+def _cmd_obligations(args: argparse.Namespace) -> int:
+    return _list_assertions(args, OBLIGATION)
+
+
+def _cmd_decisions(args: argparse.Namespace) -> int:
+    args.owed_by = args.owed_to = None
+    args.overdue = False
+    return _list_assertions(args, DECISION)
+
+
+def _sources_text(sources: Sequence[AssertionSource]) -> str:
+    """The sources the way `changes` writes them, so that a line of the
+    history and a change line agree."""
+
+    def one(source: AssertionSource) -> str:
+        if source.units is None:
+            return f"event {source.event}"
+        return f"event {source.event} units {', '.join(str(seq) for seq in source.units)}"
+
+    return "; ".join(one(source) for source in sources)
+
+
+def _body_fields(statement: AssertionStatement) -> list[tuple[str, str]]:
+    body = statement.body
+    if isinstance(body, ObligationBody):
+        return [
+            ("state", body.state),
+            ("due", _day(body.due, _NO_VALUE)),
+            ("debtor", body.debtor),
+            ("creditor", body.creditor),
+            ("what", body.what),
+        ]
+    if isinstance(body, DecisionBody):
+        return [
+            ("state", body.state),
+            ("on", body.on.isoformat()),
+            ("by", ", ".join(body.by)),
+            ("what", body.what),
+            ("replaces", _NO_VALUE if body.replaces is None else str(body.replaces)),
+        ]
+    return []
+
+
+def _field_lines(lead: str, fields: Sequence[tuple[str, str]]) -> list[str]:
+    return [f"{lead}{escape_field(name)}\t{escape_field(value)}" for name, value in fields]
+
+
+def _entry_lines(
+    thread: Thread, winner: Version, today: date, replaced_by: int | None
+) -> list[str]:
+    """The page of one entry: what stands, and the pending proposals as the
+    fields they would change."""
+    statement = winner.statement
+    fields = _body_fields(statement)
+    extra: list[tuple[str, str]] = []
+    if isinstance(statement.body, ObligationBody) and overdue(statement.body, today):
+        extra.append(("overdue", "yes"))
+    if replaced_by is not None:
+        extra.append(("replaced by", str(replaced_by)))
+    fields[1:1] = extra
+    proposed = " (proposal)" if statement.responsibility == OPEN else ""
+    lines = [f"{thread.kind} {thread.subject}{proposed}", f"version\t{winner.id}"]
+    lines += _field_lines("", fields)
+    lines += _field_lines(
+        "",
+        [
+            ("sources", _sources_text(statement.sources)),
+            ("reason", _NO_VALUE if statement.reason is None else statement.reason),
+            ("author", statement.author),
+            ("responsibility", statement.responsibility),
+            ("versions", str(len(thread.versions))),
+            ("proposals", str(len(thread.pending()))),
+        ],
+    )
+    for pending in thread.pending():
+        lead = f"proposal\t{pending.id}\t{escape_field(pending.statement.author)}"
+        lines += _change_lines(lead, statement, pending.statement) or [lead]
+    return lines
+
+
+def _history_lines(
+    thread: Thread, rejections: Sequence[tuple[int, datetime, AssertionStatement]]
+) -> list[str]:
+    """Every version in chain order, each with its difference to the one
+    standing before it, and the rejections among them."""
+    lines = [f"{thread.kind} {thread.subject}: {len(thread.versions)} versions"]
+    shown: list[tuple[int, list[str]]] = []
+    for position, version in enumerate(thread.versions):
+        statement = version.statement
+        head = [
+            "version",
+            str(version.id),
+            iso_utc(version.recorded_at),
+            statement.responsibility,
+            escape_field(statement.author),
+        ]
+        if version.id in thread.rejected:
+            head.append("rejected")
+        elif version.id in thread.approved:
+            head.append("approved")
+        elif statement.approves is not None:
+            head.append(f"approves {statement.approves}")
+        body = [
+            "\t".join(head),
+            f"sources\t{escape_field(_sources_text(statement.sources))}",
+            f"reason\t{escape_field(_NO_VALUE if statement.reason is None else statement.reason)}",
+        ]
+        if position == 0:
+            body += _field_lines("set\t", _body_fields(statement))
+        else:
+            body += _change_lines("change", thread.versions[position - 1].statement, statement)
+        shown.append((version.id, body))
+    for event_id, recorded_at, rejection in rejections:
+        head = "\t".join(
+            (
+                "rejection",
+                str(event_id),
+                iso_utc(recorded_at),
+                escape_field(rejection.author),
+                f"rejects {rejection.of}",
+            )
+        )
+        reason = _NO_VALUE if rejection.reason is None else rejection.reason
+        shown.append((event_id, [head, f"reason\t{escape_field(reason)}"]))
+    for _event_id, body in sorted(shown):
+        lines += body
+    return lines
+
+
+def _rejections_of(
+    storage: PostgresStorage, conn: Connection, thread: Thread
+) -> list[tuple[int, datetime, AssertionStatement]]:
+    named = {version.id for version in thread.versions}
+    found: list[tuple[int, datetime, AssertionStatement]] = []
+    for row in storage.read_by_kind(conn, ASSERTION):
+        statement = None if row.payload is None else parse_statement(row.payload)
+        if statement is not None and statement.kind == REJECTION and statement.of in named:
+            found.append((row.id, row.recorded_at, statement))
+    return found
+
+
+def _show_assertion(args: argparse.Namespace, kind: str) -> int:
+    today = _utc_today()
+    with _storage() as storage, storage.snapshot() as conn:
+        threads = read_threads(storage, conn)
+        thread = threads.get(args.id)
+        winner = None if thread is None or thread.kind != kind else thread.winner()
+        if thread is None or winner is None:
+            print(f"no {kind} stands under event {args.id}", file=sys.stderr)
+            return 1
+        if args.history:
+            lines = _history_lines(thread, _rejections_of(storage, conn, thread))
+        else:
+            lines = _entry_lines(thread, winner, today, _replaced_by(threads).get(thread.subject))
+    for line in lines:
+        print(line)
+    return 0
+
+
+def _cmd_obligation(args: argparse.Namespace) -> int:
+    return _show_assertion(args, OBLIGATION)
+
+
+def _cmd_decision(args: argparse.Namespace) -> int:
+    return _show_assertion(args, DECISION)
+
+
+def _listing(parser: argparse.ArgumentParser, states: Sequence[str]) -> None:
+    parser.add_argument(
+        "--circle", help="only what concerns this circle: its sources or its parties"
+    )
+    parser.add_argument("--state", choices=states, help="only this state")
+    parser.add_argument(
+        "--proposals",
+        action="store_true",
+        help="list what has a proposal pending, or stands as one, instead of what stands",
+    )
+
+
+def _obligations_arguments(parser: argparse.ArgumentParser) -> None:
+    _listing(parser, OBLIGATION_STATES)
+    parser.add_argument("--owed-by", help="only this debtor, a reference")
+    parser.add_argument("--owed-to", help="only this creditor, a reference")
+    parser.add_argument(
+        "--overdue", action="store_true", help="only what is open and past its due date"
+    )
+
+
+def _decisions_arguments(parser: argparse.ArgumentParser) -> None:
+    _listing(parser, DECISION_STATES)
+
+
+def _entry_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("id", type=int, help="the id of the first version")
+    parser.add_argument("--history", action="store_true", help="every version, in chain order")
+
+
 # --- MCP clients ---------------------------------------------------------------
 
 
@@ -2220,6 +2913,13 @@ COMMANDS: tuple[Command, ...] = (
     Command("gate", "explain or try a model call", _cmd_gate, _gate_arguments),
     Command("client", "add, revoke and list MCP clients", _cmd_client, _client_arguments),
     Command("access", "show what MCP clients saw", _cmd_access, _access_arguments),
+    Command("assert", "state an obligation or a decision", _cmd_assert, _assert_arguments),
+    Command("approve", "make proposals your own", _cmd_approve, _approve_arguments),
+    Command("reject", "reject a proposal", _cmd_reject, _reject_arguments),
+    Command("obligations", "list what is owed", _cmd_obligations, _obligations_arguments),
+    Command("obligation", "show one obligation", _cmd_obligation, _entry_arguments),
+    Command("decisions", "list what was decided", _cmd_decisions, _decisions_arguments),
+    Command("decision", "show one decision", _cmd_decision, _entry_arguments),
     Command("mcp", "serve MCP over stdio", _cmd_mcp),
     Command("serve", "serve MCP over HTTP", _cmd_serve),
 )
