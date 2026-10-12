@@ -91,13 +91,23 @@ Schuldner, Gläubiger und Entscheider sind **Verweise mit Präfix**
   Policy nicht stehen: eine Feststellung beschreibt die Welt und hängt nicht am
   Stand der Policy.
 - **`address:` und `circle:` sind die tragfähigen Verweise**, `name:` ist der
-  Notausgang. „Huber", „Fr. Huber" und „Hubers Büro" sind drei Schreibweisen,
-  die später je eine eigene Zuordnung brauchen; die Doku sagt das.
+  Notausgang — und wirklich unscharf: es gibt viele Frau Hubers (Betreuer,
+  2026-10-12). Darum:
+  - **`name:` ist eine Beschriftung, keine Identität.** Zwei `name:`-Verweise
+    gelten nie als derselbe Akteur, auch bei gleichem Text; eine Liste sucht im
+    Text, setzt die Treffer aber nicht gleich.
+  - **Präzisiert wird mit einer neuen Fassung**, nicht mit einer globalen
+    Zuordnung: wird die Adresse bekannt, bekommt genau diese Verpflichtung eine
+    Fassung mit `address:` statt `name:`, und `reason` sagt, warum. Eine andere
+    Frau Huber in einer anderen Verpflichtung bleibt unberührt.
+  - **Beim Schreiben ein Hinweis, kein Verbot:** steht in einer Quelle eine
+    Adresse, die zum Namen passen kann, schlagen Kommandozeile und
+    MCP-Vorschau `address:` vor.
 - **Erwähnt heißt nicht beteiligt.** Ein Akteur, der nur im Text einer Mail
   vorkommt, wird ein Verweis, aber er macht die Feststellung nicht zum Inhalt
   eines Kreises (§7). Schreibt er Wochen später selbst, ist die Zuordnung
-  `name:Anbieter XY` → `address:office@xy.at` eine Feststellung über
-  Identitäten — Identitätsgraph, §15.
+  `name:Anbieter XY` → `address:office@xy.at` eine neue Fassung der
+  Verpflichtung, in der er vorkommt (siehe oben).
 
 **Warum das nichts verbaut:** Personen und Organisationen wären auch später
 Projektionen über Feststellungen (Design §6), keine Wahrheitstabellen. Kommen
@@ -451,8 +461,9 @@ Beim Einfrieren in die Landkarte, je unter seine Einheit:
   Kontakte werden Wahrnehmungen; neue Adressdaten aus Mails von Neukunden
   zurückschreiben ist eine Handlung in einem Fremdsystem, mit Befugnis.
 - **Der Identitätsgraph:** Personen und Organisationen als Projektionen,
-  Zuordnungen von Verweisen (`name:` → `address:` → `person:`), `circle:` →
-  Organisation, und wer `human:operator` ist.
+  Zuordnungen tragfähiger Verweise (`address:` → `person:`), `circle:` →
+  Organisation, und wer `human:operator` ist. `name:` gehört nicht dazu: es
+  wird je Verpflichtung durch eine neue Fassung präzisiert (§2.1).
 - **Automatische Feststellung mit Rückfrage** — Einheit 6: sie muss Inhalt,
   Organisation und in Folge Projekt herausfinden und im Zweifel fragen
   (`list_triage`, `write_triage_answer`, K §4.2–§4.3).
