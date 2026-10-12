@@ -5969,9 +5969,9 @@ def test_a_source_the_log_refuses_is_refused_before_the_question(
     capsys: pytest.CaptureFixture[str],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Rulings F-10 of the 2026-10-12 plan: nobody confirms what the write
-    path will refuse. Nothing is shown, nothing is asked, nothing is written;
-    the control is the same command with a source that stands."""
+    """Ruling F-10 of the 2026-10-12 assertions plan: nobody confirms what
+    the write path will refuse. Nothing is shown, nothing is asked, nothing
+    is written; the control is the same command with a source that stands."""
     storage = _assertion_log(db, monkeypatch)
     redact_event(storage, storage, 2, reason="r", recorded_at=datetime.now(UTC))
     _answer(monkeypatch, "y\n")

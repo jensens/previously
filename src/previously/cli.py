@@ -2056,7 +2056,7 @@ class Command:
 # stands for it. The command line is the operator's own way to write one, so
 # its author is `human:operator` and its responsibility is direct. Nothing
 # here asks the policy: whoever has the command line is the operator, as with
-# `chronicle`.
+# `chronicle` ({ref}`assertions-mentioned`).
 
 _SOURCE_FORM = re.compile(r"(\d{1,16})(?::(\d{1,16}(?:,\d{1,16})*))?", re.ASCII)
 _DAY_FORM = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
@@ -2420,7 +2420,7 @@ def _reject_arguments(parser: argparse.ArgumentParser) -> None:
 def _refers_to(actor: str, wanted: str) -> bool:
     """Whether `actor` is the reference `wanted`. A `name:` is a label, not an
     identity, so a list searches the text of one, ignoring case, and never
-    treats two names as the same actor."""
+    treats two names as the same actor ({ref}`assertions-names`)."""
     if wanted.startswith(_NAME_PREFIX):
         return actor.startswith(_NAME_PREFIX) and (
             wanted.removeprefix(_NAME_PREFIX).casefold()

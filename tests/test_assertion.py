@@ -84,7 +84,7 @@ def make_decision(
     replaces: int | None = None,
 ) -> Statement:
     # A model writes a direct version only as an approval (ruling F-6 of the
-    # 2026-10-12 assertion plan), so a direct decision here is the operator's.
+    # 2026-10-12 assertions plan), so a direct decision here is the operator's.
     return Statement(
         DECISION,
         OPERATOR if responsibility == DIRECT else model_author("claude"),
@@ -700,7 +700,7 @@ def counts(
     approves: int, versions: Mapping[int, Statement], answered: set[int], gone: set[int]
 ) -> bool:
     """Whether an approval counts: its proposal is unanswered, and open or
-    erased (ruling F-5 of the 2026-10-12 assertion plan)."""
+    erased (ruling F-5 of the 2026-10-12 assertions plan)."""
     if approves in answered:
         return False
     proposal = versions.get(approves)
@@ -827,7 +827,7 @@ def test_overdue(due: date | None, state: str, late: bool) -> None:
 
 
 def test_a_direct_version_by_a_model_is_a_form_fault() -> None:
-    """Ruling F-6 of the 2026-10-12 assertion plan: otherwise a proposal that
+    """Ruling F-6 of the 2026-10-12 assertions plan: otherwise a proposal that
     took another way in would outrank the operator's direct version."""
     model = model_author("claude")
     direct = payload_of(make_obligation(author=model))
@@ -850,7 +850,7 @@ def test_a_model_may_approve_propose_and_reject() -> None:
 
 
 def test_an_approval_stands_when_its_proposal_was_erased() -> None:
-    """Ruling F-5 of the 2026-10-12 assertion plan: the approval is a whole
+    """Ruling F-5 of the 2026-10-12 assertions plan: the approval is a whole
     statement with its own sources, checked when it was written."""
     rows = [
         row(1, make_obligation()),

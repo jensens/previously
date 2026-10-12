@@ -239,8 +239,9 @@ def _check_version(view: _View, statement: Statement) -> None:
     stands and is of its kind, a decision it replaces, and for an approval an
     open version of its thread that is neither approved nor rejected yet,
     taken over unchanged. Approving twice, or after a rejection, would let a
-    second answer to one proposal stand beside the first (decision 5 of the
-    2026-10-12 assertion plan; ruling F-3 of its execution)."""
+    second answer to one proposal stand beside the first
+    ({ref}`assertions-approval`; decision 5 of the 2026-10-12 assertions plan,
+    and ruling F-3 of the 2026-10-12 assertions plan)."""
     subject = statement.subject
     if subject is not None:
         kind = view.kinds.get(subject)
@@ -429,15 +430,17 @@ def write_statements[Conn](
 
     A batch whose handle an assertion in the log carries already writes
     nothing and returns the ids of the assertions that carry it and still
-    stand: confirming twice is harmless (decision 9 of the plan). The module
+    stand: confirming twice is harmless ({ref}`mcp-writing`; decision 9 of
+    the 2026-10-12 assertions plan). The module
     docstring says in which order the rest happens and why.
 
     The handle lives in the payload, and an erasure takes the payload, so a
     batch whose assertions were all erased since is written again when its
-    handle comes back. That is accepted (ruling F-7 of the 2026-10-12
-    assertion plan): the operator erased them, decision 9 lets a handle live
-    ten minutes at most, and the client holds the text anyway. A source key would survive
-    the erasure, and would be a second truth beside the payload. Where only
+    handle comes back. That is accepted ({ref}`assertions-limits`; ruling
+    F-7 of the 2026-10-12 assertions plan): the operator erased them, a
+    handle lives ten minutes at most, and the client holds the text anyway.
+    A source key would survive the erasure, and would be a second truth
+    beside the payload. Where only
     some of the batch were erased, the ids of the ones that stand come back.
 
     The caller guarantees that one handle means one content: the lookup
@@ -462,8 +465,8 @@ def write_statements[Conn](
         top = 0 if tip is None else tip.id
         # Every assertion in the log, read in this transaction: fine at the
         # volumes of the pilot, and what an index or a projection would
-        # remove. The final review of the plan measures it at 5 000
-        # assertions.
+        # remove. The final review of the 2026-10-12 assertions plan
+        # measures it at 5 000 assertions ({ref}`assertions-folded`).
         below = _rows(log, conn, up_to=top)
         repeated = _repeated(below, handle)
         if repeated:
@@ -528,9 +531,10 @@ def assertion_decisions(
     identities: Sequence[Mapping[str, object]],
     sources: Sequence[str | None],
 ) -> tuple[Decision, ...]:
-    """The decisions for an assertion (decision 7 of the plan): `decide` once
-    per distinct source, each with the identities of all source events, in
-    the order of the sources. No source at all is decided once, without one.
+    """The decisions for an assertion ({ref}`assertions-mentioned`; decision 7
+    of the 2026-10-12 assertions plan): `decide` once per distinct source,
+    each with the identities of all source events, in the order of the
+    sources. No source at all is decided once, without one.
 
     Every decision is returned, so that a caller that records which rules
     decided (the access log of the MCP server) sees the rule of every source

@@ -4,7 +4,7 @@
 """The sealed handle of a writing MCP call, without a server: `now` and the
 nonce are passed in, so an expired handle is one sealed at an earlier `now`.
 
-Review focus 4 of the 2026-10-12 assertion plan: a handle redeemed after its
+Review focus 4 of the 2026-10-12 assertions plan: a handle redeemed after its
 expiry, by another client, or with changed content is refused, each with a
 sentence that holds nothing of the content.
 """

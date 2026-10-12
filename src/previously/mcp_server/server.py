@@ -674,7 +674,7 @@ class Service[Conn]:
                 # A name this server lacks, a misspelled writing tool among
                 # them, may carry text a client derived from a mail; only the
                 # names of its arguments are kept (ruling F-13 of the
-                # 2026-10-12 assertion plan), so none outlives an erasure.
+                # 2026-10-12 assertions plan), so none outlives an erasure.
                 arguments = {key: cast("object", None) for key in arguments}
         message = f"{name} did not run: {text or 'the request was refused'}"
         answer = Answer(render_error(message), error=True)
@@ -1035,8 +1035,8 @@ class Service[Conn]:
     ) -> Answered:
         """The thread and the version `proposal` names, when the client may
         see the entry and every source of the version; otherwise the
-        sentence an id that names nothing gets (review focus 2 of the
-        2026-10-12 assertion plan). Whether the version is still an open
+        sentence an id that names nothing gets ({ref}`assertions-proposals`;
+        review focus 2 of the 2026-10-12 assertions plan). Whether the version is still an open
         proposal is the write path's question, asked of what the client
         sees.
 
@@ -1080,8 +1080,9 @@ class Service[Conn]:
         locker, key = self.writing()
         # A line the preview would cut is refused, not cut: the write would
         # carry the whole text, and the reading tools cut at the same place,
-        # so no call would ever show what was confirmed (ruling F-12 of the
-        # 2026-10-12 assertion plan). For an approval and a rejection the
+        # so no call would ever show what was confirmed
+        # ({ref}`assertions-proposals`; ruling F-12 of the 2026-10-12
+        # assertions plan). For an approval and a rejection the
         # lines are the proposal's, so this holds for what they answer too.
         # The raw length is the bound: sanitizing only ever shortens a line.
         if any(len(line) > STATED_LINE_CHARS for item in shown for line in item.lines):
@@ -1274,7 +1275,8 @@ def _event_ids(values: object) -> list[int]:
 
 def write_record(name: str, arguments: Mapping[str, object]) -> dict[str, object]:
     """What the access entry of a writing call keeps of its arguments
-    (decision 10 of the 2026-10-12 assertion plan): how many statements, the
+    ({ref}`assertions-erasure`; decision 10 of the 2026-10-12 assertions
+    plan): how many statements, the
     ids of the sources or of the proposals answered, and whether `confirm`
     was given; `Service.record` adds the ids written. No text: a text that a
     client derived from a mail would otherwise stand in the log and outlive

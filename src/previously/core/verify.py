@@ -619,8 +619,10 @@ class _Assertions:
         approves = statement.approves
         if approves is not None:
             if approves in self._erased:
-                # Ruling F-5: an approval of a proposal erased on its own
-                # stands, and nothing of the proposal is left to compare.
+                # An approval of a proposal erased on its own stands, and
+                # nothing of the proposal is left to compare
+                # ({ref}`assertions-approval`; ruling F-5 of the 2026-10-12
+                # assertions plan).
                 self._placed.setdefault(approves, subject)
             else:
                 proposal = self._named(approves)

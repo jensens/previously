@@ -54,11 +54,11 @@ has committed by then, and the call it wrote is found and locked in a second
 round. A call found there was not committed when the first read ran, so its
 id is above every row of the first round, and the order stays ascending.
 
-An assertion goes the same way, and further: it says in its own words what
-its sources said, so an erasure of the source event, of a unit the assertion
-cites, or of any unit of an event it cites whole that is erased after the
-assertion was written, erases its payload, by a redaction of the whole
-assertion in the same transaction
+An assertion goes the same way, and further ({ref}`assertions-erasure`): it
+says in its own words what its sources said, so an erasure of the source
+event, of a unit the assertion cites, or of any unit of an event it cites
+whole that is erased after the assertion was written, erases its payload,
+by a redaction of the whole assertion in the same transaction
 (`assertions.stands_on_erased` decides, the question `verify` asks too). The
 assertions are found and locked with the calls, in the same round and the
 same second read; the write path of assertions holds the lock on every source

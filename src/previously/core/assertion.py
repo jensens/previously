@@ -18,7 +18,8 @@ An obligation or a decision is named after the event of its first version.
 Each further version says everything that holds after it, and carries that
 name as `subject`. A rejection has no `subject`: it names the proposal it
 rejects in `of`, and `fold` attaches it to the thread of that proposal.
-Direct responsibility beats open; within one level the latest version wins.
+Direct responsibility beats open; within one level the latest version wins
+({ref}`assertions-responsibility`).
 An approval is a new direct version with the content of the proposal and
 `approves` pointing at it.
 """
@@ -336,7 +337,8 @@ def _version_problem(payload: Mapping[str, object]) -> str | None:
         return "an approval is direct"
     # A model proposes; what it writes is direct only when it is an approval,
     # which makes the operator's choice its own. Otherwise a proposal that
-    # came around the MCP tool would outrank the operator's direct version.
+    # came around the MCP tool would outrank the operator's direct version
+    # ({ref}`assertions-responsibility`).
     # A rejection is not a version and is exempt: `write_reject` writes it
     # direct with the author of its way.
     author = cast("str", payload["author"])

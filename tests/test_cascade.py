@@ -874,7 +874,7 @@ def _forge(storage: PostgresStorage, payload: Mapping[str, object]) -> int:
 def test_an_approval_stands_when_its_proposal_is_erased_on_its_own(
     db: Engine, through: str
 ) -> None:
-    """Ruling F-5 of the 2026-10-12 assertion plan: erasing the proposal on
+    """Ruling F-5 of the 2026-10-12 assertions plan: erasing the proposal on
     its own leaves the approval as the direct winner. The control erases the
     source they share, and the approval goes with the proposal."""
     storage = _setup(db)

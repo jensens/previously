@@ -731,7 +731,7 @@ def test_an_erased_source_adds_no_identity(db: Engine) -> None:
 
 @pytest.mark.db
 def test_a_direct_version_by_a_model_is_refused(db: Engine) -> None:
-    """Ruling F-6 of the 2026-10-12 assertion plan: a model's version is
+    """Ruling F-6 of the 2026-10-12 assertions plan: a model's version is
     direct only as an approval. The control, a model's approval, is
     `test_an_approval_makes_the_proposal_direct`."""
     storage = _setup(db)
@@ -751,10 +751,10 @@ def test_a_direct_version_by_a_model_is_refused(db: Engine) -> None:
 def test_check_statements_refuses_what_the_write_path_refuses_with_its_sentence_and_writes_nothing(
     db: Engine,
 ) -> None:
-    """Ruling F-10 of the 2026-10-12 plan: the preview of a command and of a
-    tool can ask this before it asks anyone. The cases are the ones the
-    write path refuses by source, by unit and by reference; the control is a
-    batch that stands, which both accept."""
+    """Ruling F-10 of the 2026-10-12 assertions plan: the preview of a
+    command and of a tool can ask this before it asks anyone. The cases are
+    the ones the write path refuses by source, by unit and by reference; the
+    control is a batch that stands, which both accept."""
     storage = _setup(db, mails=3)
     redact_event(storage, storage, 3, reason="wrong", recorded_at=NOW)
     (first,) = _write(storage, obligation())

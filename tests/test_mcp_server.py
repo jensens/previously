@@ -1974,7 +1974,7 @@ def test_confirming_writes_proposals_by_the_model_of_the_client(world: World, mo
 def test_confirming_twice_writes_nothing_new_and_answers_the_same_ids(
     world: World, mode: str
 ) -> None:
-    # Review focus 4 of the 2026-10-12 assertion plan, and assurance 6.
+    # Review focus 4 of the 2026-10-12 assertions plan, and assurance 6.
     arguments = {"items": [_item(world.ids["attachments_only"])]}
     preview, first = _confirmed(world, mode, "write_assertion", arguments)
     again = _write(
@@ -2159,7 +2159,7 @@ def test_a_subject_or_a_decision_replaced_that_the_client_may_not_see_is_named_a
 def test_write_approve_by_a_client_that_may_not_see_a_source_is_refused(
     world: World, mode: str
 ) -> None:
-    """Review focus 2 of the 2026-10-12 assertion plan: the proposal rests on
+    """Review focus 2 of the 2026-10-12 assertions plan: the proposal rests on
     the plain mail, which `claude-code` may not see. It is refused as an
     id that names nothing is, and nothing is written."""
     proposal = _proposal(world, "plain")
@@ -2270,7 +2270,7 @@ def test_without_a_key_the_write_tools_answer_an_error_and_the_reading_tools_wor
 def test_the_access_of_a_write_holds_counts_and_ids_and_no_text_and_no_address(
     world: World, mode: str
 ) -> None:
-    """Decision 10 of the 2026-10-12 assertion plan: one entry per call, and
+    """Decision 10 of the 2026-10-12 assertions plan: one entry per call, and
     in it the number of statements, the source ids, whether confirm was
     given and the ids written, and not a word of the text, the reason or an
     address. A call the SDK refuses records the same form."""
@@ -2490,7 +2490,7 @@ def _what_of_line(length: int) -> str:
 def test_a_line_longer_than_a_preview_shows_is_refused_and_one_as_long_is_shown_whole(
     world: World, mode: str
 ) -> None:
-    """Ruling F-12 of the 2026-10-12 assertion plan: what a writing tool
+    """Ruling F-12 of the 2026-10-12 assertions plan: what a writing tool
     writes or answers is always seen whole. A line of 1,001 characters is
     refused by all three tools, the proposal of an approval or a rejection
     included, and nothing is written; one of 1,000 is shown uncut."""
@@ -2537,7 +2537,7 @@ def test_a_line_longer_than_a_preview_shows_is_refused_and_one_as_long_is_shown_
 def test_a_tool_the_server_lacks_is_recorded_with_the_names_of_its_arguments_only(
     world: World, mode: str
 ) -> None:
-    """Ruling F-13 of the 2026-10-12 assertion plan: a misspelled writing
+    """Ruling F-13 of the 2026-10-12 assertions plan: a misspelled writing
     tool carries the text it meant to write, and none of it reaches the log."""
     item = _item(world.ids["attachments_only"], what=PRIVATE_TEXT, reason=PRIVATE_REASON)
     result = _write(world, mode, "write_assertions", {"items": [item], "confirm": PRIVATE_REASON})

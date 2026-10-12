@@ -1604,7 +1604,7 @@ def test_an_assertion_on_a_whole_event_falls_with_a_unit_erased_after_it(
 
 @pytest.mark.db
 def test_a_second_approval_or_one_after_a_rejection_is_a_finding(db: Engine) -> None:
-    """Ruling F-3 of the 2026-10-12 assertion plan: the fold passes over
+    """Ruling F-3 of the 2026-10-12 assertions plan: the fold passes over
     them, and `verify` says so."""
     storage = _with_mail(db)
     proposal = _owed(responsibility=OPEN)
@@ -1683,7 +1683,7 @@ def test_a_rejection_of_a_proposal_erased_by_itself_is_no_finding(db: Engine) ->
 
 @pytest.mark.db
 def test_a_direct_version_by_a_model_without_an_approval_is_a_finding(db: Engine) -> None:
-    """Ruling F-6 of the 2026-10-12 assertion plan, for a row that came
+    """Ruling F-6 of the 2026-10-12 assertions plan, for a row that came
     around the write path."""
     storage = _with_mail(db)
     (owned,) = _asserted(storage, _owed())
@@ -1703,7 +1703,7 @@ def test_a_direct_version_by_a_model_without_an_approval_is_a_finding(db: Engine
 def test_an_approval_or_rejection_without_the_sources_of_its_proposal_is_a_finding(
     db: Engine,
 ) -> None:
-    """Ruling F-9 of the 2026-10-12 assertion plan: one that left a source
+    """Ruling F-9 of the 2026-10-12 assertions plan: one that left a source
     out would outlive the erasure of that source with the proposal's
     content. The approval and the rejection still count, as the fold reads
     them."""
@@ -1736,7 +1736,7 @@ def test_an_approval_or_rejection_without_the_sources_of_its_proposal_is_a_findi
 
 @pytest.mark.db
 def test_a_subject_that_was_no_thread_is_a_finding(db: Engine) -> None:
-    """Ruling F-9 of the 2026-10-12 assertion plan: a subject names the
+    """Ruling F-9 of the 2026-10-12 assertions plan: a subject names the
     first version of a thread. A later version, a rejection and an erased
     observation are none. An erased later version is known as one when an
     approval named it under another subject; an erased assertion nothing
