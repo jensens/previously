@@ -97,9 +97,9 @@ die Antwort um: die Adress-Einstellungen, die Meldungen, die Anforderung an
 das Netz, der Handoff `handoffs/2026-10-11-kup6s-settings.md`; er ist
 gemergt (PR #14, `347c37b`), `v0.1.0a4` ist am 2026-10-12 veröffentlicht, und
 der Handoff der Einstellungen ist übergeben. Was jetzt kommt, in dieser
-Reihenfolge: 1..n IMAP-Ordner als Eingang (Betreuer, 2026-10-12; unter
-*Aufnahme aus IMAP*), dann als nächste Einheit mit Spec Einheit 5, die
-Feststellungen.
+Reihenfolge: 1..n IMAP-Ordner als Eingang (Betreuer, 2026-10-12), gebaut auf
+dem Zweig `worktree-imap-ordner` (unten unter *Erledigt*) und wartend auf den
+Merge, dann als nächste Einheit mit Spec Einheit 5, die Feststellungen.
 Was die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an
 den Einheiten, zu denen es gehört.
 
@@ -492,17 +492,10 @@ ebenso.
   seines Posteingangs und alles Gesendete, Spam und Belangloses
   herausgefiltert. Wie die Mail in das eine Postfach kommt, das die Aufnahme
   liest, entscheidet kup6s; ob ein Job je Ordner oder ein Sammelordner, ist
-  auf beiden Seiten offen (RG). Mehrere Ordner in einem Lauf stehen im
-  nächsten Punkt.
-- 1..n IMAP-Ordner als Eingang: vom Betreuer am 2026-10-12 verlangt, „es ist
-  wichtig, dass wir uns nicht auf einen IMAP-Ordner einschränken"; wie sie im
-  Einzelnen genutzt werden (gesendete Mails, Sammelordner, Filter), wird
-  später entschieden. Heute liest ein Lauf einen Ordner eines Postfachs; die
-  Wasserlinie ist je `imap:<user>@<host>/<folder>` geführt, und dieselbe Mail
-  in zwei Ordnern ist über die Message-ID ein Event — mehrere Ordner in
-  mehreren Läufen gingen also im Prinzip schon, getestet und beschrieben ist
-  es nicht. Der nächste Schritt vor Einheit 5. PI §11 Punkt 3 hatte einen
-  Ordner je Lauf für den Piloten genügen lassen.
+  auf beiden Seiten offen (RG). Ein Lauf liest seit dem Zweig
+  `worktree-imap-ordner` mehrere Ordner eines Postfachs (`--folder`, unten
+  unter *Erledigt*); wie sie genutzt werden — gesendete Mails, Sammelordner,
+  Filter —, ist damit nicht entschieden und bleibt dieser Punkt.
 - `IDLE`, Aufnahme ohne Zeitgeber, mit dem MCP-Dienst denkbar (PI §1,
   §11 Punkt 5).
 - Eine Weiterleitung als zitierter Text bleibt Text der äußeren Mail; sie zu
@@ -1158,6 +1151,18 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
   Nachtrag).
 
 ## Erledigt, seit es auf einer Liste stand
+
+- ~~1..n IMAP-Ordner als Eingang~~ (Betreuer, 2026-10-12; PI §11 Punkt 3
+  hatte einen Ordner je Lauf für den Piloten genügen lassen) — auf dem Zweig `worktree-imap-ordner`, Commit `5626f98`:
+  `ingest imap --folder NAME`, wiederholbar, ohne die Option weiter
+  `PREVIOUSLY_IMAP_FOLDER`; je Ordner die Wasserlinie unter dem bisherigen
+  Namen `imap:<user>@<host>/<folder>` und eine Zeile, die den Ordner nennt;
+  ein Ordner, der scheitert, hält die übrigen nicht auf, der Lauf endet mit
+  2; eine abgewiesene Anmeldung, ein unerreichbarer Server, ein Fehler der
+  Datenbank oder des Blob-Speichers halten ihn sofort an. Mehrere Postfächer
+  sind mehrere Läufe, je mit eigenen Zugangsdaten. Getestet gegen GreenMail
+  und PostgreSQL, auch zwei Läufe zugleich über zwei Ordner. Wie die Ordner
+  genutzt werden, bleibt unter *Aufnahme aus IMAP* offen.
 
 - ~~Bedingung 9 der Abnahme des MCP-Lesezugangs: der Lauf des Betreuers mit
   Claude Code und Vibe gegen `previously serve`~~ (ML §12) — erledigt durch
