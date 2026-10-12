@@ -77,10 +77,11 @@ previously serve
 ```
 
 Without it, the server reads as before and every writing tool answers `Error: writing is not configured on this server`.
+If your client starts `previously mcp` over standard input, pass the key the way it passes the other settings, such as with one more `--env PREVIOUSLY_MCP_CONFIRM_KEY=…` to `claude mcp add` ({ref}`connect-claude-code-and-vibe`); the client's configuration then holds the key, as {ref}`environment-requirements` says under the MCP server.
 
 Then ask Claude Code, for example: "Read the mails of the circle `huber` since September and propose, with `write_assertion`, every obligation and decision in them, each with the units it rests on."
 Claude Code calls `write_assertion` once to preview its proposals and once more to confirm them.
-What it writes stays a proposal: it holds nowhere until you approve it.
+What it writes stays a proposal, out of every default list, until you approve it.
 
 ## Make the client ask before it answers
 
@@ -100,11 +101,12 @@ For Claude Code, add an ask rule to your user settings in `~/.claude/settings.js
 }
 ```
 
-Claude Code's documentation of permissions says that an ask rule prompts even where an allow rule also matches, and in every permission mode, `auto` and `bypassPermissions` included, except `dontAsk`, which refuses the call instead.
-Without the rule, `auto` mode, which recent versions start in, lets a classifier decide in your place.
+Claude Code's [documentation of permissions](https://code.claude.com/docs/en/permissions#manage-permissions) says that an ask rule prompts even where an allow rule also matches, and in every permission mode, `auto` and `bypassPermissions` included, except `dontAsk`, which refuses the call instead.
+Without the rule, `auto` mode lets a classifier decide in your place, and Claude Code starts in `auto` mode from v2.1.283 on, as its [documentation of permission modes](https://code.claude.com/docs/en/permission-modes) says.
+The same documentation names a mark an MCP tool can carry, `_meta["anthropic/requiresUserInteraction"]`, that makes Claude Code ask for it as an ask rule does; the tools of Previously don't carry it, so the ask rule is what makes Claude Code ask.
 Never add either tool to `allow`.
 
-For Mistral Vibe, its documentation sets a tool to ask in `.vibe/config.toml`, with the tool named after the server and the tool:
+For Mistral Vibe, its [documentation of MCP servers](https://docs.mistral.ai/vibe/code/cli/mcp-servers) sets a tool to ask in `.vibe/config.toml`, with the tool named after the server and the tool:
 
 ```toml
 [tools.previously_write_approve]
@@ -140,6 +142,7 @@ previously approve 71 72
 previously reject 73 --reason "Eva asked about it and nobody decided"
 ```
 
+Of several proposals on one entry, approve one and reject the others: an approval is a direct version that comes after them, and `approve` refuses a proposal that a direct version came after.
 An approval keeps the proposal's wording and sources; to change a word, approve and then write a new version with `--subject`, or reject and write your own.
 Over MCP, ask Claude Code to approve or reject by the ids its history names; it previews, asks you, and confirms.
 

@@ -117,7 +117,8 @@ One that alone is longer than a page is cut after a whole line, and a note after
 No call serves the lines left out; `previously obligation ID --history` prints them on the command line.
 
 An entry the policy keeps from the client stands as the placeholder `[withheld: URI — REASON]` below, which holds no text, no actor and no source.
-An entry whose every version an erasure took is in no list, and a `subject` that names it answers as for an id that names nothing.
+An entry whose every version an erasure took is in no list.
+A `subject` that names an assertion an erasure took, while no entry stands under that id, answers with the placeholder `[erased: URI]` in either tool and with or without `history`, as `get_event` answers for an erased event to any client: the erasure took the payload that said which kind and which entry the assertion was.
 
 ### Placeholders
 
@@ -240,6 +241,7 @@ Error: ids[5] — the id is out of range: an event id is a whole number from 1 t
 
 The obligations that stand, in the order of their ids.
 By default it lists those that a person made their own; an entry that only a model proposed stays out unless `proposals` is set.
+An entry a person made their own and that has a proposal pending is in both lists, and its label counts the proposal.
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
@@ -256,7 +258,10 @@ A cursor carries the id of the last entry the page consumed, the filters and the
 
 The policy decides for each entry on its own, over the people in the sources of all versions that stand, one decision for each distinct source, and the first that allows nothing holds: the strictest rule wins.
 The parties an entry names take no part in it, so a creditor from a circle without a rule doesn't withhold an entry whose sources have one.
-With `history`, the verdict is still the entry's, over the sources of all versions together.
+With `history`, the verdict is still the entry's, over the sources of all versions together and of the rejections the history shows.
+
+The policy decides before `state`, `overdue` and `proposals` look at an entry.
+An entry it withholds passes those three whatever they ask, so its placeholder stands under every one of them alike and none of them tells what the entry holds.
 
 A `subject` that names no entry of this kind answers with a line of its own on the page:
 
@@ -264,17 +269,29 @@ A `subject` that names no entry of this kind answers with a line of its own on t
 Error: previously://event/9 — no obligation stands under this id
 ```
 
-The history shows the first version with `set` lines and each later one with `change` lines:
+The history goes inside the fence of the entry, in place of its content.
+It shows the first version with `set` lines, each later one with `change` lines, and each rejection with its reason, in the order written:
 
 ```text
 version 25 · 2026-10-11T12:00:00.000000Z · direct · human:operator
 set what: send the offer for the roof
+set debtor → creditor: own → address:eva.huber@example.org
 set due: 2099-01-01
+set reason: none
+set sources: previously://event/21
 version 26 · 2026-10-11T12:00:00.000000Z · direct · human:operator
 change due: 2099-01-01 → 2099-02-01
+change reason: (none) → postponed
+version 27 · 2026-10-11T12:00:00.000000Z · open · model:claude-code · rejected
+change due: 2099-02-01 → 2099-03-01
+change reason: postponed → (none)
+rejection 28 · 2026-10-11T12:00:00.000000Z · human:operator · rejects 27
+reason: the date stands
 ```
 
 A version that was approved or rejected says so at the end of its first line, and one that approves a proposal says `approves N`.
+A rejection is a line `rejection`, its id, the time, its author and `rejects N`, followed by its reason, or `reason: none`.
+With `history`, an entry whose versions are all rejected proposals answers too, labelled `no version stands`.
 
 ### `list_decisions`
 
@@ -464,6 +481,7 @@ Each becomes a direct version of its entry with the content, the sources and the
 | `confirm` | string | none | The handle of the preview. |
 
 The client has to be allowed to see the entry of each proposal and every source of it.
+Only a proposal that's pending, or that stands because the entry has no direct version, is approved: one that a direct version came after is refused, as `previously approve` refuses it, and `write_reject` still takes it.
 The approval counts as the operator's because the client asks the person before it confirms; a client that confirms `write_approve` without asking writes approvals nobody looked at.
 
 ### `write_reject`

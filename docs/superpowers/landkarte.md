@@ -108,9 +108,11 @@ Eingang (Betreuer, 2026-10-12) sind gemergt (PR #16, `739912b`; unten unter
 ist gebaut auf dem Zweig `worktree-feststellungen`, ohne Projektionstabellen
 und ohne Migration (Planentscheidung 1, vom Betreuer am 2026-10-12
 bestätigt); der Handoff `handoffs/2026-10-12-kup6s-assertions.md` liegt bei.
-Was jetzt kommt, in dieser Reihenfolge: die Endprüfung, die die Lesezeit bei
-5 000 Feststellungen misst; der Merge; das Release nach `v0.1.0a4` mit dem
-Handoff; die Abnahme nach F §14 durch den Betreuer. Als nächste Einheit mit
+Die Endprüfung hat am 2026-10-12 die Lesezeit bei 5 000 Feststellungen
+gemessen (unten unter *Feststellungen*), und ihre Fixwelle ist gelaufen.
+Was jetzt kommt, in dieser Reihenfolge: die Nachprüfung der Fixwelle; der
+Merge; das Release nach `v0.1.0a4` mit dem Handoff; die Abnahme nach F §14
+durch den Betreuer. Als nächste Einheit mit
 Spec dann die Zuordnungen (F §1, §15; unten unter *Feststellungen und
 Entitäten*).
 Was die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an
@@ -850,20 +852,28 @@ auf `assertions.md` unter *What the pilot leaves open*.
 
 - Eine Projektion für Feststellungen, nur wenn die Messung sie verlangt:
   gelesen wird durch Falten aller Feststellungen aus dem Log, bei jeder Liste
-  und jedem Schreiben (Planentscheidung 1). Die Endprüfung misst die Lesezeit
-  von `obligations` und `list_obligations` bei 5 000 Feststellungen; die Zahl
-  kommt auf `assertions.md` (P-F).
+  und jedem Schreiben (Planentscheidung 1). Gemessen am 2026-10-12 bei 5 000
+  Feststellungen (i7-11370H, PostgreSQL 18, Median aus drei): das Falten
+  150 ms; langsam waren nur die Listen, die Policy oder Kreise fragen, weil
+  sie jede Quelle einzeln lasen — `obligations --circle` 2 824 ms,
+  `list_obligations` Seite 1 941 ms, mit dünnem Kreis 1 964 ms. Seit der
+  Fixwelle liest ein Aufruf die Quellen gesammelt in zwei Abfragen (P-F,
+  Ruling F-16), und dieselben Listen brauchen 193, 225 und 224 ms; die
+  Zahlen stehen auf `assertions.md`. Die Projektion verlangt die Messung
+  damit nicht.
 - Je ein echter Aufruf von `write_assertion` mit Claude Code und mit Vibe, zur
   Abnahme: das Eingabeschema verschachtelt seine Einträge über `$defs` und
   `$ref`, und probiert ist es nur gegen den Client des SDK. Flach machen nur,
   wenn ein Client scheitert (P-F, Aufgabe 5).
 - Die Forderung, dass der Client vor `write_approve` und `write_reject` fragt,
   hängt allein an seiner Einstellung. Die Doku von Claude Code nennt
-  MCP-Werkzeuge mit `_meta["anthropic/requiresUserInteraction"]`, die in jedem
-  Modus fragen; ob der Server die beiden Werkzeuge so kennzeichnen sollte, ist
-  ungeprüft, und Vibe kennt es nicht (gefunden beim Schreiben der Anleitung,
-  2026-10-12). Die Einstellungen der Anleitung für beide Clients sind
-  ungemessen.
+  MCP-Werkzeuge mit `_meta["anthropic/requiresUserInteraction"]`, die fragen
+  wie mit einer Ask-Regel; ob der Server die beiden Werkzeuge so kennzeichnen
+  sollte, ist ungeprüft, und Vibe kennt es nicht (gefunden beim Schreiben der
+  Anleitung, 2026-10-12). Claude Code startet ab v2.1.283 im Auto-Modus, in
+  dem ohne Ask-Regel ein Klassifikator entscheidet; die Anleitung verlinkt
+  seit der Fixwelle die Quellen. Die Einstellungen der Anleitung für beide
+  Clients sind ungemessen.
 - Eine Geschichte, die länger ist als eine Seite, wird über MCP nach einer
   ganzen Zeile gekürzt, und ihr Rest kommt über keinen Aufruf; die
   Kommandozeile zeigt sie ganz. Ein Weg wäre ein Cursor für die Geschichte
@@ -879,7 +889,9 @@ auf `assertions.md` unter *What the pilot leaves open*.
   `no obligation stands under event ID` steht außerhalb des Zitattests; der
   Abweisungszweig für das aufgeschobene Schreiben in `mcp_server/server.py`
   ist ungetestet, weil er einen Stellvertreter für die Datenbank bräuchte;
-  `_cmd_decisions` setzt die Listenfilter auf `args`.
+  `_cmd_decisions` setzt die Listenfilter auf `args`; die Geschichte über MCP
+  schreibt einen fehlenden Grund in `set`-Zeilen als `none` und in
+  `change`-Zeilen als `(none)` (gefunden in der Fixwelle, 2026-10-12).
 
 ### Nextcloud-Ordner (Pilot, Einheit 7)
 

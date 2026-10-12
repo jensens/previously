@@ -60,10 +60,14 @@ es im Plan und im Ausführungsprotokoll
   not one this client can use as a source`; je ein eigener fester Satz gilt
   ebenso für ein `subject`, ein `replaces` und einen Vorschlag, die es nicht
   gibt oder die der Client nicht sehen darf (`mcp-tools.md`).
-- **Ein Eintrag ohne stehende Fassung erscheint nicht als getilgt** (§8
-  „gibt es keine, erscheint sie als getilgt"). Er fehlt in jeder Liste, und
-  eine Frage nach ihm wird beantwortet wie die nach einer Kennung, die nichts
-  nennt.
+- **Ein Eintrag ohne stehende Fassung erscheint in keiner Liste als
+  getilgt** (§8 „gibt es keine, erscheint sie als getilgt"). Er fehlt in jeder
+  Liste; erst die Frage nach seiner Kennung antwortet „getilgt": über MCP mit
+  `[erased: previously://event/<id>]`, auf der Kommandozeile mit `assertion
+  <id> is erased`. So antwortet jede getilgte Feststellung, auch eine spätere
+  Fassung, denn mit der Nutzlast gingen auch Art und Eintrag (Ruling F-18).
+  Bis zur Fixwelle der Endprüfung am selben Tag wurde die Frage beantwortet
+  wie die nach einer Kennung, die nichts nennt.
 - **Eine Freigabe steht, wenn ihr Vorschlag für sich getilgt wird** (§3.3,
   §8), nicht über eine Quelle: sie ist eine ganze, beim Schreiben geprüfte
   Aussage mit eigenen Quellen (Ruling F-5). Ein Eintrag behält seine Kennung,

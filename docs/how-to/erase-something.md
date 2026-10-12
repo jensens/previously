@@ -166,6 +166,13 @@ An assertion that rests on the target goes with it too, for an event and for its
 That covers every assertion: an obligation, a decision, a proposal, an approval and a rejection.
 An assertion that cites only other units of the event stays.
 
+If you erase an approved proposal itself, with `redact event` and its id, the approval stays, and it carries the proposal's words.
+The command says so on standard error, and names the approval to erase as well:
+
+```text
+the approval 9 still carries the words of the proposal 6; redact event 9 to erase them too
+```
+
 The cascade doesn't reach the provider.
 Anthropic keeps requests and responses for 30 days, and nothing in Previously deletes them.
 

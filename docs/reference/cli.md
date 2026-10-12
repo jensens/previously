@@ -69,10 +69,10 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `client` | The client was added and its token printed, revoked, or listed, even when none exists. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the processor isn't declared, no such client exists to revoke, or storage raised an error. |
 | `access` | The access log was printed, even when no call matches. | Not used. | The input was invalid, or storage raised an error. |
 | `assert` | The version was written. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, including a date that isn't one, a malformed `--source` and a reference without a known prefix, the write path refused the version, or storage raised an error. |
-| `approve` | Every proposal was made the operator's own. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, a proposal is none, is direct, or is already approved or rejected, the write path refused the batch, or storage raised an error. |
+| `approve` | Every proposal was made the operator's own. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, a proposal is none, is direct, is already approved or rejected, or a direct version came after it, the write path refused the batch, or storage raised an error. |
 | `reject` | The rejection was written. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the proposal is none, is direct, or is already approved or rejected, the write path refused the rejection, or storage raised an error. |
 | `obligations`, `decisions` | The list was printed, even when no entry matches. | Not used. | The input was invalid, or storage raised an error. |
-| `obligation`, `decision` | The entry was printed. | No entry of that kind stands under the id. | Storage raised an error. |
+| `obligation`, `decision` | The entry was printed. | No entry of that kind stands under the id, or the id names an assertion an erasure took. | Storage raised an error. |
 | `mcp` | Standard input closed, and the server ended. | Not used. | `PREVIOUSLY_MCP_CLIENT` is unset or names no client in force, or storage raised an error. |
 | `serve` | The server was stopped with an interrupt, such as Ctrl+C. | Not used. | `PREVIOUSLY_MCP_ADDRESS` isn't an address, `PREVIOUSLY_MCP_HOST` is set without it, or storage raised an error. |
 | `gate` | `explain` printed the decision, whether it allows a call or denies it; `try` made the call, got an answer that matches the schema, and recorded it. | Not used. | The event doesn't exist, the price file can't be read, storage raised an error, or `try` recorded a call that was denied, failed, refused by the model, or answered against the schema. |
@@ -374,6 +374,13 @@ cascaded: assertion 44
 
 An erasure of a blob erases no payload and no unit, so it takes no assertion with it.
 A target that no call read and no assertion rests on prints no such line, and neither does a repeat of an erasure whose cascade stands.
+
+An approval keeps standing when `redact event` erases its proposal, and it carries the proposal's content.
+For each approval that stands of the target, one notice goes to standard error, after the other notices, and before the sentence of an unfinished redaction:
+
+```text
+the approval 9 still carries the words of the proposal 6; redact event 9 to erase them too
+```
 `redact` refuses a redaction as a target and accepts every other action, a policy event and a `model_call` included.
 
 `redact` works in this order: it records the redaction and sets the tombstones in one transaction, deletes the blobs that no longer have to lie, and brings every projection up to the tip of the log, the way `project` does.
@@ -558,7 +565,7 @@ FINDING 9: unknown action "teleport"
 | `action has no valid form` | An event of kind `action` carries no `action` name in its payload, or a redaction's payload doesn't have exactly the form `redact` writes. | The action. |
 | `unknown action "<name>"` | An event of kind `action` carries an `action` name that isn't `redaction`, `policy`, `model_call` or `mcp_access`. | The action. |
 
-Fifteen findings come from assertions, the events of the kind `assertion` ({ref}`assertions-reference`):
+Sixteen findings come from assertions, the events of the kind `assertion` ({ref}`assertions-reference`):
 
 ```text
 FINDING 57: assertion has no valid form: the sources are empty: an assertion needs at least one source
@@ -569,6 +576,7 @@ FINDING 57: assertion has a subject of another kind
 FINDING 57: decision replaces no earlier decision
 FINDING 57: approval names no open proposal of its subject
 FINDING 57: approval of a proposal that is already approved or rejected
+FINDING 57: approval does not take the content and the author of its proposal
 FINDING 57: approval does not take the sources of its proposal
 FINDING 57: rejection names no open proposal
 FINDING 57: rejection of a proposal that is already approved or rejected
@@ -588,7 +596,8 @@ FINDING 57: assertion stands on an erased source
 | `decision replaces no earlier decision` | `replaces` names neither an earlier decision nor an erased assertion. |
 | `approval names no open proposal of its subject` | `approves` names no earlier proposal of the entry that `subject` names, and no erased assertion. |
 | `approval of a proposal that is already approved or rejected` | An earlier approval or rejection answered the proposal. |
-| `approval does not take the sources of its proposal` | The approval's sources differ from those of the proposal it approves. |
+| `approval does not take the content and the author of its proposal` | The approval's obligation or decision, or its author, differs from that of the proposal it approves, while the proposal stands; the reason may differ. An approval with this finding doesn't get the next one. |
+| `approval does not take the sources of its proposal` | The approval's sources differ from those of the proposal it approves, while the proposal stands. |
 | `rejection names no open proposal` | `of` names no earlier proposal, and no erased assertion. |
 | `rejection of a proposal that is already approved or rejected` | An earlier approval or rejection answered the proposal. |
 | `rejection does not take the sources of its proposal` | The rejection's sources differ from those of the proposal it rejects. |
@@ -1202,6 +1211,7 @@ Error: --subject 5 names no obligation that stands
 
 A reference without a known prefix is refused as `Error: --debtor: the reference has no known prefix: use own, circle:, address: or name:`, and the other form errors of an assertion come from its checks.
 What only the log knows is checked before the question as well, with the sentence of the write path: a source that isn't an event, isn't an observation or is erased, a unit that doesn't exist or is erased, and a `--subject`, `--replaces` or proposal that names nothing that stands.
+So is a text the log can't hold, such as one with a lone UTF-16 surrogate, which the write path would refuse with `a statement cannot be written:` and the path of the field.
 The write path checks again under its locks, so a refusal can still follow the question when an erasure comes in between.
 
 ### `approve` and `reject`
@@ -1226,7 +1236,12 @@ Error: event 99 is no proposal that stands
 Error: the version 6 is no proposal: it is direct
 Error: the proposal 3 is already approved
 Error: the proposal 4 is already rejected
+Error: the proposal 5 is overtaken: the direct version 7 came after it
 ```
+
+`approve` takes only a proposal that's pending, or that stands because no direct version exists.
+A proposal that a direct version came after was made against what stood before that version, and approving it would put its older content back over the newer one; `reject` still takes it.
+The batch is checked as it will stand once written, so a call that approves two proposals of one entry is refused at the second one: the approval of the first is a direct version that came after it.
 
 ### `obligations` and `decisions`
 
@@ -1276,6 +1291,8 @@ A rejection is a line `rejection`, its id, the time, its author and `rejects ID`
 
 `--history` also answers for an entry whose versions are all rejected proposals.
 When no obligation or decision of that kind stands under the id, or none of its versions wins and `--history` is absent, the command prints `no obligation stands under event ID` to standard error, with `decision` for a decision, and returns 1.
+When no entry stands under the id and the id names an assertion an erasure took, the command prints `assertion ID is erased` to standard error instead, with or without `--history`, and returns 1.
+That's the answer for an entry whose versions are all erased, and for any other erased version too: the erasure took the payload that said which kind and which entry it was.
 
 (cli-mcp)=
 

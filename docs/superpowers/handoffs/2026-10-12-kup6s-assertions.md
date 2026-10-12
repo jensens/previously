@@ -35,13 +35,17 @@ Give it to the Deployment `previously-mcp` and to nothing else: not to the tools
 **Why:** three tools of the server write, `write_assertion`, `write_approve` and `write_reject`, and each writes in two calls: the first shows what it would write and returns a handle, and only a second call that presents the handle writes.
 The server seals the handle with this key, so that it opens only for the client and the statements it was issued for, for ten minutes.
 No other process writes through a handle, so the key has no use anywhere else.
-Rotating it makes only the handles not yet confirmed fail; nothing stored depends on it.
+Rotating it makes every handle issued before it fail; nothing stored depends on it.
 
 **Without it,** or with a value shorter than 32 characters, the server starts and reads as before, and every writing tool answers `Error: writing is not configured on this server`.
 That's a safe state to deploy first and add the key later.
 
 Neither `serve` nor anything else prints the key or writes it to a log.
-The connection string of `previously-mcp` already belongs to a role that may write, since every call appends its access record; writing assertions needs no other grant.
+The connection string of `previously-mcp` already belongs to a role that may write, since every call appends its access record.
+Writing assertions needs one grant more, if that role doesn't hold it yet: `UPDATE` on at least one column of the table `event`.
+The write path locks every source row with `SELECT … FOR NO KEY UPDATE`, so that an erasure can't fall between its check and its write, and PostgreSQL takes that lock only for a role with `UPDATE` on the table; measured on 2026-10-12 against PostgreSQL 18.6, a role with `SELECT` and `INSERT` alone gets `permission denied for table event`.
+The same holds for the role the tools pod writes assertions with on the command line.
+`docs/reference/environment.md` holds the requirement.
 
 **It stands when** a client connected through `kubectl port-forward` asks for `write_assertion` without `confirm`, on a mail it may see, and gets a preview with a `handle:` line instead of the sentence above.
 Confirming isn't needed for the check, and a preview writes nothing but its access record.
@@ -84,6 +88,6 @@ This file considers it and builds nothing for it.
 ## How to recognize that everything stands
 
 1. The tools pod and the jobs run the release after `v0.1.0a4`, and the migration job reported `up to date:` with `0005_watermark`.
-2. `previously-mcp` has `PREVIOUSLY_MCP_CONFIRM_KEY`, and no other pod or job has it.
+2. `previously-mcp` has `PREVIOUSLY_MCP_CONFIRM_KEY`, and no other pod or job has it; its role, and the role of the tools pod, hold `UPDATE` on `event`.
 3. A preview of `write_assertion` through `kubectl port-forward` shows a `handle:` line.
 4. The ingest's next run prints its line with ` in ` and the folder's name at the end, and goes on from its watermark.

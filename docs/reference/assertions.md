@@ -21,7 +21,7 @@ Every kind has these keys:
 | `responsibility` | Who stands for it: `direct` or `open`. |
 | `sources` | The events it rests on: a list of at least one object with exactly the keys `event` and `units`. |
 | `reason` | Why this version was written: a text that isn't blank, or `null`. |
-| `handle` | The identifier of the MCP handle whose confirmation wrote it, or `null` for an assertion the command line wrote. |
+| `handle` | The nonce of the MCP handle whose confirmation wrote it, or `null` for an assertion the command line wrote. |
 
 An entry of `sources` holds:
 
@@ -166,7 +166,8 @@ Latest and newer mean the order of the chain.
 "Overdue" is never stored; it's computed when an entry is read.
 
 An entry stands as long as one of its versions stands, and keeps its id when its first version is erased.
-An entry without a standing version is in no list, and asking for it answers as for an id that names nothing.
+An entry without a standing version is in no list.
+Asking for it by the id of an assertion an erasure took, its first version or any other, answers that the assertion is erased, whichever kind is asked for: the kind went with the payload.
 An entry whose every version is a rejected proposal has nothing that stands either: it's in no list, and only its history answers for it.
 
 ## What a write checks
@@ -179,14 +180,20 @@ Beyond the form above, a write refuses a batch when any of these fails, and writ
 | Sources | Every source is an event that exists, is an observation and isn't erased, and every unit it cites exists and isn't erased. |
 | `subject` | Names an entry of the same kind that stands below the tip, or that an earlier statement of the same batch creates. |
 | `replaces` | Names a decision that stands. |
-| `approves` | Names a proposal of the entry that `subject` names, which isn't answered, and the approval carries its content, its sources and its author unchanged. |
+| `approves` | Names a proposal of the entry that `subject` names, which isn't answered and which no direct version of the entry came after, and the approval carries its content, its sources and its author unchanged. Its reason may differ. |
 | `of` | Names a proposal that stands and isn't answered, and the rejection carries its sources unchanged. |
 
 A batch whose `handle` an assertion in the log carries already is written once: a repeat writes nothing and answers with the ids of the assertions that carry it and still stand.
-`verify` checks the same rules for every assertion in the log, and {ref}`cli-reference` lists its findings under `verify`.
+`verify` checks the form and what each assertion names for every assertion in the log, with two exceptions.
+An approval of a proposal that a direct version came after is no finding: the write path refuses one, and `verify` doesn't check for it.
+An approval that names an erased assertion is accepted whatever that assertion was, since the erasure took what would tell.
+{ref}`cli-reference` lists the findings under `verify`.
 
 ## What an erasure takes
 
 An erasure takes an assertion along when it erases a source event of it, a unit it cites, or a unit of an event it cites whole that's erased after the assertion.
 The assertion's payload is erased by a redaction of its own, with the reason `cascade of redaction ID`, in the same transaction; `redact` prints it as `cascaded: assertion ID` ({ref}`cli-reference`).
 An erasure of a blob takes no assertion along.
+
+An erasure of an approved proposal, on its own and not through a source, leaves its approval standing.
+The approval carries the content of the proposal, so the words stay in the log until the approval is erased too; `redact` says so on standard error ({ref}`cli-reference`).

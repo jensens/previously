@@ -92,7 +92,7 @@ All three writing tools start with `write_`, so that one rule per client can mak
 
 The key that seals a handle is a secret of the MCP server alone.
 No other process writes through a handle, so a copy anywhere else, in the tools pod or beside the ingest, would be a key that nothing uses and that can still leak.
-Rotating it makes the handles not yet confirmed fail, and nothing else.
+Rotating it makes every handle issued before it fail; nothing stored depends on it.
 
 Which client carried an approval stands in the access log, not in the assertion.
 The `mcp_access` of the confirming call names the client and the ids it wrote, so the question "who approved this, and through what" has an answer.
@@ -115,8 +115,16 @@ Its reason can be the operator's own, since why it's taken can differ from why i
 A proposal is answered once.
 Approving one that's approved or rejected already is refused, because two answers to one proposal would stand side by side, and the second would win without a word.
 
+Only a proposal that's pending, or that stands because no direct version exists, can be approved.
+A proposal is a complete version, written against what stood when it was made.
+Once a direct version came after it, approving it would put its older content back over the newer one, as if nobody had changed the entry since.
+Rejecting it stays allowed, since a rejection changes nothing that stands.
+The same holds inside one call: the first of two approvals of one entry is a direct version that comes after the second proposal, so the second is refused, and the operator picks one.
+
 An approval stands when its proposal is erased on its own, by an erasure of the proposal and not of a source.
 It was checked against the proposal when it was written, it carries the same sources, and it's a whole statement that doesn't need the proposal to say what it says.
+That cuts both ways: the words of the proposal stay in the log, in the approval, until the approval is erased as well.
+An erasure is meant to take content out, so `redact` says so when its target was an approved proposal, and names the approval.
 An approval whose proposal went through a source goes with it, since it rests on the same sources.
 
 (assertions-rejection)=
@@ -150,7 +158,9 @@ Proposals, approvals and rejections go alike.
 
 When the version that holds is erased, the entry falls back to the next direct version that stands.
 Without one, a proposal that stands appears again, as a proposal and never as direct.
-Without any standing version the entry is gone: every list leaves it out, and asking for it answers as for an id that names nothing.
+Without any standing version the entry is gone, and every list leaves it out.
+Asking for it by its id answers that the assertion is erased, on the command line and over MCP alike, rather than that nothing stands there: the first is true, and the second would read as if the entry had never been.
+The answer can't say whether it was an obligation or a decision, since that went with the payload, and it's the same for any erased version; over MCP it's the placeholder `get_event` gives any client for an erased event, so it tells a client nothing it couldn't learn there.
 
 The write path and an erasure can meet.
 The write path locks every source, in ascending order, with the row lock an erasure takes, and reads them again under it, so a source erased a moment before is refused, and an erasure that comes a moment later waits and then finds the assertion; {ref}`concurrency` describes that lock.
@@ -180,12 +190,14 @@ If it did, naming a circle with a generous rule would hand out content of a circ
 A reference to an actor grants nothing and takes nothing away.
 
 Where an assertion shows up is a matter of sorting, and there the people it names count.
-A list filtered by a circle finds an entry whose sources touch the circle, and also one whose debtor or creditor is that circle or an address that belongs to it.
+A list filtered by a circle finds an entry whose sources touch the circle, and also one whose parties (debtor, creditor or deciders) are that circle or an address that belongs to it.
 The filter only sorts: what the policy keeps from a client stays a placeholder in any list.
 
 A withheld entry is found by the circles of its sources alone, never by the people it names.
 Otherwise the filter would tell, of an entry the client may not read, which circle one of its parties belongs to, and the parties are content.
 What it still tells is the same as the chronicle's filter tells of a withheld event: a placeholder found under a circle says that somebody in its sources belongs to that circle, also where the circle has a rule and the placeholder's reason names only circles without one.
+The filters that look at the content, `state`, `overdue` and `proposals`, don't touch a withheld entry at all.
+The policy decides first, and a placeholder stands under every one of them alike; were it the other way round, which filter keeps a placeholder would tell what the entry holds.
 
 The command line shows everything, without asking the policy, as `chronicle` does: whoever has the command line is the operator.
 The chronicle itself stays with observations, and assertions appear in lists of their own.
@@ -229,8 +241,25 @@ What holds is computed and not kept, so nothing beside the log can disagree with
 
 The cost is that every list, every page of an entry and every write reads every assertion in the log.
 The write path reads them as well, inside its transaction, to check what a statement names and whether its handle was confirmed before.
-How long that takes at 5,000 assertions, for `previously obligations` and for `list_obligations`, hasn't been measured yet: the final review of the build measures it, and this section carries the figure with its date once it's taken.
-A derived table comes only when a measurement asks for one.
+
+The final review measured that on 2026-10-12, on an Intel Core i7-11370H against PostgreSQL 18 in a container, with 5,000 assertions on 1,000 mails: 600 obligations and 400 decisions, each with two later versions and a proposal, of which 400 were rejected and 300 approved, and 300 proposals more.
+Folding all 5,000 took about 150 ms, and a plain list hardly more.
+The lists that ask the policy or the circles were slow, and folding wasn't why: they read each source event with a query of its own, which was 85 to 90 percent of their time.
+Since the fix wave of the same day, a call reads the source events of all the entries it looks at in two queries, the rows and the source keys.
+The figures are medians of three runs, before and after that change, measured the same day by the same script:
+
+| Read | Before | After |
+|---|---|---|
+| Folding every assertion | 143 ms | 150 ms |
+| `previously obligations` | 155 ms | 146 ms |
+| `previously obligations --circle huber` | 2,824 ms | 193 ms |
+| `list_obligations`, first page | 941 ms | 225 ms |
+| `list_obligations` with the sparse circle `team`, first page | 1,964 ms | 224 ms |
+| Writing one statement | 151 ms | 162 ms |
+| `verify` of the whole log | 1,551 ms | 1,348 ms |
+
+Every list stays well under a second at that size, so no derived table came with the build.
+One comes only when a measurement asks for one.
 
 (assertions-limits)=
 
@@ -245,6 +274,11 @@ These limits are known and named; the map of open points holds the ones that cal
 - **`verify` can't tell every erased version apart.**
   An erased assertion keeps no payload, so `verify` can't say whether it was the first version of an entry or a later one, and a version whose `subject` names an erased later version passes, unless an approval once named the erased one under another subject.
   The write path refuses such a version; only a row written around it can carry one.
+- **`verify` accepts an approval that names any erased assertion.**
+  An approval of a proposal erased on its own stands, and nothing of the proposal is left to compare it with, so an approval that names an erased direct version, an erased rejection or an erased proposal of another entry passes as well, whatever content it carries.
+  Only a row written around the write path can be one.
+- **`verify` doesn't check that an approval's proposal was pending.**
+  The write path refuses to approve a proposal that a direct version came after, and a row written around it that does so is no finding.
 - **A history longer than a page** is cut over MCP after a whole line, and no call serves the rest; `previously obligation ID --history` prints all of it.
 - **A line longer than 1,000 characters** can't be written or answered over MCP, because the preview would cut it.
   The command line has no such limit, since it shows the whole payload.
