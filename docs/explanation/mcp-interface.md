@@ -85,8 +85,8 @@ The subject, the names of attachments and the provenance of a mail stand inside 
 
 That's a bet on how models treat marked text, and the effect of such marking on current models hasn't been measured.
 The boundary that holds lies elsewhere.
-Every tool of the pilot only reads, so a model that follows an injected instruction finds nothing to write with.
-When writing tools arrive, each one's name starts with `write_`, so that one pattern per client can make the client always ask before any of them, and each one takes two steps, a preview and a confirmation.
+Most tools only read, and the three that write can't do what a person stated: `write_assertion` only proposes, and a proposal never outranks a statement of the operator.
+Each writing tool's name starts with `write_`, so that one pattern per client can make the client always ask before any of them, and each one takes two steps, a preview and a confirmation.
 And before any of this, the policy decides which content reaches the client at all.
 
 The fence has two named gaps.

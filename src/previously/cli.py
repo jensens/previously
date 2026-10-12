@@ -2851,6 +2851,9 @@ def _cmd_mcp(_args: argparse.Namespace) -> int:
     a revocation while the process runs locks the client out from its next
     call, because every call reads the policy again.
     Nothing is printed: standard output is the protocol.
+    `PREVIOUSLY_MCP_CONFIRM_KEY` is passed on unread: without it, or shorter
+    than 32 characters, the writing tools answer that writing is not
+    configured, and the key is never printed.
 
     The server module is imported here and not at the head, as the adapters
     of the gate are: the MCP SDK, Starlette and uvicorn add about 0.3 s to
@@ -2859,6 +2862,7 @@ def _cmd_mcp(_args: argparse.Namespace) -> int:
     for `previously.cli` alone, cumulative, three runs each; every other
     command would pay for it.
     """
+    from previously.mcp_server.confirm import KEY_VARIABLE
     from previously.mcp_server.server import CLIENT_VARIABLE
     from previously.mcp_server.server import run_stdio
 
@@ -2871,7 +2875,7 @@ def _cmd_mcp(_args: argparse.Namespace) -> int:
                 raise PreviouslyError(
                     f'no client "{name}" is in force; add it with previously client add'
                 )
-        run_stdio(storage, name)
+        run_stdio(storage, name, locker=storage, confirm_key=os.environ.get(KEY_VARIABLE))
     return 0
 
 
@@ -2894,9 +2898,11 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
     Every request needs the bearer token of a client in force. The host check
     against DNS rebinding lets through the loopback names and those in
     `PREVIOUSLY_MCP_ALLOWED_HOSTS`, separated by commas or blanks.
+    `PREVIOUSLY_MCP_CONFIRM_KEY` is passed on as `_cmd_mcp` passes it.
 
     The server module is imported here for the reason `_cmd_mcp` gives.
     """
+    from previously.mcp_server.confirm import KEY_VARIABLE
     from previously.mcp_server.server import run_http
 
     host, port = _mcp_address()
@@ -2904,7 +2910,14 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
     where = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
     with _storage() as storage:
         print(f"serving MCP over HTTP on http://{where}/mcp", file=sys.stderr)
-        run_http(storage, host=host, port=port, allowed_hosts=allowed)
+        run_http(
+            storage,
+            host=host,
+            port=port,
+            allowed_hosts=allowed,
+            locker=storage,
+            confirm_key=os.environ.get(KEY_VARIABLE),
+        )
     return 0
 
 

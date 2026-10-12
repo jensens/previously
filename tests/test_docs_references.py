@@ -1432,6 +1432,7 @@ def test_the_mcp_reference_quotes_what_the_server_says() -> None:
     for after in (
         "A call that fails as a whole answers with one sentence after `Error: `, such as these:",
         "An `event_id` that isn't a whole number in ASCII digits is refused:",
+        "The refusals of the server are these, each with nothing written:",
     ):
         for line in _mcp_lines(after):
             prefix, _, message = line.partition(": ")
@@ -1455,6 +1456,35 @@ def test_the_mcp_reference_quotes_what_the_server_says() -> None:
     ):
         (line,) = _mcp_lines(after)
         _said(line, server, "server.py")
+
+
+def test_the_mcp_reference_quotes_the_refusals_of_a_handle_as_they_are_made() -> None:
+    """The four refusals of a handle, made by `open_handle` itself and
+    compared whole, in the order the page lists them: a seal of another key,
+    another client, other statements, and a moment after the expiry."""
+    from datetime import datetime
+    from datetime import timedelta
+    from datetime import UTC
+    from previously.mcp_server.confirm import HANDLE_SECONDS
+    from previously.mcp_server.confirm import HandleRefused
+    from previously.mcp_server.confirm import open_handle
+    from previously.mcp_server.confirm import seal
+
+    now = datetime(2026, 10, 12, 12, 0, tzinfo=UTC)
+    key = b"k" * 32
+    payloads = [{"assertion": "obligation"}]
+    handle = seal(key, client="claude-code", payloads=payloads, now=now, nonce="n")
+    made: list[str] = []
+    for other_key, client, other_payloads, moment in (
+        (b"q" * 32, "claude-code", payloads, now),
+        (key, "vibe", payloads, now),
+        (key, "claude-code", [{"assertion": "decision"}], now),
+        (key, "claude-code", payloads, now + timedelta(seconds=HANDLE_SECONDS + 1)),
+    ):
+        with pytest.raises(HandleRefused) as refused:
+            open_handle(other_key, handle, client=client, payloads=other_payloads, now=moment)
+        made.append(f"Error: {refused.value}")
+    assert _mcp_lines("A handle that doesn't let the call write is refused") == made
 
 
 def test_the_mcp_reference_quotes_the_reasons_the_decision_builds() -> None:

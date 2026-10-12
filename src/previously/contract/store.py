@@ -36,7 +36,8 @@ The protocol declares fifteen: `observations` came the same day with the MCP
 server, and `core` does not call it: `mcp_server/read.py` does, to read the
 chronicle of a circle from the log (decision 3 of the 2026-10-11 MCP read
 access plan). `grep -ohE 'log\.[a-z_]*\(' src/previously/mcp_server/*.py`
-names the six the server calls, `observations` among them. Typing `core`
+names the seven the server calls, `observations` among them, counted on
+2026-10-12; the sentence said six until then, a count no longer true. Typing `core`
 against this protocol instead of against `PostgresStorage` removes the edge
 `core -> storage.postgres`, and with it the two named exemptions in
 `.importlinter` and the test that guarded them ({ref}`module-boundaries`).

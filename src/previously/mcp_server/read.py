@@ -442,6 +442,28 @@ def events[Conn](
     return Seen(tuple(reads))
 
 
+def event_hidden[Conn](
+    log: LogStore[Conn], conn: Conn, policy: Policy, client: Client, event_id: int
+) -> bool:
+    """Whether a client may not learn that the event `event_id` exists: no
+    event has the id, or it is an observation the policy withholds from this
+    client, as `get_event` decides it.
+
+    An erased event and one that is no observation are not hidden, since
+    `get_event` names both to any client; a writing tool lets the write path
+    refuse them with its own sentence.
+    """
+    if not 1 <= event_id <= MAX_SAFE_INT:
+        return True
+    row = next(iter(log.read(conn, event_id, 1)), None)
+    if row is None or row.id != event_id:
+        return True
+    if row.kind != "observation":
+        return False
+    pending = _decided(policy, client, row, log.source_keys(conn, [event_id]).get(event_id))
+    return pending.read is not None and isinstance(pending.read.entry, Withheld)
+
+
 # --- what a client sees in principle ------------------------------------------------
 
 
@@ -516,7 +538,9 @@ def _uris(statement: Statement) -> str:
     return ", ".join(uris)
 
 
-def _statement_lines(statement: Statement) -> list[str]:
+def statement_lines(statement: Statement) -> list[str]:
+    """The lines of a statement inside the fence: its text, its actors, its
+    dates, its reason and its sources as URIs; the state is the label's."""
     body = statement.body
     lines: list[str] = []
     if isinstance(body, ObligationBody):
@@ -555,7 +579,7 @@ def _history_lines(thread: Thread) -> list[str]:
             head.append(f"approves {statement.approves}")
         lines.append(" · ".join(head))
         if before is None:
-            lines.extend(f"set {line}" for line in _statement_lines(statement))
+            lines.extend(f"set {line}" for line in statement_lines(statement))
         else:
             lines.extend(
                 f"change {name}: {old} → {new}" for name, old, new in changes(before, statement)
@@ -637,10 +661,24 @@ def _entry[Conn](
     if listing.history or winner is None:
         lines = _history_lines(thread)
     else:
-        lines = _statement_lines(winner.statement)
+        lines = statement_lines(winner.statement)
     item = Stated(uri, thread.kind, _label(thread, winner, listing.today), tuple(lines))
     delivered = Delivered(thread.subject, (), decisions[-1].circles)
     return Read(item, delivered, rules, thread.subject)
+
+
+def thread_hidden[Conn](
+    log: LogStore[Conn], conn: Conn, policy: Policy, client: Client, thread: Thread | None
+) -> bool:
+    """Whether a client may not learn that an obligation or a decision
+    stands: there is none (`thread` is `None`), or the policy withholds it,
+    as `list_obligations` and `list_decisions` decide it over the sources of
+    every standing version."""
+    if thread is None:
+        return True
+    identities, sources = source_identities(log, conn, thread)
+    decisions = assertion_decisions(policy, client, identities, sources)
+    return any(decision.chosen is None for decision in decisions)
 
 
 def assertions[Conn](

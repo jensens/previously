@@ -97,8 +97,8 @@ An event that doesn't pass comes back as a placeholder without its subject and i
 
 Four properties of this boundary are worth stating on their own.
 
-The first is that every tool only reads.
-Nothing a client does through the server changes the log, beyond the record of the call itself.
+The first is that a client can't state anything in the operator's name.
+Beyond the record of the call itself, all a client can write through the server is a proposal, or an answer to one that its user confirmed, and only about events it may see.
 
 The second is that a client is known by its token and not by the network.
 Over HTTP every request needs the bearer token of a client in force, looked up at every request, and only the SHA-256 of a token is ever stored.
@@ -108,7 +108,7 @@ The third is that the log holds a record of every call that has a client, a refu
 `previously access` answers what a client saw and what it didn't get.
 
 The fourth is the one that isn't a boundary: the fence around the text of a mail.
-It marks foreign text for the model, and a model can still follow what the text says; {ref}`mcp-interface` explains why the pilot relies on read-only tools and the policy instead.
+It marks foreign text for the model, and a model can still follow what the text says; {ref}`mcp-interface` explains why the pilot relies on tools that only read or propose, and on the policy, instead.
 
 What every client sees regardless of the policy is what the operator stated and what isn't content of a customer: the names of the circles, their rules, the number of members, and the promises of the providers.
 No address of a member is among it.

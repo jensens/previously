@@ -24,6 +24,7 @@ from dataclasses import dataclass
 from dataclasses import replace
 from datetime import date
 from datetime import datetime
+from datetime import timedelta
 from datetime import UTC
 from mcp.client.client import Client
 from mcp.client.streamable_http import streamable_http_client
@@ -46,6 +47,8 @@ from previously.core.assertion import OBLIGATION
 from previously.core.assertion import ObligationBody
 from previously.core.assertion import OPEN
 from previously.core.assertion import OPERATOR
+from previously.core.assertion import payload_of
+from previously.core.assertion import REJECTION
 from previously.core.assertion import Source
 from previously.core.assertion import Statement
 from previously.core.assertions import write_statements
@@ -57,13 +60,18 @@ from previously.core.policy import Inference
 from previously.core.policy import Membership
 from previously.core.policy import OwnIdentity
 from previously.core.policy import Provider
+from previously.core.policy import read_policy
 from previously.core.policy import Rule
 from previously.core.policy import set_policy
 from previously.core.redact import redact_event
 from previously.core.verify import verify
+from previously.mcp_server.confirm import HANDLE_SECONDS
+from previously.mcp_server.confirm import seal
+from previously.mcp_server.read import event_hidden
 from previously.mcp_server.render import PAGE_CHARS
 from previously.mcp_server.server import build_app
 from previously.mcp_server.server import build_server
+from previously.mcp_server.server import write_record
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import create_engine
 from sqlalchemy import Engine
@@ -840,7 +848,7 @@ def test_the_prompts_ask_for_work_and_hold_no_content(world: World, mode: str) -
 # The SHA-256 of the tool list as clients see it: name, description and input
 # schema of every tool, sorted by name, as canonical JSON. A change to any of
 # them is a change of the interface, made deliberately and released.
-TOOLS_SHA256 = "d5cab21a01f2e3fe49744970638697c3cfe28c7ab50a65e64e17335beade2913"
+TOOLS_SHA256 = "45a73803197d866e97fb5f6511787de00988a020fe9a642fdaf7a34aa418cc04"
 
 
 def tool_list_digest(tools: list[dict[str, object]]) -> str:
@@ -870,6 +878,9 @@ def test_the_tool_list_matches_its_checksum(world: World, mode: str) -> None:
         "policy_gaps",
         "previously",
         "whoami",
+        "write_approve",
+        "write_assertion",
+        "write_reject",
     ]
     assert tool_list_digest(tools) == TOOLS_SHA256
 
@@ -925,8 +936,11 @@ def _http[T](
     use: Callable[[httpx2.AsyncClient], Awaitable[T]],
     *,
     allowed_hosts: tuple[str, ...] = (),
+    confirm_key: str | None = None,
 ) -> T:
-    app = build_app(world.storage, allowed_hosts=allowed_hosts)
+    app = build_app(
+        world.storage, allowed_hosts=allowed_hosts, locker=world.storage, confirm_key=confirm_key
+    )
 
     async def run() -> T:
         async with app.router.lifespan_context(app):
@@ -940,14 +954,20 @@ def _http[T](
 
 
 def _over_http(
-    world: World, token: str, mode: str, name: str, arguments: dict[str, Any]
+    world: World,
+    token: str,
+    mode: str,
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    confirm_key: str | None = None,
 ) -> CallToolResult:
     async def use(http: httpx2.AsyncClient) -> CallToolResult:
         http.headers["Authorization"] = f"Bearer {token}"
         async with Client(streamable_http_client(URL, http_client=http), mode=mode) as session:
             return await session.call_tool(name, arguments)
 
-    return _http(world, use)
+    return _http(world, use, confirm_key=confirm_key)
 
 
 _INITIALIZE = {
@@ -1787,3 +1807,662 @@ def test_an_unknown_circle_a_state_of_the_other_kind_and_a_subject_out_of_range_
         assert result.is_error
         assert sentence in _text(result)
         assert _last_access(world).access.outcome == "error"
+
+
+# --- writing: write_assertion, write_approve, write_reject --------------------------------
+
+# The key the writing tests start the server with: 32 characters, the least
+# a key may have.
+KEY = "k" * 32
+PRIVATE_REASON = "PRIVATE-REASON-OF-A-PROPOSAL"
+_HANDLE = re.compile(r"^handle: (\S+)$", re.MULTILINE)
+
+
+def _writer(world: World, *, client: str = "claude-code", key: str | None = KEY) -> Any:
+    return build_server(world.storage, stdio_client=client, locker=world.storage, confirm_key=key)
+
+
+def _write(
+    world: World,
+    mode: str,
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    client: str = "claude-code",
+    key: str | None = KEY,
+) -> CallToolResult:
+    server = _writer(world, client=client, key=key)
+    return _session(server, mode, lambda session: session.call_tool(name, arguments))
+
+
+def _handle(page: str) -> str:
+    found = _HANDLE.search(page)
+    assert found is not None, page
+    return found.group(1)
+
+
+def _item(event: int, **fields: Any) -> dict[str, Any]:
+    """An obligation as `write_assertion` takes it, resting on `event`."""
+    return {
+        "kind": "obligation",
+        "debtor": "own",
+        "creditor": "address:eva.huber@example.org",
+        "what": THE_TEXT,
+        "due": "2099-01-01",
+        "sources": [{"event": event}],
+        **fields,
+    }
+
+
+def _assertions(world: World) -> list[tuple[int, dict[str, object] | None]]:
+    with world.storage.begin() as conn:
+        return [
+            (row.id, None if row.payload is None else dict(row.payload))
+            for row in world.storage.read_by_kind(conn, "assertion")
+        ]
+
+
+def _proposal(world: World, event: str, *, client: str = "local-harness") -> int:
+    """A proposal resting on the mail `event`, as a model would write it."""
+    statement = replace(
+        _obligation(_on(world, event), responsibility=OPEN, what=PRIVATE_TEXT),
+        author=model_author(client),
+    )
+    (proposal,) = _state(world, statement)
+    return proposal
+
+
+def _confirmed(
+    world: World, mode: str, name: str, arguments: dict[str, Any], *, client: str = "claude-code"
+) -> tuple[CallToolResult, CallToolResult]:
+    """The preview and the call that confirms it."""
+    preview = _write(world, mode, name, arguments, client=client)
+    assert not preview.is_error, _text(preview)
+    handle = _handle(_text(preview))
+    return preview, _write(world, mode, name, {**arguments, "confirm": handle}, client=client)
+
+
+def _strings_in(value: object) -> list[str]:
+    """Every string in a payload, keys included, as `tests/test_access.py`
+    searches one."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        entries = cast("dict[str, object]", value)
+        return [s for key, item in entries.items() for s in (key, *_strings_in(item))]
+    if isinstance(value, list):
+        return [s for item in cast("list[object]", value) for s in _strings_in(item)]
+    return []
+
+
+def _access_payloads(world: World) -> list[dict[str, object]]:
+    with world.storage.begin() as conn:
+        return [
+            dict(row.payload)
+            for row in world.storage.actions(conn, "mcp_access")
+            if row.payload is not None
+        ]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_assertion_without_confirm_previews_and_writes_nothing(
+    world: World, mode: str
+) -> None:
+    scanned = world.ids["attachments_only"]
+
+    page = _untagged(_text(_write(world, mode, "write_assertion", {"items": [_item(scanned)]})))
+
+    assert _assertions(world) == []
+    assert page.splitlines()[0] == "previously · write_assertion · preview · page 1"
+    assert (
+        "### statement 1 · obligation · proposed · open · open · by model:claude-code · "
+        "new entry\n<<<customer-content TAG>>>\n"
+        f"what: {THE_TEXT}\n"
+        "debtor → creditor: own → address:eva.huber@example.org\n"
+        "due: 2099-01-01\n"
+        "reason: none\n"
+        f"sources: previously://event/{scanned}\n"
+        "<<<end TAG>>>\n\nhandle: "
+    ) in page
+    handle = _handle(page)
+    lines = page.splitlines()
+    assert lines[-2].startswith("expires: ") and lines[-2].endswith(" UTC")
+    assert lines[-1] == (
+        "Nothing is written yet: to write, call write_assertion again with the same "
+        f"arguments and confirm={handle}."
+    )
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_confirming_writes_proposals_by_the_model_of_the_client(world: World, mode: str) -> None:
+    scanned = world.ids["attachments_only"]
+    decision = {
+        "kind": "decision",
+        "what": "use slate for the roof",
+        "by": ["own"],
+        "on": "2026-10-30",
+        "sources": [{"event": scanned, "units": [1]}],
+        "reason": "said in the call",
+    }
+    items = [_item(scanned), decision]
+
+    _preview, written = _confirmed(world, mode, "write_assertion", {"items": items})
+
+    stored = _assertions(world)
+    assert [event_id for event_id, _ in stored] == [
+        int(found) for found in re.findall(r"^assertion (\d+)$", _text(written), re.MULTILINE)
+    ]
+    assert _text(written).splitlines()[0] == "previously · write_assertion · written"
+    payloads = [cast("dict[str, object]", payload) for _, payload in stored]
+    assert [p["author"] for p in payloads] == ["model:claude-code", "model:claude-code"]
+    assert [p["responsibility"] for p in payloads] == [OPEN, OPEN]
+    assert [p["state"] for p in payloads] == ["open", "valid"]
+    handles = {p["handle"] for p in payloads}
+    assert len(handles) == 1 and None not in handles
+    assert verify(world.storage) == []
+    proposals = _text(_tool(world, mode, "list_obligations", {"proposals": True}))
+    assert _shown_ids(proposals) == [stored[0][0]]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_confirming_twice_writes_nothing_new_and_answers_the_same_ids(
+    world: World, mode: str
+) -> None:
+    # Review focus 4 of the 2026-10-12 assertion plan, and assurance 6.
+    arguments = {"items": [_item(world.ids["attachments_only"])]}
+    preview, first = _confirmed(world, mode, "write_assertion", arguments)
+    again = _write(
+        world, mode, "write_assertion", {**arguments, "confirm": _handle(_text(preview))}
+    )
+
+    assert not again.is_error
+    assert _text(again) == _text(first)
+    assert len(_assertions(world)) == 1
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_another_client_does_not_redeem_the_handle(world: World, mode: str) -> None:
+    """An approval is the same content whichever client asks for it, so only
+    the binding to the client refuses it here."""
+    proposal = _proposal(world, "attachments_only")
+    arguments: dict[str, Any] = {"ids": [proposal]}
+    preview = _write(world, mode, "write_approve", arguments)
+    handle = _handle(_text(preview))
+
+    foreign = _write(
+        world, mode, "write_approve", {**arguments, "confirm": handle}, client="local-harness"
+    )
+
+    assert foreign.is_error
+    assert _text(foreign) == (
+        "Error: the handle was sealed for another client; call again without confirm for a new one"
+    )
+    assert len(_assertions(world)) == 1
+    own = _write(world, mode, "write_approve", {**arguments, "confirm": handle})
+    assert not own.is_error  # the control: the client it was sealed for redeems it
+    assert len(_assertions(world)) == 2
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_handle_for_changed_items_is_refused(world: World, mode: str) -> None:
+    scanned = world.ids["attachments_only"]
+    preview = _write(world, mode, "write_assertion", {"items": [_item(scanned)]})
+    changed = {"items": [_item(scanned, what="another text")], "confirm": _handle(_text(preview))}
+
+    result = _write(world, mode, "write_assertion", changed)
+
+    assert result.is_error
+    assert _text(result) == (
+        "Error: the handle was sealed for other statements than these; "
+        "call again without confirm for a new one"
+    )
+    assert _assertions(world) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_expired_handle_is_refused(world: World, mode: str) -> None:
+    """The handle is sealed here, with the server's key and the statement it
+    builds, at a `now` eleven minutes back; the same one sealed at the
+    present `now` is the control that the statement is the same."""
+    scanned = world.ids["attachments_only"]
+    statement = Statement(
+        OBLIGATION,
+        "model:claude-code",
+        OPEN,
+        (Source(scanned, None),),
+        None,
+        None,
+        None,
+        None,
+        None,
+        ObligationBody("own", "address:eva.huber@example.org", THE_TEXT, FAR_FUTURE, "open"),
+    )
+
+    def sealed(now: datetime) -> str:
+        payloads = [payload_of(statement)]
+        return seal(KEY.encode(), client="claude-code", payloads=payloads, now=now, nonce="n")
+
+    arguments: dict[str, Any] = {"items": [_item(scanned)]}
+    late = datetime.now(UTC) - timedelta(seconds=HANDLE_SECONDS + 60)
+    expired = _write(world, mode, "write_assertion", {**arguments, "confirm": sealed(late)})
+    assert expired.is_error
+    assert _text(expired) == (
+        "Error: the handle has expired: a handle holds for 10 minutes; "
+        "call again without confirm for a new one"
+    )
+    assert _assertions(world) == []
+    fresh = _write(
+        world, mode, "write_assertion", {**arguments, "confirm": sealed(datetime.now(UTC))}
+    )
+    assert not fresh.is_error, _text(fresh)
+    assert len(_assertions(world)) == 1
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_tampered_handle_is_refused(world: World, mode: str) -> None:
+    arguments: dict[str, Any] = {"items": [_item(world.ids["attachments_only"])]}
+    handle = _handle(_text(_write(world, mode, "write_assertion", arguments)))
+
+    result = _write(world, mode, "write_assertion", {**arguments, "confirm": "x" + handle})
+
+    assert _text(result) == (
+        "Error: the handle is not one this server sealed; call again without confirm for a new one"
+    )
+    assert _assertions(world) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_invisible_source_and_a_missing_one_give_the_same_sentence(
+    world: World, mode: str
+) -> None:
+    """Assurance 7: the plain mail involves the circle team, which has no
+    rule, so `claude-code` may not see it; event 999999 does not exist. The
+    two answers differ in the id and nothing else, with and without
+    confirm, and neither writes."""
+    hidden, missing = world.ids["plain"], 999_999
+    answers: dict[int, list[str]] = {}
+    for event in (hidden, missing):
+        answers[event] = [
+            _text(_write(world, mode, "write_assertion", {"items": [_item(event)], **extra}))
+            for extra in ({}, {"confirm": "anything"})
+        ]
+    assert answers[hidden][0] == (
+        f"Error: event {hidden} is not one this client can use as a source"
+    )
+    assert [text.replace(str(hidden), "ID") for text in answers[hidden]] == [
+        text.replace(str(missing), "ID") for text in answers[missing]
+    ]
+    assert _assertions(world) == []
+    # The control: the client that may see the mail is shown the preview.
+    local = _write(
+        world, mode, "write_assertion", {"items": [_item(hidden)]}, client="local-harness"
+    )
+    assert not local.is_error, _text(local)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_subject_or_a_decision_replaced_that_the_client_may_not_see_is_named_as_missing(
+    world: World, mode: str
+) -> None:
+    scanned = world.ids["attachments_only"]
+    (hidden,) = _state(world, _obligation(_on(world, "plain")))
+    (decision,) = _state(world, _decision(_on(world, "plain")))
+    texts: list[str] = []
+    for target in (hidden, 999_999):
+        texts.append(
+            _text(
+                _write(world, mode, "write_assertion", {"items": [_item(scanned, subject=target)]})
+            )
+        )
+    replacing = {
+        "kind": "decision",
+        "what": "use tiles",
+        "by": ["own"],
+        "on": "2026-10-30",
+        "sources": [{"event": scanned}],
+    }
+    for target in (decision, 999_999):
+        texts.append(
+            _text(
+                _write(
+                    world, mode, "write_assertion", {"items": [{**replacing, "replaces": target}]}
+                )
+            )
+        )
+    assert texts == [
+        f"Error: subject {hidden} is not an entry this client can see",
+        "Error: subject 999999 is not an entry this client can see",
+        f"Error: replaces {decision} is not an entry this client can see",
+        "Error: replaces 999999 is not an entry this client can see",
+    ]
+    assert len(_assertions(world)) == 2
+    # The control: a subject the client may see takes the item as a version.
+    (seen,) = _state(world, _obligation(_on(world, "attachments_only")))
+    visible = _write(world, mode, "write_assertion", {"items": [_item(scanned, subject=seen)]})
+    assert f"new version of previously://event/{seen}" in _text(visible)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_approve_by_a_client_that_may_not_see_a_source_is_refused(
+    world: World, mode: str
+) -> None:
+    """Review focus 2 of the 2026-10-12 assertion plan: the proposal rests on
+    the plain mail, which `claude-code` may not see. It is refused as an
+    id that names nothing is, and nothing is written."""
+    proposal = _proposal(world, "plain")
+    texts = [
+        _text(_write(world, mode, name, arguments))
+        for name, arguments in (
+            ("write_approve", {"ids": [proposal]}),
+            ("write_approve", {"ids": [999_999]}),
+            ("write_reject", {"proposal": proposal}),
+            ("write_approve", {"ids": [proposal], "confirm": "anything"}),
+        )
+    ]
+    assert texts == [
+        f"Error: event {proposal} is not a proposal this client can answer",
+        "Error: event 999999 is not a proposal this client can answer",
+        f"Error: event {proposal} is not a proposal this client can answer",
+        f"Error: event {proposal} is not a proposal this client can answer",
+    ]
+    assert len(_assertions(world)) == 1
+    # The control: the client that may see the mail approves it.
+    _preview, approved = _confirmed(
+        world, mode, "write_approve", {"ids": [proposal]}, client="local-harness"
+    )
+    assert not approved.is_error, _text(approved)
+    (_, written) = _assertions(world)[-1]
+    assert written is not None
+    assert (written["responsibility"], written["author"], written["approves"]) == (
+        DIRECT,
+        "model:local-harness",
+        proposal,
+    )
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_approve_passes_on_why_a_proposal_the_client_sees_cannot_be_approved(
+    world: World, mode: str
+) -> None:
+    proposal = _proposal(world, "attachments_only")
+    _confirmed(world, mode, "write_approve", {"ids": [proposal, proposal]})
+    (direct,) = _state(world, _obligation(_on(world, "attachments_only")))
+
+    again = _text(_write(world, mode, "write_approve", {"ids": [proposal]}))
+    not_one = _text(_write(world, mode, "write_approve", {"ids": [direct]}))
+
+    assert again == f"Error: the proposal {proposal} is already approved"
+    assert not_one == f"Error: the version {direct} is no proposal: it is direct"
+    assert len(_assertions(world)) == 3  # the proposal, one approval, the direct one
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_reject_writes_a_direct_rejection_by_the_model_with_the_sources_of_the_proposal(
+    world: World, mode: str
+) -> None:
+    proposal = _proposal(world, "attachments_only")
+    preview, written = _confirmed(
+        world, mode, "write_reject", {"proposal": proposal, "reason": "not what was said"}
+    )
+
+    assert f"### rejection · rejection · rejects previously://event/{proposal}" in _text(preview)
+    assert "reason: not what was said" in _text(preview)
+    assert not written.is_error, _text(written)
+    (_, rejection) = _assertions(world)[-1]
+    assert rejection is not None
+    assert (
+        rejection["assertion"],
+        rejection["author"],
+        rejection["responsibility"],
+        rejection["of"],
+        rejection["sources"],
+    ) == (
+        REJECTION,
+        "model:claude-code",
+        DIRECT,
+        proposal,
+        [{"event": world.ids["attachments_only"], "units": None}],
+    )
+    assert _shown_ids(_text(_tool(world, mode, "list_obligations", {"proposals": True}))) == []
+    assert verify(world.storage) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_without_a_key_the_write_tools_answer_an_error_and_the_reading_tools_work(
+    world: World, mode: str
+) -> None:
+    proposal = _proposal(world, "attachments_only")
+    for key in (None, "k" * 31):
+        for name, arguments in (
+            ("write_assertion", {"items": [_item(world.ids["attachments_only"])]}),
+            ("write_approve", {"ids": [proposal]}),
+            ("write_reject", {"proposal": proposal}),
+        ):
+            result = _write(world, mode, name, arguments, key=key)
+            assert result.is_error
+            assert _text(result) == "Error: writing is not configured on this server"
+        assert not _write(world, mode, "list_circles", {}, key=key).is_error
+    assert len(_assertions(world)) == 1
+    # Without a store that locks the sources the server does not write either.
+    server = build_server(world.storage, stdio_client="claude-code", confirm_key=KEY)
+    result = _session(server, mode, lambda s: s.call_tool("write_reject", {"proposal": proposal}))
+    assert _text(result) == "Error: writing is not configured on this server"
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_access_of_a_write_holds_counts_and_ids_and_no_text_and_no_address(
+    world: World, mode: str
+) -> None:
+    """Decision 10 of the 2026-10-12 assertion plan: one entry per call, and
+    in it the number of statements, the source ids, whether confirm was
+    given and the ids written, and not a word of the text, the reason or an
+    address. A call the SDK refuses records the same form."""
+    scanned = world.ids["attachments_only"]
+    item = _item(scanned, what=PRIVATE_TEXT, creditor=f"address:{PRIVATE_ADDRESS}")
+    item["reason"] = PRIVATE_REASON
+    _preview, written = _confirmed(world, mode, "write_assertion", {"items": [item]})
+    (proposal,) = [event_id for event_id, _ in _assertions(world)]
+    _confirmed(world, mode, "write_reject", {"proposal": proposal, "reason": PRIVATE_REASON})
+    refused = _write(
+        world,
+        mode,
+        "write_assertion",
+        {"items": [{**item, "sources": PRIVATE_TEXT}], "confirm": PRIVATE_REASON},
+    )
+    assert _text(refused).startswith("Error: write_assertion did not run: ")
+
+    rows = _accesses(world)
+    assert [(row.access.name, row.access.outcome) for row in rows] == [
+        ("write_assertion", "ok"),
+        ("write_assertion", "ok"),
+        ("write_reject", "ok"),
+        ("write_reject", "ok"),
+        ("write_assertion", "error"),
+    ]
+    rejection = _assertions(world)[-1][0]
+    assert [row.access.arguments for row in rows] == [
+        {"statements": 1, "sources": [scanned], "confirm": False, "written": []},
+        {"statements": 1, "sources": [scanned], "confirm": True, "written": [proposal]},
+        {"statements": 1, "proposals": [proposal], "confirm": False, "written": []},
+        {"statements": 1, "proposals": [proposal], "confirm": True, "written": [rejection]},
+        {"statements": 1, "sources": [], "confirm": True, "written": []},
+    ]
+    found = [s for payload in _access_payloads(world) for s in _strings_in(payload)]
+    for private in (PRIVATE_TEXT, PRIVATE_ADDRESS, PRIVATE_REASON):
+        assert not any(private in s for s in found)
+    # The control: the same search finds them in what was written.
+    stored = [s for _, payload in _assertions(world) for s in _strings_in(payload)]
+    for private in (PRIVATE_TEXT, PRIVATE_ADDRESS, PRIVATE_REASON):
+        assert any(private in s for s in stored)
+    assert "written" in _text(written)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_item_that_is_no_statement_is_refused_before_anything_is_read(
+    world: World, mode: str
+) -> None:
+    scanned = world.ids["attachments_only"]
+    decision = {"kind": "decision", "what": "w", "by": ["own"], "on": "2026-10-30"}
+    for items, sentence in (
+        ([], "items takes 1 to 20 statements, this call gave 0"),
+        ([_item(scanned)] * 21, "items takes 1 to 20 statements, this call gave 21"),
+        ([_item(scanned, kind="rejection")], "item 1: kind is obligation or decision"),
+        ([_item(scanned, debtor=None)], "item 1: an obligation needs debtor and creditor"),
+        ([_item(scanned, by=["own"])], "item 1: by belongs to a decision"),
+        ([{**decision, "sources": [{"event": scanned}], "due": "2026-10-30"}], "item 1: due"),
+        ([{**decision, "on": None, "sources": [{"event": scanned}]}], "item 1: a decision"),
+        ([_item(scanned, due="30.11.2026")], "item 1: due is not a date written YYYY-MM-DD"),
+        ([_item(scanned, due="2026-02-30")], "item 1: due is not a date written YYYY-MM-DD"),
+        ([_item(2**60)], "item 1: an event id is a whole number from 1 to 2^53 - 1"),
+        ([_item(scanned, subject=0)], "item 1: an event id is a whole number from 1 to 2^53 - 1"),
+        ([_item(scanned, what="")], "a statement has no valid form: what is not a non-empty text"),
+        ([_item(scanned, what="a\x00b")], "a statement cannot be written: $.what: null byte"),
+        (
+            [_item(scanned, debtor="nobody")],
+            "a statement has no valid form: the debtor is not a valid reference",
+        ),
+    ):
+        result = _write(world, mode, "write_assertion", {"items": items})
+        assert result.is_error, items
+        assert _text(result).startswith(f"Error: {sentence}"), _text(result)
+    assert _assertions(world) == []
+    assert _text(_write(world, mode, "write_approve", {"ids": []})) == (
+        "Error: ids takes 1 to 20 proposals, this call gave 0"
+    )
+    assert _text(_write(world, mode, "write_approve", {"ids": [2**60]})) == (
+        "Error: ids holds an id that is not a whole number from 1 to 2^53 - 1"
+    )
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_source_erased_between_the_preview_and_the_confirmation_is_refused_by_the_write_path(
+    world: World, mode: str
+) -> None:
+    """The visibility check passes an erased event on to the write path, which
+    names it: `get_event` names an erased event to any client too."""
+    scanned = world.ids["attachments_only"]
+    arguments: dict[str, Any] = {"items": [_item(scanned)]}
+    handle = _handle(_text(_write(world, mode, "write_assertion", arguments)))
+    redact_event(world.storage, world.storage, scanned, reason="test", recorded_at=T0)
+
+    result = _write(world, mode, "write_assertion", {**arguments, "confirm": handle})
+
+    assert _text(result) == f"Error: event {scanned} is erased and cannot be a source"
+    assert _assertions(world) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_over_http_the_handle_is_bound_to_the_client_of_the_token(world: World, mode: str) -> None:
+    proposal = _proposal(world, "attachments_only")
+    arguments: dict[str, Any] = {"ids": [proposal]}
+
+    def call(client: str, extra: dict[str, Any]) -> CallToolResult:
+        token = world.tokens[client]
+        return _over_http(
+            world, token, mode, "write_approve", {**arguments, **extra}, confirm_key=KEY
+        )
+
+    handle = _handle(_text(call("claude-code", {})))
+    foreign = call("local-harness", {"confirm": handle})
+    own = call("claude-code", {"confirm": handle})
+
+    assert _text(foreign).startswith("Error: the handle was sealed for another client")
+    assert _text(own).splitlines()[0] == "previously · write_approve · written"
+    assert len(_assertions(world)) == 2
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_preview_longer_than_a_page_is_refused_and_never_cut(world: World, mode: str) -> None:
+    scanned = world.ids["attachments_only"]
+    long_item = _item(
+        scanned,
+        what="w" * 1_000,
+        reason="r" * 1_000,
+        debtor="name:" + "d" * 200,
+        creditor="name:" + "c" * 200,
+        sources=[{"event": scanned}] * 40,
+    )
+    result = _write(world, mode, "write_assertion", {"items": [long_item] * 20})
+    assert _text(result) == (
+        "Error: the preview of these statements is longer than a page; write fewer in one call"
+    )
+    # The control: ten of them fit.
+    assert not _write(world, mode, "write_assertion", {"items": [long_item] * 10}).is_error
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_reject_refuses_a_proposal_out_of_range(world: World, mode: str) -> None:
+    result = _write(world, mode, "write_reject", {"proposal": 0})
+    assert _text(result) == "Error: proposal is not a whole number from 1 to 2^53 - 1"
+
+
+def test_the_record_of_a_writing_call_reads_arguments_of_any_form() -> None:
+    """A call the SDK refused can carry anything; the record still holds
+    only counts and ids."""
+    assert write_record("write_assertion", {"items": "text"}) == {
+        "statements": 0,
+        "sources": [],
+        "confirm": False,
+        "written": [],
+    }
+    items = ["text", {"sources": "text"}, {"sources": ["text", {"event": "7"}, {"event": 7}]}]
+    assert write_record("write_assertion", {"items": items, "confirm": ""}) == {
+        "statements": 3,
+        "sources": [7],
+        "confirm": True,
+        "written": [],
+    }
+    assert write_record("write_approve", {"ids": [3, 3, True, "4", 5]}) == {
+        "statements": 2,
+        "proposals": [3, 5],
+        "confirm": False,
+        "written": [],
+    }
+    assert write_record("write_reject", {"proposal": "text", "reason": "text"}) == {
+        "statements": 0,
+        "proposals": [],
+        "confirm": False,
+        "written": [],
+    }
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_action_as_a_source_is_refused_by_the_write_path_since_get_event_names_it_too(
+    world: World, mode: str
+) -> None:
+    result = _write(world, mode, "write_assertion", {"items": [_item(world.policy_event)]})
+    assert _text(result) == (
+        f"Error: event {world.policy_event} is not an observation, and only one can be a source"
+    )
+
+
+@pytest.mark.db
+def test_an_id_out_of_range_is_hidden_without_a_query(world: World) -> None:
+    with world.storage.snapshot() as conn:
+        policy = read_policy(world.storage, conn)
+        client = policy.clients["claude-code"]
+        hidden = [
+            event_hidden(world.storage, conn, policy, client, event_id)
+            for event_id in (0, -1, 2**60, world.ids["attachments_only"], world.ids["plain"])
+        ]
+    assert hidden == [True, True, True, False, True]

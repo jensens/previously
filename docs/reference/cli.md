@@ -7,7 +7,7 @@ It has twenty-five subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, 
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
 `append --attach`, `ingest imap`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
 `ingest imap` alone reads the `PREVIOUSLY_IMAP_*` settings, and `gate try` alone reads `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `PREVIOUSLY_LOCAL_MODEL_URL` and `PREVIOUSLY_PRICES`.
-`mcp` alone reads `PREVIOUSLY_MCP_CLIENT`, and `serve` alone reads `PREVIOUSLY_MCP_ADDRESS` and `PREVIOUSLY_MCP_ALLOWED_HOSTS`.
+`mcp` alone reads `PREVIOUSLY_MCP_CLIENT`, `serve` alone reads `PREVIOUSLY_MCP_ADDRESS` and `PREVIOUSLY_MCP_ALLOWED_HOSTS`, and both read `PREVIOUSLY_MCP_CONFIRM_KEY`.
 A missing setting is an input error that names the first variable missing, in the form `Error: PREVIOUSLY_BLOB_BUCKET is not set`.
 An error sentence prints every control character but a tab and a line feed as `\xNN`, such as `\x1b` for the escape character, because a key it quotes can be the Message-ID of a mail.
 A transaction the database aborts in a conflict with a concurrent one, a deadlock or a lock not granted in time, is a storage error with exit code 2, in the form `Error: the database aborted the operation in a conflict with a concurrent one; run the command again`.
@@ -1260,6 +1260,7 @@ Every call reads the policy again.
 A client revoked while the process runs gets an error from its next call on, and the access log records that call with the outcome `error`.
 Standard output carries the protocol and nothing else, and the process ends when standard input closes.
 The tools, resources and prompts are the same as over HTTP; every call writes an `mcp_access`, which {ref}`cli-access` reads.
+The writing tools write only when `PREVIOUSLY_MCP_CONFIRM_KEY` holds at least 32 characters ({ref}`configuration-reference`); otherwise they answer with an error, and `mcp` starts all the same.
 
 (cli-serve)=
 
@@ -1267,7 +1268,7 @@ The tools, resources and prompts are the same as over HTTP; every call writes an
 
 Serves MCP over HTTP under the path `/mcp`, with answers as JSON and without a session.
 A client of the protocol revision `2026-07-28` and one of an earlier revision are served at the same address.
-`serve` takes no options, and reads `PREVIOUSLY_MCP_ADDRESS` and `PREVIOUSLY_MCP_ALLOWED_HOSTS` ({ref}`configuration-reference`).
+`serve` takes no options, and reads `PREVIOUSLY_MCP_ADDRESS`, `PREVIOUSLY_MCP_ALLOWED_HOSTS` and, for the writing tools as `mcp` does, `PREVIOUSLY_MCP_CONFIRM_KEY` ({ref}`configuration-reference`).
 On start it prints one line to standard error, and then runs until it's stopped:
 
 ```text
