@@ -17,6 +17,8 @@ from datetime import datetime
 from datetime import UTC
 from pathlib import Path
 from previously.connectors.imap import ImapConnector
+from previously.connectors.imap import ImapError
+from previously.connectors.imap import MailboxUnreachable
 from previously.connectors.imap import PORT as IMAP_PORT
 from previously.contract.types import BlobRef
 from previously.contract.types import Evidence
@@ -34,6 +36,8 @@ from previously.core.clients import client_rows
 from previously.core.clients import revoke_client
 from previously.core.clients import token_hash
 from previously.core.errors import AddressMismatch
+from previously.core.errors import ArtifactChanged
+from previously.core.errors import BatchTooLarge
 from previously.core.errors import CannotOpen
 from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
@@ -641,8 +645,15 @@ def _ingest_arguments(parser: argparse.ArgumentParser) -> None:
     # A second level, like `blob`: the source is a word of its own, and the
     # next connector is the next word beside it.
     sources = parser.add_subparsers(dest="source", required=True)
-    sentence = "take in the mail an IMAP folder holds above the watermark of the last run"
-    sources.add_parser("imap", help=sentence, description=sentence)
+    sentence = "take in the mail IMAP folders hold above the watermark of the last run"
+    imap = sources.add_parser("imap", help=sentence, description=sentence)
+    imap.add_argument(
+        "--folder",
+        action="append",
+        metavar="NAME",
+        help="a folder to read, by its full name; repeatable, and in place of "
+        "PREVIOUSLY_IMAP_FOLDER",
+    )
 
 
 def _imap_address() -> tuple[str, int]:
@@ -668,8 +679,15 @@ def _imap_address() -> tuple[str, int]:
     return parse_address("PREVIOUSLY_IMAP_ADDRESS", text, default_port=IMAP_PORT)
 
 
-def _imap_connector() -> ImapConnector:
-    """The folder out of its four settings, read before anything connects.
+def _imap_connectors(named: Sequence[str] | None) -> list[ImapConnector]:
+    """One connector per folder, out of the folder's settings, read before
+    anything connects: `--folder` as given, each name once and in the order
+    first given, or `PREVIOUSLY_IMAP_FOLDER` without it. Read in the order
+    `PREVIOUSLY_IMAP_ADDRESS`, `…_USER`, `…_PASSWORD`, `…_FOLDER`, as before
+    `--folder` existed; with it, the folder setting is not read at all.
+
+    One mailbox, one password: several mailboxes are several runs, each with
+    the settings of its own.
 
     The certificate is verified against the system's trust store, and so is
     the host name: `ssl.create_default_context()`, with no setting that turns
@@ -677,46 +695,91 @@ def _imap_connector() -> ImapConnector:
     OpenSSL trusts anything, through `SSL_CERT_FILE` or the trust store, not
     through a switch of this command.
     """
+    # Refused here rather than sent: an empty name is no folder, and the
+    # setting refuses an empty value the same way.
+    if named is not None and "" in named:
+        raise PreviouslyError("--folder must not be empty")
     host, port = _imap_address()
-    return ImapConnector(
-        host=host,
-        port=port,
-        user=_setting("PREVIOUSLY_IMAP_USER"),
-        password=_setting("PREVIOUSLY_IMAP_PASSWORD"),
-        folder=_setting("PREVIOUSLY_IMAP_FOLDER"),
-        ssl_context=ssl.create_default_context(),
-    )
+    user = _setting("PREVIOUSLY_IMAP_USER")
+    password = _setting("PREVIOUSLY_IMAP_PASSWORD")
+    folders = named if named is not None else [_setting("PREVIOUSLY_IMAP_FOLDER")]
+    context = ssl.create_default_context()
+    return [
+        ImapConnector(
+            host=host, port=port, user=user, password=password, folder=folder, ssl_context=context
+        )
+        for folder in dict.fromkeys(folders)
+    ]
 
 
-def _cmd_ingest(_args: argparse.Namespace) -> int:
-    """Takes in what the folder holds above its watermark ({ref}`cli-reference`).
+def _cmd_ingest(args: argparse.Namespace) -> int:
+    """Takes in what each folder holds above its watermark ({ref}`cli-reference`).
 
     Every setting is read, and the recipient checked, before anything
-    connects: the folder's four, the recipient, `PREVIOUSLY_DSN` and the
-    store's five, in that order. The directory of identities is not among
-    them: taking in seals and opens nothing.
+    connects: the mailbox's address, user and password, the folder setting
+    unless `--folder` names the folders, the recipient, `PREVIOUSLY_DSN` and
+    the store's five, in that order. The directory of identities is not
+    among them: taking in seals and opens nothing.
 
-    Standard output is one line, the counts and the UID the watermark stands
-    at; `up to uid 0` is a folder that has given nothing yet, since a UID is
+    The folders are read one after the other, each over a connection of its
+    own: `ImapConnector.fetch` connects, logs in and logs out again, so a
+    connection that breaks off in one folder is that folder's, and the next
+    folder connects anew. Standard output is one line per folder that was
+    read, the counts and the UID the watermark stands at, and the folder;
+    `up to uid 0` is a folder that has given nothing yet, since a UID is
     never 0. Each variant is one line on standard error. The projections are
     not caught up: `project` does that, and the two may run side by side.
+
+    A folder that fails is one line on standard error that names it, and
+    the run goes on with the next folder and returns 2 at the end. A
+    failure is the folder's when it comes from that folder alone: the server
+    refuses to open it, to search it or to fetch from it, the connection
+    breaks off while it is read, or the log refuses a mail of it, for too
+    many events or a variant key held with another content. The last two
+    come back at every run until the mail leaves the folder, and would
+    otherwise keep every folder after it from being read.
+
+    What every folder would meet alike stops the run at once, with the one
+    sentence a run of a single folder prints: a `MailboxUnreachable` — the
+    server out of reach, a certificate that does not verify, a login refused
+    — and an error of the database or the blob store. Going on would only
+    repeat it, and for a refused login that is one more refused login at
+    the server for each folder.
     """
-    connector = _imap_connector()
+    connectors = _imap_connectors(args.folder)
     recipient = _recipient()
+    failed = False
     with _storage() as storage, _blob_store() as store:
-        result = ingest(
-            storage, storage, store, connector, recipient=recipient, recorded_at=datetime.now(UTC)
-        )
-    # The Message-ID is the mail's, so it is escaped like a field of
-    # `chronicle`: one line per variant, and no control reaches the terminal.
-    for message_id, event_id in result.variants:
-        print(f"variant of {escape_field(message_id)}: event {event_id}", file=sys.stderr)
-    uid = "0" if result.position is None else result.position["uid"]
-    print(
-        f"imap: {result.appended} appended, {result.known} known, "
-        f"{len(result.variants)} variants, up to uid {uid}"
-    )
-    return 0
+        for connector in connectors:
+            # The folder is the operator's, but it is printed the way every
+            # field from outside is: one line, and no control raw.
+            folder = escape_field(connector.folder)
+            try:
+                result = ingest(
+                    storage,
+                    storage,
+                    store,
+                    connector,
+                    recipient=recipient,
+                    recorded_at=datetime.now(UTC),
+                )
+            except MailboxUnreachable:
+                raise
+            except (ImapError, BatchTooLarge, ArtifactChanged) as error:
+                print(f"Error: folder {folder}: {escape_controls(str(error))}", file=sys.stderr)
+                failed = True
+                continue
+            # The Message-ID is the mail's, so it is escaped like a field of
+            # `chronicle`: one line per variant, and no control reaches the
+            # terminal.
+            for message_id, event_id in result.variants:
+                print(f"variant of {escape_field(message_id)}: event {event_id}", file=sys.stderr)
+            uid = "0" if result.position is None else result.position["uid"]
+            print(
+                f"imap: {result.appended} appended, {result.known} known, "
+                f"{len(result.variants)} variants, up to uid {uid} in {folder}"
+            )
+    return 2 if failed else 0
 
 
 def _log_arguments(parser: argparse.ArgumentParser) -> None:
@@ -2140,7 +2203,7 @@ COMMANDS: tuple[Command, ...] = (
     # runs before the schema stands.
     Command("migrate", "bring the database schema up to the newest revision", _cmd_migrate),
     Command("append", "submit text", _cmd_append, _append_arguments),
-    Command("ingest", "take in new mail from an IMAP folder", _cmd_ingest, _ingest_arguments),
+    Command("ingest", "take in new mail from IMAP folders", _cmd_ingest, _ingest_arguments),
     Command("redact", "erase an event, units of it, or a blob", _cmd_redact, _redact_arguments),
     # "print the chronicle" until stage 1b, which is now the other command:
     # `log` is the chain order and `chronicle` the chronology ({ref}`projections`).

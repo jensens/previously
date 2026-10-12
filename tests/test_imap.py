@@ -27,7 +27,10 @@ from previously.connectors.imap import parse_internaldate
 from previously.contract.types import Watermark
 from previously.core.ingest import ingest
 from previously.core.sealing import recipient_of
+from previously.core.verify import examine
 from previously.storage.postgres import PostgresStorage
+from previously.storage.s3 import from_settings
+from sqlalchemy import text
 from typing import TYPE_CHECKING
 
 import pytest
@@ -38,6 +41,8 @@ import threading
 
 
 if TYPE_CHECKING:
+    from collections.abc import Iterator
+    from previously.contract.types import Fetched
     from previously.core.ingest import Ingested
     from previously.storage.s3 import S3BlobStore
     from sqlalchemy import Engine
@@ -380,3 +385,88 @@ def test_a_folder_made_anew_is_read_from_the_start_and_nothing_doubles(
     assert (second.appended, second.known) == (0, 5)
     assert second.position == {"uidvalidity": after, "uid": "4"}
     assert _event_count(storage) == 5
+
+
+class _Together:
+    """A folder's connector that waits for a partner once the folder is
+    read: the run has then looked up every key and stored every blob, and
+    appends only after it leaves `fetch`. Two runs that each read through
+    one of these meet at the log with their batches at once, and not by the
+    luck of how two threads are scheduled."""
+
+    def __init__(self, inner: ImapConnector, meet: threading.Barrier) -> None:
+        self.name = inner.name
+        self._inner = inner
+        self._meet = meet
+
+    def fetch(self, since: Watermark | None) -> Iterator[Fetched]:
+        yield from self._inner.fetch(since)
+        self._meet.wait(timeout=60)
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_two_runs_at_once_take_every_mail_in_once_and_the_chain_holds(
+    db: Engine,
+    blob_store: S3BlobStore,
+    s3_settings: dict[str, str],
+    mail_server: MailServer,
+    imap_folder: str,
+    age_identity: str,
+) -> None:
+    """Two runs at the same moment, one per folder, each with a store and a
+    storage of its own, the way two scheduled jobs are two processes. Both
+    folders hold the same four mails, and each one mail of its own: the log
+    ends with seven events, each once, in a chain that verifies, and each
+    folder's watermark stands at its last mail.
+
+    The counts of the two runs are not held: an event the other run appends
+    between the reading of the tip and the append counts as appended in
+    both (`Ingested`)."""
+    mail_server.append(imap_folder, (MAILS / "signed.eml").read_bytes())
+    mail_server.recreate("Kopie")
+    mail_server.append("Kopie", *FOLDER_MAILS, (MAILS / "encrypted.eml").read_bytes())
+    meet = threading.Barrier(2)
+    failures: list[BaseException] = []
+
+    def run(folder: str) -> None:
+        store = from_settings(**s3_settings, bucket=blob_store.bucket)
+        try:
+            ingest(
+                PostgresStorage(db),
+                PostgresStorage(db),
+                store,
+                _Together(mail_server.connector(folder), meet),
+                recipient=recipient_of(age_identity),
+                recorded_at=RECORDED_AT,
+            )
+        except BaseException as error:  # handed to the main thread below
+            failures.append(error)
+            meet.abort()
+        finally:
+            store.close()
+
+    threads = [threading.Thread(target=run, args=(f,)) for f in (imap_folder, "Kopie")]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=120)
+    assert not any(thread.is_alive() for thread in threads)
+    if failures:
+        raise failures[0]
+
+    storage = PostgresStorage(db)
+    with storage.snapshot() as conn:
+        marks = {
+            folder: storage.watermark(conn, mail_server.connector(folder).name)
+            for folder in (imap_folder, "Kopie")
+        }
+    with db.connect() as conn:
+        keys = conn.execute(text("SELECT external_id FROM source_key")).scalars().all()
+    assert _event_count(storage) == 7
+    assert sorted(keys) == sorted(set(keys)) and len(keys) == 7
+    assert examine(storage).findings == ()
+    for folder, mark in marks.items():
+        assert mark is not None
+        assert mark.position == {"uidvalidity": mail_server.uidvalidity(folder), "uid": "5"}

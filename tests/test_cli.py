@@ -31,6 +31,7 @@ from previously.core.sealing import recipient_of
 from previously.core.sealing import seal
 from previously.core.units import split_plaintext
 from previously.storage.postgres import PostgresStorage
+from typing import cast
 from typing import TYPE_CHECKING
 
 import hashlib
@@ -39,6 +40,7 @@ import io
 import json
 import mailfiles
 import os
+import pathlib
 import pytest
 import re
 import secrets
@@ -61,8 +63,6 @@ if TYPE_CHECKING:
     from sqlalchemy import Engine
     from sqlalchemy import URL
     from typing import IO
-
-    import pathlib
 
 
 @pytest.mark.parametrize(
@@ -3791,9 +3791,15 @@ def test_ingest_imap_takes_in_the_folder_and_a_second_run_appends_nothing(
     nothing new. The chronicle shows each subject once the projections are
     caught up."""
     assert main(["ingest", "imap"]) == 0
-    assert capsys.readouterr() == ("imap: 5 appended, 0 known, 0 variants, up to uid 4\n", "")
+    assert capsys.readouterr() == (
+        "imap: 5 appended, 0 known, 0 variants, up to uid 4 in Kunde Müller\n",
+        "",
+    )
     assert main(["ingest", "imap"]) == 0
-    assert capsys.readouterr() == ("imap: 0 appended, 0 known, 0 variants, up to uid 4\n", "")
+    assert capsys.readouterr() == (
+        "imap: 0 appended, 0 known, 0 variants, up to uid 4 in Kunde Müller\n",
+        "",
+    )
     assert _events(imap.engine) == 5
 
     assert main(["project"]) == 0
@@ -3824,7 +3830,7 @@ def test_ingest_imap_names_each_variant_on_standard_error(
     mail_server.append(imap_folder, mailfiles.PLAIN_OTHER_BODY)
     assert main(["ingest", "imap"]) == 0
     assert capsys.readouterr() == (
-        "imap: 1 appended, 0 known, 1 variants, up to uid 5\n",
+        "imap: 1 appended, 0 known, 1 variants, up to uid 5 in Kunde Müller\n",
         "variant of 20261005101500.4711@example.net: event 6\n",
     )
 
@@ -3845,7 +3851,7 @@ def test_ingest_imap_escapes_a_control_in_the_message_id_of_a_variant(
     mail_server.append(imap_folder, mailfiles.PLAIN_OTHER_BODY.replace(plain_id, hostile_id))
     assert main(["ingest", "imap"]) == 0
     assert capsys.readouterr() == (
-        "imap: 2 appended, 0 known, 1 variants, up to uid 6\n",
+        "imap: 2 appended, 0 known, 1 variants, up to uid 6 in Kunde Müller\n",
         "variant of ein\\x1b]0;Titel\\x07@example.net: event 7\n",
     )
 
@@ -3992,7 +3998,10 @@ def test_ingest_imap_stops_at_a_dropped_connection_with_the_watermark_at_the_las
     assert out == ""
     # Nothing of the mail either: `imaplib` aborts here with a header line of
     # the second mail in its text (see `ImapConnector._speaking`).
-    assert err == f"Error: the connection to the IMAP server {_IMAP_HOST}:{relay.port} broke off\n"
+    assert err == (
+        "Error: folder Kunde Müller: "
+        f"the connection to the IMAP server {_IMAP_HOST}:{relay.port} broke off\n"
+    )
     assert mail_server.password not in err
     assert "example.org" not in err
     assert _imap_watermark(imap.engine) == {
@@ -4003,7 +4012,261 @@ def test_ingest_imap_stops_at_a_dropped_connection_with_the_watermark_at_the_las
 
     monkeypatch.setenv("PREVIOUSLY_IMAP_ADDRESS", f"{_IMAP_HOST}:{mail_server.port}")
     assert main(["ingest", "imap"]) == 0
-    assert capsys.readouterr() == ("imap: 2 appended, 0 known, 0 variants, up to uid 6\n", "")
+    assert capsys.readouterr() == (
+        "imap: 2 appended, 0 known, 0 variants, up to uid 6 in Kunde Müller\n",
+        "",
+    )
+
+
+# --- ingest imap over several folders ------------------------------------------
+
+# The mails of `imap_folder` as files, for a second folder that holds them too.
+_MAILS = pathlib.Path(__file__).resolve().parent / "mails"
+
+
+def _folder_line(appended: int, known: int, uid: int, folder: str) -> str:
+    return f"imap: {appended} appended, {known} known, 0 variants, up to uid {uid} in {folder}\n"
+
+
+def _watermark_of(engine: Engine, folder: str) -> dict[str, str] | None:
+    storage = PostgresStorage(engine)
+    with storage.snapshot() as conn:
+        mark = storage.watermark(conn, f"imap:pilot@{_IMAP_HOST}/{folder}")
+    return None if mark is None else dict(mark.position)
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_reads_each_folder_with_its_own_watermark_and_line(
+    imap: _Blobs, mail_server: MailServer, imap_folder: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Two folders in one run: each is read, each line names its folder, and
+    each folder moves a watermark of its own. A mail added to one of them
+    is the next run's only news, and it comes from that folder alone."""
+    mail_server.recreate("Gesendet")
+    mail_server.append("Gesendet", (_MAILS / "signed.eml").read_bytes())
+    both = ["ingest", "imap", "--folder", imap_folder, "--folder", "Gesendet"]
+
+    assert main(both) == 0
+    assert capsys.readouterr() == (
+        _folder_line(5, 0, 4, "Kunde Müller") + _folder_line(1, 0, 1, "Gesendet"),
+        "",
+    )
+    assert _watermark_of(imap.engine, "Kunde Müller") == {
+        "uidvalidity": mail_server.uidvalidity(imap_folder),
+        "uid": "4",
+    }
+    assert _watermark_of(imap.engine, "Gesendet") == {
+        "uidvalidity": mail_server.uidvalidity("Gesendet"),
+        "uid": "1",
+    }
+
+    mail_server.append("Gesendet", (_MAILS / "encrypted.eml").read_bytes())
+    assert main(both) == 0
+    assert capsys.readouterr() == (
+        _folder_line(0, 0, 4, "Kunde Müller") + _folder_line(1, 0, 2, "Gesendet"),
+        "",
+    )
+    assert _events(imap.engine) == 7
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_reads_a_folder_named_twice_once_and_the_setting_not_beside_an_option(
+    imap: _Blobs, mail_server: MailServer, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """`--folder` takes the place of `PREVIOUSLY_IMAP_FOLDER`, which still
+    names `Kunde Müller` here, and the same name twice is one folder."""
+    mail_server.recreate("Gesendet")
+    mail_server.append("Gesendet", (_MAILS / "signed.eml").read_bytes())
+    assert main(["ingest", "imap", "--folder", "Gesendet", "--folder", "Gesendet"]) == 0
+    assert capsys.readouterr() == (_folder_line(1, 0, 1, "Gesendet"), "")
+    assert _watermark_of(imap.engine, "Kunde Müller") is None
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_takes_the_same_mail_in_two_folders_in_once(
+    imap: _Blobs, mail_server: MailServer, imap_folder: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The second folder holds the same four mails, the first of them as it
+    arrived in another mailbox, with other `Received` lines: the same
+    Message-ID and the same content, so every event of the second folder is
+    known, and the log holds each mail once, found where it was first."""
+    mail_server.recreate("Kopie")
+    copies = [mailfiles.PLAIN_OTHER_TRANSPORT]
+    copies += [(_MAILS / name).read_bytes() for name in ("reply.eml", "html_only.eml")]
+    copies += [(_MAILS / "forwarded.eml").read_bytes()]
+    mail_server.append("Kopie", *copies)
+
+    assert main(["ingest", "imap", "--folder", imap_folder, "--folder", "Kopie"]) == 0
+    assert capsys.readouterr() == (
+        _folder_line(5, 0, 4, "Kunde Müller") + _folder_line(0, 5, 4, "Kopie"),
+        "",
+    )
+    assert _events(imap.engine) == 5
+    storage = PostgresStorage(imap.engine)
+    with storage.snapshot() as conn:
+        found = [
+            cast("dict[str, str]", row.payload["found_in"])["connector"]
+            for row in storage.read(conn, 1, 100)
+            if row.payload is not None
+        ]
+    assert found == [_IMAP_CONNECTOR] * 5
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_goes_on_after_a_folder_it_cannot_open(
+    imap: _Blobs, mail_server: MailServer, imap_folder: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A folder the server does not have: one line on standard error that
+    names it and the server's reason, the next folder is read all the same,
+    and the run returns 2."""
+    assert main(["ingest", "imap", "--folder", "Nirgendwo", "--folder", imap_folder]) == 2
+    server = f"{_IMAP_HOST}:{mail_server.port}"
+    assert capsys.readouterr() == (
+        _folder_line(5, 0, 4, "Kunde Müller"),
+        f"Error: folder Nirgendwo: the IMAP server {server} refused to open the folder "
+        "'Nirgendwo' of pilot: EXAMINE failed. No such mailbox\n",
+    )
+    assert _watermark_of(imap.engine, "Kunde Müller") is not None
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_goes_on_after_a_folder_whose_connection_broke_off(
+    imap: _Blobs,
+    mail_server: MailServer,
+    imap_folder: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The connection of the first folder breaks off inside its second large
+    mail (`Relay`, as in the test of a single folder above); the second
+    folder is read over a connection of its own. Nothing of the first folder
+    is in the log, and its watermark is unset, since its one batch was never
+    appended. The line on standard error names the folder and nothing of the
+    mail."""
+    mail_server.recreate("Scans")
+    mail_server.append("Scans", _large_mail(1), _large_mail(2))
+    with Relay(mail_server, limit=len(_large_mail(1)) + 512 * 1024, first_only=True) as relay:
+        monkeypatch.setenv("PREVIOUSLY_IMAP_ADDRESS", f"{_IMAP_HOST}:{relay.port}")
+        assert main(["ingest", "imap", "--folder", "Scans", "--folder", imap_folder]) == 2
+    assert capsys.readouterr() == (
+        _folder_line(5, 0, 4, "Kunde Müller"),
+        f"Error: folder Scans: the connection to the IMAP server {_IMAP_HOST}:{relay.port} "
+        "broke off\n",
+    )
+    assert _watermark_of(imap.engine, "Scans") is None
+    assert _events(imap.engine) == 5
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_goes_on_after_a_mail_the_log_refuses(
+    imap: _Blobs, mail_server: MailServer, imap_folder: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A mail with 500 mails attached is 501 events, more than one batch
+    holds, and the log refuses it at every run until it leaves its folder;
+    the folders after it are read all the same."""
+    inner = mailfiles.PLAIN.replace(b"<20261005101500.4711@example.net>", b"<inner-{}@example.org>")
+    attached = b"".join(
+        b"--part\r\nContent-Type: message/rfc822\r\n\r\n"
+        + inner.replace(b"{}", str(number).encode())
+        for number in range(500)
+    )
+    huge = (
+        b"From: archiv@example.org\r\nTo: pilot@example.org\r\nSubject: Sammlung\r\n"
+        b"Date: Tue, 06 Oct 2026 08:00:00 +0200\r\nMessage-ID: <sammlung@example.org>\r\n"
+        b'MIME-Version: 1.0\r\nContent-Type: multipart/mixed; boundary="part"\r\n\r\n'
+        + attached
+        + b"--part--\r\n"
+    )
+    mail_server.recreate("Sammlung")
+    mail_server.append("Sammlung", huge)
+    assert main(["ingest", "imap", "--folder", "Sammlung", "--folder", imap_folder]) == 2
+    assert capsys.readouterr() == (
+        _folder_line(5, 0, 4, "Kunde Müller"),
+        "Error: folder Sammlung: 501 events in one transaction, 500 are allowed — "
+        "larger batches starve against small submissions\n",
+    )
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_stops_at_a_refused_login_before_the_next_folder(
+    imap: _Blobs,
+    mail_server: MailServer,
+    imap_folder: str,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A refused login is the mailbox's, not a folder's: every folder would
+    be refused the same way, so the run stops at the first, with the one
+    sentence a single folder gets, and no folder in front of it."""
+    monkeypatch.setenv("PREVIOUSLY_IMAP_PASSWORD", f"wrong-{secrets.token_hex(8)}")
+    assert main(["ingest", "imap", "--folder", imap_folder, "--folder", "Gesendet"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the IMAP server {_IMAP_HOST}:{mail_server.port} refused the login of pilot\n",
+    )
+
+
+@pytest.mark.db
+@pytest.mark.s3
+@pytest.mark.imap
+def test_ingest_imap_keeps_the_watermark_of_the_setting_for_the_option(
+    imap: _Blobs, mail_server: MailServer, imap_folder: str, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """A deployment that named its folder in `PREVIOUSLY_IMAP_FOLDER` has a
+    watermark under `imap:<user>@<host>/<folder>`; the same folder given
+    with `--folder` reads on from it, and the setting reads on from where
+    the option left it. Read from the start instead, the second run would
+    count five events as known."""
+    assert main(["ingest", "imap"]) == 0
+    assert capsys.readouterr().out == _folder_line(5, 0, 4, "Kunde Müller")
+    assert _imap_watermark(imap.engine) == {
+        "uidvalidity": mail_server.uidvalidity(imap_folder),
+        "uid": "4",
+    }
+
+    mail_server.append(imap_folder, (_MAILS / "signed.eml").read_bytes())
+    assert main(["ingest", "imap", "--folder", "Kunde Müller"]) == 0
+    assert capsys.readouterr().out == _folder_line(1, 0, 5, "Kunde Müller")
+
+    mail_server.append(imap_folder, (_MAILS / "encrypted.eml").read_bytes())
+    assert main(["ingest", "imap"]) == 0
+    assert capsys.readouterr().out == _folder_line(1, 0, 6, "Kunde Müller")
+    assert _imap_watermark(imap.engine) == {
+        "uidvalidity": mail_server.uidvalidity(imap_folder),
+        "uid": "6",
+    }
+
+
+def test_ingest_imap_needs_no_folder_setting_beside_the_option(
+    age_identity: str, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """With `--folder`, `PREVIOUSLY_IMAP_FOLDER` is not read: the run gets as
+    far as connecting, to the database first. An empty name is refused
+    before any setting is read, the way an empty setting is refused."""
+    _unreachable(age_identity, monkeypatch)
+    monkeypatch.delenv("PREVIOUSLY_IMAP_FOLDER")
+    assert main(["ingest", "imap", "--folder", "Kunde Müller"]) == 2
+    out, err = capsys.readouterr()
+    assert out == ""
+    assert err.startswith("Error: connecting to database previously at 127.0.0.1:1 failed: ")
+
+    monkeypatch.delenv("PREVIOUSLY_IMAP_ADDRESS")
+    assert main(["ingest", "imap", "--folder", "Kunde Müller", "--folder", ""]) == 2
+    assert capsys.readouterr() == ("", "Error: --folder must not be empty\n")
 
 
 # Every setting `ingest imap` needs, each pointing nowhere that answers: a

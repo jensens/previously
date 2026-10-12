@@ -150,11 +150,19 @@ class Relay:
     the limit lands inside the one it means. Bytes from the client pass
     unchanged and uncounted. Use it as a context manager; leaving it closes
     every socket, which also ends a client that waits on a held connection.
+
+    With `first_only`, the count and the break are the first connection's
+    alone, and every later one passes unchanged: a run that connects anew
+    for each folder then loses the first folder's connection and keeps the
+    next one's.
     """
 
-    def __init__(self, server: MailServer, *, limit: int, hold: bool = False) -> None:
+    def __init__(
+        self, server: MailServer, *, limit: int, hold: bool = False, first_only: bool = False
+    ) -> None:
         self.limit = limit
         self.hold = hold
+        self.first_only = first_only
         self._target = (server.host, server.port)
         self._listener = socket.create_server(("127.0.0.1", 0))
         self.port: int = self._listener.getsockname()[1]
@@ -192,9 +200,11 @@ class Relay:
             except OSError:
                 return
             upstream = socket.create_connection(self._target)
+            # Counted; with `first_only`, only the first connection is.
+            counted = not (self.first_only and len(self._sockets) > 1)
             self._sockets += [client, upstream]
             self._start(self._pump, client, upstream, False)
-            self._start(self._pump, upstream, client, True)
+            self._start(self._pump, upstream, client, counted)
 
     def _pump(self, source: socket.socket, sink: socket.socket, counted: bool) -> None:
         with suppress(OSError):
