@@ -19,6 +19,7 @@ from previously.mcp_server.render import render_page
 from previously.mcp_server.render import render_text
 from previously.mcp_server.render import sanitize
 from previously.mcp_server.render import Shown
+from previously.mcp_server.render import Stated
 from previously.mcp_server.render import WithheldMark
 
 import base64
@@ -685,3 +686,75 @@ def test_render_text_sanitizes_every_line_and_counts_what_it_removed() -> None:
 
 def test_render_text_without_lines_says_so() -> None:
     assert render_text("gaps", []) == "previously · gaps\n\nNo results."
+
+
+# --- an obligation or a decision ---------------------------------------------------
+
+
+def _stated(
+    event_id: int = 7, *lines: str, label: str = "open · direct · 1 version · 0 proposals"
+) -> Stated:
+    return Stated(
+        f"previously://event/{event_id}", "obligation", label, lines or ("what: send the offer",)
+    )
+
+
+def test_a_stated_entry_has_its_heading_outside_the_fence_and_its_lines_inside() -> None:
+    page = _render(_stated(7, "what: send the offer", "due: 2026-11-30"))
+
+    (tag,) = _tags(page)
+    assert (
+        "### previously://event/7 · obligation · open · direct · 1 version · 0 proposals\n"
+        f"<<<customer-content {tag}>>>\n"
+        "what: send the offer\n"
+        "due: 2026-11-30\n"
+        f"<<<end {tag}>>>"
+    ) in page.text
+    assert page.consumed == 1
+    assert page.units == ((),)
+
+
+def test_the_lines_of_a_stated_entry_are_sanitized_and_kept_on_one_line() -> None:
+    page = _render(_stated(7, "what: a\u202eb\x1b[31mc\nd"))
+
+    assert "what: abc d\n" in page.text
+    assert page.removed_characters > 0
+    assert "control characters removed" in page.text.splitlines()[0]
+
+
+def test_a_stated_entry_that_does_not_fit_goes_on_the_next_page_whole() -> None:
+    big = "x" * 1_000
+    items = [_stated(n, *[f"line {i}: {big}" for i in range(20)]) for n in (1, 2, 3, 4)]
+
+    page = _render(*items)
+
+    assert 0 < page.consumed < 4
+    assert len(page.text) <= PAGE_CHARS
+    assert page.text.count("<<<customer-content") == page.consumed
+    assert page.text.count("<<<end ") == page.consumed
+    assert "truncated" not in page.text
+    assert page.next_cursor == _cursor_for(page.consumed - 1)
+
+
+def test_a_stated_entry_alone_over_the_page_is_cut_at_a_line_and_says_so() -> None:
+    page = _render(_stated(1, *[f"line {i}: {'x' * 900}" for i in range(100)]))
+
+    assert len(page.text) <= PAGE_CHARS
+    assert page.consumed == 1
+    assert "… truncated — " in page.text
+    assert re.search(r"truncated — \d+ more lines are not shown", page.text)
+    assert page.text.count("<<<end ") == 1
+    assert all(
+        line.startswith(("line ", "###", "<<<", "…", "previously")) or not line
+        for line in page.text.splitlines()
+    )
+
+
+def test_the_tag_of_a_page_with_a_stated_entry_skips_one_that_occurs_in_its_lines() -> None:
+    page = render_page(
+        "obligations",
+        [_stated(1, "what: pay 0000abcd now")],
+        cursor_for=_cursor_for,
+        candidates=iter(["0000abcd", "1111abcd"]),
+    )
+    assert _tags(page) == ["1111abcd"]

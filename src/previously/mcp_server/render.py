@@ -60,6 +60,10 @@ _FIELD_CHARS: Final = 200
 _MAX_RECIPIENTS: Final = 10
 _MAX_ATTACHMENTS: Final = 10
 _REASON_CHARS: Final = 500
+# The longest line of an assertion inside the fence: its text, an actor, a reason.
+# Public because the writing tools refuse what a line this long cannot show
+# whole: a preview that cut a line would confirm text nobody saw.
+STATED_LINE_CHARS: Final = 1_000
 _ERROR_CHARS: Final = 2_000
 
 # Same length as a real tag and impossible in sanitized text (NUL is a control
@@ -151,7 +155,27 @@ class ErrorMark:
     message: str
 
 
-type Item = Shown | WithheldMark | ErasedMark | ErrorMark
+@dataclass(frozen=True)
+class Stated:
+    """An obligation or a decision shown ({ref}`mcp-tools`).
+
+    `label` is what Previously says of it, outside the fence: its state, an
+    overdue mark, the responsibility and how many versions and proposals
+    there are.
+    `lines` are inside the fence, one line each: the text, the actors, the
+    dates, the reason and the sources as URIs, all of which came from a mail
+    or from a client and are as foreign as a mail.
+    An entry is never cut between two pages; one that does not fit goes on
+    the next page.
+    """
+
+    uri: str
+    kind: str
+    label: str
+    lines: tuple[str, ...]
+
+
+type Item = Shown | Stated | WithheldMark | ErasedMark | ErrorMark
 
 
 @dataclass(frozen=True)
@@ -362,6 +386,28 @@ def _shown_block(item: Shown, counter: _Counter, budget: int | None) -> tuple[st
     return "\n".join([*prefix, *shown, closing, note]), tuple(seqs)
 
 
+def _stated_block(item: Stated, counter: _Counter, budget: int | None) -> str:
+    """The block of one entry. The caller passes a budget only for an entry
+    that stands alone on its page and is still over it: then trailing lines
+    are left out at a line boundary, and a note says how many."""
+    head = f"### {counter.line(item.uri)} · {counter.line(item.kind)} · {counter.line(item.label)}"
+    lines = [counter.line(line, STATED_LINE_CHARS) for line in item.lines]
+    closing = _fence_close()
+    full = "\n".join([head, _fence_open(), *lines, closing])
+    if budget is None or len(full) <= budget:
+        return full
+    note_room = len("… truncated — 999999 more lines are not shown")
+    room = budget - len("\n".join([head, _fence_open(), closing])) - 1 - note_room - 1
+    kept: list[str] = []
+    for line in lines:
+        if len(line) + 1 > room:
+            break
+        kept.append(line)
+        room -= len(line) + 1
+    note = f"… truncated — {len(lines) - len(kept)} more lines are not shown"
+    return "\n".join([head, _fence_open(), *kept, closing, note])
+
+
 def _placeholder(item: WithheldMark | ErasedMark | ErrorMark, counter: _Counter) -> str:
     if isinstance(item, ErrorMark):
         label = counter.line(item.label)
@@ -453,6 +499,8 @@ def render_page(
         before = (counter.removed, len(counter.content))
         if isinstance(item, Shown):
             block, seqs = _shown_block(item, counter, None)
+        elif isinstance(item, Stated):
+            block, seqs = _stated_block(item, counter, None), ()
         else:
             block, seqs = _placeholder(item, counter), ()
         candidate = [*blocks, block]
@@ -466,7 +514,7 @@ def render_page(
             counter.removed, kept = before
             del counter.content[kept:]
             break
-        if not isinstance(item, Shown):
+        if not isinstance(item, Shown | Stated):
             # A placeholder is capped far below the page.
             blocks, cursor = candidate, next_cursor
             shown.append(seqs)
@@ -477,7 +525,10 @@ def render_page(
         counter.removed, kept = before
         del counter.content[kept:]
         fixed = frame.length(next_cursor, with_item, [""])
-        cut, seqs = _shown_block(item, counter, PAGE_CHARS - fixed)
+        if isinstance(item, Stated):
+            cut, seqs = _stated_block(item, counter, PAGE_CHARS - fixed), ()
+        else:
+            cut, seqs = _shown_block(item, counter, PAGE_CHARS - fixed)
         blocks, cursor = [cut], next_cursor
         shown.append(seqs)
         break

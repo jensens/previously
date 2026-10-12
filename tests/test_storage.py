@@ -263,6 +263,21 @@ def test_source_keys_reads_by_batch(db: Engine) -> None:
 
 
 @pytest.mark.db
+def test_events_by_id_reads_by_batch(db: Engine) -> None:
+    """The rows `read` gives one at a time, for a whole batch; an id without
+    a row is absent, as in `source_keys`, and the empty batch is no query."""
+    storage = PostgresStorage(db)
+    with storage.begin() as c:
+        storage.insert_event(c, _row(1, None), [UnitRow(1, 1, "a")], ("cli", "x1"))
+        storage.insert_event(c, _row(2, b"\x01" * 32), [UnitRow(2, 1, "b")], None)
+    with storage.begin() as c:
+        found = storage.events_by_id(c, [2, 3, 1])
+        assert found == {row.id: row for row in storage.read(c, from_id=1, limit=10)}
+        assert sorted(found) == [1, 2]
+        assert storage.events_by_id(c, []) == {}
+
+
+@pytest.mark.db
 def test_count_events_counts_what_read_does_not_see_too(db: Engine) -> None:
     """The counter carries **no** `id` condition — therein lies its whole
     purpose (review finding B1): `read` filters `id >= from_id`, and a row

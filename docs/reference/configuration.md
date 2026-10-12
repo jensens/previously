@@ -2,8 +2,8 @@
 
 # Configuration
 
-Previously reads its settings from nineteen environment variables.
-Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store, fetch or delete a blob, as the table below says per variable, the four `PREVIOUSLY_IMAP_*` variables only by `ingest imap`, the four settings of the model providers only by `gate try`, and the three `PREVIOUSLY_MCP_*` variables only by `mcp` and `serve`.
+Previously reads its settings from twenty environment variables.
+Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store, fetch or delete a blob, as the table below says per variable, the four `PREVIOUSLY_IMAP_*` variables only by `ingest imap`, the four settings of the model providers only by `gate try`, and the four `PREVIOUSLY_MCP_*` variables only by `mcp` and `serve`.
 
 No setting has a name that Kubernetes gives a variable of a Service.
 For every Service in a namespace, Kubernetes sets variables such as `X_SERVICE_HOST`, `X_PORT` and `X_PORT_8765_TCP` in every pod of that namespace, with `X` the name of the Service upper-cased and `-` written as `_`; a Service named `previously-mcp` sets `PREVIOUSLY_MCP_PORT`.
@@ -193,6 +193,7 @@ The MCP server of `previously mcp` and `previously serve`; see {ref}`cli-mcp` an
 | `PREVIOUSLY_MCP_CLIENT` | The name of the client that `mcp` serves over standard input and output, a client in force from `client add`. | `mcp` |
 | `PREVIOUSLY_MCP_ADDRESS` | Where `serve` listens, as `host:port` in {ref}`the address form <address-form>`, such as `0.0.0.0:8765` or `[::1]:8765`. Unset or empty, it's `127.0.0.1:8765`. | Never; an address of another form is refused. |
 | `PREVIOUSLY_MCP_ALLOWED_HOSTS` | Host names a request to `serve` may name in its `Host` and `Origin` headers beside `127.0.0.1`, `localhost` and `[::1]`, such as the name of the machine in a private network, separated by commas or blanks. Unset or empty, only those three. | Never. |
+| `PREVIOUSLY_MCP_CONFIRM_KEY` | The key that `mcp` and `serve` seal the handles of the writing tools with, at least 32 characters. Changing it makes every handle issued before it fail; nothing stored depends on it. Only the MCP server gets it ({ref}`environment-requirements`). | Never; unset, empty or shorter than 32 characters, the writing tools answer `Error: writing is not configured on this server`, and the reading tools work. |
 
 `mcp` reads `PREVIOUSLY_MCP_CLIENT` before anything connects, and returns 2 when it's unset or empty:
 
@@ -210,6 +211,8 @@ Error: PREVIOUSLY_MCP_HOST is not read any more: set PREVIOUSLY_MCP_ADDRESS to h
 
 A client that connects by a name other than those three needs that name in `PREVIOUSLY_MCP_ALLOWED_HOSTS`, the name of a Kubernetes service among them, or its requests get the status 421.
 Over HTTP the client is the one whose bearer token a request carries; no variable names it.
+
+Neither command prints `PREVIOUSLY_MCP_CONFIRM_KEY` or writes it to a log, and no other command reads it.
 
 (address-form)=
 

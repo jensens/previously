@@ -17,16 +17,30 @@ server writes the access log from what reached the page (`logged`).
 
 from dataclasses import dataclass
 from dataclasses import replace
+from datetime import date
 from previously.contract.rows import EventRow
 from previously.core.access import Delivered
 from previously.core.access import NO_RULE
 from previously.core.access import RULE as RULE_CODE
 from previously.core.access import Withheld
+from previously.core.assertion import changes
+from previously.core.assertion import DecisionBody
+from previously.core.assertion import ObligationBody
+from previously.core.assertion import OPEN
+from previously.core.assertion import overdue
+from previously.core.assertions import assertion_decisions
+from previously.core.assertions import erased_assertion
+from previously.core.assertions import read_source_events
+from previously.core.assertions import read_threads
+from previously.core.assertions import rejections_of
+from previously.core.assertions import source_identities
+from previously.core.assertions import thread_circles
 from previously.core.canonical import MAX_SAFE_INT
 from previously.core.chain import read_references
 from previously.core.decide import Candidate
 from previously.core.decide import circles_of
 from previously.core.decide import decide
+from previously.core.hashing import iso_utc
 from previously.core.policy import LOCAL_ONLY
 from previously.core.policy import RULE
 from previously.mcp_server.render import ErasedMark
@@ -35,6 +49,7 @@ from previously.mcp_server.render import Head
 from previously.mcp_server.render import Item
 from previously.mcp_server.render import PAGE_CHARS
 from previously.mcp_server.render import Shown
+from previously.mcp_server.render import Stated
 from previously.mcp_server.render import WithheldMark
 from typing import cast
 from typing import Final
@@ -47,6 +62,10 @@ if TYPE_CHECKING:
     from datetime import datetime
     from previously.contract.rows import UnitRow
     from previously.contract.store import LogStore
+    from previously.core.assertion import Statement
+    from previously.core.assertion import Thread
+    from previously.core.assertion import Version
+    from previously.core.assertions import SourceEvents
     from previously.core.decide import Decision
     from previously.core.policy import Client
     from previously.core.policy import Policy
@@ -302,6 +321,8 @@ def _shown(
 def _weight(read: Read) -> int:
     if isinstance(read.item, Shown):
         return _ITEM_ALLOWANCE + sum(len(text) for _, text in read.item.units)
+    if isinstance(read.item, Stated):
+        return _ITEM_ALLOWANCE + sum(len(line) for line in read.item.lines)
     return _ITEM_ALLOWANCE
 
 
@@ -425,6 +446,28 @@ def events[Conn](
     return Seen(tuple(reads))
 
 
+def event_hidden[Conn](
+    log: LogStore[Conn], conn: Conn, policy: Policy, client: Client, event_id: int
+) -> bool:
+    """Whether a client may not learn that the event `event_id` exists: no
+    event has the id, or it is an observation the policy withholds from this
+    client, as `get_event` decides it.
+
+    An erased event and one that is no observation are not hidden, since
+    `get_event` names both to any client; a writing tool lets the write path
+    refuse them with its own sentence.
+    """
+    if not 1 <= event_id <= MAX_SAFE_INT:
+        return True
+    row = next(iter(log.read(conn, event_id, 1)), None)
+    if row is None or row.id != event_id:
+        return True
+    if row.kind != "observation":
+        return False
+    pending = _decided(policy, client, row, log.source_keys(conn, [event_id]).get(event_id))
+    return pending.read is not None and isinstance(pending.read.entry, Withheld)
+
+
 # --- what a client sees in principle ------------------------------------------------
 
 
@@ -457,3 +500,283 @@ def source_verdict(policy: Policy, client: Client, source: str | None) -> Verdic
     if decision.chosen is not None:
         return Verdict(True, "a rule allows this client's processing chain")
     return Verdict(False, withholding(policy, client, decision)[1])
+
+
+# --- obligations and decisions -----------------------------------------------------
+
+_NONE: Final = "none"
+
+
+@dataclass(frozen=True)
+class Listing:
+    """What a call of `list_obligations` or `list_decisions` asked for.
+
+    With `subject`, the call shows that one entry and the other filters are
+    not applied; `today` is the UTC date the caller passes in, the day
+    "overdue" is judged on.
+    """
+
+    kind: str
+    today: date
+    circle: str | None = None
+    state: str | None = None
+    overdue: bool = False
+    proposals: bool = False
+    subject: int | None = None
+    history: bool = False
+
+
+def _plural(count: int, noun: str) -> str:
+    return f"{count} {noun}" if count == 1 else f"{count} {noun}s"
+
+
+def _uris(statement: Statement) -> str:
+    """The sources as URIs: a unit of an event as `#unit-<n>`, an event
+    cited whole as itself."""
+    uris: list[str] = []
+    for source in statement.sources:
+        if source.units is None:
+            uris.append(event_uri(source.event))
+        else:
+            uris.extend(f"{event_uri(source.event)}#unit-{seq}" for seq in source.units)
+    return ", ".join(uris)
+
+
+def statement_lines(statement: Statement) -> list[str]:
+    """The lines of a statement inside the fence: its text, its actors, its
+    dates, its reason and its sources as URIs; the state is the label's."""
+    body = statement.body
+    lines: list[str] = []
+    if isinstance(body, ObligationBody):
+        lines.append(f"what: {body.what}")
+        lines.append(f"debtor → creditor: {body.debtor} → {body.creditor}")
+        lines.append(f"due: {_NONE if body.due is None else body.due.isoformat()}")
+    elif isinstance(body, DecisionBody):
+        lines.append(f"what: {body.what}")
+        lines.append(f"decided by: {', '.join(body.by)}")
+        lines.append(f"on: {body.on.isoformat()}")
+        if body.replaces is not None:
+            lines.append(f"replaces: {event_uri(body.replaces)}")
+    lines.append(f"reason: {_NONE if statement.reason is None else statement.reason}")
+    lines.append(f"sources: {_uris(statement)}")
+    return lines
+
+
+def _history_lines(
+    thread: Thread, rejections: Sequence[tuple[int, datetime, Statement]] = ()
+) -> list[str]:
+    """Every standing version in chain order: who stated it, and what it
+    changed against the version before it; and among them the rejections,
+    each with its reason, as `previously obligation --history` shows them."""
+    shown: list[tuple[int, list[str]]] = []
+    before: Statement | None = None
+    for version in thread.versions:
+        statement = version.statement
+        head = [
+            f"version {version.id}",
+            iso_utc(version.recorded_at),
+            statement.responsibility,
+            statement.author,
+        ]
+        if version.id in thread.rejected:
+            head.append("rejected")
+        elif version.id in thread.approved:
+            head.append("approved")
+        elif statement.approves is not None:
+            head.append(f"approves {statement.approves}")
+        lines = [" · ".join(head)]
+        if before is None:
+            lines.extend(f"set {line}" for line in statement_lines(statement))
+        else:
+            lines.extend(
+                f"change {name}: {old} → {new}" for name, old, new in changes(before, statement)
+            )
+        shown.append((version.id, lines))
+        before = statement
+    for event_id, recorded_at, rejection in rejections:
+        head = f"rejection {event_id} · {iso_utc(recorded_at)} · {rejection.author}"
+        reason = _NONE if rejection.reason is None else rejection.reason
+        shown.append((event_id, [f"{head} · rejects {rejection.of}", f"reason: {reason}"]))
+    return [line for _event_id, lines in sorted(shown) for line in lines]
+
+
+def _label(thread: Thread, winner: Version | None, today: date) -> str:
+    versions = _plural(len(thread.versions), "version")
+    proposals = _plural(len(thread.pending()), "proposal")
+    if winner is None or winner.statement.body is None:
+        return f"no version stands · {versions} · {proposals}"
+    body = winner.statement.body
+    state = body.state
+    if isinstance(body, ObligationBody) and overdue(body, today):
+        state += " · overdue"
+    if winner.statement.responsibility == OPEN:
+        state = f"proposed · {state}"
+    return f"{state} · {winner.statement.responsibility} · {versions} · {proposals}"
+
+
+def _stands(thread: Thread, listing: Listing) -> bool:
+    """Whether the thread is an entry of the kind the call lists: one whose
+    winner stands. That much decides whether an entry is there at all, and
+    a placeholder says it too."""
+    winner = thread.winner()
+    return thread.kind == listing.kind and winner is not None and winner.statement.body is not None
+
+
+def _kept(thread: Thread, listing: Listing) -> bool:
+    """Whether the filters that look at the content keep an entry the client
+    sees. Without `proposals`, an entry with a direct winner, a pending
+    proposal or not; with it, one that has a proposal pending or stands as
+    one: a proposal never passes for an entry that stands."""
+    winner = cast("Version", thread.winner())
+    body = cast("ObligationBody | DecisionBody", winner.statement.body)
+    proposed = winner.statement.responsibility == OPEN
+    listed = (proposed or bool(thread.pending())) if listing.proposals else not proposed
+    if not listed:
+        return False
+    if listing.state is not None and body.state != listing.state:
+        return False
+    return not (
+        listing.overdue and not (isinstance(body, ObligationBody) and overdue(body, listing.today))
+    )
+
+
+def _entry(
+    policy: Policy,
+    client: Client,
+    thread: Thread,
+    listing: Listing,
+    read: SourceEvents,
+    rejections: Sequence[tuple[int, datetime, Statement]] = (),
+) -> Read | None:
+    """The entry of one thread, shown or as a placeholder, or `None` when a
+    filter drops it.
+
+    The policy decides over the identities of the sources of every standing
+    version, one decision per distinct source, and the first that chooses
+    nothing holds. The actors an assertion names are not in it: they say who
+    owes or decided, and no more than that about the people in the sources.
+
+    The policy decides before any filter that looks at the content: a
+    withheld entry passes `state`, `overdue` and `proposals` whatever they
+    ask, so that the same placeholder appears under every one of them and
+    none of them tells what it holds. It is filtered by the circles of its
+    sources alone, so that a placeholder never tells which circle an actor
+    belongs to. With `listing.subject` no filter applies but the circle,
+    which the caller clears. The `rejections` are those a history shows, and
+    the policy decides over their sources too.
+    """
+    identities, sources = read.of(thread, [rejection for _, _, rejection in rejections])
+    decisions = assertion_decisions(policy, client, identities, sources)
+    rules = tuple(sorted({rule for d in decisions for rule in _rules_of(policy, d)}))
+    uri = event_uri(thread.subject)
+    blocked = next((i for i, d in enumerate(decisions) if d.chosen is None), None)
+    if blocked is not None:
+        decision = decisions[blocked]
+        if listing.circle is not None and listing.circle not in decision.circles:
+            return None
+        code, reason = withholding(policy, client, decision)
+        uncovered = decision.fallback.circles if decision.fallback is not None else ()
+        source = (tuple(sources) or (None,))[blocked]
+        entry = Withheld(thread.subject, code, decision.circles, reason, uncovered, source)
+        return Read(WithheldMark(uri, reason), entry, rules, thread.subject)
+    if listing.subject is None and not _kept(thread, listing):
+        return None
+    winner = thread.winner()
+    if listing.circle is not None and (
+        winner is None or listing.circle not in thread_circles(policy, identities, winner.statement)
+    ):
+        return None
+    if listing.history or winner is None:
+        lines = _history_lines(thread, rejections)
+    else:
+        lines = statement_lines(winner.statement)
+    item = Stated(uri, thread.kind, _label(thread, winner, listing.today), tuple(lines))
+    delivered = Delivered(thread.subject, (), decisions[-1].circles)
+    return Read(item, delivered, rules, thread.subject)
+
+
+def thread_seen[Conn](
+    log: LogStore[Conn], conn: Conn, policy: Policy, client: Client, thread: Thread | None
+) -> tuple[Delivered, tuple[int, ...]] | None:
+    """What the access log records of an obligation or a decision a call
+    shows, as `list_obligations` records an entry: the delivered entry with
+    the circles of its sources, and the ids of the rules of every decision.
+    `None` when the client may not see it: there is none (`thread` is
+    `None`), or the policy withholds it over the sources of every standing
+    version."""
+    if thread is None:
+        return None
+    identities, sources = source_identities(log, conn, thread)
+    decisions = assertion_decisions(policy, client, identities, sources)
+    if any(decision.chosen is None for decision in decisions):
+        return None
+    rules = tuple(sorted({rule for d in decisions for rule in _rules_of(policy, d)}))
+    return Delivered(thread.subject, (), decisions[-1].circles), rules
+
+
+def thread_hidden[Conn](
+    log: LogStore[Conn], conn: Conn, policy: Policy, client: Client, thread: Thread | None
+) -> bool:
+    """Whether a client may not learn that an obligation or a decision
+    stands: `thread_seen` has nothing to record of it."""
+    return thread_seen(log, conn, policy, client, thread) is None
+
+
+def assertions[Conn](
+    log: LogStore[Conn],
+    conn: Conn,
+    policy: Policy,
+    client: Client,
+    listing: Listing,
+    *,
+    after: int | None,
+) -> Seen:
+    """The obligations or decisions that stand, by their ids after `after`,
+    as many as fill a page and one more if it exists; each shown, or a
+    placeholder where the policy keeps it from this client.
+
+    With `listing.subject` the one entry, whatever the other filters say;
+    the placeholder of an erased event when the id names an assertion an
+    erasure took and no entry stands under it; or the error that none of
+    that kind stands under the id.
+
+    An erased id answers as `get_event` answers it, to any client: the
+    kind of an event stays in the log, and whether the assertion was an
+    obligation or a decision went with its payload ({ref}`assertions-erasure`).
+    """
+    threads = read_threads(log, conn)
+    if listing.subject is not None:
+        subject = listing.subject
+        uri = event_uri(subject)
+        thread = threads.get(subject)
+        if thread is None and erased_assertion(log, conn, subject):
+            return Seen((Read(ErasedMark(uri), Delivered(subject, (), ()), event=subject),))
+        if (
+            thread is None
+            or thread.kind != listing.kind
+            or (thread.winner() is None and not listing.history)
+        ):
+            message = f"no {listing.kind} stands under this id"
+            return Seen((Read(ErrorMark(uri, message), None, event=subject),))
+        rejections = rejections_of(log, conn, thread) if listing.history else ()
+        beside = [rejection for _, _, rejection in rejections]
+        sources = read_source_events(log, conn, [thread], beside)
+        read = _entry(policy, client, thread, replace(listing, circle=None), sources, rejections)
+        return Seen((cast("Read", read),))
+    names = [
+        name
+        for name in sorted(threads)
+        if (after is None or name > after) and _stands(threads[name], listing)
+    ]
+    sources = read_source_events(log, conn, [threads[name] for name in names])
+    reads: list[Read] = []
+    size = 0
+    for name in names:
+        read = _entry(policy, client, threads[name], listing, sources)
+        if read is None:
+            continue
+        if size > PAGE_CHARS:
+            return Seen(tuple(reads), more=True)
+        reads.append(read)
+        size += _weight(read)
+    return Seen(tuple(reads))

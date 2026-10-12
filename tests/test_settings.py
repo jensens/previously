@@ -98,6 +98,7 @@ def test_no_setting_has_a_name_that_kubernetes_gives_a_service() -> None:
         "PREVIOUSLY_IMAP_ADDRESS",
         "PREVIOUSLY_MCP_ADDRESS",
         "PREVIOUSLY_MCP_CLIENT",
+        "PREVIOUSLY_MCP_CONFIRM_KEY",
         "PREVIOUSLY_LOCAL_MODEL_URL",
     } <= names
     colliding = sorted(

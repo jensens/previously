@@ -421,6 +421,25 @@ class PostgresStorage:
         for row in conn.execute(query):
             yield _event_row(row)
 
+    def events_by_id(self, conn: Connection, event_ids: Sequence[int]) -> dict[int, EventRow]:
+        """Events **by batch**: one query for the batch, where `read` with a
+        limit of one is a query per event.
+
+        The policy of an assertion is decided over the identities of every
+        source event of every version, and a list does that for every entry
+        it shows: read one by one, those reads were most of the time a list
+        took ({ref}`assertions-folded`).
+
+        Ids without a row are absent from the return value, as in
+        `source_keys`, and the empty batch returns without a query.
+        """
+        if not event_ids:
+            return {}
+        return {
+            row.id: _event_row(row)
+            for row in conn.execute(select(event).where(event.c.id.in_(event_ids)))
+        }
+
     def read_by_kind(self, conn: Connection, kind: str) -> Iterator[EventRow]:
         """Every event of one kind, in chain order, through a server-side
         cursor like `read`.

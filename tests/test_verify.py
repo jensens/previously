@@ -2,14 +2,29 @@
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from dataclasses import replace
+from datetime import date
 from datetime import datetime
 from datetime import UTC
 from previously.contract.types import Anchor
 from previously.contract.types import BlobRef
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
+from previously.contract.types import RawUnit
 from previously.core.action import append_action
 from previously.core.append import append
+from previously.core.assertion import DECISION
+from previously.core.assertion import DecisionBody
+from previously.core.assertion import DIRECT
+from previously.core.assertion import model_author
+from previously.core.assertion import OBLIGATION
+from previously.core.assertion import ObligationBody
+from previously.core.assertion import OPEN
+from previously.core.assertion import OPERATOR
+from previously.core.assertion import payload_of
+from previously.core.assertion import REJECTION
+from previously.core.assertion import Source
+from previously.core.assertion import Statement
+from previously.core.assertions import write_statements
 from previously.core.blob import store_blob
 from previously.core.chain import link
 from previously.core.chain import prepare
@@ -17,6 +32,7 @@ from previously.core.errors import InvalidPayload
 from previously.core.hashing import unit_digest
 from previously.core.redact import redact_blob
 from previously.core.redact import redact_event
+from previously.core.redact import redact_units
 from previously.core.redaction import blob_payload
 from previously.core.redaction import event_payload
 from previously.core.redaction import units_payload
@@ -32,6 +48,7 @@ from previously.storage.keys import DirectoryKeys
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import Engine
 from sqlalchemy import text
+from typing import cast
 from typing import TYPE_CHECKING
 
 import io
@@ -1416,3 +1433,362 @@ def test_a_policy_event_that_took_another_way_in_is_a_finding(db: Engine) -> Non
     )
     assert good == 1
     assert verify(storage) == [Finding(bad, 'policy event has no valid form: it has no "name"')]
+
+
+# --- assertions ---------------------------------------------------------------------
+
+
+def _owed(
+    *sources: Source,
+    responsibility: str = DIRECT,
+    subject: int | None = None,
+    approves: int | None = None,
+) -> Statement:
+    return Statement(
+        OBLIGATION,
+        OPERATOR if responsibility == DIRECT else model_author("claude-code"),
+        responsibility,
+        sources or (Source(1, None),),
+        None,
+        None,
+        subject,
+        approves,
+        None,
+        ObligationBody("own", "circle:huber", "send the offer", None, "open"),
+    )
+
+
+def _decided(*, subject: int | None = None, replaces: int | None = None) -> Statement:
+    return Statement(
+        DECISION,
+        OPERATOR,
+        DIRECT,
+        (Source(1, None),),
+        None,
+        None,
+        subject,
+        None,
+        None,
+        DecisionBody("use slate", ("own",), date(2026, 10, 1), "valid", replaces),
+    )
+
+
+def _turned_down(of: int) -> Statement:
+    return Statement(
+        REJECTION, OPERATOR, DIRECT, (Source(1, None),), None, None, None, None, of, None
+    )
+
+
+def _forged(
+    storage: PostgresStorage, payload: Mapping[str, object], units: Sequence[RawUnit] = ()
+) -> int:
+    """An assertion on the tip that did not come through `write_statements`."""
+    prepared = prepare(kind="assertion", occurred_at=NOW, payload=payload, units=units, key=None)
+    with storage.begin() as c:
+        tip = storage.tip(c)
+        assert tip is not None
+        row, linked = link(prepared, event_id=tip.id + 1, prev_hash=tip.hash, recorded_at=NOW)
+        storage.insert_event(c, row, linked, None)
+    return row.id
+
+
+def _asserted(storage: PostgresStorage, *statements: Statement) -> tuple[int, ...]:
+    return write_statements(storage, storage, statements, recorded_at=NOW)
+
+
+def _with_mail(db: Engine) -> PostgresStorage:
+    storage = PostgresStorage(db)
+    append(storage, [_event("m")], recorded_at=NOW)
+    return storage
+
+
+@pytest.mark.db
+def test_assertions_written_through_their_write_path_are_no_finding(db: Engine) -> None:
+    """The control of the findings below."""
+    storage = _with_mail(db)
+    proposal = _owed(responsibility=OPEN)
+    first, second, made = _asserted(storage, proposal, proposal, _decided())
+    _asserted(
+        storage,
+        replace(proposal, responsibility=DIRECT, subject=first, approves=first),
+        _turned_down(second),
+        _decided(subject=made),
+        _decided(replaces=made),
+    )
+
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_an_assertion_without_a_valid_form_is_a_finding(db: Engine) -> None:
+    storage = _with_mail(db)
+    bad = _forged(storage, {**payload_of(_owed()), "sources": []})
+
+    assert verify(storage) == [
+        Finding(
+            bad,
+            "assertion has no valid form: the sources are empty: "
+            "an assertion needs at least one source",
+        )
+    ]
+
+
+@pytest.mark.db
+def test_an_assertion_with_units_is_a_finding(db: Engine) -> None:
+    storage = _with_mail(db)
+    bad = _forged(storage, payload_of(_owed()), [RawUnit(1, "text")])
+
+    assert verify(storage) == [Finding(bad, "assertion has units")]
+
+
+@pytest.mark.db
+def test_an_assertion_that_points_forward_is_a_finding(db: Engine) -> None:
+    storage = _with_mail(db)
+    ahead = _forged(storage, payload_of(_owed(Source(3, None))))
+    forward = _forged(storage, payload_of(_owed(subject=5)))
+
+    assert verify(storage) == [
+        Finding(ahead, "assertion names a source that does not stand before it"),
+        Finding(forward, "assertion has a subject that names no earlier obligation or decision"),
+    ]
+
+
+@pytest.mark.db
+def test_an_assertion_on_something_other_than_an_observation_is_a_finding(db: Engine) -> None:
+    storage = _with_mail(db)
+    (owed,) = _asserted(storage, _owed())
+    on_assertion = _forged(storage, payload_of(_owed(Source(owed, None))))
+    on_nothing = _forged(storage, payload_of(_owed(Source(1, (7,)))))
+
+    assert verify(storage) == [
+        Finding(on_assertion, "assertion names a source that is not an observation"),
+        Finding(on_nothing, "assertion names a unit its source does not have"),
+    ]
+
+
+@pytest.mark.db
+def test_an_assertion_on_an_erased_source_without_its_own_erasure_is_a_finding(
+    db: Engine,
+) -> None:
+    """An erasure that skipped the cascade: the order and its tombstones,
+    and the assertion beside them."""
+    storage = _with_mail(db)
+    (owed,) = _asserted(storage, _owed())
+    _action(storage, event_payload(1, blobs=(), reason="wrong"))
+    with storage.begin() as c:
+        storage.erase_payload(c, 1)
+        storage.erase_units(c, 1, [1])
+
+    assert verify(storage) == [Finding(owed, "assertion stands on an erased source")]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("before", [True, False], ids=["unit-erased-before", "unit-erased-after"])
+def test_an_assertion_on_a_whole_event_falls_with_a_unit_erased_after_it(
+    db: Engine, before: bool
+) -> None:
+    """A unit erased before the assertion was written is not what it rests
+    on; one erased after it, without the cascade, is."""
+    storage = PostgresStorage(db)
+    append(storage, [_message("m")], recorded_at=NOW)
+    if before:
+        redact_units(storage, storage, 1, [1], reason="wrong", recorded_at=NOW)
+    (owed,) = _asserted(storage, _owed())
+    if not before:
+        _action(storage, units_payload(1, [1], reason="wrong"))
+        with db.begin() as c:
+            c.execute(text(_ERASE_UNIT), {"e": 1, "s": 1})
+
+    expected = [] if before else [Finding(owed, "assertion stands on an erased source")]
+    assert verify(storage) == expected
+
+
+@pytest.mark.db
+def test_a_second_approval_or_one_after_a_rejection_is_a_finding(db: Engine) -> None:
+    """Ruling F-3 of the 2026-10-12 assertions plan: the fold passes over
+    them, and `verify` says so."""
+    storage = _with_mail(db)
+    proposal = _owed(responsibility=OPEN)
+    first, second = _asserted(storage, proposal, proposal)
+    _asserted(
+        storage,
+        replace(proposal, responsibility=DIRECT, subject=first, approves=first),
+        _turned_down(second),
+    )
+    again = _forged(
+        storage,
+        payload_of(replace(proposal, responsibility=DIRECT, subject=first, approves=first)),
+    )
+    after = _forged(
+        storage,
+        payload_of(replace(proposal, responsibility=DIRECT, subject=second, approves=second)),
+    )
+    twice = _forged(storage, payload_of(_turned_down(second)))
+
+    assert verify(storage) == [
+        Finding(again, "approval of a proposal that is already approved or rejected"),
+        Finding(after, "approval of a proposal that is already approved or rejected"),
+        Finding(twice, "rejection of a proposal that is already approved or rejected"),
+    ]
+
+
+@pytest.mark.db
+def test_references_to_assertions_of_the_wrong_kind_are_findings(db: Engine) -> None:
+    storage = _with_mail(db)
+    owed, made = _asserted(storage, _owed(), _decided())
+    (turned,) = _asserted(storage, _turned_down(_asserted(storage, _owed(responsibility=OPEN))[0]))
+    other_kind = _forged(storage, payload_of(_decided(subject=owed)))
+    no_proposal = _forged(storage, payload_of(_owed(subject=owed, approves=owed)))
+    of_rejection = _forged(storage, payload_of(_turned_down(turned)))
+    of_direct = _forged(storage, payload_of(_turned_down(made)))
+    replaces_owed = _forged(storage, payload_of(_decided(replaces=owed)))
+
+    assert verify(storage) == [
+        Finding(other_kind, "assertion has a subject of another kind"),
+        Finding(no_proposal, "approval names no open proposal of its subject"),
+        Finding(of_rejection, "rejection names no open proposal"),
+        Finding(of_direct, "rejection names no open proposal"),
+        Finding(replaces_owed, "decision replaces no earlier decision"),
+    ]
+
+
+@pytest.mark.db
+def test_a_version_of_another_kind_on_an_erased_first_version_is_a_finding(
+    db: Engine,
+) -> None:
+    """The fold cannot know the kind of an erased first version, and takes
+    the kind of the thread from its first standing version; `verify` holds
+    every later version to that kind."""
+    storage = _with_mail(db)
+    (first,) = _asserted(storage, _owed())
+    _asserted(storage, _owed(subject=first))
+    redact_event(storage, storage, first, reason="wrong", recorded_at=NOW)
+    other_kind = _forged(storage, payload_of(_decided(subject=first)))
+    same_kind = _forged(storage, payload_of(_owed(subject=first)))
+
+    assert verify(storage) == [Finding(other_kind, "assertion has a subject of another kind")]
+    assert same_kind == other_kind + 1
+
+
+@pytest.mark.db
+def test_a_rejection_of_a_proposal_erased_by_itself_is_no_finding(db: Engine) -> None:
+    """The proposal is erased on its own, not by a cascade: its kind is
+    gone, and the rejection names an erased assertion, which stays allowed."""
+    storage = _with_mail(db)
+    (proposed,) = _asserted(storage, _owed(responsibility=OPEN))
+    _asserted(storage, _turned_down(proposed))
+    redact_event(storage, storage, proposed, reason="wrong", recorded_at=NOW)
+
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_a_direct_version_by_a_model_without_an_approval_is_a_finding(db: Engine) -> None:
+    """Ruling F-6 of the 2026-10-12 assertions plan, for a row that came
+    around the write path."""
+    storage = _with_mail(db)
+    (owned,) = _asserted(storage, _owed())
+    forged = _forged(
+        storage, payload_of(replace(_owed(subject=owned), author=model_author("claude-code")))
+    )
+
+    assert verify(storage) == [
+        Finding(
+            forged,
+            "assertion has no valid form: a version by a model is direct only as an approval",
+        )
+    ]
+
+
+@pytest.mark.db
+def test_an_approval_or_rejection_without_the_sources_of_its_proposal_is_a_finding(
+    db: Engine,
+) -> None:
+    """Ruling F-9 of the 2026-10-12 assertions plan: one that left a source
+    out would outlive the erasure of that source with the proposal's
+    content. The approval and the rejection still count, as the fold reads
+    them."""
+    storage = _with_mail(db)
+    proposal = _owed(responsibility=OPEN)
+    first, second = _asserted(storage, proposal, proposal)
+    approval = _forged(
+        storage,
+        payload_of(
+            replace(
+                proposal,
+                responsibility=DIRECT,
+                subject=first,
+                approves=first,
+                sources=(Source(1, (1,)),),
+            )
+        ),
+    )
+    rejection = _forged(
+        storage, payload_of(replace(_turned_down(second), sources=(Source(1, (1,)),)))
+    )
+    again = _forged(storage, payload_of(_turned_down(second)))
+
+    assert verify(storage) == [
+        Finding(approval, "approval does not take the sources of its proposal"),
+        Finding(rejection, "rejection does not take the sources of its proposal"),
+        Finding(again, "rejection of a proposal that is already approved or rejected"),
+    ]
+
+
+@pytest.mark.db
+def test_an_approval_with_other_content_or_another_author_is_a_finding(db: Engine) -> None:
+    """An approval says the operator made the proposal their own: one with
+    another `what` or another author than its proposal says it of something
+    the proposal never said. The approval with a reason of its own is the
+    control: the reason may differ."""
+    storage = _with_mail(db)
+    proposal = _owed(responsibility=OPEN)
+    first, second, third = _asserted(storage, proposal, proposal, proposal)
+    approval = replace(proposal, responsibility=DIRECT, subject=first, approves=first)
+    body = cast("ObligationBody", proposal.body)
+    other_what = _forged(storage, payload_of(replace(approval, body=replace(body, what="else"))))
+    other_author = _forged(
+        storage,
+        payload_of(
+            replace(approval, subject=second, approves=second, author=model_author("other"))
+        ),
+    )
+    _asserted(storage, replace(approval, subject=third, approves=third, reason="my own words"))
+
+    assert verify(storage) == [
+        Finding(other_what, "approval does not take the content and the author of its proposal"),
+        Finding(other_author, "approval does not take the content and the author of its proposal"),
+    ]
+
+
+@pytest.mark.db
+def test_a_subject_that_was_no_thread_is_a_finding(db: Engine) -> None:
+    """Ruling F-9 of the 2026-10-12 assertions plan: a subject names the
+    first version of a thread. A later version, a rejection and an erased
+    observation are none. An erased later version is known as one when an
+    approval named it under another subject; an erased assertion nothing
+    names that way cannot be told from an erased first version, since its
+    `subject` went with its payload."""
+    storage = _with_mail(db)
+    append(storage, [_event("n")], recorded_at=NOW)
+    redact_event(storage, storage, 2, reason="wrong", recorded_at=NOW)
+    proposal = _owed(responsibility=OPEN)
+    (owned,) = _asserted(storage, _owed())
+    later, proposed = _asserted(storage, _owed(subject=owned), replace(proposal, subject=owned))
+    (turned,) = _asserted(storage, _turned_down(_asserted(storage, proposal)[0]))
+    _asserted(storage, replace(proposal, responsibility=DIRECT, subject=owned, approves=proposed))
+    redact_event(storage, storage, proposed, reason="wrong", recorded_at=NOW)
+    on_later = _forged(storage, payload_of(_owed(subject=later)))
+    on_rejection = _forged(storage, payload_of(_owed(subject=turned)))
+    on_observation = _forged(storage, payload_of(_owed(subject=2)))
+    on_erased_version = _forged(storage, payload_of(_owed(subject=proposed)))
+    on_thread = _forged(storage, payload_of(_owed(subject=owned)))
+
+    no_thread = "assertion has a subject that names no earlier obligation or decision"
+    assert verify(storage) == [
+        Finding(on_later, no_thread),
+        Finding(on_rejection, no_thread),
+        Finding(on_observation, no_thread),
+        Finding(on_erased_version, no_thread),
+    ]
+    assert on_thread == on_erased_version + 1

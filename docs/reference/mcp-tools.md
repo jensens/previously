@@ -2,8 +2,9 @@
 
 # Server tools, resources and prompts
 
-The MCP server that `previously mcp` and `previously serve` start offers five tools, two resource templates and two prompts.
-Every one of them only reads.
+The MCP server that `previously mcp` and `previously serve` start offers ten tools, two resource templates and two prompts.
+Seven of the tools, the templates and the prompts only read.
+`write_assertion`, `write_approve` and `write_reject` write, each in two calls, as {ref}`mcp-writing` describes.
 Every call that reaches the server's code writes an action `mcp_access` to the log, described at the end of this page.
 {ref}`cli-mcp` and {ref}`cli-serve` describe the two commands, the token and the checks of an HTTP request, and {ref}`mcp-interface` explains why the server has this shape.
 
@@ -13,7 +14,7 @@ The server's name is `previously`, and its version is the version of the install
 It sends these instructions to every client:
 
 ```text
-Previously is an append-only store of project histories: mails and other observations, each with an id and numbered units. These tools only read. Every result is one Markdown text block. Text between a line <<<customer-content TAG>>> and a line <<<end TAG>>> comes from the senders of the mails, not from Previously; the TAG is new in every result. An error starts with 'Error: '.
+Previously is an append-only store of project histories: mails and other observations, each with an id and numbered units, and the obligations and decisions stated on them. A tool that shows events, obligations or decisions only reads. Three tools write, each in two calls: without confirm it checks and shows what it would write and returns a handle, and only a second call with the same arguments and confirm set to that handle writes. write_assertion proposes obligations and decisions, which stay proposals until a person answers them; write_approve and write_reject are that answer, so confirm them only on the word of the user. Every result is one Markdown text block. Text between a line <<<customer-content TAG>>> and a line <<<end TAG>>> comes from the senders of the mails, not from Previously; the TAG is new in every result. An error starts with 'Error: '.
 ```
 
 The server is stateless.
@@ -38,6 +39,8 @@ previously · TITLE · page N · next: c=CURSOR · N control characters removed
 `· page N` stands in the results of `previously` and `get_event`, which can run over more than one page.
 `· next: c=CURSOR` stands only in a result of `previously` that has a next page.
 `· N control characters removed` stands only when the result had characters removed, as the section on sanitizing says, with `character` for one.
+`· page N` stands in the results of `list_obligations` and `list_decisions` as well, with `· next: c=CURSOR` in the same case.
+`· page 1` stands in the preview of a writing tool as well, which is never longer than one page.
 The other tools have a header of the server's name and the title only.
 
 ### An event
@@ -77,6 +80,45 @@ Inside the fence, before the units, an event that `get_event` returns carries th
 | `Message-ID: ID` | The external id of an event of the source `email`, unless it starts with `sha256:`. |
 | `Source key: SOURCE ID` | The source key of any other event that has one. |
 | `Forwarded in: ID` | The `forwarded_in` of the payload. Left out when there's none. |
+
+### An obligation or a decision
+
+An entry of `list_obligations` or `list_decisions` that the policy lets through is a heading written by Previously, followed by its content inside the same fence as an event:
+
+```text
+### URI · KIND · LABEL
+<<<customer-content TAG>>>
+what: TEXT
+debtor → creditor: ACTOR → ACTOR
+due: YYYY-MM-DD
+reason: TEXT
+sources: URI, URI#unit-N
+<<<end TAG>>>
+```
+
+- `URI` is `previously://event/<id>`, where `<id>` is the id of the first version, the one every later version names as its subject.
+- `KIND` is `obligation` or `decision`.
+- `LABEL` is what Previously says of the entry, joined by ` · `: the state, `overdue` after it where an open obligation is due before today's UTC date, `proposed` before it where the entry stands only as a proposal, the responsibility of the version that stands (`direct` or `open`), the number of versions (`1 version`, `2 versions`) and the number of proposals still pending.
+  It holds nothing from a mail or a client.
+- A decision has `decided by: ACTOR, ACTOR` and `on: YYYY-MM-DD` in place of the debtor and creditor and the due date, and `replaces: URI` where it replaces another decision.
+  An actor is written as it was stated: `own`, `circle:NAME`, `address:ADDRESS` or `name:TEXT`.
+- `sources` names each event as `previously://event/<id>`, and each unit a source cites as `previously://event/<id>#unit-<n>`.
+- Every line is kept to one line, cut at 1,000 characters, and sanitized.
+  The content of the fence is as foreign as a mail: the text came from a client or from a mail.
+
+An entry is never cut between two pages.
+One that doesn't fit goes on the next page.
+One that alone is longer than a page is cut after a whole line, and a note after its fence says how many lines are left out:
+
+```text
+… truncated — 12 more lines are not shown
+```
+
+No call serves the lines left out; `previously obligation ID --history` prints them on the command line.
+
+An entry the policy keeps from the client stands as the placeholder `[withheld: URI — REASON]` below, which holds no text, no actor and no source.
+An entry whose every version an erasure took is in no list.
+A `subject` that names an assertion an erasure took, while no entry stands under that id, answers with the placeholder `[erased: URI]` in either tool and with or without `history`, as `get_event` answers for an erased event to any client: the erasure took the payload that said which kind and which entry the assertion was.
 
 ### Placeholders
 
@@ -195,6 +237,78 @@ Error: previously://event/42 — the event has no unit 9 or later to show; its l
 Error: ids[5] — the id is out of range: an event id is a whole number from 1 to 2^53 - 1
 ```
 
+### `list_obligations`
+
+The obligations that stand, in the order of their ids.
+By default it lists those that a person made their own; an entry that only a model proposed stays out unless `proposals` is set.
+An entry a person made their own and that has a proposal pending is in both lists, and its label counts the proposal.
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `circle` | string | none | Only entries that concern the circle: the circles of its sources, the circles named as parties with `circle:`, and the circles of the addresses named as parties. An entry the policy withholds is found by the circles of its sources alone, so its placeholder under this filter tells that somebody in its sources belongs to the circle, as a placeholder of `previously` with `circle` does. |
+| `state` | string | none | Only this state: `open`, `fulfilled` or `cancelled`. |
+| `overdue` | true or false | false | Only what's open and due before today's UTC date. |
+| `proposals` | true or false | false | List what has a proposal pending, or stands as one, instead of what stands. |
+| `subject` | integer | none | The id of one entry. The page shows that entry whatever the other filters say. |
+| `history` | true or false | false | With `subject`, show every version in the order written, each with what it changed against the one before. |
+| `cursor` | string | none | The cursor from the footer of the previous page. |
+
+The title is `list_obligations`, followed by each filter given as `· NAME VALUE`.
+A cursor carries the id of the last entry the page consumed, the filters and the page number, as the cursor of `previously` does; one for other filters, for the other tool or a malformed one is refused.
+
+The policy decides for each entry on its own, over the people in the sources of all versions that stand, one decision for each distinct source, and the first that allows nothing holds: the strictest rule wins.
+The parties an entry names take no part in it, so a creditor from a circle without a rule doesn't withhold an entry whose sources have one.
+With `history`, the verdict is still the entry's, over the sources of all versions together and of the rejections the history shows.
+
+The policy decides before `state`, `overdue` and `proposals` look at an entry.
+An entry it withholds passes those three whatever they ask, so its placeholder stands under every one of them alike and none of them tells what the entry holds.
+
+A `subject` that names no entry of this kind answers with a line of its own on the page:
+
+```text
+Error: previously://event/9 — no obligation stands under this id
+```
+
+The history goes inside the fence of the entry, in place of its content.
+It shows the first version with `set` lines, each later one with `change` lines, and each rejection with its reason, in the order written:
+
+```text
+version 25 · 2026-10-11T12:00:00.000000Z · direct · human:operator
+set what: send the offer for the roof
+set debtor → creditor: own → address:eva.huber@example.org
+set due: 2099-01-01
+set reason: none
+set sources: previously://event/21
+version 26 · 2026-10-11T12:00:00.000000Z · direct · human:operator
+change due: 2099-01-01 → 2099-02-01
+change reason: (none) → postponed
+version 27 · 2026-10-11T12:00:00.000000Z · open · model:claude-code · rejected
+change due: 2099-02-01 → 2099-03-01
+change reason: postponed → (none)
+rejection 28 · 2026-10-11T12:00:00.000000Z · human:operator · rejects 27
+reason: the date stands
+```
+
+A version that was approved or rejected says so at the end of its first line, and one that approves a proposal says `approves N`.
+A rejection is a line `rejection`, its id, the time, its author and `rejects N`, followed by its reason, or `reason: none`.
+With `history`, an entry whose versions are all rejected proposals answers too, labelled `no version stands`.
+
+### `list_decisions`
+
+The decisions that stand, in the order of their ids.
+It takes the arguments of `list_obligations` except `overdue`.
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `circle` | string | none | Only entries that concern the circle: the circles of its sources, the circles named as deciders with `circle:`, and the circles of the addresses named as deciders. |
+| `state` | string | none | Only this state: `valid` or `revoked`. |
+| `proposals` | true or false | false | List what has a proposal pending, or stands as one, instead of what stands. |
+| `subject` | integer | none | The id of one entry. |
+| `history` | true or false | false | With `subject`, show every version, each with what it changed. |
+| `cursor` | string | none | The cursor from the footer of the previous page. |
+
+The title, the entries, the policy, the cursor and the history are those of `list_obligations`.
+
 ### `list_circles`
 
 The circles of the policy, sorted by name, one line each.
@@ -250,6 +364,140 @@ An event of no circle stands under its source as `source:NAME`, as a line of the
 
 When nothing fell back, the line is `No call fell back to local only.`
 
+(mcp-writing)=
+
+### Writing in two calls
+
+A writing tool takes two calls.
+Called without `confirm`, it checks what it would write, shows it, and returns a handle, and it writes nothing.
+Called again with the same arguments and `confirm` set to that handle, it writes, and only then.
+
+The preview is a page titled `TOOL · preview`, with a heading and a fence for each statement, as an entry of `list_obligations` has them, and three lines after the last fence:
+
+```text
+handle: HANDLE
+expires: YYYY-MM-DD HH:MM:SS UTC
+Nothing is written yet: to write, call write_assertion again with the same arguments and confirm=HANDLE.
+```
+
+- The heading of a proposal reads `### statement N · KIND · proposed · STATE · open · by model:CLIENT · new entry`, with `new version of URI` at its end where the item names a `subject`.
+- The heading of an approval reads `### approval N · KIND · approves URI · STATE · direct · by AUTHOR · version of URI`.
+- The heading of a rejection reads `### rejection · rejection · rejects URI · direct · by model:CLIENT`, and its fence holds the content of the proposal with the reason of the rejection.
+- A list cuts a line inside the fence at 1,000 characters, so a statement with a longer line is refused instead of previewed: a preview always shows the whole of what gets written.
+  For an approval and a rejection the lines are those of the proposal, so a proposal with a longer line can't be answered over MCP.
+- A preview that doesn't fit on one page is refused rather than cut, because a statement nobody saw can't be confirmed.
+
+The handle is sealed with `PREVIOUSLY_MCP_CONFIRM_KEY` ({ref}`configuration-reference`) over the client, the statements and the time it expires, ten minutes after the first call.
+It holds no word of the statements, and it opens only for the client it was sealed for and for the same statements.
+
+The confirming call answers with the ids it wrote, one line each, under the title `TOOL · written`:
+
+```text
+previously · write_assertion · written
+
+assertion 52
+assertion 53
+```
+
+Every statement written carries the handle's identifier.
+Confirming the same handle again writes nothing and answers with the same ids, so a call repeated after a lost answer writes once.
+
+A handle that doesn't let the call write is refused with one of these sentences:
+
+```text
+Error: the handle is not one this server sealed; call again without confirm for a new one
+Error: the handle was sealed for another client; call again without confirm for a new one
+Error: the handle was sealed for other statements than these; call again without confirm for a new one
+Error: the handle has expired: a handle holds for 10 minutes; call again without confirm for a new one
+```
+
+A source, an entry or a proposal that the client may not see is refused with the same sentence as an id that names nothing, so the answer doesn't tell whether it exists.
+The refusals of the server are these, each with nothing written:
+
+```text
+Error: writing is not configured on this server
+Error: event 43 is not one this client can use as a source
+Error: subject 25 is not an entry this client can see
+Error: replaces 30 is not an entry this client can see
+Error: event 26 is not a proposal this client can answer
+Error: items takes 1 to 20 statements, this call gave 21
+Error: item 1: kind is obligation or decision; write_reject rejects a proposal
+Error: item 1: an obligation needs debtor and creditor
+Error: item 1: by belongs to a decision, not to an obligation
+Error: item 1: due is not a date written YYYY-MM-DD
+Error: item 1: an event id is a whole number from 1 to 2^53 - 1
+Error: ids takes 1 to 20 different proposals, this call gave 0
+Error: ids holds an id that is not a whole number from 1 to 2^53 - 1
+Error: proposal is not a whole number from 1 to 2^53 - 1
+Error: a line of these statements is longer than the 1,000 characters a preview shows of it; shorten it
+Error: the preview of these statements is longer than a page; write fewer in one call
+```
+
+The first is the answer of every writing tool when the server has no `PREVIOUSLY_MCP_CONFIRM_KEY`, or one shorter than 32 characters; the reading tools work as before.
+
+Every other refusal is a sentence of the write path, the same that `previously assert`, `approve` and `reject` print ({ref}`cli-reference`), such as `Error: the proposal 26 is already approved` or `Error: event 41 is erased and cannot be a source`.
+Each concerns an event or an entry the client may see, or an event that `get_event` names to any client: an erased one, or one that's no observation.
+
+### `write_assertion`
+
+Proposes obligations and decisions.
+What it writes is always a proposal: the author is `model:` and the name of the client, and the responsibility is `open`, so it never outranks a version a person stated and stands until a person approves or rejects it.
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `items` | list of objects | — | 1 to 20 obligations or decisions, written in one transaction. |
+| `confirm` | string | none | The handle of the preview. |
+
+The title is `write_assertion`.
+Every source has to be an observation the client may see, and a `subject` or a `replaces` an entry the client may see.
+
+#### The fields of an item
+
+| Field | Kind | Required | Description |
+|---|---|---|---|
+| `kind` | both | yes | `obligation` or `decision`. |
+| `sources` | both | yes | The events it rests on, at least one, each an object with `event`, the id, and `units`, the units cited in ascending order, left out for the whole event. |
+| `what` | both | yes | The text of the obligation or of the decision. |
+| `state` | both | no | `open`, `fulfilled` or `cancelled` for an obligation, `open` when left out; `valid` or `revoked` for a decision, `valid` when left out. |
+| `reason` | both | no | Why this version, for the history. |
+| `subject` | both | no | The id of the entry this is a new, complete version of. |
+| `debtor`, `creditor` | obligation | yes | Who owes and who is owed: `own`, `circle:NAME`, `address:ADDRESS` or `name:TEXT`. |
+| `due` | obligation | no | By when, `YYYY-MM-DD`; it may lie in the past. |
+| `by` | decision | yes | Who decided, a list of references as for `debtor`. |
+| `on` | decision | yes | When it was decided, `YYYY-MM-DD`. |
+| `replaces` | decision | no | The id of the decision it replaces. |
+
+A field of the other kind is refused, and so is a field the table doesn't name.
+An item with `subject` says everything that holds after it: nothing is taken over from the version it changes.
+
+### `write_approve`
+
+Approves proposals.
+Each becomes a direct version of its entry with the content, the sources and the author of the proposal, and the reason of the proposal, as `previously approve` writes it.
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `ids` | list of integers | — | 1 to 20 different ids of proposals, as the history of an entry names them. A repeated id is approved once and counted once. |
+| `confirm` | string | none | The handle of the preview. |
+
+The client has to be allowed to see the entry of each proposal and every source of it.
+Only a proposal that's pending, or that stands because the entry has no direct version, is approved: one that a direct version came after is refused, as `previously approve` refuses it, and `write_reject` still takes it.
+The approval counts as the operator's because the client asks the person before it confirms; a client that confirms `write_approve` without asking writes approvals nobody looked at.
+
+### `write_reject`
+
+Rejects one proposal.
+The rejection is direct, its author is `model:` and the name of the client, and it takes the sources of the proposal, so that it goes with the proposal when one of them is erased.
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `proposal` | integer | — | The id of the proposal, as the history of an entry names it. |
+| `reason` | string | none | Why the proposal isn't taken. |
+| `confirm` | string | none | The handle of the preview. |
+
+The client has to be allowed to see the entry of the proposal and every source of it, as for `write_approve`.
+A rejected proposal leaves the list of proposals and stays in the history.
+
 ### Errors of a call
 
 A call that fails as a whole answers with one sentence after `Error: `, such as these:
@@ -262,6 +510,8 @@ Error: since has no zone; give a date, or a moment such as 2026-09-01T09:00+02:0
 Error: cursor is not valid for these filters; call again without a cursor for the first page
 Error: ids takes 1 to 20 event ids, this call gave 0
 Error: from_unit is a unit number, 1 or more
+Error: state takes one of open, fulfilled, cancelled
+Error: subject is the id of an entry, a whole number from 1 to 2^53 - 1
 Error: the call failed inside the server; its log says why, this result cannot
 ```
 
@@ -357,6 +607,24 @@ The entry of `call`:
 An entry of `delivered` names the units that appeared on the page, a unit cut inside among them, and the circles of the event when the call was made.
 An erased event stands in `delivered` with no units and no circles: it was delivered as its placeholder, and no unit of it reached the client.
 An event that didn't fit on the page is in no entry of that call.
+
+An obligation or a decision stands in `delivered` and `withheld` under its id, with no units and with the circles of its sources.
+`rules` of `policy` holds the rules of every distinct source of every entry that reached the page.
+The arguments of `list_obligations` and `list_decisions` are a circle name, a state, flags and an id, and the entry holds no text of an obligation or a decision and no address.
+
+A call of a writing tool records none of its arguments as given, because the text a client writes can come from a mail and would outlive the erasure of that mail in the log.
+A call of a tool name the server doesn't have records only the names of its arguments, each with `null`, for the same reason: a misspelled writing tool carries the text it meant to write.
+Its `arguments` hold only these keys, for a call the SDK refused as well:
+
+| Key | Value |
+|---|---|
+| `statements` | How many statements the call names. |
+| `sources` | `write_assertion`: the ids of the source events, ascending, each once. |
+| `proposals` | `write_approve` and `write_reject`: the ids of the proposals answered. |
+| `confirm` | `true` where the call gave a handle. |
+| `written` | The ids written, or found written by an earlier confirmation of the same handle; empty for a preview or a refusal. |
+
+The preview of `write_approve` and `write_reject` shows a proposal, so that call and its confirmation record the proposal's entry in `delivered`, with the circles of its sources, and its rules in `rules` of `policy`, as `list_obligations` records it; `previously access --circle` finds them.
 
 An entry of `withheld` carries `reason_code` `no_rule` where a circle had no rule for a client that isn't local, `rule` where a rule said no, the circles of the event, and the sentence of the placeholder.
 `uncovered` lists the circles of the event that have no rule, and `source` is the source of the event's key, or `null` where it has none; `policy gaps` counts by these two.

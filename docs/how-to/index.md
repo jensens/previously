@@ -14,6 +14,7 @@ keep-the-blob-key-safe
 ingest-a-mail-folder
 set-a-policy-and-try-a-call
 connect-claude-code-and-vibe
+record-what-is-owed-and-decided
 add-a-migration
 rebuild-a-projection
 run-the-image

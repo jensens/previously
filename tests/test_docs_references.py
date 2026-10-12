@@ -31,12 +31,14 @@ from typing import TYPE_CHECKING
 import ast
 import json
 import pathlib
+import pytest
 import re
 
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
     from previously.contract.types import RawEvent
+    from sqlalchemy import Engine
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 SOURCE_DIRS = ["src", "tests"]
@@ -571,6 +573,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         ("For each unit it skips, one notice goes to standard error", 1),
         ("one notice goes to standard error, naming the blob and those events", 2),
         ("When a string anywhere in the payload of the target", 1),
+        ("For each approval that stands of the target, one notice goes to standard error", 1),
         ("`redact` prints one of two lines to standard output", 2),
         ("`migrate` prints one line to standard output, in one of two forms", 3),
         ("When no event names the blob, `blob get` returns 1", 1),
@@ -1430,6 +1433,7 @@ def test_the_mcp_reference_quotes_what_the_server_says() -> None:
     for after in (
         "A call that fails as a whole answers with one sentence after `Error: `, such as these:",
         "An `event_id` that isn't a whole number in ASCII digits is refused:",
+        "The refusals of the server are these, each with nothing written:",
     ):
         for line in _mcp_lines(after):
             prefix, _, message = line.partition(": ")
@@ -1453,6 +1457,35 @@ def test_the_mcp_reference_quotes_what_the_server_says() -> None:
     ):
         (line,) = _mcp_lines(after)
         _said(line, server, "server.py")
+
+
+def test_the_mcp_reference_quotes_the_refusals_of_a_handle_as_they_are_made() -> None:
+    """The four refusals of a handle, made by `open_handle` itself and
+    compared whole, in the order the page lists them: a seal of another key,
+    another client, other statements, and a moment after the expiry."""
+    from datetime import datetime
+    from datetime import timedelta
+    from datetime import UTC
+    from previously.mcp_server.confirm import HANDLE_SECONDS
+    from previously.mcp_server.confirm import HandleRefused
+    from previously.mcp_server.confirm import open_handle
+    from previously.mcp_server.confirm import seal
+
+    now = datetime(2026, 10, 12, 12, 0, tzinfo=UTC)
+    key = b"k" * 32
+    payloads = [{"assertion": "obligation"}]
+    handle = seal(key, client="claude-code", payloads=payloads, now=now, nonce="n")
+    made: list[str] = []
+    for other_key, client, other_payloads, moment in (
+        (b"q" * 32, "claude-code", payloads, now),
+        (key, "vibe", payloads, now),
+        (key, "claude-code", [{"assertion": "decision"}], now),
+        (key, "claude-code", payloads, now + timedelta(seconds=HANDLE_SECONDS + 1)),
+    ):
+        with pytest.raises(HandleRefused) as refused:
+            open_handle(other_key, handle, client=client, payloads=other_payloads, now=moment)
+        made.append(f"Error: {refused.value}")
+    assert _mcp_lines("A handle that doesn't let the call write is refused") == made
 
 
 def test_the_mcp_reference_quotes_the_reasons_the_decision_builds() -> None:
@@ -1542,3 +1575,286 @@ def test_the_mcp_reference_access_entry_has_the_form_verify_holds() -> None:
     assert _first_cells(page, heading, "The entry of `call`:", name=MCP_PAGE_NAME) == set(
         example["call"]
     )
+
+
+# --- the assertions section of cli.md -----------------------------------------------
+
+
+def _assertions_section() -> str:
+    page = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
+    return page.split("\n## Assertions\n", 1)[1].split("\n(cli-mcp)=", 1)[0]
+
+
+def test_the_assertions_reference_quotes_only_sentences_the_code_says() -> None:
+    """Every `Error: ` the "Assertions" section of `cli.md` quotes, in a block
+    or inline, is a message `cli.py` raises, one the write path in
+    `core/assertions.py` refuses with, or, behind an option name, one that
+    `core/assertion.py` returns; and the hint is the sentence `cli.py`
+    builds. A sentence changed on the page alone, or in the code alone, fails.
+
+    Measured on 2026-10-12: with `already approved` turned into `already
+    answered` on the page, this test goes red; the unchanged page is the
+    control. Patterns shorter than ten characters are left out, or the bare
+    `{option}: {problem}` would stand in for any sentence with a colon.
+    """
+    section = _assertions_section()
+    quoted = re.findall(r"^Error: (.+)$", section, re.MULTILINE)
+    quoted += re.findall(r"`Error: ([^`]+)`", section)
+    assert len(quoted) >= 8, quoted
+    source = ROOT / "src" / "previously"
+    own = [
+        parts
+        for parts in [
+            *_raised_patterns(source / "cli.py", "PreviouslyError"),
+            *_raised_patterns(source / "core" / "assertions.py", "AssertionRefused"),
+        ]
+        if len("".join(parts)) >= 10
+    ]
+    core = _message_patterns(source / "core" / "assertion.py")
+    for sentence in quoted:
+        behind_option = re.sub(r"^--[a-z-]+: ", "", sentence)
+        assert any(_is_the_same_sentence(parts, sentence) for parts in own) or (
+            behind_option != sentence
+            and any(_is_the_same_sentence(parts, behind_option) for parts in core)
+        ), f"cli.md quotes {sentence!r} and neither cli.py nor core/assertion.py says it"
+    hints = re.findall(r"^hint: (.+)$", section, re.MULTILINE)
+    assert len(hints) == 1
+    code = (source / "cli.py").read_text(encoding="utf-8")
+    assert hints[0].partition(" ")[2] in code.replace('"\n        "', "")
+
+
+@pytest.mark.db
+def test_the_assertions_reference_names_every_label_the_commands_print(
+    db: Engine, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The first word of every line of the page of an entry and of its
+    history, and the seven fields of a list line, are named on the page. A
+    label the code prints and the page leaves out fails; the page's `seven`
+    is held against the list line the command prints."""
+    from previously.cli import main
+
+    monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
+    decide = ["assert", "decision", "--what", "d", "--by", "own", "--on", "2026-10-30"]
+    owe = ["assert", "obligation", "--debtor", "own", "--creditor", "name:x", "--what", "w"]
+    run = [
+        ["append", "--source", "s", "--external-id", "1", "--text", "One. Two."],
+        [*owe, "--due", "2020-01-01", "--source", "1", "--yes"],
+        ["assert", "obligation", "--subject", "2", "--state", "fulfilled", "--yes"],
+        [*decide, "--source", "1", "--yes"],
+        [*decide, "--source", "1", "--replaces", "4", "--yes"],
+    ]
+    for argv in run:
+        assert main(argv) == 0
+    _write_proposals(db)
+    assert main(["reject", "6", "--reason", "no", "--yes"]) == 0
+    assert main(["approve", "7", "--yes"]) == 0
+    section = _assertions_section()
+    prose = re.sub(r"```.*?```", "", section, flags=re.DOTALL)
+    spans = set(re.findall(r"`([^`]+)`", prose))
+    printed: set[str] = set()
+    for argv in (
+        ["obligation", "2"],
+        ["obligation", "2", "--history"],
+        ["decision", "4"],
+        ["obligation", "6", "--history"],
+    ):
+        capsys.readouterr()
+        assert main(argv) == 0
+        for line in capsys.readouterr().out.splitlines():
+            label = line.split("\t")[0]
+            printed.add(
+                label.split(" ")[0] if label.startswith(("obligation", "decision")) else label
+            )
+    for label in printed - {"obligation", "decision"}:
+        base = label.removesuffix(" ID")
+        assert any(span == base or span.startswith(base + " ") for span in spans), (
+            f"the command prints the label {label!r} and the Assertions section names no `{label}`"
+        )
+    capsys.readouterr()
+    assert main(["obligations"]) == 0
+    fields = capsys.readouterr().out.splitlines()[0].split("\t")
+    assert len(fields) == 7
+    assert "Each line holds seven tab-separated fields" in section
+
+
+def _write_proposals(db: Engine) -> None:
+    from datetime import date
+    from datetime import datetime
+    from datetime import UTC
+    from previously.core.assertion import model_author
+    from previously.core.assertion import OBLIGATION
+    from previously.core.assertion import ObligationBody
+    from previously.core.assertion import OPEN
+    from previously.core.assertion import Source
+    from previously.core.assertion import Statement
+    from previously.core.assertions import write_statements
+    from previously.storage.postgres import PostgresStorage
+
+    def proposal(what: str, subject: int | None) -> Statement:
+        body = ObligationBody("own", "name:x", what, date(2026, 12, 1), "open")
+        return Statement(
+            OBLIGATION,
+            model_author("claude-code"),
+            OPEN,
+            (Source(1, None),),
+            None,
+            None,
+            subject,
+            None,
+            None,
+            body,
+        )
+
+    storage = PostgresStorage(db)
+    now = datetime(2026, 11, 1, tzinfo=UTC)
+    write_statements(storage, storage, [proposal("p", None)], recorded_at=now)  # 6
+    write_statements(storage, storage, [proposal("q", 2)], recorded_at=now)  # 7
+
+
+def test_the_reference_quotes_the_findings_about_assertions() -> None:
+    """The sixteen findings `verify` reports about an assertion, as `cli.md`
+    quotes them under `verify`: each a reason `core/verify.py` gives, with the
+    first fault of the form, behind `assertion has no valid form: `, held
+    against the sentences `core/assertion.py` returns. Every finding the code
+    gives about an assertion is quoted, so a new one fails here too.
+
+    "Every finding" has three limits, all in how the code's side is
+    collected. A reason counts only when it opens with one of the four
+    words in `starts`: a new finding that opened with another would be
+    missed, and the page could leave it out. A reason handed to `Finding`
+    counts only as a plain string, so one with an interpolation would be
+    missed the same way; the one there is, the fault of the form, is held
+    against `core/assertion.py` instead. And a returned reason counts only
+    from the three functions named below, which is why `_untaken` joined
+    them on 2026-10-12, when the approval's content and author came to be
+    compared there.
+
+    Measured on 2026-10-12: `approval names no open proposal of its subject`
+    turned into `... of its entry` on the page goes red, and so does a block
+    with one line deleted; the unchanged page is the control.
+    """
+    page = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
+    verify = ROOT / "src" / "previously" / "core" / "verify.py"
+    literal = {parts[0] for parts in _finding_patterns(verify) if len(parts) == 1}
+    returned = (
+        _string_constants(verify, "_rejection")
+        | _string_constants(verify, "_version")
+        | _string_constants(verify, "_untaken")
+    )
+    forms = _message_patterns(ROOT / "src" / "previously" / "core" / "assertion.py")
+    starts = ("assertion ", "approval ", "rejection ", "decision ")
+    in_code = {text for text in literal | returned if text.startswith(starts)}
+    form_prefix = "assertion has no valid form: "
+    quoted: set[str] = set()
+    lines = _quoted_block(page, "Sixteen findings come from assertions")
+    assert len(lines) == 16, lines
+    for line in lines:
+        prefix, _, reason = line.partition(": ")
+        assert re.fullmatch(r"FINDING [0-9]+", prefix), line
+        if reason.startswith(form_prefix):
+            problem = reason.removeprefix(form_prefix)
+            assert any(_is_the_same_sentence(parts, problem) for parts in forms), (
+                f"cli.md quotes the fault {problem!r}, which core/assertion.py never returns"
+            )
+            continue
+        assert reason in in_code, (
+            f"cli.md quotes the finding {reason!r} and core/verify.py gives no such reason"
+        )
+        quoted.add(reason)
+    assert in_code == quoted, f"cli.md leaves out the findings {sorted(in_code - quoted)}"
+
+
+ASSERTIONS_PAGE = DOCS / "reference" / "assertions.md"
+
+
+def test_the_assertions_reference_names_every_key_of_the_payload() -> None:
+    """The keys each table on `assertions.md` names, against the payload
+    `payload_of` writes for an obligation, a decision and a rejection: the
+    common keys, the two of a version, and the ones of each kind.
+
+    Measured on 2026-10-12: the row of `handle` deleted from the page goes
+    red; the unchanged page is the control.
+    """
+    from datetime import date
+    from previously.core.assertion import DECISION
+    from previously.core.assertion import DecisionBody
+    from previously.core.assertion import DIRECT
+    from previously.core.assertion import OBLIGATION
+    from previously.core.assertion import ObligationBody
+    from previously.core.assertion import OPERATOR
+    from previously.core.assertion import payload_of
+    from previously.core.assertion import REJECTION
+    from previously.core.assertion import Source
+    from previously.core.assertion import Statement
+
+    def statement(kind: str, body: ObligationBody | DecisionBody | None) -> Statement:
+        of = 9 if body is None else None
+        return Statement(
+            kind, OPERATOR, DIRECT, (Source(1, None),), None, None, None, None, of, body
+        )
+
+    obligation = set(
+        payload_of(statement(OBLIGATION, ObligationBody("own", "own", "w", None, "open")))
+    )
+    decision = set(
+        payload_of(
+            statement(DECISION, DecisionBody("w", ("own",), date(2026, 1, 1), "valid", None))
+        )
+    )
+    rejection = set(payload_of(statement(REJECTION, None)))
+    page = ASSERTIONS_PAGE.read_text(encoding="utf-8")
+
+    def cells(after: str) -> set[str]:
+        return _first_cells(page, "## The payload", after, name="assertions.md")
+
+    common = cells("Every kind has these keys:")
+    version = cells("An obligation and a decision add")
+    assert common == obligation & decision & rejection
+    assert common | version | cells("An obligation adds:") == obligation
+    assert common | version | cells("A decision adds:") == decision
+    assert common | cells("A rejection adds:") == rejection
+    assert not version & (cells("An obligation adds:") | cells("A decision adds:"))
+    assert cells("An entry of `sources` holds:") == {"event", "units"}
+
+
+def test_the_assertions_reference_examples_have_the_form_the_code_checks() -> None:
+    """Each payload the page shows as an example is one `assertion_problem`
+    finds no fault with, and the three are the three kinds.
+
+    Measured on 2026-10-12: the `due` of the example written `30.11.2026`
+    goes red; the unchanged page is the control.
+    """
+    from previously.core.assertion import assertion_problem
+    from previously.core.assertion import KINDS
+
+    page = ASSERTIONS_PAGE.read_text(encoding="utf-8")
+    section = page.split("### Examples", 1)[1].split("\n## ", 1)[0]
+    blocks = re.findall(r"```json\n(.*?)\n```", section, re.DOTALL)
+    examples = [cast("dict[str, object]", json.loads(block)) for block in blocks]
+    assert [example["assertion"] for example in examples] == list(KINDS)
+    for example in examples:
+        assert assertion_problem(example) is None, (example, assertion_problem(example))
+
+
+def test_the_assertions_reference_holds_the_limits_of_the_code() -> None:
+    """The figures the page states, against the constants that set them: the
+    length of a name and of an address, and the size of a batch on the write
+    path and over MCP.
+
+    Measured on 2026-10-12: `at most 254 characters` turned into `at most
+    255` on the page goes red; the unchanged page is the control.
+    """
+    from previously.core.append import MAX_BATCH
+    from previously.core.assertion import MAX_ADDRESS_LENGTH
+    from previously.core.assertion import MAX_NAME_LENGTH
+    from previously.mcp_server.server import MAX_STATEMENTS
+
+    page = ASSERTIONS_PAGE.read_text(encoding="utf-8")
+    for sentence in (
+        f"has at most {MAX_ADDRESS_LENGTH} characters, exactly one `@`",
+        f"`TEXT` has 1 to {MAX_NAME_LENGTH} characters",
+        f"of 1 to {MAX_NAME_LENGTH} characters, without white space",
+        f"One batch holds 1 to {MAX_BATCH} statements",
+        f"Over MCP, one call holds 1 to {MAX_STATEMENTS}.",
+    ):
+        assert sentence in page, f"assertions.md no longer says {sentence!r}"

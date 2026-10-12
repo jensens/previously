@@ -4,6 +4,7 @@
 
 This guide shows you how to let Claude Code or Mistral Vibe read the log: declare the client's processing chain, give the circles it may read a rule, add the client, start the server, connect the client, and check that the connection stands.
 For why a client is treated as a processor, see {ref}`mcp-interface`, for the tools it gets, {ref}`mcp-tools`, and for every option, {ref}`cli-reference`.
+To let a client propose obligations and decisions as well, and to make it ask you before it answers one, continue with {ref}`record-what-is-owed-and-decided` once the connection stands.
 
 You need three things before you start.
 
@@ -125,6 +126,7 @@ With `api_key_env`, Vibe 2.26.1 sent no header at all, the server refused every 
 
 Vibe's default harness keeps the list of tools across sessions.
 After a release of Previously that changes the tools, start Vibe with `--legacy-harness` until the default harness offers the new ones.
+The first release with assertions is such a release: it adds `list_obligations`, `list_decisions` and the three writing tools, ten tools in all where there were five.
 Whether `/mcp refresh` in Vibe brings the new tools into the default harness hasn't been measured.
 
 ## Check the connection
@@ -163,3 +165,7 @@ The first two configurations were measured on 2026-10-10, against a test server 
 The form of a result that the server uses, one text block, arrived whole in the first two.
 The measurement recorded the key `headers` of the Vibe entry and not the rest of it; `name`, `transport` and `url` above follow [Vibe's documentation of MCP servers](https://docs.mistral.ai/vibe/code/cli/mcp-servers).
 Nothing else on this page was measured with a real client: not the form with standard input and output, and not Vibe against `previously serve`.
+
+The writing tools haven't met a real client yet.
+The input schema of `write_assertion` nests its items and their sources through `$defs` and `$ref`, and only the client of the MCP SDK has called it so far, in the tests.
+One real call of `write_assertion` from Claude Code and one from Vibe is still owed.

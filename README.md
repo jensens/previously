@@ -16,7 +16,9 @@ chain, the projections derived from it, and blobs and erasure. A release
 publishes a package on PyPI and an image on ghcr.io. The first connector takes
 the mail of an IMAP folder in, and a gate lets a language model read it only
 as far as a policy in the log allows; an MCP server lets Claude Code or
-Mistral Vibe read it under the same policy.** Not a product surface — a command line
+Mistral Vibe read it under the same policy. Obligations and decisions are
+recorded with the mails they rest on, and a client proposes them for a person
+to approve.** Not a product surface — a command line
 thin enough to get at the log by hand, so that each stage is *runnable* and not
 merely described.
 
@@ -82,28 +84,40 @@ merely described.
   [About the processing policy](docs/explanation/processing-policy.md),
   [About trust boundaries](docs/explanation/trust-boundaries.md) and
   [How to set a policy and try a call](docs/how-to/set-a-policy-and-try-a-call.md)
-- **MCP read access** (`client`, `mcp`, `serve`, `access`): Claude Code,
-  Mistral Vibe or a local harness reads the chronicle of a circle and single
-  mails through five tools, each client named, declared as a processor and,
+- **MCP access** (`client`, `mcp`, `serve`, `access`): Claude Code,
+  Mistral Vibe or a local harness reads the chronicle of a circle, single
+  mails, and the obligations and decisions through ten tools, each client named, declared as a processor and,
   over HTTP, holding a token of its own, so that the policy decides for every event whether this client
   may see it, and shows a placeholder with the reason where it may not. Every
   call becomes an `mcp_access` event that holds no content, and `access` lists
   what each client saw and what was withheld; see
   [About the client interface](docs/explanation/mcp-interface.md) and
   [How to connect Claude Code and Mistral Vibe](docs/how-to/connect-claude-code-and-vibe.md)
-- the eighteen commands `migrate`, `append`, `ingest`, `redact`, `log`,
+- **assertions** (`assert`, `approve`, `reject`, `obligations`, `obligation`,
+  `decisions`, `decision`): who owes whom what and by when, and what was
+  decided, each resting on named mails and their units, written in complete
+  versions with an author and a responsibility of their own. A client
+  proposes through `write_assertion`, a proposal stays one until a person
+  approves it, and a direct statement always outranks a proposal. An erasure of
+  a mail takes every assertion on it along; see
+  [About assertions](docs/explanation/assertions.md) and
+  [How to record what's owed and decided](docs/how-to/record-what-is-owed-and-decided.md)
+- the twenty-five commands `migrate`, `append`, `ingest`, `redact`, `log`,
   `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`,
-  `policy`, `gate`, `client`, `access`, `mcp` and `serve`
+  `policy`, `gate`, `client`, `access`, `assert`, `approve`, `reject`,
+  `obligations`, `obligation`, `decisions`, `decision`, `mcp` and `serve`
 - the schema as Alembic migrations inside the package, applied by
   `previously migrate`
 
-**What it does not do:** no header — a header rests on assertions, and those
-come out of the gate; no assignment of events to projects, so the chronicle is
+**What it does not do:** no header, the view of a project that rests on its
+assertions; no layer behind the gate that proposes assertions by itself; no
+assignment of events to projects, so the chronicle is
 the chronicle of the whole log and not of one project; no job queue — the
 projection worker is a command, run when somebody runs it; one connector,
 for an IMAP folder, and none for anything else yet, such as a shared folder
-or an issue tracker; no MCP tool that writes, no assertions, no action that
-writes into a foreign system, and one task only for the gate, an overview of a
+or an issue tracker; no people or organizations as entities, so an actor is
+the own side, a circle, an address or a plain label; no action that writes into a foreign
+system, and one task only for the gate, an overview of a
 mail that is a probe and no result anything relies on; no search, no user
 administration, and no network interface but the MCP server.
 
@@ -163,7 +177,7 @@ lives under `docs/`. Build it locally with `make -C docs html`, then open
 session typed out against a real PostgreSQL 18, from a fresh checkout to a
 passing test suite.
 
-The eleven specifications below are **frozen design records**, in German and
+The twelve specifications below are **frozen design records**, in German and
 dated: they hold how and why a decision was taken, and the documentation under
 `docs/` carries the reasoning that is maintained with the code. Where the two
 disagree, the documentation wins. A new stage starts with a new German
@@ -183,6 +197,7 @@ the first one that went that way from the start.
 | [Pilot, unit 3](docs/superpowers/specs/2026-10-09-pilot-gate-und-policy.md) | Frozen design record, 2026-10-09: detailed specification of the gate and the processing policy — circles, rules and the promises of providers as events, the decision, three adapters, and the audit of every model call; its reasoning is maintained in [About the processing policy](docs/explanation/processing-policy.md) and [About trust boundaries](docs/explanation/trust-boundaries.md), its routine in [How to set a policy and try a call](docs/how-to/set-a-policy-and-try-a-call.md), and its open points in the [map](docs/superpowers/landkarte.md) |
 | [MCP interface](docs/superpowers/specs/2026-10-10-mcp-schnittstelle.md) | Frozen design record, 2026-10-11: the concept of the MCP interface as a whole — tools, resources, prompts, access, the processing check of a client, the access log, the form of a result, versions and operation; it replaces §8 of the architecture, and its reasoning is maintained in [About the client interface](docs/explanation/mcp-interface.md) |
 | [Pilot, unit 4](docs/superpowers/specs/2026-10-10-pilot-mcp-lesezugang.md) | Frozen design record, 2026-10-11: detailed specification of MCP read access — clients as principals, the extended processing chain, `previously mcp` and `previously serve`, five tools, and `mcp_access`; its reasoning is maintained in [About the client interface](docs/explanation/mcp-interface.md), the facts in [Server tools, resources and prompts](docs/reference/mcp-tools.md), its routine in [How to connect Claude Code and Mistral Vibe](docs/how-to/connect-claude-code-and-vibe.md), and its open points in the [map](docs/superpowers/landkarte.md) |
+| [Pilot, unit 5](docs/superpowers/specs/2026-10-12-pilot-feststellungen.md) | Frozen design record, 2026-10-12: detailed specification of assertions — obligations and decisions in complete versions, references to actors, precedence by responsibility, proposals over MCP with approval and rejection, the cascade of an erasure, and the policy over the sources; its reasoning is maintained in [About assertions](docs/explanation/assertions.md), the facts in [Assertions](docs/reference/assertions.md), its routine in [How to record what's owed and decided](docs/how-to/record-what-is-owed-and-decided.md), and its open points in the [map](docs/superpowers/landkarte.md) |
 | [Execution records](docs/superpowers/sdd/) | Frozen working records, one directory per executed plan: the ledger of every decision taken while building it, and the target of the `ruling …` citations in the code |
 | [CLAUDE.md](CLAUDE.md) | The working agreements: language, attribution, dependencies, the six gates |
 | [DEPENDENCIES.md](DEPENDENCIES.md) | Every dependency with its purpose, the rejected alternative and the date it was last checked |

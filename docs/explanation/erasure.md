@@ -157,6 +157,14 @@ The calls are found by reading every action, which is cheap for a pilot and the 
 A cascade doesn't follow a call that read the result of another call.
 No task reads one, and `verify` would report such a call as keeping the result of erased input.
 
+An assertion goes the same way, and further.
+An obligation or a decision says in its own words what its sources said, so an erasure that takes a source takes every assertion that rests on it, by a redaction of the whole assertion with the same reason `cascade of redaction 7`, in the same transaction.
+It rests on an event it names, on a unit it cites, and on every unit of an event it cites whole that's erased after it was written.
+The whole assertion goes, its payload with the text, even when only one of three sources is erased, because which sentence came from which mail is interpretation and an erasure can't rest on that.
+The write path of assertions takes the same row lock on its sources that an erasure takes, so an assertion can't slip in beside an erasure either.
+An erasure of a blob takes no assertion along, since an assertion names events and units and no blob, and a model call is never the source of one.
+{ref}`assertions-erasure` explains the rest: what an entry falls back to, and why a source has to be an observation.
+
 An erasure also reaches a policy event.
 Its payload goes, and the policy then reads as if the statement had been revoked: the previous statement of the same key applies again, or none.
 The rule that a redaction can't be redacted is the only one about actions that stays.
@@ -267,6 +275,7 @@ But the forwarding mail is a new event, and the forwarded bytes are its attachme
 **What was derived or copied stays where it went.**
 Output printed in a terminal, a copy in another system, anything outside the log is beyond the reach of any erasure.
 Inside it, the chronicle is a projection of the log, and it follows an erasure: `redact` catches the projections up after it, and the rows of what was erased are deleted, as {ref}`projections` explains.
+The obligations and decisions follow at once, because they're folded from the log at every read and kept in no table.
 If that catch-up fails, the erasure stands and the chronicle lags behind it until the same command runs again or `project` runs.
 
 The anchors, by contrast, keep holding: an erasure changes no event hash, so an anchor taken before an erasure holds after it, and an anchor taken after it holds exactly.

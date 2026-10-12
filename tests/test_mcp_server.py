@@ -22,7 +22,9 @@ and `local-harness`, processed on the operator's own hardware.
 
 from dataclasses import dataclass
 from dataclasses import replace
+from datetime import date
 from datetime import datetime
+from datetime import timedelta
 from datetime import UTC
 from mcp.client.client import Client
 from mcp.client.streamable_http import streamable_http_client
@@ -30,9 +32,28 @@ from mcp.types import CallToolResult
 from mcp.types import TextContent
 from mcp.types import TextResourceContents
 from previously.contract.types import BlobRef
+from previously.contract.types import ChannelIdentity
+from previously.contract.types import Evidence
+from previously.contract.types import RawEvent
+from previously.contract.types import RawUnit
 from previously.core.access import AccessRow
 from previously.core.access import read_access
 from previously.core.append import append
+from previously.core.assertion import DECISION
+from previously.core.assertion import DecisionBody
+from previously.core.assertion import DIRECT
+from previously.core.assertion import model_author
+from previously.core.assertion import OBLIGATION
+from previously.core.assertion import ObligationBody
+from previously.core.assertion import OPEN
+from previously.core.assertion import OPERATOR
+from previously.core.assertion import payload_of
+from previously.core.assertion import REJECTION
+from previously.core.assertion import Source
+from previously.core.assertion import Statement
+from previously.core.assertions import write_statements
+from previously.core.chain import link
+from previously.core.chain import prepare
 from previously.core.clients import add_client
 from previously.core.clients import revoke_client
 from previously.core.mail import map_mail
@@ -41,13 +62,20 @@ from previously.core.policy import Inference
 from previously.core.policy import Membership
 from previously.core.policy import OwnIdentity
 from previously.core.policy import Provider
+from previously.core.policy import read_policy
 from previously.core.policy import Rule
 from previously.core.policy import set_policy
 from previously.core.redact import redact_event
 from previously.core.verify import verify
+from previously.mcp_server.confirm import HANDLE_SECONDS
+from previously.mcp_server.confirm import seal
+from previously.mcp_server.read import event_hidden
 from previously.mcp_server.render import PAGE_CHARS
+from previously.mcp_server.render import STATED_LINE_CHARS
 from previously.mcp_server.server import build_app
 from previously.mcp_server.server import build_server
+from previously.mcp_server.server import TOOLS
+from previously.mcp_server.server import write_record
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import create_engine
 from sqlalchemy import Engine
@@ -824,7 +852,7 @@ def test_the_prompts_ask_for_work_and_hold_no_content(world: World, mode: str) -
 # The SHA-256 of the tool list as clients see it: name, description and input
 # schema of every tool, sorted by name, as canonical JSON. A change to any of
 # them is a change of the interface, made deliberately and released.
-TOOLS_SHA256 = "393fe0fd49afaea2289e95e377a42e3b3ed4876e6085396bdabde8d8344bd3fc"
+TOOLS_SHA256 = "45a73803197d866e97fb5f6511787de00988a020fe9a642fdaf7a34aa418cc04"
 
 
 def tool_list_digest(tools: list[dict[str, object]]) -> str:
@@ -846,12 +874,18 @@ def test_the_tool_list_matches_its_checksum(world: World, mode: str) -> None:
         {"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema}
         for tool in listed.tools
     ]
+    assert {str(tool["name"]) for tool in tools} == TOOLS
     assert sorted(str(tool["name"]) for tool in tools) == [
         "get_event",
         "list_circles",
+        "list_decisions",
+        "list_obligations",
         "policy_gaps",
         "previously",
         "whoami",
+        "write_approve",
+        "write_assertion",
+        "write_reject",
     ]
     assert tool_list_digest(tools) == TOOLS_SHA256
 
@@ -907,8 +941,11 @@ def _http[T](
     use: Callable[[httpx2.AsyncClient], Awaitable[T]],
     *,
     allowed_hosts: tuple[str, ...] = (),
+    confirm_key: str | None = None,
 ) -> T:
-    app = build_app(world.storage, allowed_hosts=allowed_hosts)
+    app = build_app(
+        world.storage, allowed_hosts=allowed_hosts, locker=world.storage, confirm_key=confirm_key
+    )
 
     async def run() -> T:
         async with app.router.lifespan_context(app):
@@ -922,14 +959,20 @@ def _http[T](
 
 
 def _over_http(
-    world: World, token: str, mode: str, name: str, arguments: dict[str, Any]
+    world: World,
+    token: str,
+    mode: str,
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    confirm_key: str | None = None,
 ) -> CallToolResult:
     async def use(http: httpx2.AsyncClient) -> CallToolResult:
         http.headers["Authorization"] = f"Bearer {token}"
         async with Client(streamable_http_client(URL, http_client=http), mode=mode) as session:
             return await session.call_tool(name, arguments)
 
-    return _http(world, use)
+    return _http(world, use, confirm_key=confirm_key)
 
 
 _INITIALIZE = {
@@ -1298,3 +1341,1495 @@ def test_a_cursor_that_does_not_lead_on_is_an_error(world: World, mode: str) -> 
     for event_id in (world.policy_event, 999_999):
         assert _text(_tool(world, mode, "previously", {"cursor": forged(event_id)})) == message
     assert _accesses(world)[-1].access.outcome == "error"
+
+
+# --- obligations and decisions ----------------------------------------------------------
+
+# Where the sources of an assertion stand in the test world, for `claude-code`:
+# the scanned mail belongs to `office`, which has a rule, so an assertion on it
+# is shown; the plain mail also involves `team`, which has none, so one on it is
+# a placeholder; and the blockquote mail belongs to `bauer`, whose rule allows
+# only the EU.
+THE_TEXT = "send the offer for the roof"
+PRIVATE_TEXT = "PRIVATE-WORDING-OF-AN-OBLIGATION"
+PRIVATE_ADDRESS = "someone@elsewhere.example"
+FAR_FUTURE = date(2099, 1, 1)
+LONG_AGO = date(2000, 1, 1)
+_HEADING = re.compile(r"^### previously://event/(\d+) · (\w+) · (.*)$", re.MULTILINE)
+
+
+def _obligation(
+    *sources: Source,
+    what: str = THE_TEXT,
+    due: date | None = FAR_FUTURE,
+    debtor: str = "own",
+    creditor: str = "address:eva.huber@example.org",
+    state: str = "open",
+    subject: int | None = None,
+    responsibility: str = DIRECT,
+    reason: str | None = None,
+) -> Statement:
+    return Statement(
+        OBLIGATION,
+        OPERATOR if responsibility == DIRECT else model_author("claude-code"),
+        responsibility,
+        sources,
+        reason,
+        None,
+        subject,
+        None,
+        None,
+        ObligationBody(debtor, creditor, what, due, state),
+    )
+
+
+def _decision(
+    *sources: Source,
+    what: str = "use slate for the roof",
+    by: tuple[str, ...] = ("own",),
+    state: str = "valid",
+    subject: int | None = None,
+    responsibility: str = DIRECT,
+) -> Statement:
+    return Statement(
+        DECISION,
+        OPERATOR if responsibility == DIRECT else model_author("claude-code"),
+        responsibility,
+        sources,
+        None,
+        None,
+        subject,
+        None,
+        None,
+        DecisionBody(what, by, date(2026, 10, 30), state, None),
+    )
+
+
+def _state(world: World, *statements: Statement) -> tuple[int, ...]:
+    return write_statements(world.storage, world.storage, statements, recorded_at=T0)
+
+
+def _on(world: World, name: str) -> Source:
+    return Source(world.ids[name], None)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_obligation_is_a_heading_from_previously_and_its_content_inside_the_fence(
+    world: World, mode: str
+) -> None:
+    (stated,) = _state(world, _obligation(_on(world, "attachments_only"), due=LONG_AGO))
+    scanned = world.ids["attachments_only"]
+
+    page = _untagged(_text(_tool(world, mode, "list_obligations")))
+
+    assert page.splitlines()[0] == "previously · list_obligations · page 1"
+    assert (
+        f"### previously://event/{stated} · obligation · open · overdue · direct · "
+        "1 version · 0 proposals\n<<<customer-content TAG>>>\n"
+        f"what: {THE_TEXT}\n"
+        "debtor → creditor: own → address:eva.huber@example.org\n"
+        "due: 2000-01-01\n"
+        "reason: none\n"
+        f"sources: previously://event/{scanned}\n"
+        "<<<end TAG>>>"
+    ) in page
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_unit_of_a_source_is_cited_with_its_unit_marker(world: World, mode: str) -> None:
+    scanned = world.ids["attachments_only"]
+    _state(world, _obligation(Source(scanned, (1,)), Source(world.ids["plain"], None)))
+
+    page = _text(_tool(world, mode, "list_obligations", client="local-harness"))
+
+    assert f"sources: previously://event/{scanned}#unit-1, previously://event/" in page
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_overdue_marks_and_filters_only_what_is_open_and_due_before_today(
+    world: World, mode: str
+) -> None:
+    scanned = _on(world, "attachments_only")
+    late, future, undated, fulfilled = _state(
+        world,
+        _obligation(scanned, due=LONG_AGO),
+        _obligation(scanned, due=FAR_FUTURE),
+        _obligation(scanned, due=None),
+        _obligation(scanned, due=LONG_AGO, state="fulfilled"),
+    )
+
+    everything = _text(_tool(world, mode, "list_obligations"))
+    overdue = _text(_tool(world, mode, "list_obligations", {"overdue": True}))
+
+    assert _shown_ids(everything) == [late, future, undated, fulfilled]
+    assert _shown_ids(overdue) == [late]
+    assert everything.count("overdue") == 1
+    assert _last_access(world).access.arguments == {
+        "overdue": True,
+        "proposals": False,
+        "history": False,
+    }
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_state_filters_and_the_other_kind_does_not_appear(world: World, mode: str) -> None:
+    scanned = _on(world, "attachments_only")
+    open_one, done, decided = _state(
+        world,
+        _obligation(scanned),
+        _obligation(scanned, state="fulfilled"),
+        _decision(scanned),
+    )
+
+    fulfilled = _text(_tool(world, mode, "list_obligations", {"state": "fulfilled"}))
+    obligations = _text(_tool(world, mode, "list_obligations"))
+    decisions = _text(_tool(world, mode, "list_decisions"))
+    revoked = _text(_tool(world, mode, "list_decisions", {"state": "revoked"}))
+
+    assert _shown_ids(fulfilled) == [done]
+    assert _shown_ids(obligations) == [open_one, done]
+    assert _shown_ids(decisions) == [decided]
+    assert "decision" in decisions
+    assert "decided by: own\non: 2026-10-30" in decisions
+    assert _shown_ids(revoked) == []
+    assert "No results." in revoked
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_source_in_a_circle_without_a_rule_is_a_placeholder_for_claude_code_and_text_for_local(
+    world: World, mode: str
+) -> None:
+    plain = world.ids["plain"]
+    (stated,) = _state(
+        world,
+        _obligation(Source(plain, None), what=PRIVATE_TEXT, creditor=f"address:{PRIVATE_ADDRESS}"),
+    )
+
+    remote = _text(_tool(world, mode, "list_obligations"))
+    assert remote.splitlines()[-1] == (
+        f"[withheld: previously://event/{stated} — circle team has no rule, so only local "
+        "processing is allowed; this client (claude-code) processes with claude-max, "
+        "which is not local]"
+    )
+    assert PRIVATE_TEXT not in remote
+    assert PRIVATE_ADDRESS not in remote
+    assert f"previously://event/{plain}" not in remote
+    (withheld,) = _last_access(world).access.withheld
+    assert (withheld.event, withheld.reason_code, withheld.circles, withheld.uncovered) == (
+        stated,
+        "no_rule",
+        ("huber", "office", "team"),
+        ("team",),
+    )
+    assert withheld.source == "email"
+    assert _last_access(world).access.delivered == ()
+
+    local = _text(_tool(world, mode, "list_obligations", client="local-harness"))
+    assert PRIVATE_TEXT in local
+    (delivered,) = _last_access(world).access.delivered
+    assert (delivered.event, delivered.units, delivered.circles) == (
+        stated,
+        (),
+        ("huber", "office", "team"),
+    )
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_actor_of_another_circle_changes_nothing_in_the_verdict(world: World, mode: str) -> None:
+    """The creditor is a member of `bauer`, whose rule allows only the EU and
+    would withhold the mail for `claude-code`; the source is the scanned mail
+    of `office`, so the policy goes by that and the entry is shown. Taking the
+    actors into the verdict would withhold it."""
+    (stated,) = _state(
+        world, _obligation(_on(world, "attachments_only"), creditor="address:lea@example.com")
+    )
+
+    page = _text(_tool(world, mode, "list_obligations"))
+
+    assert _shown_ids(page) == [stated]
+    assert "address:lea@example.com" in page
+    (delivered,) = _last_access(world).access.delivered
+    assert delivered.circles == ("office",)
+    assert _last_access(world).access.withheld == ()
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_circle_filter_finds_an_entry_by_its_sources_and_by_its_actors(
+    world: World, mode: str
+) -> None:
+    (stated,) = _state(
+        world, _obligation(_on(world, "attachments_only"), creditor="address:lea@example.com")
+    )
+
+    def listed(circle: str) -> list[int]:
+        return _shown_ids(_text(_tool(world, mode, "list_obligations", {"circle": circle})))
+
+    assert listed("office") == [stated]  # by the source
+    assert listed("bauer") == [stated]  # by the creditor
+    assert listed("huber") == []
+    assert listed("team") == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_placeholder_is_found_by_the_circles_of_its_sources_and_never_by_an_actor(
+    world: World, mode: str
+) -> None:
+    (stated,) = _state(
+        world, _obligation(Source(world.ids["plain"], None), creditor="address:lea@example.com")
+    )
+
+    def found(circle: str) -> str:
+        return _text(_tool(world, mode, "list_obligations", {"circle": circle}))
+
+    assert f"[withheld: previously://event/{stated} — " in found("huber")
+    assert f"[withheld: previously://event/{stated} — " in found("team")
+    assert "No results." in found("bauer")  # an actor's circle would tell too much
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_one_entry_by_subject_and_its_history_with_what_each_version_changed(
+    world: World, mode: str
+) -> None:
+    scanned = _on(world, "attachments_only")
+    (first,) = _state(world, _obligation(scanned))
+    (second,) = _state(
+        world, _obligation(scanned, subject=first, due=date(2099, 2, 1), reason="postponed")
+    )
+
+    entry = _text(_tool(world, mode, "list_obligations", {"subject": first}))
+    history = _untagged(
+        _text(_tool(world, mode, "list_obligations", {"subject": first, "history": True}))
+    )
+
+    assert _shown_ids(entry) == [first]
+    assert "2 versions" in entry
+    assert "due: 2099-02-01" in entry
+    assert f"version {first}" not in entry
+    assert f"version {first} · 2026-10-11T12:00:00.000000Z · direct · human:operator\n" in history
+    assert f"version {second} · 2026-10-11T12:00:00.000000Z · direct · human:operator\n" in history
+    assert "change due: 2099-01-01 → 2099-02-01\n" in history
+    assert "change reason: (none) → postponed" in history
+    assert f"set what: {THE_TEXT}\n" in history
+    assert history.index(f"version {first}") < history.index(f"version {second}")
+    assert _last_access(world).access.arguments == {
+        "overdue": False,
+        "proposals": False,
+        "subject": first,
+        "history": True,
+    }
+
+
+def _rejection(proposal: int, *sources: Source, reason: str | None = None) -> Statement:
+    return Statement(REJECTION, OPERATOR, DIRECT, sources, reason, None, None, None, proposal, None)
+
+
+def _forged(world: World, statement: Statement) -> int:
+    """An assertion on the tip that did not come through `write_statements`."""
+    ready = prepare(
+        kind="assertion", occurred_at=T0, payload=payload_of(statement), units=(), key=None
+    )
+    with world.storage.begin() as conn:
+        tip = world.storage.tip(conn)
+        assert tip is not None
+        row, units = link(ready, event_id=tip.id + 1, prev_hash=tip.hash, recorded_at=T0)
+        world.storage.insert_event(conn, row, units, None)
+    return row.id
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_history_marks_approvals_and_rejections_and_shows_each_rejection_with_its_reason(
+    world: World, mode: str
+) -> None:
+    """Ruling F-18 of the 2026-10-12 assertions plan: the history shows a
+    rejection with its reason, as `previously obligation --history` does,
+    in chain order among the versions; and the marks of a version, which
+    no test held until then."""
+    scanned = _on(world, "attachments_only")
+    (first,) = _state(world, _obligation(scanned))
+    proposed = _obligation(scanned, subject=first, responsibility=OPEN, due=date(2099, 3, 1))
+    taken, refused = _state(world, proposed, proposed)
+    (approval, rejection) = _state(
+        world,
+        replace(proposed, responsibility=DIRECT, subject=first, approves=taken),
+        _rejection(refused, scanned, reason="not what was said"),
+    )
+
+    history = _text(_tool(world, mode, "list_obligations", {"subject": first, "history": True}))
+
+    at = "2026-10-11T12:00:00.000000Z"
+    assert f"version {taken} · {at} · open · model:claude-code · approved\n" in history
+    assert f"version {refused} · {at} · open · model:claude-code · rejected\n" in history
+    assert f"version {approval} · {at} · direct · model:claude-code · approves {taken}\n" in (
+        history
+    )
+    assert (
+        f"rejection {rejection} · {at} · human:operator · rejects {refused}\n"
+        "reason: not what was said\n"
+    ) in history
+    assert history.index(f"version {approval} ") < history.index(f"rejection {rejection} ")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_entry_without_a_version_that_stands_shows_its_history_and_says_so(
+    world: World, mode: str
+) -> None:
+    scanned = _on(world, "attachments_only")
+    (proposed,) = _state(world, _obligation(scanned, responsibility=OPEN))
+    _state(world, _rejection(proposed, scanned))
+
+    history = _text(_tool(world, mode, "list_obligations", {"subject": proposed, "history": True}))
+    entry = _text(_tool(world, mode, "list_obligations", {"subject": proposed}))
+
+    assert (
+        f"### previously://event/{proposed} · obligation · no version stands · "
+        "1 version · 0 proposals\n"
+    ) in history
+    assert "rejects" in history
+    assert "reason: none" in history
+    assert f"Error: previously://event/{proposed} — no obligation stands under this id" in entry
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_rejection_on_a_withheld_source_withholds_the_history_that_shows_it(
+    world: World, mode: str
+) -> None:
+    """A rejection takes the sources of its proposal; one written around the
+    write path that did not would show its reason under a decision that
+    never looked at its sources. The entry without its history, which shows
+    no rejection, is the control."""
+    scanned = _on(world, "attachments_only")
+    (first,) = _state(world, _obligation(scanned))
+    (proposed,) = _state(world, _obligation(scanned, subject=first, responsibility=OPEN))
+    _forged(world, _rejection(proposed, Source(world.ids["plain"], None), reason=PRIVATE_TEXT))
+
+    history = _text(_tool(world, mode, "list_obligations", {"subject": first, "history": True}))
+    entry = _text(_tool(world, mode, "list_obligations", {"subject": first}))
+
+    assert f"[withheld: previously://event/{first} — circle team has no rule" in history
+    assert PRIVATE_TEXT not in history
+    assert _shown_ids(entry) == [first]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_id_whose_versions_are_all_erased_answers_erased_and_leaves_the_lists(
+    world: World, mode: str
+) -> None:
+    """Ruling F-18 of the 2026-10-12 assertions plan: the placeholder of an
+    erased event, as `get_event` gives it, for either kind and with or
+    without the history, since the kind went with the payload. The entry
+    whose first version alone is erased still stands under its id and is
+    the control."""
+    scanned = _on(world, "attachments_only")
+    gone, kept = _state(world, _obligation(scanned), _obligation(scanned, what="kept"))
+    (later,) = _state(world, _obligation(scanned, subject=gone))
+    _state(world, _obligation(scanned, subject=kept))
+    for erased in (gone, later, kept):
+        redact_event(world.storage, world.storage, erased, reason="test", recorded_at=T0)
+
+    for tool, arguments in (
+        ("list_obligations", {"subject": gone}),
+        ("list_decisions", {"subject": gone}),
+        ("list_obligations", {"subject": gone, "history": True}),
+        ("list_obligations", {"subject": later}),
+    ):
+        page = _text(_tool(world, mode, tool, arguments))
+        assert page.splitlines()[-1] == f"[erased: previously://event/{arguments['subject']}]"
+        (delivered,) = _last_access(world).access.delivered
+        assert (delivered.event, delivered.units, delivered.circles) == (
+            arguments["subject"],
+            (),
+            (),
+        )
+    assert _shown_ids(_text(_tool(world, mode, "list_obligations"))) == [kept]
+    assert _shown_ids(_text(_tool(world, mode, "list_obligations", {"subject": kept}))) == [kept]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_subject_that_is_not_an_entry_of_this_kind_is_an_error_line_and_a_page(
+    world: World, mode: str
+) -> None:
+    (decided,) = _state(world, _decision(_on(world, "attachments_only")))
+
+    page = _text(_tool(world, mode, "list_obligations", {"subject": decided}))
+    assert f"Error: previously://event/{decided} — no obligation stands under this id" in page
+    missing = _text(_tool(world, mode, "list_obligations", {"subject": 9999}))
+    assert "Error: previously://event/9999 — no obligation stands under this id" in missing
+    assert _last_access(world).access.delivered == ()
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_history_is_withheld_with_the_thread_when_a_later_version_cites_a_withheld_source(
+    world: World, mode: str
+) -> None:
+    scanned = _on(world, "attachments_only")
+    (first,) = _state(world, _obligation(scanned, what=PRIVATE_TEXT))
+    _state(world, _obligation(scanned, Source(world.ids["plain"], None), subject=first))
+
+    entry = _text(_tool(world, mode, "list_obligations", {"subject": first, "history": True}))
+
+    assert f"[withheld: previously://event/{first} — circle team has no rule" in entry
+    assert PRIVATE_TEXT not in entry
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_proposal_is_listed_only_with_proposals_and_never_passes_for_an_entry(
+    world: World, mode: str
+) -> None:
+    scanned = _on(world, "attachments_only")
+    (standing, proposed) = _state(
+        world,
+        _obligation(scanned),
+        _obligation(scanned, responsibility=OPEN, what="a proposal"),
+    )
+
+    plain = _text(_tool(world, mode, "list_obligations"))
+    proposals = _text(_tool(world, mode, "list_obligations", {"proposals": True}))
+
+    assert _shown_ids(plain) == [standing]
+    assert _shown_ids(proposals) == [proposed]
+    assert "obligation · proposed · open · open · 1 version · 0 proposals" in proposals
+    assert _last_access(world).access.arguments == {
+        "overdue": False,
+        "proposals": True,
+        "history": False,
+    }
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_direct_entry_with_a_pending_proposal_is_listed_and_counted_among_the_proposals(
+    world: World, mode: str
+) -> None:
+    """A proposal pending on an entry that stands directly leaves the entry
+    in the default list, labelled with the proposal, and puts it in the
+    proposals list too, as `previously obligations` does."""
+    scanned = _on(world, "attachments_only")
+    (standing,) = _state(world, _obligation(scanned))
+    _state(world, _obligation(scanned, subject=standing, responsibility=OPEN, what="later"))
+
+    plain = _text(_tool(world, mode, "list_obligations"))
+    proposals = _text(_tool(world, mode, "list_obligations", {"proposals": True}))
+
+    assert _shown_ids(plain) == [standing]
+    assert "obligation · open · direct · 2 versions · 1 proposal" in plain
+    assert _shown_ids(proposals) == [standing]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_placeholder_is_the_same_under_every_filter_that_looks_at_the_content(
+    world: World, mode: str
+) -> None:
+    """The policy decides before `state`, `overdue` and `proposals` look at
+    an entry: were it the other way round, which of them keeps a placeholder
+    would tell what the withheld entry holds. The visible entry beside it is
+    the control: the filters still apply to what the client sees."""
+    hidden, shown = _state(
+        world,
+        _obligation(Source(world.ids["plain"], None), due=FAR_FUTURE),
+        _obligation(_on(world, "attachments_only"), due=FAR_FUTURE),
+    )
+    placeholder = f"[withheld: previously://event/{hidden} — "
+
+    def listed(arguments: dict[str, Any]) -> tuple[list[str], list[int]]:
+        page = _text(_tool(world, mode, "list_obligations", arguments))
+        marks = [line for line in page.splitlines() if line.startswith(placeholder)]
+        return marks, _shown_ids(page)
+
+    everything, visible = listed({})
+    assert len(everything) == 1
+    assert visible == [shown]
+    for arguments, expected in (
+        ({"state": "open"}, [shown]),
+        ({"state": "fulfilled"}, []),
+        ({"overdue": True}, []),
+        ({"overdue": False}, [shown]),
+        ({"proposals": True}, []),
+    ):
+        assert listed(arguments) == (everything, expected), arguments
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_every_delivered_and_withheld_entry_is_in_the_access_without_a_word_of_its_text(
+    world: World, mode: str
+) -> None:
+    scanned = _on(world, "attachments_only")
+    shown, hidden = _state(
+        world,
+        _obligation(scanned, what=PRIVATE_TEXT),
+        _obligation(Source(world.ids["plain"], None), what=PRIVATE_TEXT + " 2"),
+    )
+
+    _tool(world, mode, "list_obligations", {"circle": "office"})
+
+    access = _last_access(world).access
+    assert [(d.event, d.units, d.circles) for d in access.delivered] == [(shown, (), ("office",))]
+    assert [(w.event, w.reason_code) for w in access.withheld] == [(hidden, "no_rule")]
+    assert access.arguments == {
+        "circle": "office",
+        "overdue": False,
+        "proposals": False,
+        "history": False,
+    }
+    with world.storage.begin() as conn:
+        stored = [row.payload for row in world.storage.read_by_kind(conn, "action")]
+    assert PRIVATE_TEXT not in json.dumps(stored)
+    assert PRIVATE_ADDRESS not in json.dumps(stored)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_rules_of_every_source_are_in_the_access_and_not_only_the_last(
+    world: World, mode: str
+) -> None:
+    """Two sources of different kinds, each decided on its own: the access
+    names the rule of the first as well, which the verdict, being the last
+    decision, does not carry."""
+    email_rule = set_policy(
+        world.storage,
+        Rule("source:email", frozenset({"any"}), None, frozenset()),
+        statement="for the test",
+        recorded_at=T0,
+    )
+    (tracker,) = append(
+        world.storage,
+        [
+            RawEvent(
+                source="gitlab",
+                external_id="issue-1",
+                occurred_at=INTERNALDATE,
+                evidence=Evidence.VERBATIM,
+                units=(RawUnit(1, "The roof."),),
+                payload={},
+                channel_identities=(ChannelIdentity("gitlab", "from", "office@example.org"),),
+            )
+        ],
+        recorded_at=T0,
+    )
+    gitlab_rule = set_policy(
+        world.storage,
+        Rule("source:gitlab", frozenset({"any"}), None, frozenset()),
+        statement="for the test",
+        recorded_at=T0,
+    )
+    (stated,) = _state(world, _obligation(_on(world, "attachments_only"), Source(tracker, None)))
+
+    page = _text(_tool(world, mode, "list_obligations"))
+
+    assert _shown_ids(page) == [stated]
+    rules = cast("list[int]", _last_access(world).access.policy_ids["rules"])
+    assert email_rule in rules
+    assert gitlab_rule in rules
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_entries_are_never_cut_between_pages_and_the_cursor_goes_on_by_id(
+    world: World, mode: str
+) -> None:
+    scanned = _on(world, "attachments_only")
+    ids = _state(world, *(_obligation(scanned, what=f"{n:02d} " + "x" * 9_000) for n in range(14)))
+
+    first = _text(_tool(world, mode, "list_obligations"))
+    cursor = re.search(r"call again with cursor=(\S+)", first)
+    assert cursor is not None
+    second = _text(_tool(world, mode, "list_obligations", {"cursor": cursor.group(1)}))
+
+    assert len(first) <= PAGE_CHARS
+    assert first.count("<<<customer-content") == first.count("<<<end ")
+    assert _shown_ids(first) + _shown_ids(second) == list(ids)
+    assert 0 < len(_shown_ids(first)) < 14
+    assert "page 2" in second.splitlines()[0]
+    delivered = _accesses(world)[-2].access.delivered
+    assert [d.event for d in delivered] == _shown_ids(first)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_cursor_of_another_filter_or_the_other_tool_is_refused(world: World, mode: str) -> None:
+    scanned = _on(world, "attachments_only")
+    _state(world, *(_obligation(scanned, what="x" * 9_000) for _ in range(14)))
+    first = _text(_tool(world, mode, "list_obligations", {"circle": "office"}))
+    found = re.search(r"cursor=(\S+)", first)
+    assert found is not None
+
+    for name, arguments in (
+        ("list_obligations", {"cursor": found.group(1)}),
+        ("list_obligations", {"cursor": found.group(1), "circle": "huber"}),
+        ("list_decisions", {"cursor": found.group(1), "circle": "office"}),
+    ):
+        result = _tool(world, mode, name, arguments)
+        assert result.is_error
+        assert _text(result).startswith("Error: cursor is not valid for these filters")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_unknown_circle_a_state_of_the_other_kind_and_a_subject_out_of_range_are_errors(
+    world: World, mode: str
+) -> None:
+    for name, arguments, sentence in (
+        ("list_obligations", {"circle": "nobody"}, "no circle nobody exists"),
+        ("list_obligations", {"state": "valid"}, "state takes one of open, fulfilled, cancelled"),
+        ("list_decisions", {"state": "open"}, "state takes one of valid, revoked"),
+        ("list_obligations", {"subject": 0}, "subject is the id of an entry"),
+    ):
+        result = _tool(world, mode, name, arguments)
+        assert result.is_error
+        assert sentence in _text(result)
+        assert _last_access(world).access.outcome == "error"
+
+
+# --- writing: write_assertion, write_approve, write_reject --------------------------------
+
+# The key the writing tests start the server with: 32 characters, the least
+# a key may have.
+KEY = "k" * 32
+PRIVATE_REASON = "PRIVATE-REASON-OF-A-PROPOSAL"
+_HANDLE = re.compile(r"^handle: (\S+)$", re.MULTILINE)
+
+
+def _writer(world: World, *, client: str = "claude-code", key: str | None = KEY) -> Any:
+    return build_server(world.storage, stdio_client=client, locker=world.storage, confirm_key=key)
+
+
+def _write(
+    world: World,
+    mode: str,
+    name: str,
+    arguments: dict[str, Any],
+    *,
+    client: str = "claude-code",
+    key: str | None = KEY,
+) -> CallToolResult:
+    server = _writer(world, client=client, key=key)
+    return _session(server, mode, lambda session: session.call_tool(name, arguments))
+
+
+def _handle(page: str) -> str:
+    found = _HANDLE.search(page)
+    assert found is not None, page
+    return found.group(1)
+
+
+def _item(event: int, **fields: Any) -> dict[str, Any]:
+    """An obligation as `write_assertion` takes it, resting on `event`."""
+    return {
+        "kind": "obligation",
+        "debtor": "own",
+        "creditor": "address:eva.huber@example.org",
+        "what": THE_TEXT,
+        "due": "2099-01-01",
+        "sources": [{"event": event}],
+        **fields,
+    }
+
+
+def _assertions(world: World) -> list[tuple[int, dict[str, object] | None]]:
+    with world.storage.begin() as conn:
+        return [
+            (row.id, None if row.payload is None else dict(row.payload))
+            for row in world.storage.read_by_kind(conn, "assertion")
+        ]
+
+
+def _proposal(world: World, event: str, *, client: str = "local-harness") -> int:
+    """A proposal resting on the mail `event`, as a model would write it."""
+    statement = replace(
+        _obligation(_on(world, event), responsibility=OPEN, what=PRIVATE_TEXT),
+        author=model_author(client),
+    )
+    (proposal,) = _state(world, statement)
+    return proposal
+
+
+def _confirmed(
+    world: World, mode: str, name: str, arguments: dict[str, Any], *, client: str = "claude-code"
+) -> tuple[CallToolResult, CallToolResult]:
+    """The preview and the call that confirms it."""
+    preview = _write(world, mode, name, arguments, client=client)
+    assert not preview.is_error, _text(preview)
+    handle = _handle(_text(preview))
+    return preview, _write(world, mode, name, {**arguments, "confirm": handle}, client=client)
+
+
+def _strings_in(value: object) -> list[str]:
+    """Every string in a payload, keys included, as `tests/test_access.py`
+    searches one."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        entries = cast("dict[str, object]", value)
+        return [s for key, item in entries.items() for s in (key, *_strings_in(item))]
+    if isinstance(value, list):
+        return [s for item in cast("list[object]", value) for s in _strings_in(item)]
+    return []
+
+
+def _access_payloads(world: World) -> list[dict[str, object]]:
+    with world.storage.begin() as conn:
+        return [
+            dict(row.payload)
+            for row in world.storage.actions(conn, "mcp_access")
+            if row.payload is not None
+        ]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_assertion_without_confirm_previews_and_writes_nothing(
+    world: World, mode: str
+) -> None:
+    scanned = world.ids["attachments_only"]
+
+    page = _untagged(_text(_write(world, mode, "write_assertion", {"items": [_item(scanned)]})))
+
+    assert _assertions(world) == []
+    assert page.splitlines()[0] == "previously · write_assertion · preview · page 1"
+    assert (
+        "### statement 1 · obligation · proposed · open · open · by model:claude-code · "
+        "new entry\n<<<customer-content TAG>>>\n"
+        f"what: {THE_TEXT}\n"
+        "debtor → creditor: own → address:eva.huber@example.org\n"
+        "due: 2099-01-01\n"
+        "reason: none\n"
+        f"sources: previously://event/{scanned}\n"
+        "<<<end TAG>>>\n\nhandle: "
+    ) in page
+    handle = _handle(page)
+    lines = page.splitlines()
+    assert lines[-2].startswith("expires: ") and lines[-2].endswith(" UTC")
+    assert lines[-1] == (
+        "Nothing is written yet: to write, call write_assertion again with the same "
+        f"arguments and confirm={handle}."
+    )
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_confirming_writes_proposals_by_the_model_of_the_client(world: World, mode: str) -> None:
+    scanned = world.ids["attachments_only"]
+    decision = {
+        "kind": "decision",
+        "what": "use slate for the roof",
+        "by": ["own"],
+        "on": "2026-10-30",
+        "sources": [{"event": scanned, "units": [1]}],
+        "reason": "said in the call",
+    }
+    items = [_item(scanned), decision]
+
+    _preview, written = _confirmed(world, mode, "write_assertion", {"items": items})
+
+    stored = _assertions(world)
+    assert [event_id for event_id, _ in stored] == [
+        int(found) for found in re.findall(r"^assertion (\d+)$", _text(written), re.MULTILINE)
+    ]
+    assert _text(written).splitlines()[0] == "previously · write_assertion · written"
+    payloads = [cast("dict[str, object]", payload) for _, payload in stored]
+    assert [p["author"] for p in payloads] == ["model:claude-code", "model:claude-code"]
+    assert [p["responsibility"] for p in payloads] == [OPEN, OPEN]
+    assert [p["state"] for p in payloads] == ["open", "valid"]
+    handles = {p["handle"] for p in payloads}
+    assert len(handles) == 1 and None not in handles
+    assert verify(world.storage) == []
+    proposals = _text(_tool(world, mode, "list_obligations", {"proposals": True}))
+    assert _shown_ids(proposals) == [stored[0][0]]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_confirming_twice_writes_nothing_new_and_answers_the_same_ids(
+    world: World, mode: str
+) -> None:
+    # Review focus 4 of the 2026-10-12 assertions plan, and assurance 6.
+    arguments = {"items": [_item(world.ids["attachments_only"])]}
+    preview, first = _confirmed(world, mode, "write_assertion", arguments)
+    again = _write(
+        world, mode, "write_assertion", {**arguments, "confirm": _handle(_text(preview))}
+    )
+
+    assert not again.is_error
+    assert _text(again) == _text(first)
+    assert len(_assertions(world)) == 1
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_another_client_does_not_redeem_the_handle(world: World, mode: str) -> None:
+    """An approval is the same content whichever client asks for it, so only
+    the binding to the client refuses it here."""
+    proposal = _proposal(world, "attachments_only")
+    arguments: dict[str, Any] = {"ids": [proposal]}
+    preview = _write(world, mode, "write_approve", arguments)
+    handle = _handle(_text(preview))
+
+    foreign = _write(
+        world, mode, "write_approve", {**arguments, "confirm": handle}, client="local-harness"
+    )
+
+    assert foreign.is_error
+    assert _text(foreign) == (
+        "Error: the handle was sealed for another client; call again without confirm for a new one"
+    )
+    assert len(_assertions(world)) == 1
+    own = _write(world, mode, "write_approve", {**arguments, "confirm": handle})
+    assert not own.is_error  # the control: the client it was sealed for redeems it
+    assert len(_assertions(world)) == 2
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_handle_for_changed_items_is_refused(world: World, mode: str) -> None:
+    scanned = world.ids["attachments_only"]
+    preview = _write(world, mode, "write_assertion", {"items": [_item(scanned)]})
+    changed = {"items": [_item(scanned, what="another text")], "confirm": _handle(_text(preview))}
+
+    result = _write(world, mode, "write_assertion", changed)
+
+    assert result.is_error
+    assert _text(result) == (
+        "Error: the handle was sealed for other statements than these; "
+        "call again without confirm for a new one"
+    )
+    assert _assertions(world) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_expired_handle_is_refused(world: World, mode: str) -> None:
+    """The handle is sealed here, with the server's key and the statement it
+    builds, at a `now` eleven minutes back; the same one sealed at the
+    present `now` is the control that the statement is the same."""
+    scanned = world.ids["attachments_only"]
+    statement = Statement(
+        OBLIGATION,
+        "model:claude-code",
+        OPEN,
+        (Source(scanned, None),),
+        None,
+        None,
+        None,
+        None,
+        None,
+        ObligationBody("own", "address:eva.huber@example.org", THE_TEXT, FAR_FUTURE, "open"),
+    )
+
+    def sealed(now: datetime) -> str:
+        payloads = [payload_of(statement)]
+        return seal(KEY.encode(), client="claude-code", payloads=payloads, now=now, nonce="n")
+
+    arguments: dict[str, Any] = {"items": [_item(scanned)]}
+    late = datetime.now(UTC) - timedelta(seconds=HANDLE_SECONDS + 60)
+    expired = _write(world, mode, "write_assertion", {**arguments, "confirm": sealed(late)})
+    assert expired.is_error
+    assert _text(expired) == (
+        "Error: the handle has expired: a handle holds for 10 minutes; "
+        "call again without confirm for a new one"
+    )
+    assert _assertions(world) == []
+    fresh = _write(
+        world, mode, "write_assertion", {**arguments, "confirm": sealed(datetime.now(UTC))}
+    )
+    assert not fresh.is_error, _text(fresh)
+    assert len(_assertions(world)) == 1
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_tampered_handle_is_refused(world: World, mode: str) -> None:
+    arguments: dict[str, Any] = {"items": [_item(world.ids["attachments_only"])]}
+    handle = _handle(_text(_write(world, mode, "write_assertion", arguments)))
+
+    result = _write(world, mode, "write_assertion", {**arguments, "confirm": "x" + handle})
+
+    assert _text(result) == (
+        "Error: the handle is not one this server sealed; call again without confirm for a new one"
+    )
+    assert _assertions(world) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_invisible_source_and_a_missing_one_give_the_same_sentence(
+    world: World, mode: str
+) -> None:
+    """Assurance 7: the plain mail involves the circle team, which has no
+    rule, so `claude-code` may not see it; event 999999 does not exist. The
+    two answers differ in the id and nothing else, with and without
+    confirm, and neither writes."""
+    hidden, missing = world.ids["plain"], 999_999
+    answers: dict[int, list[str]] = {}
+    for event in (hidden, missing):
+        answers[event] = [
+            _text(_write(world, mode, "write_assertion", {"items": [_item(event)], **extra}))
+            for extra in ({}, {"confirm": "anything"})
+        ]
+    assert answers[hidden][0] == (
+        f"Error: event {hidden} is not one this client can use as a source"
+    )
+    assert [text.replace(str(hidden), "ID") for text in answers[hidden]] == [
+        text.replace(str(missing), "ID") for text in answers[missing]
+    ]
+    assert _assertions(world) == []
+    # The control: the client that may see the mail is shown the preview.
+    local = _write(
+        world, mode, "write_assertion", {"items": [_item(hidden)]}, client="local-harness"
+    )
+    assert not local.is_error, _text(local)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_subject_or_a_decision_replaced_that_the_client_may_not_see_is_named_as_missing(
+    world: World, mode: str
+) -> None:
+    scanned = world.ids["attachments_only"]
+    (hidden,) = _state(world, _obligation(_on(world, "plain")))
+    (decision,) = _state(world, _decision(_on(world, "plain")))
+    texts: list[str] = []
+    for target in (hidden, 999_999):
+        texts.append(
+            _text(
+                _write(world, mode, "write_assertion", {"items": [_item(scanned, subject=target)]})
+            )
+        )
+    replacing = {
+        "kind": "decision",
+        "what": "use tiles",
+        "by": ["own"],
+        "on": "2026-10-30",
+        "sources": [{"event": scanned}],
+    }
+    for target in (decision, 999_999):
+        texts.append(
+            _text(
+                _write(
+                    world, mode, "write_assertion", {"items": [{**replacing, "replaces": target}]}
+                )
+            )
+        )
+    assert texts == [
+        f"Error: subject {hidden} is not an entry this client can see",
+        "Error: subject 999999 is not an entry this client can see",
+        f"Error: replaces {decision} is not an entry this client can see",
+        "Error: replaces 999999 is not an entry this client can see",
+    ]
+    assert len(_assertions(world)) == 2
+    # The control: a subject the client may see takes the item as a version.
+    (seen,) = _state(world, _obligation(_on(world, "attachments_only")))
+    visible = _write(world, mode, "write_assertion", {"items": [_item(scanned, subject=seen)]})
+    assert f"new version of previously://event/{seen}" in _text(visible)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_approve_by_a_client_that_may_not_see_a_source_is_refused(
+    world: World, mode: str
+) -> None:
+    """Review focus 2 of the 2026-10-12 assertions plan: the proposal rests on
+    the plain mail, which `claude-code` may not see. It is refused as an
+    id that names nothing is, and nothing is written."""
+    proposal = _proposal(world, "plain")
+    texts = [
+        _text(_write(world, mode, name, arguments))
+        for name, arguments in (
+            ("write_approve", {"ids": [proposal]}),
+            ("write_approve", {"ids": [999_999]}),
+            ("write_reject", {"proposal": proposal}),
+            ("write_approve", {"ids": [proposal], "confirm": "anything"}),
+        )
+    ]
+    assert texts == [
+        f"Error: event {proposal} is not a proposal this client can answer",
+        "Error: event 999999 is not a proposal this client can answer",
+        f"Error: event {proposal} is not a proposal this client can answer",
+        f"Error: event {proposal} is not a proposal this client can answer",
+    ]
+    assert len(_assertions(world)) == 1
+    # The control: the client that may see the mail approves it.
+    _preview, approved = _confirmed(
+        world, mode, "write_approve", {"ids": [proposal]}, client="local-harness"
+    )
+    assert not approved.is_error, _text(approved)
+    (_, written) = _assertions(world)[-1]
+    assert written is not None
+    assert (written["responsibility"], written["author"], written["approves"]) == (
+        DIRECT,
+        "model:local-harness",
+        proposal,
+    )
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_approve_passes_on_why_a_proposal_the_client_sees_cannot_be_approved(
+    world: World, mode: str
+) -> None:
+    proposal = _proposal(world, "attachments_only")
+    _confirmed(world, mode, "write_approve", {"ids": [proposal, proposal]})
+    (direct,) = _state(world, _obligation(_on(world, "attachments_only")))
+
+    again = _text(_write(world, mode, "write_approve", {"ids": [proposal]}))
+    not_one = _text(_write(world, mode, "write_approve", {"ids": [direct]}))
+
+    assert again == f"Error: the proposal {proposal} is already approved"
+    assert not_one == f"Error: the version {direct} is no proposal: it is direct"
+    assert len(_assertions(world)) == 3  # the proposal, one approval, the direct one
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_approve_refuses_a_proposal_a_later_direct_version_overtook(
+    world: World, mode: str
+) -> None:
+    """Ruling F-17 of the 2026-10-12 assertions plan over MCP; the preview
+    of a rejection of the same proposal is the control."""
+    (owned,) = _state(world, _obligation(_on(world, "attachments_only")))
+    (stale,) = _state(
+        world, _obligation(_on(world, "attachments_only"), subject=owned, responsibility=OPEN)
+    )
+    (newer,) = _state(world, _obligation(_on(world, "attachments_only"), subject=owned))
+
+    refused = _text(_write(world, mode, "write_approve", {"ids": [stale]}))
+    rejected = _text(_write(world, mode, "write_reject", {"proposal": stale}))
+
+    assert refused == (
+        f"Error: the proposal {stale} is overtaken: the direct version {newer} came after it"
+    )
+    assert _handle(rejected)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_reject_writes_a_direct_rejection_by_the_model_with_the_sources_of_the_proposal(
+    world: World, mode: str
+) -> None:
+    proposal = _proposal(world, "attachments_only")
+    preview, written = _confirmed(
+        world, mode, "write_reject", {"proposal": proposal, "reason": "not what was said"}
+    )
+
+    assert f"### rejection · rejection · rejects previously://event/{proposal}" in _text(preview)
+    assert "reason: not what was said" in _text(preview)
+    assert not written.is_error, _text(written)
+    (_, rejection) = _assertions(world)[-1]
+    assert rejection is not None
+    assert (
+        rejection["assertion"],
+        rejection["author"],
+        rejection["responsibility"],
+        rejection["of"],
+        rejection["sources"],
+    ) == (
+        REJECTION,
+        "model:claude-code",
+        DIRECT,
+        proposal,
+        [{"event": world.ids["attachments_only"], "units": None}],
+    )
+    assert _shown_ids(_text(_tool(world, mode, "list_obligations", {"proposals": True}))) == []
+    assert verify(world.storage) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_without_a_key_the_write_tools_answer_an_error_and_the_reading_tools_work(
+    world: World, mode: str
+) -> None:
+    proposal = _proposal(world, "attachments_only")
+    for key in (None, "k" * 31):
+        for name, arguments in (
+            ("write_assertion", {"items": [_item(world.ids["attachments_only"])]}),
+            ("write_approve", {"ids": [proposal]}),
+            ("write_reject", {"proposal": proposal}),
+        ):
+            result = _write(world, mode, name, arguments, key=key)
+            assert result.is_error
+            assert _text(result) == "Error: writing is not configured on this server"
+        assert not _write(world, mode, "list_circles", {}, key=key).is_error
+    assert len(_assertions(world)) == 1
+    # Without a store that locks the sources the server does not write either.
+    server = build_server(world.storage, stdio_client="claude-code", confirm_key=KEY)
+    result = _session(server, mode, lambda s: s.call_tool("write_reject", {"proposal": proposal}))
+    assert _text(result) == "Error: writing is not configured on this server"
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_access_of_a_write_holds_counts_and_ids_and_no_text_and_no_address(
+    world: World, mode: str
+) -> None:
+    """Decision 10 of the 2026-10-12 assertions plan: one entry per call, and
+    in it the number of statements, the source ids, whether confirm was
+    given and the ids written, and not a word of the text, the reason or an
+    address. A call the SDK refuses records the same form."""
+    scanned = world.ids["attachments_only"]
+    item = _item(scanned, what=PRIVATE_TEXT, creditor=f"address:{PRIVATE_ADDRESS}")
+    item["reason"] = PRIVATE_REASON
+    _preview, written = _confirmed(world, mode, "write_assertion", {"items": [item]})
+    (proposal,) = [event_id for event_id, _ in _assertions(world)]
+    _confirmed(world, mode, "write_reject", {"proposal": proposal, "reason": PRIVATE_REASON})
+    refused = _write(
+        world,
+        mode,
+        "write_assertion",
+        {"items": [{**item, "sources": PRIVATE_TEXT}], "confirm": PRIVATE_REASON},
+    )
+    assert _text(refused).startswith("Error: write_assertion did not run: ")
+
+    rows = _accesses(world)
+    assert [(row.access.name, row.access.outcome) for row in rows] == [
+        ("write_assertion", "ok"),
+        ("write_assertion", "ok"),
+        ("write_reject", "ok"),
+        ("write_reject", "ok"),
+        ("write_assertion", "error"),
+    ]
+    rejection = _assertions(world)[-1][0]
+    assert [row.access.arguments for row in rows] == [
+        {"statements": 1, "sources": [scanned], "confirm": False, "written": []},
+        {"statements": 1, "sources": [scanned], "confirm": True, "written": [proposal]},
+        {"statements": 1, "proposals": [proposal], "confirm": False, "written": []},
+        {"statements": 1, "proposals": [proposal], "confirm": True, "written": [rejection]},
+        {"statements": 1, "sources": [], "confirm": True, "written": []},
+    ]
+    found = [s for payload in _access_payloads(world) for s in _strings_in(payload)]
+    for private in (PRIVATE_TEXT, PRIVATE_ADDRESS, PRIVATE_REASON):
+        assert not any(private in s for s in found)
+    # The control: the same search finds them in what was written.
+    stored = [s for _, payload in _assertions(world) for s in _strings_in(payload)]
+    for private in (PRIVATE_TEXT, PRIVATE_ADDRESS, PRIVATE_REASON):
+        assert any(private in s for s in stored)
+    assert "written" in _text(written)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_item_that_is_no_statement_is_refused_before_anything_is_read(
+    world: World, mode: str
+) -> None:
+    scanned = world.ids["attachments_only"]
+    decision = {"kind": "decision", "what": "w", "by": ["own"], "on": "2026-10-30"}
+    for items, sentence in (
+        ([], "items takes 1 to 20 statements, this call gave 0"),
+        ([_item(scanned)] * 21, "items takes 1 to 20 statements, this call gave 21"),
+        ([_item(scanned, kind="rejection")], "item 1: kind is obligation or decision"),
+        ([_item(scanned, debtor=None)], "item 1: an obligation needs debtor and creditor"),
+        ([_item(scanned, by=["own"])], "item 1: by belongs to a decision"),
+        ([{**decision, "sources": [{"event": scanned}], "due": "2026-10-30"}], "item 1: due"),
+        ([{**decision, "on": None, "sources": [{"event": scanned}]}], "item 1: a decision"),
+        ([_item(scanned, due="30.11.2026")], "item 1: due is not a date written YYYY-MM-DD"),
+        ([_item(scanned, due="2026-02-30")], "item 1: due is not a date written YYYY-MM-DD"),
+        ([_item(2**60)], "item 1: an event id is a whole number from 1 to 2^53 - 1"),
+        ([_item(scanned, subject=0)], "item 1: an event id is a whole number from 1 to 2^53 - 1"),
+        ([_item(scanned, what="")], "a statement has no valid form: what is not a non-empty text"),
+        ([_item(scanned, what="a\x00b")], "a statement cannot be written: $.what: null byte"),
+        (
+            [_item(scanned, debtor="nobody")],
+            "a statement has no valid form: the debtor is not a valid reference",
+        ),
+    ):
+        result = _write(world, mode, "write_assertion", {"items": items})
+        assert result.is_error, items
+        assert _text(result).startswith(f"Error: {sentence}"), _text(result)
+    assert _assertions(world) == []
+    assert _text(_write(world, mode, "write_approve", {"ids": []})) == (
+        "Error: ids takes 1 to 20 different proposals, this call gave 0"
+    )
+    assert _text(_write(world, mode, "write_approve", {"ids": [2**60]})) == (
+        "Error: ids holds an id that is not a whole number from 1 to 2^53 - 1"
+    )
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_source_erased_between_the_preview_and_the_confirmation_is_refused_by_the_write_path(
+    world: World, mode: str
+) -> None:
+    """The visibility check passes an erased event on to the write path, which
+    names it: `get_event` names an erased event to any client too."""
+    scanned = world.ids["attachments_only"]
+    arguments: dict[str, Any] = {"items": [_item(scanned)]}
+    handle = _handle(_text(_write(world, mode, "write_assertion", arguments)))
+    redact_event(world.storage, world.storage, scanned, reason="test", recorded_at=T0)
+
+    result = _write(world, mode, "write_assertion", {**arguments, "confirm": handle})
+
+    assert _text(result) == f"Error: event {scanned} is erased and cannot be a source"
+    assert _assertions(world) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_over_http_the_handle_is_bound_to_the_client_of_the_token(world: World, mode: str) -> None:
+    proposal = _proposal(world, "attachments_only")
+    arguments: dict[str, Any] = {"ids": [proposal]}
+
+    def call(client: str, extra: dict[str, Any]) -> CallToolResult:
+        token = world.tokens[client]
+        return _over_http(
+            world, token, mode, "write_approve", {**arguments, **extra}, confirm_key=KEY
+        )
+
+    handle = _handle(_text(call("claude-code", {})))
+    foreign = call("local-harness", {"confirm": handle})
+    own = call("claude-code", {"confirm": handle})
+
+    assert _text(foreign).startswith("Error: the handle was sealed for another client")
+    assert _text(own).splitlines()[0] == "previously · write_approve · written"
+    assert len(_assertions(world)) == 2
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_preview_longer_than_a_page_is_refused_and_never_cut(world: World, mode: str) -> None:
+    scanned = world.ids["attachments_only"]
+    long_item = _item(
+        scanned,
+        what="w" * 990,
+        reason="r" * 990,
+        debtor="name:" + "d" * 200,
+        creditor="name:" + "c" * 200,
+        sources=[{"event": scanned}] * 40,
+    )
+    result = _write(world, mode, "write_assertion", {"items": [long_item] * 20})
+    assert _text(result) == (
+        "Error: the preview of these statements is longer than a page; write fewer in one call"
+    )
+    # The control: ten of them fit.
+    assert not _write(world, mode, "write_assertion", {"items": [long_item] * 10}).is_error
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_reject_refuses_a_proposal_out_of_range(world: World, mode: str) -> None:
+    result = _write(world, mode, "write_reject", {"proposal": 0})
+    assert _text(result) == "Error: proposal is not a whole number from 1 to 2^53 - 1"
+
+
+def test_the_record_of_a_writing_call_reads_arguments_of_any_form() -> None:
+    """A call the SDK refused can carry anything; the record still holds
+    only counts and ids."""
+    assert write_record("write_assertion", {"items": "text"}) == {
+        "statements": 0,
+        "sources": [],
+        "confirm": False,
+        "written": [],
+    }
+    items = ["text", {"sources": "text"}, {"sources": ["text", {"event": "7"}, {"event": 7}]}]
+    assert write_record("write_assertion", {"items": items, "confirm": ""}) == {
+        "statements": 3,
+        "sources": [7],
+        "confirm": True,
+        "written": [],
+    }
+    assert write_record("write_approve", {"ids": [3, 3, True, "4", 5]}) == {
+        "statements": 2,
+        "proposals": [3, 5],
+        "confirm": False,
+        "written": [],
+    }
+    assert write_record("write_reject", {"proposal": "text", "reason": "text"}) == {
+        "statements": 0,
+        "proposals": [],
+        "confirm": False,
+        "written": [],
+    }
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_action_as_a_source_is_refused_by_the_write_path_since_get_event_names_it_too(
+    world: World, mode: str
+) -> None:
+    result = _write(world, mode, "write_assertion", {"items": [_item(world.policy_event)]})
+    assert _text(result) == (
+        f"Error: event {world.policy_event} is not an observation, and only one can be a source"
+    )
+
+
+@pytest.mark.db
+def test_an_id_out_of_range_is_hidden_without_a_query(world: World) -> None:
+    with world.storage.snapshot() as conn:
+        policy = read_policy(world.storage, conn)
+        client = policy.clients["claude-code"]
+        hidden = [
+            event_hidden(world.storage, conn, policy, client, event_id)
+            for event_id in (0, -1, 2**60, world.ids["attachments_only"], world.ids["plain"])
+        ]
+    assert hidden == [True, True, True, False, True]
+
+
+# --- fix round 1 of task 5 -------------------------------------------------------------
+
+LINE_TOO_LONG = (
+    "Error: a line of these statements is longer than the 1,000 characters a preview "
+    "shows of it; shorten it"
+)
+
+
+def _what_of_line(length: int) -> str:
+    """A text whose line inside the fence, `what: ` and the text, is
+    `length` characters long."""
+    return "x" * (length - len("what: "))
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_line_longer_than_a_preview_shows_is_refused_and_one_as_long_is_shown_whole(
+    world: World, mode: str
+) -> None:
+    """Ruling F-12 of the 2026-10-12 assertions plan: what a writing tool
+    writes or answers is always seen whole. A line of 1,001 characters is
+    refused by all three tools, the proposal of an approval or a rejection
+    included, and nothing is written; one of 1,000 is shown uncut."""
+    assert STATED_LINE_CHARS == 1_000
+    scanned = world.ids["attachments_only"]
+    over = _what_of_line(STATED_LINE_CHARS + 1)
+    refused = _write(world, mode, "write_assertion", {"items": [_item(scanned, what=over)]})
+    assert _text(refused) == LINE_TOO_LONG
+    long_reason = _write(
+        world, mode, "write_assertion", {"items": [_item(scanned, reason="r" * 1_000)]}
+    )
+    assert _text(long_reason) == LINE_TOO_LONG
+    statement = replace(
+        _obligation(_on(world, "attachments_only"), responsibility=OPEN, what=over),
+        author=model_author("local-harness"),
+    )
+    (proposal,) = _state(world, statement)
+    for name, arguments in (
+        ("write_approve", {"ids": [proposal]}),
+        ("write_reject", {"proposal": proposal}),
+        ("write_reject", {"proposal": proposal, "confirm": "anything"}),
+    ):
+        assert _text(_write(world, mode, name, arguments)) == LINE_TOO_LONG
+    reject_reason = {"proposal": proposal, "reason": "r" * 1_000}
+    assert _text(_write(world, mode, "write_reject", reject_reason)) == LINE_TOO_LONG
+    assert len(_assertions(world)) == 1
+    # The control: a line of exactly 1,000 characters is shown whole.
+    exact = _what_of_line(STATED_LINE_CHARS)
+    shown = _text(_write(world, mode, "write_assertion", {"items": [_item(scanned, what=exact)]}))
+    assert f"what: {exact}\n" in shown
+    (fitting,) = _state(
+        world,
+        replace(
+            _obligation(_on(world, "attachments_only"), responsibility=OPEN, what=exact),
+            author=model_author("local-harness"),
+        ),
+    )
+    approval = _text(_write(world, mode, "write_approve", {"ids": [fitting]}))
+    assert f"what: {exact}\n" in approval
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_tool_the_server_lacks_is_recorded_with_the_names_of_its_arguments_only(
+    world: World, mode: str
+) -> None:
+    """Ruling F-13 of the 2026-10-12 assertions plan: a misspelled writing
+    tool carries the text it meant to write, and none of it reaches the log."""
+    item = _item(world.ids["attachments_only"], what=PRIVATE_TEXT, reason=PRIVATE_REASON)
+    result = _write(world, mode, "write_assertions", {"items": [item], "confirm": PRIVATE_REASON})
+    assert _text(result).startswith("Error: write_assertions did not run: ")
+    refused = _write(world, mode, "get_event", {"ids": PRIVATE_TEXT})
+    assert refused.is_error
+
+    first, second = _accesses(world)
+    assert first.access.arguments == {"items": None, "confirm": None}
+    found = _strings_in(_access_payloads(world)[0])
+    assert not any(PRIVATE_TEXT in s or PRIVATE_REASON in s for s in found)
+    # The control: a tool the server has keeps what it was given.
+    assert second.access.arguments == {"ids": PRIVATE_TEXT}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_answering_a_proposal_records_its_entry_as_delivered_as_a_list_does(
+    world: World, mode: str
+) -> None:
+    """The preview of an approval or a rejection shows the proposal, so its
+    entry stands in `delivered` with its circles and the rules, and
+    `previously access --circle` finds the call; a proposal written anew
+    shows no entry of the log and records none."""
+    proposal = _proposal(world, "attachments_only")
+    _write(world, mode, "list_obligations", {"proposals": True}, client="claude-code")
+    listed = _last_access(world).access
+    _confirmed(world, mode, "write_reject", {"proposal": proposal})
+    _write(world, mode, "write_assertion", {"items": [_item(world.ids["attachments_only"])]})
+
+    rows = _accesses(world)
+    assert [row.access.name for row in rows] == [
+        "list_obligations",
+        "write_reject",
+        "write_reject",
+        "write_assertion",
+    ]
+    for row in rows[1:3]:
+        assert row.access.delivered == listed.delivered
+        assert row.access.policy_ids["rules"] == listed.policy_ids["rules"]
+    assert [(d.event, d.circles) for d in rows[1].access.delivered] == [(proposal, ("office",))]
+    assert rows[1].access.policy_ids["rules"] != []
+    assert rows[3].access.delivered == ()
+    with world.storage.begin() as conn:
+        found = read_access(world.storage, conn, client=None, circle="office", since=None)
+    assert [row.access.name for row in found] == [
+        "list_obligations",
+        "write_reject",
+        "write_reject",
+    ]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_approve_counts_the_different_proposals_against_its_limit(
+    world: World, mode: str
+) -> None:
+    ids = [*range(1_000, 1_021), 1_000]
+    result = _write(world, mode, "write_approve", {"ids": ids})
+    assert _text(result) == "Error: ids takes 1 to 20 different proposals, this call gave 21"
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_proposal_whose_entry_rests_on_a_hidden_source_elsewhere_is_refused_too(
+    world: World, mode: str
+) -> None:
+    """The proposal's own source is the scanned mail, which `claude-code` may
+    see; the first version of its entry rests on the plain mail, which it
+    may not. The verdict of the entry holds, as `list_obligations` decides
+    it, so the proposal is refused as one that names nothing."""
+    (first,) = _state(world, _obligation(_on(world, "plain")))
+    proposal_statement = replace(
+        _obligation(_on(world, "attachments_only"), responsibility=OPEN, subject=first),
+        author=model_author("local-harness"),
+    )
+    (proposal,) = _state(world, proposal_statement)
+
+    for name, arguments in (
+        ("write_approve", {"ids": [proposal]}),
+        ("write_reject", {"proposal": proposal}),
+    ):
+        assert _text(_write(world, mode, name, arguments)) == (
+            f"Error: event {proposal} is not a proposal this client can answer"
+        )
+    # The control: the client that may see the plain mail is shown the preview.
+    local = _write(world, mode, "write_approve", {"ids": [proposal]}, client="local-harness")
+    assert not local.is_error, _text(local)

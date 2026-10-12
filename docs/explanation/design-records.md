@@ -2,8 +2,8 @@
 
 # About the frozen design records
 
-Eleven German documents under `docs/superpowers/specs/` hold how this project was decided: the design, the architecture, the detailed specification of stage 1a, the one for stage 1b, the one for the external anchor, the one for stage 1c, the one for delivery, the one for taking mail in from an IMAP folder, the one for the gate and the policy, the concept of the MCP interface, and the specification of MCP read access.
-The first three froze on 2026-10-03, the next two on 2026-10-04, two more on 2026-10-05, one on 2026-10-06, one on 2026-10-09, and the last two on 2026-10-11, and nothing pulls any of them forward again.
+Twelve German documents under `docs/superpowers/specs/` hold how this project was decided: the design, the architecture, the detailed specification of stage 1a, the one for stage 1b, the one for the external anchor, the one for stage 1c, the one for delivery, the one for taking mail in from an IMAP folder, the one for the gate and the policy, the concept of the MCP interface, the specification of MCP read access, and the one for assertions.
+The first three froze on 2026-10-03, the next two on 2026-10-04, two more on 2026-10-05, one on 2026-10-06, one on 2026-10-09, two on 2026-10-11, and the last on 2026-10-12, and nothing pulls any of them forward again.
 The reasoning that gets maintained along with the code lives in this quadrant instead, and where a specification and a page disagree, the page is what holds.
 
 Until this documentation existed, those first three documents were the only place a reason was written down, so the code cited them: 72 paragraph references across 21 files in `src/`, `tests/` and `migrations/`, pointing at 20 paragraphs.
@@ -60,6 +60,14 @@ The architecture's disclosure check in the MCP server, its §8.7, became the pro
 {ref}`connect-claude-code-and-vibe` took the routine, with the dated list of tested configurations the concept asks for, and a fourth handoff, `docs/superpowers/handoffs/2026-10-11-kup6s-mcp.md`, tells whoever runs the Kubernetes environment what the server needs there.
 The build departs from the wording of the two records in places that the header of the specification lists, and the pages hold.
 The open points of both went into the map, each under the unit of work it belongs to.
+
+The specification of the pilot's fifth unit, assertions, is dated 2026-10-12 and froze the same day, once its pages stood.
+It gave the kind `assertion`, which the schema had allowed since stage 1a, its first way into the log: obligations and decisions in complete versions, with their sources, an author apart from the responsibility, proposals from an MCP client, approval and rejection, and an erasure that takes an assertion along with its source.
+{ref}`assertions` carries its reasoning, and {ref}`erasure` took the cascade; {ref}`assertions-reference` took the payload and the references to actors, {ref}`cli-reference` the commands and the findings of `verify`, {ref}`mcp-tools` the five new tools, and {ref}`environment-requirements` the key of the handles and the requirement that a client asks before it answers a proposal.
+{ref}`record-what-is-owed-and-decided` took the routine, and a handoff, `docs/superpowers/handoffs/2026-10-12-kup6s-assertions.md`, tells whoever runs the Kubernetes environment what the release needs there.
+Its build left out a part the record planned, the two derived tables and their migration, with the consent the maintainer gave on 2026-10-12, before the build began; {ref}`assertions-folded` says why.
+That departure and the others are listed in the header of the record, and the pages hold.
+Its open points went into the map, each under the unit of work it belongs to.
 
 ## What a frozen record is still good for
 
@@ -150,6 +158,10 @@ Its code cites {ref}`delivery` instead, in `storage/migrate.py`, where the gate 
 No row names the specification of the pilot's first unit either.
 Measured on 2026-10-06, once its pages stood, `grep -rn "§" src tests | grep -v "frozen design record"` printed nothing, and the signs stand on the same fifteen lines in the same seven files as at the start of the unit.
 Its code cites {ref}`artifact-identity` and {ref}`cli-reference` instead.
+
+No row names the specification of the pilot's fifth unit either.
+Measured on 2026-10-12, once its pages stood, `grep -rn "§" src tests | grep -v "frozen design record"` printed nothing, and the signs stand on the same twenty-one lines in the same thirteen files as at the start of the unit.
+Its code cites the sections of {ref}`assertions` instead, beside the decisions and rulings of the plan that built it.
 
 ## Two kinds of citation, and the code shows which is which
 

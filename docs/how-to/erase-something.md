@@ -162,6 +162,17 @@ The call stays in the log with its payload, and its units are erased by a redact
 Nothing more is needed: `previously verify` holds the cascade to the same rules as any other redaction.
 A call that read only other units, or another event, is left alone, and a target that no call read prints no `cascaded` line.
 
+An assertion that rests on the target goes with it too, for an event and for its units, and the command prints `cascaded: assertion` with its `id`.
+That covers every assertion: an obligation, a decision, a proposal, an approval and a rejection.
+An assertion that cites only other units of the event stays.
+
+If you erase an approved proposal itself, with `redact event` and its id, the approval stays, and it carries the proposal's words.
+The command says so on standard error, and names the approval to erase as well:
+
+```text
+the approval 9 still carries the words of the proposal 6; redact event 9 to erase them too
+```
+
 The cascade doesn't reach the provider.
 Anthropic keeps requests and responses for 30 days, and nothing in Previously deletes them.
 

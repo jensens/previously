@@ -4,14 +4,17 @@
 r"""The store protocols: what `core` may ask of a store, and nothing more.
 
 `LogStore` is what the modules of `core` that write or read the log call —
-fourteen methods, counted on 2026-10-11 by this command, run from the root of
+fifteen methods, counted on 2026-10-12 by this command, run from the root of
 the repository in bash or fish:
 
     grep -ohE '(storage|log)\.[a-z_]*\(' $(grep -rl LogStore src/previously/core) \
         | sed 's/.*\.//' | sort -u | wc -l
 
-The files are every module of `core` that names `LogStore`, eleven that day,
-and the count is not copied from the method list of the implementation. The
+The files are every module of `core` that names `LogStore`, twelve that day
+with `core/assertions.py`, and the count is not copied from the method list of
+the implementation. Where `__pycache__` directories exist, `grep -rl` lists
+their compiled files as well, and the first `grep` takes no name out of them,
+so the count stays the same. The
 docstring is raw so that the text in this file is the command, backslashes as
 they stand. Until 2026-10-11 the command named its files one by one, six of
 them, and the sentence beside it called those "the six modules that name
@@ -31,12 +34,16 @@ so both stay; it was nine until stage 1c, whose redactions are read with
 `actions`, which `core.policy` reads the policy with since 2026-10-11, and
 `core.clients` the dates of the clients, so that the policy read of every MCP
 call does not read every access entry the calls before it wrote
-({ref}`mcp-open-limits`).
-The protocol declares fifteen: `observations` came the same day with the MCP
+({ref}`mcp-open-limits`). The fifteenth is `events_by_id`, with which
+`core.assertions` reads the source events of every entry a list looks at in
+one query since 2026-10-12, where `read` took one query per event
+({ref}`assertions-folded`).
+The protocol declares sixteen: `observations` came on 2026-10-11 with the MCP
 server, and `core` does not call it: `mcp_server/read.py` does, to read the
 chronicle of a circle from the log (decision 3 of the 2026-10-11 MCP read
 access plan). `grep -ohE 'log\.[a-z_]*\(' src/previously/mcp_server/*.py`
-names the six the server calls, `observations` among them. Typing `core`
+names the seven the server calls, `observations` among them, counted on
+2026-10-12; the sentence said six until then, a count no longer true. Typing `core`
 against this protocol instead of against `PostgresStorage` removes the edge
 `core -> storage.postgres`, and with it the two named exemptions in
 `.importlinter` and the test that guarded them ({ref}`module-boundaries`).
@@ -95,6 +102,7 @@ class LogStore[Conn](Protocol):
         blobs: Sequence[bytes] = (),
     ) -> None: ...
     def read(self, conn: Conn, from_id: int, limit: int) -> Iterator[EventRow]: ...
+    def events_by_id(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, EventRow]: ...
     def units_by_event(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, list[UnitRow]]: ...
     def count_events(self, conn: Conn) -> int: ...
     def source_keys(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, tuple[str, str]]: ...

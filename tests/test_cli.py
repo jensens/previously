@@ -2,7 +2,9 @@
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from contextlib import contextmanager
+from datetime import date
 from datetime import datetime
+from datetime import timedelta
 from datetime import UTC
 from mailserver import Relay
 from previously.cli import COMMANDS
@@ -17,9 +19,20 @@ from previously.contract.rows import EventRow
 from previously.contract.rows import ProjectionState
 from previously.contract.rows import UnitRow
 from previously.contract.types import BlobRef
+from previously.contract.types import ChannelIdentity
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
+from previously.contract.types import RawUnit
 from previously.core.append import append
+from previously.core.assertion import DIRECT
+from previously.core.assertion import model_author
+from previously.core.assertion import OBLIGATION
+from previously.core.assertion import ObligationBody
+from previously.core.assertion import OPEN
+from previously.core.assertion import OPERATOR
+from previously.core.assertion import Source
+from previously.core.assertion import Statement as AssertionStatement
+from previously.core.assertions import write_statements
 from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
 from previously.core.identity import artifact_hash_of
@@ -1966,6 +1979,31 @@ def _append_with_text_in_payload(engine: Engine, text_: str) -> None:
         ],
         recorded_at=datetime(2026, 10, 2, 12, 0, 0, tzinfo=UTC),
     )
+
+
+@pytest.mark.db
+def test_redacting_an_approved_proposal_says_that_its_approval_keeps_its_words(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling F-19 of the 2026-10-12 assertions plan: the approval stands
+    with the proposal's words when the proposal is erased on its own, and
+    the line on standard output would read as if the words were gone. The
+    redaction of the approval itself, and of a proposal nobody approved,
+    are the controls: neither says it."""
+    storage = _assertion_log(db, monkeypatch)
+    approved, lone = _propose(storage, _debt(), _debt(what="lone"))
+    assert main(["approve", str(approved), "--yes"]) == 0
+    approval = lone + 1
+    capsys.readouterr()
+
+    assert main(["redact", "event", str(approved), "--reason", "r"]) == 0
+    assert capsys.readouterr().err.splitlines()[-1] == (
+        f"the approval {approval} still carries the words of the proposal {approved}; "
+        f"redact event {approval} to erase them too"
+    )
+    for target in (lone, approval):
+        assert main(["redact", "event", str(target), "--reason", "r"]) == 0
+        assert "approval" not in capsys.readouterr().err
 
 
 @pytest.mark.db
@@ -5025,3 +5063,1149 @@ def test_serve_listens_where_the_address_says_beside_the_variables_of_a_service(
         server.wait(timeout=30)
         assert server.stderr is not None
         server.stderr.close()
+
+
+def _call_over_http(url: str, token: str, name: str, arguments: dict[str, object]) -> str:
+    """The text of one tool call to a running `serve`, as a client sends it."""
+    from mcp.client.client import Client
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp.types import TextContent
+
+    import anyio
+    import httpx2
+
+    async def call() -> str:
+        headers = {"Authorization": f"Bearer {token}"}
+        async with (
+            httpx2.AsyncClient(headers=headers) as http,
+            Client(streamable_http_client(url, http_client=http)) as session,
+        ):
+            result = await session.call_tool(name, arguments)
+        (block,) = result.content
+        assert isinstance(block, TextContent)
+        return block.text
+
+    return anyio.run(call)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("key", [None, "k" * 32])
+def test_serve_passes_the_confirm_key_on_to_the_writing_tools(
+    key: str | None,
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the key set, a writing call reaches the write path, which names
+    an id that is no proposal; without it, the same call is not configured,
+    the control that the answer depends on the key."""
+    port = _free_port("127.0.0.1")
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    token = _token_of(capsys.readouterr().out)
+    environment = {**os.environ, "PREVIOUSLY_MCP_ADDRESS": f"127.0.0.1:{port}"}
+    environment.pop("PREVIOUSLY_MCP_CONFIRM_KEY", None)
+    if key is not None:
+        environment["PREVIOUSLY_MCP_CONFIRM_KEY"] = key
+    server = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from previously.cli import main; sys.exit(main(['serve']))",
+        ],
+        env=environment,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert server.stderr is not None
+        server.stderr.readline()
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                connection.request("GET", "/healthz")
+                connection.getresponse().read()
+                connection.close()
+                break
+            except ConnectionRefusedError:
+                assert time.monotonic() < deadline, "the server never listened"
+                time.sleep(0.1)
+        url = f"http://127.0.0.1:{port}/mcp"
+        text = _call_over_http(url, token, "write_reject", {"proposal": 999_999})
+    finally:
+        server.terminate()
+        server.wait(timeout=30)
+        assert server.stderr is not None
+        server.stderr.close()
+    if key is None:
+        assert text == "Error: writing is not configured on this server"
+    else:
+        assert text == "Error: event 999999 is not a proposal this client can answer"
+    assert "k" * 32 not in _all_actions(db)
+
+
+# --- assertions: assert, approve, reject and the lists ----------------------------
+
+_ANNA = "anna@huber.example"
+_WHAT = "send the offer for the roof"
+_THE_OFFER = f"address:{_ANNA}"
+_ASSERT_AT = datetime(2026, 11, 1, 12, 0, 0, tzinfo=UTC)
+
+
+def _assertion_mail(external_id: str, *identities: tuple[str, str | None]) -> RawEvent:
+    return RawEvent(
+        source="email",
+        external_id=external_id,
+        occurred_at=datetime(2026, 10, 30, 9, 0, 0, tzinfo=UTC),
+        evidence=Evidence.VERBATIM,
+        units=(RawUnit(1, "One."), RawUnit(2, "Two."), RawUnit(3, "Three.")),
+        payload={"text": "One. Two. Three."},
+        channel_identities=tuple(
+            ChannelIdentity("email", "from", address, name) for address, name in identities
+        ),
+    )
+
+
+def _assertion_log(db: object, monkeypatch: pytest.MonkeyPatch, mails: int = 2) -> PostgresStorage:
+    """A log with `mails` observations, ids 1 to `mails`; the first one is
+    from Anna Huber."""
+    _setup(db, monkeypatch)
+    from sqlalchemy import Engine
+
+    assert isinstance(db, Engine)
+    storage = PostgresStorage(db)
+    events = [_assertion_mail("m1", (_ANNA, "Anna Huber"))]
+    events += [_assertion_mail(f"m{n}") for n in range(2, mails + 1)]
+    append(storage, events, recorded_at=_ASSERT_AT)
+    return storage
+
+
+def _debt(
+    *sources: Source,
+    responsibility: str = OPEN,
+    author: str = model_author("claude-code"),
+    subject: int | None = None,
+    what: str = _WHAT,
+    due: date | None = date(2026, 11, 30),
+    state: str = "open",
+    debtor: str = "own",
+    creditor: str = _THE_OFFER,
+) -> AssertionStatement:
+    return AssertionStatement(
+        OBLIGATION,
+        author,
+        responsibility,
+        sources or (Source(1, None),),
+        None,
+        None,
+        subject,
+        None,
+        None,
+        ObligationBody(debtor, creditor, what, due, state),
+    )
+
+
+def _propose(storage: PostgresStorage, *statements: AssertionStatement) -> tuple[int, ...]:
+    return write_statements(storage, storage, statements, recorded_at=_ASSERT_AT)
+
+
+def _standing(db: object) -> list[tuple[int, dict[str, object]]]:
+    """Every assertion payload in the log, in chain order."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    with db.begin() as c:
+        rows = c.execute(
+            text("SELECT id, payload FROM event WHERE kind = 'assertion' ORDER BY id")
+        ).all()
+    return [(row[0], row[1]) for row in rows]
+
+
+def _assert_obligation(*extra: str) -> list[str]:
+    return [
+        "assert",
+        "obligation",
+        "--debtor",
+        "own",
+        "--creditor",
+        _THE_OFFER,
+        "--what",
+        _WHAT,
+        "--due",
+        "2026-11-30",
+        "--source",
+        "1:1,2",
+        *extra,
+    ]
+
+
+_FIRST_PREVIEW = f"""{{
+  "approves": null,
+  "assertion": "obligation",
+  "author": "human:operator",
+  "creditor": "address:{_ANNA}",
+  "debtor": "own",
+  "due": "2026-11-30",
+  "handle": null,
+  "reason": null,
+  "responsibility": "direct",
+  "sources": [
+    {{
+      "event": 1,
+      "units": [
+        1,
+        2
+      ]
+    }}
+  ],
+  "state": "open",
+  "subject": null,
+  "what": "{_WHAT}"
+}}
+"""
+
+
+@pytest.mark.parametrize(
+    ("name", "sentence"),
+    [
+        ("assert", "state an obligation or a decision"),
+        ("approve", "make proposals your own"),
+        ("reject", "reject a proposal"),
+        ("obligations", "list what is owed"),
+        ("obligation", "show one obligation"),
+        ("decisions", "list what was decided"),
+        ("decision", "show one decision"),
+    ],
+)
+def test_the_assertion_commands_carry_the_contractual_help(name: str, sentence: str) -> None:
+    assert [(c.name, c.help) for c in COMMANDS if c.name == name] == [(name, sentence)]
+
+
+@pytest.mark.db
+def test_assert_obligation_shows_the_payload_asks_and_writes_after_a_yes(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assertion_log(db, monkeypatch)
+    _answer(monkeypatch, "y\n")
+    assert main(_assert_obligation()) == 0
+    captured = capsys.readouterr()
+    assert captured.out == _FIRST_PREVIEW + "write? [y/N] assertion 3\n"
+    assert captured.err == ""
+    ((event_id, payload),) = _standing(db)
+    assert event_id == 3
+    assert payload["author"] == "human:operator"
+    assert payload["responsibility"] == "direct"
+
+
+@pytest.mark.db
+def test_assert_obligation_with_yes_writes_without_asking(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assertion_log(db, monkeypatch)
+    assert main(_assert_obligation("--yes")) == 0
+    assert capsys.readouterr().out == _FIRST_PREVIEW + "assertion 3\n"
+
+
+@pytest.mark.db
+def test_assert_without_an_answer_writes_nothing(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review focus 5 of the 2026-10-12 plan, the last part, and its two
+    controls: an `n` and an input that ends write nothing and exit 1."""
+    _assertion_log(db, monkeypatch)
+    _answer(monkeypatch, "n\n")
+    assert main(_assert_obligation()) == 1
+    captured = capsys.readouterr()
+    assert captured.out == _FIRST_PREVIEW + "write? [y/N] "
+    assert captured.err == "nothing written\n"
+    _answer(monkeypatch, "")
+    assert main(_assert_obligation()) == 1
+    assert capsys.readouterr().err == _NO_ANSWER + "nothing written\n"
+    assert _standing(db) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("day", ["2026-02-30", "30.11.2026", "", "2026-11-3", "20261130"])
+def test_a_due_that_is_not_a_date_is_refused_before_the_question(
+    day: str, db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review focus 5 of the 2026-10-12 plan: one sentence, exit 2, no
+    payload shown, no question asked, nothing written."""
+    _assertion_log(db, monkeypatch)
+    argv = _assert_obligation()
+    argv[argv.index("--due") + 1] = day
+    assert main(argv) == 2
+    assert capsys.readouterr() == ("", "Error: --due is not a date written YYYY-MM-DD\n")
+    assert _standing(db) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("day", ["2026-02-30", "30.11.2026", ""])
+def test_an_on_that_is_not_a_date_is_refused_before_the_question(
+    day: str, db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assertion_log(db, monkeypatch)
+    argv = ["assert", "decision", "--what", "use slate", "--by", "own", "--on", day]
+    assert main([*argv, "--source", "1"]) == 2
+    assert capsys.readouterr() == ("", "Error: --on is not a date written YYYY-MM-DD\n")
+    assert _standing(db) == []
+
+
+@pytest.mark.db
+def test_a_due_in_the_past_is_written_and_the_obligation_is_overdue_at_once(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review focus 5, the other half: yesterday is allowed. The control is
+    the obligation due tomorrow, which is not overdue."""
+    _assertion_log(db, monkeypatch)
+    today = datetime.now(UTC).date()
+    yesterday, tomorrow = today - timedelta(days=1), today + timedelta(days=1)
+    for day in (yesterday, tomorrow):
+        argv = _assert_obligation("--yes")
+        argv[argv.index("--due") + 1] = day.isoformat()
+        assert main(argv) == 0
+    capsys.readouterr()
+    assert main(["obligations"]) == 0
+    assert capsys.readouterr().out == (
+        f"3\topen overdue\t{yesterday}\town -> {_THE_OFFER}\t{_WHAT}\t1 version\t0 proposals\n"
+        f"4\topen\t{tomorrow}\town -> {_THE_OFFER}\t{_WHAT}\t1 version\t0 proposals\n"
+    )
+    assert main(["obligations", "--overdue"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        f"3\topen overdue\t{yesterday}\town -> {_THE_OFFER}\t{_WHAT}\t1 version\t0 proposals"
+    ]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("source", "sentence"),
+    [
+        ("", "--source is not EVENT or EVENT:SEQ,SEQ: ''"),
+        ("abc", "--source is not EVENT or EVENT:SEQ,SEQ: 'abc'"),
+        ("1:", "--source is not EVENT or EVENT:SEQ,SEQ: '1:'"),
+        ("1:a", "--source is not EVENT or EVENT:SEQ,SEQ: '1:a'"),
+        ("1:1,", "--source is not EVENT or EVENT:SEQ,SEQ: '1:1,'"),
+        ("1:1,,2", "--source is not EVENT or EVENT:SEQ,SEQ: '1:1,,2'"),
+        ("1 :1", "--source is not EVENT or EVENT:SEQ,SEQ: '1 :1'"),
+        ("-1", "--source is not EVENT or EVENT:SEQ,SEQ: '-1'"),
+        ("1:2,1", "the units of a source are not ascending without duplicates"),
+        ("0", "a source names an event that is not a whole number of at least 1"),
+    ],
+)
+def test_a_malformed_source_is_refused_before_the_question(
+    source: str,
+    sentence: str,
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _assertion_log(db, monkeypatch)
+    argv = _assert_obligation()
+    argv[argv.index("--source") + 1] = source
+    assert main(argv) == 2
+    assert capsys.readouterr() == ("", f"Error: {sentence}\n")
+    assert _standing(db) == []
+
+
+@pytest.mark.db
+def test_a_source_that_is_the_whole_event_has_null_units(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assertion_log(db, monkeypatch)
+    argv = _assert_obligation("--source", "2", "--yes")
+    argv[argv.index("1:1,2")] = "1"
+    assert main(argv) == 0
+    ((_, payload),) = _standing(db)
+    assert payload["sources"] == [{"event": 1, "units": None}, {"event": 2, "units": None}]
+
+
+@pytest.mark.db
+def test_a_reference_that_is_none_is_refused_before_the_question(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assertion_log(db, monkeypatch)
+    argv = _assert_obligation()
+    argv[argv.index("--debtor") + 1] = "Anna"
+    assert main(argv) == 2
+    assert capsys.readouterr() == (
+        "",
+        "Error: --debtor: the reference has no known prefix: use own, circle:, address: or name:\n",
+    )
+    assert _standing(db) == []
+
+
+@pytest.mark.db
+def test_what_is_missing_without_a_subject_is_named_before_the_question(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assertion_log(db, monkeypatch)
+    assert main(["assert", "obligation", "--debtor", "own"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        "Error: an obligation needs --creditor, --what and --source "
+        "unless --subject names the one to change\n",
+    )
+    assert main(["assert", "decision", "--what", "x"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        "Error: a decision needs --by, --on and --source "
+        "unless --subject names the one to change\n",
+    )
+
+
+@pytest.mark.db
+def test_a_source_that_is_not_in_the_log_is_refused_with_the_sentence_of_the_write_path(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assertion_log(db, monkeypatch)
+    argv = _assert_obligation("--yes")
+    argv[argv.index("1:1,2")] = "99"
+    assert main(argv) == 2
+    assert capsys.readouterr().err == "Error: there is no event 99 to rest on\n"
+    assert _standing(db) == []
+
+
+@pytest.mark.db
+def test_a_subject_fills_the_fields_that_are_left_out_and_shows_what_changed(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The brief's mutation: with `--subject` not filling, the second call
+    fails for lack of `--debtor`, and this test goes red. The control is the
+    refusal above, which says the fields are needed without a subject."""
+    _assertion_log(db, monkeypatch)
+    assert main(_assert_obligation("--yes")) == 0
+    capsys.readouterr()
+    argv = ["assert", "obligation", "--subject", "3", "--state", "fulfilled", "--reason", "done"]
+    assert main([*argv, "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert out == (
+        _FIRST_PREVIEW.replace('"reason": null', '"reason": "done"')
+        .replace('"state": "open"', '"state": "fulfilled"')
+        .replace('"subject": null', '"subject": 3')
+        + "change\tstate\topen\tfulfilled\n"
+        + "change\treason\t(none)\tdone\n"
+        + "assertion 4\n"
+    )
+    ((_, first), (_, second)) = _standing(db)
+    assert second["debtor"] == first["debtor"] == "own"
+    assert second["sources"] == first["sources"]
+    assert second["subject"] == 3
+
+
+@pytest.mark.db
+def test_a_subject_that_names_no_obligation_is_refused_before_the_question(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assertion_log(db, monkeypatch)
+    assert main(["assert", "obligation", "--subject", "1", "--state", "cancelled"]) == 2
+    assert capsys.readouterr() == ("", "Error: --subject 1 names no obligation that stands\n")
+    assert main(["assert", "decision", "--subject", "1", "--what", "x"]) == 2
+    assert capsys.readouterr() == ("", "Error: --subject 1 names no decision that stands\n")
+
+
+@pytest.mark.db
+def test_a_subject_whose_winner_is_a_proposal_fills_from_it_and_writes_a_direct_version(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _assertion_log(db, monkeypatch)
+    (proposal_id,) = _propose(storage, _debt(due=date(2026, 12, 1)))
+    assert (
+        main(["assert", "obligation", "--subject", str(proposal_id), "--what", "x", "--yes"]) == 0
+    )
+    (_, proposed), (_, written) = _standing(db)
+    assert written["responsibility"] == "direct"
+    assert written["author"] == "human:operator"
+    assert written["approves"] is None
+    assert written["due"] == proposed["due"] == "2026-12-01"
+    assert written["what"] == "x"
+
+
+@pytest.mark.db
+def test_a_name_that_matches_a_sender_in_a_source_draws_a_hint_and_blocks_nothing(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The hint goes to standard error before the question, case-insensitive on
+    the display name. Controls: a name that matches nobody, and `address:`,
+    draw none."""
+    _assertion_log(db, monkeypatch)
+    argv = _assert_obligation("--yes")
+    argv[argv.index("--creditor") + 1] = "name:huber"
+    _answer(monkeypatch, "")
+    assert main(argv) == 0
+    captured = capsys.readouterr()
+    assert (
+        captured.err
+        == f"hint: {_ANNA} appears in the sources; address: is a reference that holds\n"
+    )
+    assert captured.out == _FIRST_PREVIEW.replace(_THE_OFFER, "name:huber") + "assertion 3\n"
+    for creditor in ("name:meier", _THE_OFFER):
+        argv[argv.index("--creditor") + 1] = creditor
+        assert main(argv) == 0
+        assert capsys.readouterr().err == ""
+
+
+@pytest.mark.db
+def test_the_hint_comes_before_the_question(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assertion_log(db, monkeypatch)
+    argv = _assert_obligation()
+    argv[argv.index("--creditor") + 1] = "name:ANNA"
+    _answer(monkeypatch, "n\n")
+    assert main(argv) == 1
+    assert capsys.readouterr().err == (
+        f"hint: {_ANNA} appears in the sources; address: is a reference that holds\n"
+        "nothing written\n"
+    )
+
+
+@pytest.mark.db
+def test_assert_decision_writes_a_decision_and_the_list_shows_it(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assertion_log(db, monkeypatch)
+    argv = ["assert", "decision", "--what", "use slate", "--by", "circle:huber", "--by", "own"]
+    assert main([*argv, "--on", "2026-10-30", "--source", "1", "--source", "2:3", "--yes"]) == 0
+    assert capsys.readouterr().out.endswith("assertion 3\n")
+    ((_, payload),) = _standing(db)
+    assert payload["by"] == ["circle:huber", "own"]
+    assert payload["replaces"] is None
+    assert main(["decisions"]) == 0
+    assert capsys.readouterr().out == (
+        "3\tvalid\t2026-10-30\tcircle:huber, own\tuse slate\t1 version\t0 proposals\n"
+    )
+
+
+@pytest.mark.db
+def test_a_decision_that_is_replaced_says_so_in_the_list_and_in_its_page(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assertion_log(db, monkeypatch)
+    base = ["assert", "decision", "--by", "own", "--on", "2026-10-30", "--source", "1", "--yes"]
+    assert main([*base, "--what", "use slate"]) == 0
+    assert main([*base, "--what", "use tiles", "--replaces", "3"]) == 0
+    capsys.readouterr()
+    assert main(["decisions"]) == 0
+    assert capsys.readouterr().out == (
+        "3\tvalid replaced by 4\t2026-10-30\town\tuse slate\t1 version\t0 proposals\n"
+        "4\tvalid\t2026-10-30\town\tuse tiles\t1 version\t0 proposals\n"
+    )
+    assert main(["decisions", "--state", "revoked"]) == 0
+    assert capsys.readouterr().out == ""
+    assert main(["decision", "3"]) == 0
+    assert capsys.readouterr().out == (
+        "decision 3\n"
+        "version\t3\n"
+        "state\tvalid\n"
+        "replaced by\t4\n"
+        "on\t2026-10-30\n"
+        "by\town\n"
+        "what\tuse slate\n"
+        "replaces\t(none)\n"
+        "sources\tevent 1\n"
+        "reason\t(none)\n"
+        "author\thuman:operator\n"
+        "responsibility\tdirect\n"
+        "versions\t1\n"
+        "proposals\t0\n"
+    )
+
+
+@pytest.mark.db
+def test_a_text_the_log_cannot_hold_is_refused_before_the_question(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling F-19 of the 2026-10-12 assertions plan: the check before the
+    question runs the canonical check the write runs, so nobody confirms
+    what the write then refuses. A lone surrogate reaches `--what` the way
+    finding W-1 describes; the same command without it, answered `n`, is
+    the control that the question comes otherwise."""
+    _assertion_log(db, monkeypatch)
+    _answer(monkeypatch, "n\n")
+
+    assert main(_assert_obligation("--what", "send \ud800 the offer")) == 2
+    assert capsys.readouterr() == (
+        "",
+        "Error: a statement cannot be written: $.what: string not representable as UTF-8 "
+        "(surrogates not allowed) — a lone UTF-16 surrogate, for instance\n",
+    )
+    assert main(_assert_obligation()) == 1
+    assert "write? [y/N]" in capsys.readouterr().out
+
+
+@pytest.mark.db
+def test_approve_makes_a_list_of_proposals_the_operators_own(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _assertion_log(db, monkeypatch)
+    first, second = _propose(storage, _debt(what="one"), _debt(what="two", due=None))
+    assert main(["approve", str(first), str(second), "--reason", "read it", "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert out.endswith("assertion 5\nassertion 6\n")
+    written = dict(_standing(db))
+    for new, proposal_id, what in ((5, first, "one"), (6, second, "two")):
+        payload = written[new]
+        assert payload["approves"] == payload["subject"] == proposal_id
+        assert payload["responsibility"] == "direct"
+        assert payload["author"] == "model:claude-code"
+        assert payload["what"] == what
+        assert payload["reason"] == "read it"
+        assert payload["sources"] == written[proposal_id]["sources"]
+    assert main(["obligations"]) == 0
+    assert capsys.readouterr().out == (
+        f"{first}\topen\t2026-11-30\town -> {_THE_OFFER}\tone\t2 versions\t0 proposals\n"
+        f"{second}\topen\t-\town -> {_THE_OFFER}\ttwo\t2 versions\t0 proposals\n"
+    )
+
+
+@pytest.mark.db
+def test_approve_asks_and_an_n_writes_nothing(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _assertion_log(db, monkeypatch)
+    (proposal_id,) = _propose(storage, _debt())
+    _answer(monkeypatch, "n\n")
+    assert main(["approve", str(proposal_id)]) == 1
+    captured = capsys.readouterr()
+    assert "write? [y/N]" in captured.out
+    assert captured.err == "nothing written\n"
+    assert len(_standing(db)) == 1
+
+
+@pytest.mark.db
+def test_approving_what_is_answered_already_or_is_no_proposal_is_refused_before_the_question(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Review focus 2 of the 2026-10-12 plan, on the command line. The
+    control is the proposal nobody answered, approved at the end."""
+    storage = _assertion_log(db, monkeypatch)
+    approved, rejected, open_one = _propose(
+        storage, _debt(what="a"), _debt(what="b"), _debt(what="c")
+    )
+    assert main(["approve", str(approved), "--yes"]) == 0
+    assert main(["reject", str(rejected), "--yes"]) == 0
+    direct = approved + 3
+    capsys.readouterr()
+    count = len(_standing(db))
+    for argv, sentence in (
+        (["approve", str(approved)], f"the proposal {approved} is already approved"),
+        (["approve", str(rejected)], f"the proposal {rejected} is already rejected"),
+        (["approve", str(direct)], f"the version {direct} is no proposal: it is direct"),
+        (["approve", "1"], "event 1 is no proposal that stands"),
+        (["approve", "99"], "event 99 is no proposal that stands"),
+        (["approve", str(open_one), "99"], "event 99 is no proposal that stands"),
+    ):
+        assert main(argv) == 2
+        assert capsys.readouterr() == ("", f"Error: {sentence}\n")
+        assert len(_standing(db)) == count
+    assert main(["approve", str(open_one), "--yes"]) == 0
+
+
+@pytest.mark.db
+def test_approving_a_proposal_a_later_direct_version_overtook_is_refused_before_the_question(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling F-17 of the 2026-10-12 assertions plan on the command line;
+    rejecting the same proposal is the control."""
+    storage = _assertion_log(db, monkeypatch)
+    (owned,) = _propose(storage, _debt(responsibility=DIRECT, author=OPERATOR))
+    (stale,) = _propose(storage, _debt(subject=owned, what="later"))
+    (newer,) = _propose(storage, _debt(responsibility=DIRECT, author=OPERATOR, subject=owned))
+    count = len(_standing(db))
+
+    assert main(["approve", str(stale)]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the proposal {stale} is overtaken: the direct version {newer} came after it\n",
+    )
+    assert len(_standing(db)) == count
+    assert main(["reject", str(stale), "--yes"]) == 0
+
+
+@pytest.mark.db
+def test_reject_writes_a_rejection_with_the_sources_of_the_proposal_and_a_reason(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _assertion_log(db, monkeypatch)
+    (proposal_id,) = _propose(storage, _debt(Source(2, (1,)), Source(1, None)))
+    assert main(["reject", str(proposal_id), "--reason", "not what was said", "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert out == (
+        "{\n"
+        '  "assertion": "rejection",\n'
+        '  "author": "human:operator",\n'
+        '  "handle": null,\n'
+        f'  "of": {proposal_id},\n'
+        '  "reason": "not what was said",\n'
+        '  "responsibility": "direct",\n'
+        '  "sources": [\n'
+        "    {\n"
+        '      "event": 2,\n'
+        '      "units": [\n'
+        "        1\n"
+        "      ]\n"
+        "    },\n"
+        "    {\n"
+        '      "event": 1,\n'
+        '      "units": null\n'
+        "    }\n"
+        "  ]\n"
+        "}\n"
+        "assertion 4\n"
+    )
+    assert main(["obligations"]) == 0
+    assert capsys.readouterr().out == ""
+    assert main(["obligations", "--proposals"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.db
+def test_reject_asks_first_and_refuses_a_proposal_that_is_not_open(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _assertion_log(db, monkeypatch)
+    (proposal_id,) = _propose(storage, _debt())
+    _answer(monkeypatch, "n\n")
+    assert main(["reject", str(proposal_id)]) == 1
+    assert capsys.readouterr().err == "nothing written\n"
+    assert main(["reject", str(proposal_id), "--yes"]) == 0
+    capsys.readouterr()
+    assert main(["reject", str(proposal_id), "--yes"]) == 2
+    assert capsys.readouterr().err == f"Error: the proposal {proposal_id} is already rejected\n"
+    assert main(["reject", "1", "--yes"]) == 2
+    assert capsys.readouterr().err == "Error: event 1 is no proposal that stands\n"
+
+
+@pytest.mark.db
+def test_a_list_shows_proposals_as_proposals_and_only_when_asked(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The brief's mutation: with a proposal shown as a valid entry, the
+    plain list holds `5` and this test goes red. The control is `3`, which
+    stands direct and stays in both lists."""
+    storage = _assertion_log(db, monkeypatch)
+    assert main(_assert_obligation("--yes")) == 0  # 3, direct
+    (alone,) = _propose(storage, _debt(what="proposed alone"))  # 4
+    (pending,) = _propose(storage, _debt(what="newer", subject=3, due=date(2026, 12, 24)))  # 5
+    capsys.readouterr()
+    assert main(["obligations"]) == 0
+    assert capsys.readouterr().out == (
+        f"3\topen\t2026-11-30\town -> {_THE_OFFER}\t{_WHAT}\t2 versions\t1 proposal\n"
+    )
+    assert main(["obligations", "--proposals"]) == 0
+    assert capsys.readouterr().out == (
+        f"3\topen\t2026-11-30\town -> {_THE_OFFER}\t{_WHAT}\t2 versions\t1 proposal\n"
+        f"{alone}\tproposed open\t2026-11-30\town -> {_THE_OFFER}\tproposed alone"
+        "\t1 version\t0 proposals\n"
+    )
+    assert pending == 5
+
+
+@pytest.mark.db
+def test_the_lists_filter_by_debtor_creditor_and_state(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assertion_log(db, monkeypatch)
+    plain = ["--source", "1", "--yes"]
+    rows = (
+        ("own", _THE_OFFER, "a", "open"),
+        ("name:Hosting Company", "own", "b", "open"),
+        ("circle:huber", "name:Anna", "c", "fulfilled"),
+    )
+    for debtor, creditor, what, state in rows:
+        argv = ["assert", "obligation", "--debtor", debtor, "--creditor", creditor]
+        assert main([*argv, "--what", what, "--state", state, *plain]) == 0
+    capsys.readouterr()
+
+    def listed(*argv: str) -> list[str]:
+        assert main(["obligations", *argv]) == 0
+        return [line.split("\t")[4] for line in capsys.readouterr().out.splitlines()]
+
+    assert listed() == ["a", "b", "c"]
+    assert listed("--owed-by", "own") == ["a"]
+    assert listed("--owed-to", "own") == ["b"]
+    assert listed("--owed-by", "circle:huber") == ["c"]
+    assert listed("--owed-by", "name:hosting") == ["b"]  # a name is searched, case-insensitive
+    assert listed("--owed-to", "name:anna") == ["c"]
+    assert listed("--owed-to", f"address:{_ANNA}") == ["a"]
+    assert listed("--state", "fulfilled") == ["c"]
+    assert listed("--state", "open", "--owed-by", "own") == ["a"]
+    assert main(["obligations", "--owed-by", "Anna"]) == 2
+    assert (
+        capsys.readouterr().err == "Error: --owed-by: the reference has no known prefix: "
+        "use own, circle:, address: or name:\n"
+    )
+
+
+@pytest.mark.db
+def test_the_circle_filter_finds_a_named_circle_and_a_source_of_the_circle(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--circle huber` finds the obligation whose creditor is `circle:huber`,
+    the one that rests on a mail of Anna Huber (a member), and the one whose
+    creditor is her address. The control is the obligation that does none of
+    this."""
+    _assertion_log(db, monkeypatch, mails=3)
+    for argv in (
+        ["policy", "circle", "huber", "--statement", "s", "--yes"],
+        ["policy", "member", "huber", _ANNA, "--statement", "s", "--yes"],
+    ):
+        assert main(argv) == 0
+    named = ["--debtor", "own", "--creditor", "circle:huber", "--source", "2"]
+    from_mail = ["--debtor", "own", "--creditor", "name:somebody", "--source", "1"]
+    by_address = ["--debtor", "own", "--creditor", _THE_OFFER, "--source", "3"]
+    other = ["--debtor", "own", "--creditor", "circle:bauer", "--source", "3"]
+    for what, rest in (
+        ("named", named),
+        ("mail", from_mail),
+        ("address", by_address),
+        ("other", other),
+    ):
+        assert main(["assert", "obligation", "--what", what, *rest, "--yes"]) == 0
+    capsys.readouterr()
+    assert main(["obligations", "--circle", "huber"]) == 0
+    assert [line.split("\t")[4] for line in capsys.readouterr().out.splitlines()] == [
+        "named",
+        "mail",
+        "address",
+    ]
+    assert main(["obligations", "--circle", "bauer"]) == 0
+    assert [line.split("\t")[4] for line in capsys.readouterr().out.splitlines()] == ["other"]
+    assert main(["obligations", "--circle", "nobody"]) == 0
+    assert capsys.readouterr().out == ""
+    assert main(["decisions", "--circle", "huber"]) == 0
+    assert capsys.readouterr().out == ""
+
+
+@pytest.mark.db
+def test_a_field_from_outside_is_escaped_in_the_lists(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assertion_log(db, monkeypatch)
+    argv = ["assert", "obligation", "--debtor", "own", "--creditor", "name:Anna", "--source", "1"]
+    assert main([*argv, "--what", "two\nli\tnes\\", "--yes"]) == 0
+    capsys.readouterr()
+    assert main(["obligations"]) == 0
+    assert capsys.readouterr().out == (
+        "3\topen\t-\town -> name:Anna\ttwo\\nli\\tnes\\\\\t1 version\t0 proposals\n"
+    )
+
+
+@pytest.mark.db
+def test_one_obligation_shows_its_state_and_its_pending_proposals(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _assertion_log(db, monkeypatch)
+    today = datetime.now(UTC).date()
+    argv = _assert_obligation("--yes")
+    argv[argv.index("--due") + 1] = (today - timedelta(days=2)).isoformat()
+    assert main(argv) == 0
+    (pending,) = _propose(
+        storage, _debt(subject=3, due=date(2027, 1, 15), what="send it twice", state="fulfilled")
+    )
+    capsys.readouterr()
+    assert main(["obligation", "3"]) == 0
+    assert capsys.readouterr().out == (
+        "obligation 3\n"
+        "version\t3\n"
+        "state\topen\n"
+        "overdue\tyes\n"
+        f"due\t{today - timedelta(days=2)}\n"
+        "debtor\town\n"
+        f"creditor\t{_THE_OFFER}\n"
+        f"what\t{_WHAT}\n"
+        "sources\tevent 1 units 1, 2\n"
+        "reason\t(none)\n"
+        "author\thuman:operator\n"
+        "responsibility\tdirect\n"
+        "versions\t2\n"
+        "proposals\t1\n"
+        f"proposal\t{pending}\tmodel:claude-code\twhat\t{_WHAT}\tsend it twice\n"
+        f"proposal\t{pending}\tmodel:claude-code\tdue\t{today - timedelta(days=2)}\t2027-01-15\n"
+        f"proposal\t{pending}\tmodel:claude-code\tstate\topen\tfulfilled\n"
+        f"proposal\t{pending}\tmodel:claude-code\tsources\tevent 1 units 1, 2\tevent 1\n"
+    )
+
+
+@pytest.mark.db
+def test_one_obligation_that_stands_as_a_proposal_says_so(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _assertion_log(db, monkeypatch)
+    (proposal_id,) = _propose(storage, _debt())
+    assert main(["obligation", str(proposal_id)]) == 0
+    out = capsys.readouterr().out
+    assert out.startswith(f"obligation {proposal_id} (proposal)\n")
+    assert "responsibility\topen\n" in out
+
+
+@pytest.mark.db
+def test_a_missing_entry_is_exit_1_and_a_sentence(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _assertion_log(db, monkeypatch)
+    _propose(storage, _debt())
+    assert main(["obligation", "99"]) == 1
+    assert capsys.readouterr() == ("", "no obligation stands under event 99\n")
+    assert main(["decision", "3"]) == 1
+    assert capsys.readouterr() == ("", "no decision stands under event 3\n")
+
+
+@pytest.mark.db
+def test_an_entry_whose_versions_are_all_erased_says_it_is_erased(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling F-18 of the 2026-10-12 assertions plan: an id an erasure took
+    says so, whatever kind is asked for, since the kind went with the
+    payload; the lists leave it out. The entry beside it, whose first version
+    alone is erased, still stands under its id and is the control."""
+    storage = _assertion_log(db, monkeypatch)
+    gone, kept = _propose(
+        storage,
+        _debt(responsibility=DIRECT, author=OPERATOR),
+        _debt(responsibility=DIRECT, author=OPERATOR, what="kept"),
+    )
+    (later,) = _propose(storage, _debt(responsibility=DIRECT, author=OPERATOR, subject=gone))
+    _propose(storage, _debt(responsibility=DIRECT, author=OPERATOR, subject=kept))
+    for erased in (gone, later, kept):
+        redact_event(storage, storage, erased, reason="r", recorded_at=datetime.now(UTC))
+    for argv in (["obligation", str(gone)], ["decision", str(gone)], ["obligation", str(later)]):
+        assert main([*argv]) == 1
+        assert capsys.readouterr() == ("", f"assertion {argv[1]} is erased\n")
+    assert main(["obligation", str(gone), "--history"]) == 1
+    assert capsys.readouterr().err == f"assertion {gone} is erased\n"
+    assert main(["obligations"]) == 0
+    assert capsys.readouterr().out.split("\t")[0] == str(kept)
+    assert main(["obligation", str(kept)]) == 0
+    assert main(["obligation", "99"]) == 1
+    assert capsys.readouterr().err == "no obligation stands under event 99\n"
+
+
+@pytest.mark.db
+def test_the_history_lists_every_version_with_the_difference_and_the_rejections(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Versions in chain order, each against the one standing before it, and
+    a rejection among them with what it rejects. The two events the command
+    line wrote carry the time of the run, which the test replaces by `NOW`."""
+    storage = _assertion_log(db, monkeypatch)
+    (first,) = _propose(
+        storage,
+        _debt(Source(1, (1, 2)), responsibility=DIRECT, author=OPERATOR),
+    )
+    (rejected,) = _propose(storage, _debt(subject=first, what="wrong"))  # 4
+    (approved,) = _propose(storage, _debt(subject=first, due=date(2026, 12, 1)))  # 5
+    assert main(["reject", str(rejected), "--reason", "not said", "--yes"]) == 0  # 6
+    assert main(["approve", str(approved), "--yes"]) == 0  # 7
+    capsys.readouterr()
+    assert main(["obligation", str(first), "--history"]) == 0
+    out = re.sub(r"(?m)^(rejection\t6\t|version\t7\t)\S+", r"\1NOW", capsys.readouterr().out)
+    stamp = "2026-11-01T12:00:00.000000Z"
+    assert out == (
+        "obligation 3: 4 versions\n"
+        f"version\t3\t{stamp}\tdirect\thuman:operator\n"
+        "sources\tevent 1 units 1, 2\n"
+        "reason\t(none)\n"
+        "set\tstate\topen\n"
+        "set\tdue\t2026-11-30\n"
+        "set\tdebtor\town\n"
+        f"set\tcreditor\t{_THE_OFFER}\n"
+        f"set\twhat\t{_WHAT}\n"
+        f"version\t4\t{stamp}\topen\tmodel:claude-code\trejected\n"
+        "sources\tevent 1\n"
+        "reason\t(none)\n"
+        f"change\twhat\t{_WHAT}\twrong\n"
+        "change\tsources\tevent 1 units 1, 2\tevent 1\n"
+        f"version\t5\t{stamp}\topen\tmodel:claude-code\tapproved\n"
+        "sources\tevent 1\n"
+        "reason\t(none)\n"
+        f"change\twhat\twrong\t{_WHAT}\n"
+        "change\tdue\t2026-11-30\t2026-12-01\n"
+        "rejection\t6\tNOW\thuman:operator\trejects 4\n"
+        "reason\tnot said\n"
+        "version\t7\tNOW\tdirect\tmodel:claude-code\tapproves 5\n"
+        "sources\tevent 1\n"
+        "reason\t(none)\n"
+    )
+    assert first == 3 and rejected == 4 and approved == 5
+
+
+@pytest.mark.db
+def test_the_preview_of_an_approval_escapes_the_controls_of_a_proposal(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A proposal is text a model wrote from a stranger's mail. U+009B is
+    `ESC [` for a terminal and DEL is none to read; neither may come out
+    raw. The control is the plain text beside them, which stays as it was."""
+    storage = _assertion_log(db, monkeypatch)
+    (proposal_id,) = _propose(storage, _debt(what="plain\x9b[2Jmore\x7fend"))
+    assert main(["approve", str(proposal_id), "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert "\x9b" not in out
+    assert "\x7f" not in out
+    assert '"what": "plain\\u009b[2Jmore\\u007fend"' in out
+    assert '"assertion": "obligation"' in out
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("change", "sentence"),
+    [
+        ("99", "there is no event 99 to rest on"),
+        ("2", "event 2 is erased and cannot be a source"),
+        ("1:9", "event 1 has no unit 9"),
+    ],
+)
+def test_a_source_the_log_refuses_is_refused_before_the_question(
+    change: str,
+    sentence: str,
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Ruling F-10 of the 2026-10-12 assertions plan: nobody confirms what
+    the write path will refuse. Nothing is shown, nothing is asked, nothing
+    is written; the control is the same command with a source that stands."""
+    storage = _assertion_log(db, monkeypatch)
+    redact_event(storage, storage, 2, reason="r", recorded_at=datetime.now(UTC))
+    _answer(monkeypatch, "y\n")
+    argv = _assert_obligation()
+    argv[argv.index("--source") + 1 :] = [change]
+    assert main(argv) == 2
+    assert capsys.readouterr() == ("", f"Error: {sentence}\n")
+    assert _standing(db) == []
+    argv[argv.index("--source") + 1 :] = ["1:1"]
+    _answer(monkeypatch, "y\n")
+    assert main(argv) == 0
+
+
+@pytest.mark.db
+def test_a_replaced_decision_that_does_not_stand_is_refused_before_the_question(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _assertion_log(db, monkeypatch)
+    argv = ["assert", "decision", "--what", "x", "--by", "own", "--on", "2026-10-30"]
+    assert main([*argv, "--source", "1", "--replaces", "1"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        "Error: replaces names 1, which is no decision that stands\n",
+    )
+    assert main([*argv, "--source", "1", "--replaces", "x"]) == 2
+    assert capsys.readouterr() == (
+        "",
+        "Error: --replaces is neither an event id nor none: 'x'\n",
+    )
+
+
+@pytest.mark.db
+def test_due_none_and_replaces_none_clear_what_a_subject_would_fill(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The control is the same command without `none`, which keeps the value."""
+    _assertion_log(db, monkeypatch)
+    assert main(_assert_obligation("--yes")) == 0
+    capsys.readouterr()
+    assert main(["assert", "obligation", "--subject", "3", "--what", "again", "--yes"]) == 0
+    assert "change\tdue" not in capsys.readouterr().out
+    assert main(["assert", "obligation", "--subject", "3", "--due", "none", "--yes"]) == 0
+    assert "change\tdue\t2026-11-30\t(none)\n" in capsys.readouterr().out
+    assert _standing(db)[-1][1]["due"] is None
+    base = ["assert", "decision", "--what", "x", "--by", "own", "--on", "2026-10-30"]
+    assert main([*base, "--source", "1", "--yes"]) == 0  # 6
+    assert main([*base, "--source", "1", "--replaces", "6", "--yes"]) == 0  # 7
+    assert main(["assert", "decision", "--subject", "7", "--what", "y", "--yes"]) == 0
+    assert _standing(db)[-1][1]["replaces"] == 6
+    assert main(["assert", "decision", "--subject", "7", "--replaces", "none", "--yes"]) == 0
+    assert _standing(db)[-1][1]["replaces"] is None
+
+
+@pytest.mark.db
+def test_approving_an_id_named_twice_approves_it_once(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _assertion_log(db, monkeypatch)
+    first, second = _propose(storage, _debt(what="a"), _debt(what="b"))
+    assert main(["approve", str(second), str(first), str(second), "--yes"]) == 0
+    assert capsys.readouterr().out.endswith("assertion 5\nassertion 6\n")
+    assert [payload["approves"] for _id, payload in _standing(db)[2:]] == [second, first]
+
+
+@pytest.mark.db
+def test_every_field_that_comes_from_outside_is_escaped_on_the_page_and_in_the_history(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Measured by mutation: with `escape_field` dropped from the `reason`
+    line of the history, a newline in a reason splits the line and this test
+    goes red."""
+    _assertion_log(db, monkeypatch)
+    argv = ["assert", "obligation", "--debtor", "own", "--creditor", "name:back\\slash"]
+    assert main([*argv, "--what", "w\tx", "--reason", "why\ny\x1b", "--source", "1", "--yes"]) == 0
+    assert (
+        main(
+            [
+                "assert",
+                "obligation",
+                "--subject",
+                "3",
+                "--what",
+                "w\ty",
+                "--reason",
+                "r\tz",
+                "--yes",
+            ]
+        )
+        == 0
+    )
+    capsys.readouterr()
+    assert main(["obligation", "3"]) == 0
+    page = capsys.readouterr().out.splitlines()
+    assert "what\tw\ty" not in page
+    assert "what\tw\\ty" in page
+    assert "creditor\tname:back\\\\slash" in page
+    assert "reason\tr\\tz" in page
+    assert main(["obligation", "3", "--history"]) == 0
+    history = capsys.readouterr().out.splitlines()
+    assert "reason\twhy\\ny\\x1b" in history
+    assert "set\twhat\tw\\tx" in history
+    assert "set\tcreditor\tname:back\\\\slash" in history
+    assert "change\twhat\tw\\tx\tw\\ty" in history
+    assert all(line.count("\t") <= 5 for line in history)
+
+
+@pytest.mark.db
+def test_the_hint_names_only_the_address_whose_name_matches(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A name in another source than the matching address draws no hint for
+    that address. Event 3 shows Bob Meier, event 1 Anna Huber."""
+    storage = _assertion_log(db, monkeypatch)
+    append(storage, [_assertion_mail("m3", ("bob@x.example", "Bob Meier"))], recorded_at=_ASSERT_AT)
+    argv = _assert_obligation("--yes")
+    argv[argv.index("--creditor") + 1] = "name:meier"
+    argv[argv.index("1:1,2")] = "1"
+    assert main(argv) == 0
+    assert capsys.readouterr().err == ""
+    argv += ["--source", "3"]
+    assert main(argv) == 0
+    assert capsys.readouterr().err == (
+        "hint: bob@x.example appears in the sources; address: is a reference that holds\n"
+    )
+
+
+@pytest.mark.db
+def test_the_history_of_an_entry_without_a_winner_is_shown_and_its_page_is_not(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _assertion_log(db, monkeypatch)
+    (proposal_id,) = _propose(storage, _debt())
+    assert main(["reject", str(proposal_id), "--yes"]) == 0
+    capsys.readouterr()
+    assert main(["obligation", str(proposal_id), "--history"]) == 0
+    assert capsys.readouterr().out.splitlines()[0] == "obligation 3: 1 version"
+    assert main(["obligation", str(proposal_id)]) == 1
+    assert capsys.readouterr().err == "no obligation stands under event 3\n"
+    assert main(["obligation", "99", "--history"]) == 1
