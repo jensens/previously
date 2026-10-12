@@ -85,7 +85,9 @@ The subject, the names of attachments and the provenance of a mail stand inside 
 
 That's a bet on how models treat marked text, and the effect of such marking on current models hasn't been measured.
 The boundary that holds lies elsewhere.
-Most tools only read, and the three that write can't do what a person stated: `write_assertion` only proposes, and a proposal never outranks a statement of the operator.
+Most tools only read, and `write_assertion` only proposes: a proposal never outranks a statement of the operator.
+`write_approve` and `write_reject` do write direct versions, which the operator stands for, and what makes them the operator's is that the client asks the person before it confirms them.
+That's a requirement on the client, which the server can't check: a client that allows the two tools without asking writes approvals nobody looked at.
 Each writing tool's name starts with `write_`, so that one pattern per client can make the client always ask before any of them, and each one takes two steps, a preview and a confirmation.
 And before any of this, the policy decides which content reaches the client at all.
 

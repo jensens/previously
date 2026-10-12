@@ -364,7 +364,8 @@ Nothing is written yet: to write, call write_assertion again with the same argum
 - The heading of a proposal reads `### statement N · KIND · proposed · STATE · open · by model:CLIENT · new entry`, with `new version of URI` at its end where the item names a `subject`.
 - The heading of an approval reads `### approval N · KIND · approves URI · STATE · direct · by AUTHOR · version of URI`.
 - The heading of a rejection reads `### rejection · rejection · rejects URI · direct · by model:CLIENT`, and its fence holds the content of the proposal with the reason of the rejection.
-- Every line inside the fence is cut at 1,000 characters, as in a list.
+- A list cuts a line inside the fence at 1,000 characters, so a statement with a longer line is refused instead of previewed: a preview always shows the whole of what gets written.
+  For an approval and a rejection the lines are those of the proposal, so a proposal with a longer line can't be answered over MCP.
 - A preview that doesn't fit on one page is refused rather than cut, because a statement nobody saw can't be confirmed.
 
 The handle is sealed with `PREVIOUSLY_MCP_CONFIRM_KEY` ({ref}`configuration-reference`) over the client, the statements and the time it expires, ten minutes after the first call.
@@ -406,16 +407,17 @@ Error: item 1: an obligation needs debtor and creditor
 Error: item 1: by belongs to a decision, not to an obligation
 Error: item 1: due is not a date written YYYY-MM-DD
 Error: item 1: an event id is a whole number from 1 to 2^53 - 1
-Error: ids takes 1 to 20 proposals, this call gave 0
+Error: ids takes 1 to 20 different proposals, this call gave 0
 Error: ids holds an id that is not a whole number from 1 to 2^53 - 1
 Error: proposal is not a whole number from 1 to 2^53 - 1
+Error: a line of these statements is longer than the 1,000 characters a preview shows of it; shorten it
 Error: the preview of these statements is longer than a page; write fewer in one call
 ```
 
 The first is the answer of every writing tool when the server has no `PREVIOUSLY_MCP_CONFIRM_KEY`, or one shorter than 32 characters; the reading tools work as before.
 
 Every other refusal is a sentence of the write path, the same that `previously assert`, `approve` and `reject` print ({ref}`cli-reference`), such as `Error: the proposal 26 is already approved` or `Error: event 41 is erased and cannot be a source`.
-Each concerns an event or an entry the client may see.
+Each concerns an event or an entry the client may see, or an event that `get_event` names to any client: an erased one, or one that's no observation.
 
 ### `write_assertion`
 
@@ -456,7 +458,7 @@ Each becomes a direct version of its entry with the content, the sources and the
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
-| `ids` | list of integers | — | 1 to 20 ids of proposals, as the history of an entry names them. A repeated id is approved once. |
+| `ids` | list of integers | — | 1 to 20 different ids of proposals, as the history of an entry names them. A repeated id is approved once and counted once. |
 | `confirm` | string | none | The handle of the preview. |
 
 The client has to be allowed to see the entry of each proposal and every source of it.
@@ -591,6 +593,7 @@ An obligation or a decision stands in `delivered` and `withheld` under its id, w
 The arguments of `list_obligations` and `list_decisions` are a circle name, a state, flags and an id, and the entry holds no text of an obligation or a decision and no address.
 
 A call of a writing tool records none of its arguments as given, because the text a client writes can come from a mail and would outlive the erasure of that mail in the log.
+A call of a tool name the server doesn't have records only the names of its arguments, each with `null`, for the same reason: a misspelled writing tool carries the text it meant to write.
 Its `arguments` hold only these keys, for a call the SDK refused as well:
 
 | Key | Value |
@@ -600,6 +603,8 @@ Its `arguments` hold only these keys, for a call the SDK refused as well:
 | `proposals` | `write_approve` and `write_reject`: the ids of the proposals answered. |
 | `confirm` | `true` where the call gave a handle. |
 | `written` | The ids written, or found written by an earlier confirmation of the same handle; empty for a preview or a refusal. |
+
+The preview of `write_approve` and `write_reject` shows a proposal, so that call and its confirmation record the proposal's entry in `delivered`, with the circles of its sources, and its rules in `rules` of `policy`, as `list_obligations` records it; `previously access --circle` finds them.
 
 An entry of `withheld` carries `reason_code` `no_rule` where a circle had no rule for a client that isn't local, `rule` where a rule said no, the circles of the event, and the sentence of the placeholder.
 `uncovered` lists the circles of the event that have no rule, and `source` is the source of the event's key, or `null` where it has none; `policy gaps` counts by these two.

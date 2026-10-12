@@ -5040,6 +5040,88 @@ def test_serve_listens_where_the_address_says_beside_the_variables_of_a_service(
         server.stderr.close()
 
 
+def _call_over_http(url: str, token: str, name: str, arguments: dict[str, object]) -> str:
+    """The text of one tool call to a running `serve`, as a client sends it."""
+    from mcp.client.client import Client
+    from mcp.client.streamable_http import streamable_http_client
+    from mcp.types import TextContent
+
+    import anyio
+    import httpx2
+
+    async def call() -> str:
+        headers = {"Authorization": f"Bearer {token}"}
+        async with (
+            httpx2.AsyncClient(headers=headers) as http,
+            Client(streamable_http_client(url, http_client=http)) as session,
+        ):
+            result = await session.call_tool(name, arguments)
+        (block,) = result.content
+        assert isinstance(block, TextContent)
+        return block.text
+
+    return anyio.run(call)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("key", [None, "k" * 32])
+def test_serve_passes_the_confirm_key_on_to_the_writing_tools(
+    key: str | None,
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """With the key set, a writing call reaches the write path, which names
+    an id that is no proposal; without it, the same call is not configured,
+    the control that the answer depends on the key."""
+    port = _free_port("127.0.0.1")
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    token = _token_of(capsys.readouterr().out)
+    environment = {**os.environ, "PREVIOUSLY_MCP_ADDRESS": f"127.0.0.1:{port}"}
+    environment.pop("PREVIOUSLY_MCP_CONFIRM_KEY", None)
+    if key is not None:
+        environment["PREVIOUSLY_MCP_CONFIRM_KEY"] = key
+    server = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys; from previously.cli import main; sys.exit(main(['serve']))",
+        ],
+        env=environment,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        assert server.stderr is not None
+        server.stderr.readline()
+        deadline = time.monotonic() + 30
+        while True:
+            try:
+                connection = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+                connection.request("GET", "/healthz")
+                connection.getresponse().read()
+                connection.close()
+                break
+            except ConnectionRefusedError:
+                assert time.monotonic() < deadline, "the server never listened"
+                time.sleep(0.1)
+        url = f"http://127.0.0.1:{port}/mcp"
+        text = _call_over_http(url, token, "write_reject", {"proposal": 999_999})
+    finally:
+        server.terminate()
+        server.wait(timeout=30)
+        assert server.stderr is not None
+        server.stderr.close()
+    if key is None:
+        assert text == "Error: writing is not configured on this server"
+    else:
+        assert text == "Error: event 999999 is not a proposal this client can answer"
+    assert "k" * 32 not in _all_actions(db)
+
+
 # --- assertions: assert, approve, reject and the lists ----------------------------
 
 _ANNA = "anna@huber.example"

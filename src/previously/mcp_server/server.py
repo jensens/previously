@@ -75,6 +75,8 @@ from previously.core.assertion import payload_of
 from previously.core.assertion import REJECTION
 from previously.core.assertion import Source
 from previously.core.assertion import Statement
+from previously.core.assertion import Thread
+from previously.core.assertion import Version
 from previously.core.assertions import AssertionRefused
 from previously.core.assertions import check_statements
 from previously.core.assertions import read_threads
@@ -110,6 +112,7 @@ from previously.mcp_server.read import rule_ids
 from previously.mcp_server.read import source_verdict
 from previously.mcp_server.read import statement_lines
 from previously.mcp_server.read import thread_hidden
+from previously.mcp_server.read import thread_seen
 from previously.mcp_server.render import CURSOR_REFUSED
 from previously.mcp_server.render import decode_position
 from previously.mcp_server.render import encode_cursor
@@ -119,6 +122,7 @@ from previously.mcp_server.render import render_page
 from previously.mcp_server.render import render_text
 from previously.mcp_server.render import sanitize
 from previously.mcp_server.render import Stated
+from previously.mcp_server.render import STATED_LINE_CHARS
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -146,8 +150,6 @@ if TYPE_CHECKING:
     from mcp.server.context import ServerRequestContext
     from previously.contract.store import LogStore
     from previously.contract.store import RedactionStore
-    from previously.core.assertion import Thread
-    from previously.core.assertion import Version
     from previously.core.policy import Client
     from previously.core.policy import Policy
     from previously.core.policy import Provider
@@ -376,9 +378,25 @@ _NOT_CONFIGURED: Final = "writing is not configured on this server"
 _PREVIEW_TOO_LONG: Final = (
     "the preview of these statements is longer than a page; write fewer in one call"
 )
+_LINE_TOO_LONG: Final = (
+    f"a line of these statements is longer than the {STATED_LINE_CHARS:,} characters "
+    "a preview shows of it; shorten it"
+)
 _ID_RANGE: Final = "a whole number from 1 to 2^53 - 1"
 _DAY: Final = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
 WRITERS: Final = frozenset({"write_assertion", "write_approve", "write_reject"})
+# Every tool the server registers, which the test of the tool list holds
+# against what a client lists: a call of any other name is recorded without
+# the values of its arguments.
+TOOLS: Final = WRITERS | {
+    "previously",
+    "get_event",
+    "list_obligations",
+    "list_decisions",
+    "list_circles",
+    "whoami",
+    "policy_gaps",
+}
 
 # What the access log keeps of a caller's arguments: text cut to this length,
 # lists and objects to this many entries, and nesting to this depth. The
@@ -412,6 +430,18 @@ def recordable(value: object, depth: int = 0) -> object:
             if isinstance(key, str) and KEY_PATTERN.fullmatch(key)
         }
     return recordable(str(value), depth)
+
+
+@dataclass(frozen=True)
+class Answered:
+    """A proposal a writing call answers, found and visible to the client,
+    with what the access log records of showing it: the delivered entry of
+    its thread and the ids of the rules that decided."""
+
+    thread: Thread
+    version: Version
+    delivered: Delivered
+    rules: tuple[int, ...]
 
 
 class Refused(Exception):
@@ -640,6 +670,12 @@ class Service[Conn]:
                 # What the SDK refused may hold the text the client meant
                 # to write: the entry keeps what it keeps of any writing call.
                 arguments = write_record(name, arguments)
+            elif kind == "tool" and name not in TOOLS:
+                # A name this server lacks, a misspelled writing tool among
+                # them, may carry text a client derived from a mail; only the
+                # names of its arguments are kept (ruling F-13 of the
+                # 2026-10-12 assertion plan), so none outlives an erasure.
+                arguments = {key: cast("object", None) for key in arguments}
         message = f"{name} did not run: {text or 'the request was refused'}"
         answer = Answer(render_error(message), error=True)
         client = self.client_name(request_context.request)
@@ -916,20 +952,24 @@ class Service[Conn]:
         self.writing()
         unique = list(dict.fromkeys(ids))
         if not 1 <= len(unique) <= MAX_STATEMENTS:
-            raise Refused(f"ids takes 1 to {MAX_STATEMENTS} proposals, this call gave {len(ids)}")
+            raise Refused(
+                f"ids takes 1 to {MAX_STATEMENTS} different proposals, this call gave {len(unique)}"
+            )
         if any(not 1 <= proposal <= MAX_SAFE_INT for proposal in unique):
             raise Refused(f"ids holds an id that is not {_ID_RANGE}")
         threads = read_threads(self.log, conn)
         statements: list[Statement] = []
+        answered: list[Answered] = []
         for proposal in unique:
-            thread, version = self.answerable(conn, policy, client, threads, proposal)
+            found = self.answerable(conn, policy, client, threads, proposal)
+            answered.append(found)
             statements.append(
                 replace(
-                    version.statement,
+                    found.version.statement,
                     responsibility=DIRECT,
                     handle=None,
-                    subject=thread.subject,
-                    approves=version.id,
+                    subject=found.thread.subject,
+                    approves=found.version.id,
                 )
             )
         shown = [
@@ -943,7 +983,9 @@ class Service[Conn]:
             )
             for number, statement in enumerate(statements, 1)
         ]
-        return self.staged(conn, client, "write_approve", statements, shown, confirm)
+        return self.staged(
+            conn, client, "write_approve", statements, shown, confirm, _shown_of(answered)
+        )
 
     def rejection_write(
         self,
@@ -960,9 +1002,8 @@ class Service[Conn]:
         self.writing()
         if not 1 <= proposal <= MAX_SAFE_INT:
             raise Refused(f"proposal is not {_ID_RANGE}")
-        _thread, version = self.answerable(
-            conn, policy, client, read_threads(self.log, conn), proposal
-        )
+        found = self.answerable(conn, policy, client, read_threads(self.log, conn), proposal)
+        version = found.version
         statement = Statement(
             REJECTION,
             model_author(client.name),
@@ -980,7 +1021,9 @@ class Service[Conn]:
         label = f"rejects {event_uri(version.id)} · {DIRECT} · by {statement.author}"
         rejected = replace(version.statement, reason=reason)
         shown = [Stated("rejection", REJECTION, label, tuple(statement_lines(rejected)))]
-        return self.staged(conn, client, "write_reject", [statement], shown, confirm)
+        return self.staged(
+            conn, client, "write_reject", [statement], shown, confirm, _shown_of([found])
+        )
 
     def answerable(
         self,
@@ -989,22 +1032,26 @@ class Service[Conn]:
         client: Client,
         threads: Mapping[int, Thread],
         proposal: int,
-    ) -> tuple[Thread, Version]:
+    ) -> Answered:
         """The thread and the version `proposal` names, when the client may
         see the entry and every source of the version; otherwise the
         sentence an id that names nothing gets (review focus 2 of the
         2026-10-12 assertion plan). Whether the version is still an open
         proposal is the write path's question, asked of what the client
-        sees."""
+        sees.
+
+        The preview shows the proposal's content, so the call records the
+        thread as delivered, with its circles and rules, as a list would."""
         for thread in threads.values():
             version = next((v for v in thread.versions if v.id == proposal), None)
             if version is None:
                 continue
-            if not thread_hidden(self.log, conn, policy, client, thread) and not any(
+            seen = thread_seen(self.log, conn, policy, client, thread)
+            if seen is not None and not any(
                 event_hidden(self.log, conn, policy, client, source.event)
                 for source in version.statement.sources
             ):
-                return thread, version
+                return Answered(thread, version, *seen)
             break
         raise Refused(f"event {proposal} is not a proposal this client can answer")
 
@@ -1016,12 +1063,14 @@ class Service[Conn]:
         statements: Sequence[Statement],
         shown: Sequence[Stated],
         confirm: str | None,
+        seen: tuple[tuple[Delivered, ...], tuple[int, ...]] = ((), ()),
     ) -> Outcome:
         """The two steps of a writing call, for statements the client may
         see. Without `confirm`, the write path's checks and a preview with a
         sealed handle; with it, the handle opened, the checks again with its
         nonce in every statement, and the write, which `answer` runs after
-        the snapshot.
+        the snapshot. `seen` is what the access log records as delivered,
+        with the rule ids, for the preview and for the write alike.
 
         The handle is opened before the checks so that a second
         confirmation finds the statements its nonce wrote and answers with
@@ -1029,6 +1078,14 @@ class Service[Conn]:
         is approved already.
         """
         locker, key = self.writing()
+        # A line the preview would cut is refused, not cut: the write would
+        # carry the whole text, and the reading tools cut at the same place,
+        # so no call would ever show what was confirmed (ruling F-12 of the
+        # 2026-10-12 assertion plan). For an approval and a rejection the
+        # lines are the proposal's, so this holds for what they answer too.
+        # The raw length is the bound: sanitizing only ever shortens a line.
+        if any(len(line) > STATED_LINE_CHARS for item in shown for line in item.lines):
+            raise Refused(_LINE_TOO_LONG)
         payloads = [payload_of(statement) for statement in statements]
         try:
             payload_digest(payloads)
@@ -1041,7 +1098,8 @@ class Service[Conn]:
             self.checked(conn, statements)
             nonce = secrets.token_urlsafe(16)
             handle = seal(key, client=client.name, payloads=payloads, now=now, nonce=nonce)
-            return Answer(_preview(tool, shown, handle, expiry(now)), written=())
+            text = _preview(tool, shown, handle, expiry(now))
+            return Answer(text, delivered=seen[0], rules=seen[1], written=())
         try:
             nonce = open_handle(key, confirm, client=client.name, payloads=payloads, now=now)
         except HandleRefused as refused:
@@ -1055,7 +1113,8 @@ class Service[Conn]:
             except AssertionRefused as refused:
                 raise Refused(str(refused)) from refused
             lines = [f"assertion {event_id}" for event_id in ids]
-            return Answer(render_text(f"{tool} · written", lines), written=ids)
+            text = render_text(f"{tool} · written", lines)
+            return Answer(text, delivered=seen[0], rules=seen[1], written=ids)
 
         return write
 
@@ -1064,6 +1123,14 @@ class Service[Conn]:
             check_statements(self.log, conn, statements)
         except AssertionRefused as refused:
             raise Refused(str(refused)) from refused
+
+
+def _shown_of(answered: Sequence[Answered]) -> tuple[tuple[Delivered, ...], tuple[int, ...]]:
+    """The delivered entries of the threads of `answered`, each once, and
+    the ids of their rules, ascending."""
+    delivered = {found.delivered.event: found.delivered for found in answered}
+    rules = sorted({rule for found in answered for rule in found.rules})
+    return tuple(delivered.values()), tuple(rules)
 
 
 def _state_of(statement: Statement) -> str:
@@ -1087,8 +1154,9 @@ def _proposal_label(statement: Statement) -> str:
 
 def _preview(tool: str, shown: Sequence[Stated], handle: str, until: datetime) -> str:
     """The statements inside the fence, as a list shows an entry, and the
-    handle with its expiry outside it. A preview is never cut: what is not
-    shown cannot be confirmed."""
+    handle with its expiry outside it. A preview is never cut, neither a line
+    (`Service.staged` refuses a line longer than a preview shows) nor the
+    page: what is not shown cannot be confirmed."""
     page = render_page(f"{tool} · preview", shown, cursor_for=lambda _index: "")
     if page.consumed < len(shown):
         raise Refused(_PREVIEW_TOO_LONG)

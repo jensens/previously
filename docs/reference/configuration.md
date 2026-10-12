@@ -2,7 +2,7 @@
 
 # Configuration
 
-Previously reads its settings from nineteen environment variables.
+Previously reads its settings from twenty environment variables.
 Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store, fetch or delete a blob, as the table below says per variable, the four `PREVIOUSLY_IMAP_*` variables only by `ingest imap`, the four settings of the model providers only by `gate try`, and the four `PREVIOUSLY_MCP_*` variables only by `mcp` and `serve`.
 
 No setting has a name that Kubernetes gives a variable of a Service.

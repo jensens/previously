@@ -667,18 +667,31 @@ def _entry[Conn](
     return Read(item, delivered, rules, thread.subject)
 
 
+def thread_seen[Conn](
+    log: LogStore[Conn], conn: Conn, policy: Policy, client: Client, thread: Thread | None
+) -> tuple[Delivered, tuple[int, ...]] | None:
+    """What the access log records of an obligation or a decision a call
+    shows, as `list_obligations` records an entry: the delivered entry with
+    the circles of its sources, and the ids of the rules of every decision.
+    `None` when the client may not see it: there is none (`thread` is
+    `None`), or the policy withholds it over the sources of every standing
+    version."""
+    if thread is None:
+        return None
+    identities, sources = source_identities(log, conn, thread)
+    decisions = assertion_decisions(policy, client, identities, sources)
+    if any(decision.chosen is None for decision in decisions):
+        return None
+    rules = tuple(sorted({rule for d in decisions for rule in _rules_of(policy, d)}))
+    return Delivered(thread.subject, (), decisions[-1].circles), rules
+
+
 def thread_hidden[Conn](
     log: LogStore[Conn], conn: Conn, policy: Policy, client: Client, thread: Thread | None
 ) -> bool:
     """Whether a client may not learn that an obligation or a decision
-    stands: there is none (`thread` is `None`), or the policy withholds it,
-    as `list_obligations` and `list_decisions` decide it over the sources of
-    every standing version."""
-    if thread is None:
-        return True
-    identities, sources = source_identities(log, conn, thread)
-    decisions = assertion_decisions(policy, client, identities, sources)
-    return any(decision.chosen is None for decision in decisions)
+    stands: `thread_seen` has nothing to record of it."""
+    return thread_seen(log, conn, policy, client, thread) is None
 
 
 def assertions[Conn](

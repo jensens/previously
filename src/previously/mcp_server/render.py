@@ -61,7 +61,9 @@ _MAX_RECIPIENTS: Final = 10
 _MAX_ATTACHMENTS: Final = 10
 _REASON_CHARS: Final = 500
 # The longest line of an assertion inside the fence: its text, an actor, a reason.
-_STATED_LINE_CHARS: Final = 1_000
+# Public because the writing tools refuse what a line this long cannot show
+# whole: a preview that cut a line would confirm text nobody saw.
+STATED_LINE_CHARS: Final = 1_000
 _ERROR_CHARS: Final = 2_000
 
 # Same length as a real tag and impossible in sanitized text (NUL is a control
@@ -389,7 +391,7 @@ def _stated_block(item: Stated, counter: _Counter, budget: int | None) -> str:
     that stands alone on its page and is still over it: then trailing lines
     are left out at a line boundary, and a note says how many."""
     head = f"### {counter.line(item.uri)} · {counter.line(item.kind)} · {counter.line(item.label)}"
-    lines = [counter.line(line, _STATED_LINE_CHARS) for line in item.lines]
+    lines = [counter.line(line, STATED_LINE_CHARS) for line in item.lines]
     closing = _fence_close()
     full = "\n".join([head, _fence_open(), *lines, closing])
     if budget is None or len(full) <= budget:

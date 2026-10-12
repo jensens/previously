@@ -165,8 +165,10 @@ def open_handle(
     """The nonce of `handle`, if this server sealed it for `client` and for
     exactly `payloads`, and it has not expired at `now`; else `HandleRefused`.
 
-    Every comparison is `hmac.compare_digest`, so that the time a refusal
-    takes tells nothing of how much of a value matched.
+    The seal, the client and the digest are compared with
+    `hmac.compare_digest`, so that the time a refusal takes tells nothing of
+    how much of them matched. The expiry is a plain comparison of whole
+    seconds: the moment it holds is no secret.
     """
     seconds = _seconds(now)
     body = _body(key, handle)

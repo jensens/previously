@@ -69,8 +69,10 @@ from previously.mcp_server.confirm import HANDLE_SECONDS
 from previously.mcp_server.confirm import seal
 from previously.mcp_server.read import event_hidden
 from previously.mcp_server.render import PAGE_CHARS
+from previously.mcp_server.render import STATED_LINE_CHARS
 from previously.mcp_server.server import build_app
 from previously.mcp_server.server import build_server
+from previously.mcp_server.server import TOOLS
 from previously.mcp_server.server import write_record
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import create_engine
@@ -870,6 +872,7 @@ def test_the_tool_list_matches_its_checksum(world: World, mode: str) -> None:
         {"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema}
         for tool in listed.tools
     ]
+    assert {str(tool["name"]) for tool in tools} == TOOLS
     assert sorted(str(tool["name"]) for tool in tools) == [
         "get_event",
         "list_circles",
@@ -2342,7 +2345,7 @@ def test_an_item_that_is_no_statement_is_refused_before_anything_is_read(
         assert _text(result).startswith(f"Error: {sentence}"), _text(result)
     assert _assertions(world) == []
     assert _text(_write(world, mode, "write_approve", {"ids": []})) == (
-        "Error: ids takes 1 to 20 proposals, this call gave 0"
+        "Error: ids takes 1 to 20 different proposals, this call gave 0"
     )
     assert _text(_write(world, mode, "write_approve", {"ids": [2**60]})) == (
         "Error: ids holds an id that is not a whole number from 1 to 2^53 - 1"
@@ -2394,8 +2397,8 @@ def test_a_preview_longer_than_a_page_is_refused_and_never_cut(world: World, mod
     scanned = world.ids["attachments_only"]
     long_item = _item(
         scanned,
-        what="w" * 1_000,
-        reason="r" * 1_000,
+        what="w" * 990,
+        reason="r" * 990,
         debtor="name:" + "d" * 200,
         creditor="name:" + "c" * 200,
         sources=[{"event": scanned}] * 40,
@@ -2466,3 +2469,160 @@ def test_an_id_out_of_range_is_hidden_without_a_query(world: World) -> None:
             for event_id in (0, -1, 2**60, world.ids["attachments_only"], world.ids["plain"])
         ]
     assert hidden == [True, True, True, False, True]
+
+
+# --- fix round 1 of task 5 -------------------------------------------------------------
+
+LINE_TOO_LONG = (
+    "Error: a line of these statements is longer than the 1,000 characters a preview "
+    "shows of it; shorten it"
+)
+
+
+def _what_of_line(length: int) -> str:
+    """A text whose line inside the fence, `what: ` and the text, is
+    `length` characters long."""
+    return "x" * (length - len("what: "))
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_line_longer_than_a_preview_shows_is_refused_and_one_as_long_is_shown_whole(
+    world: World, mode: str
+) -> None:
+    """Ruling F-12 of the 2026-10-12 assertion plan: what a writing tool
+    writes or answers is always seen whole. A line of 1,001 characters is
+    refused by all three tools, the proposal of an approval or a rejection
+    included, and nothing is written; one of 1,000 is shown uncut."""
+    assert STATED_LINE_CHARS == 1_000
+    scanned = world.ids["attachments_only"]
+    over = _what_of_line(STATED_LINE_CHARS + 1)
+    refused = _write(world, mode, "write_assertion", {"items": [_item(scanned, what=over)]})
+    assert _text(refused) == LINE_TOO_LONG
+    long_reason = _write(
+        world, mode, "write_assertion", {"items": [_item(scanned, reason="r" * 1_000)]}
+    )
+    assert _text(long_reason) == LINE_TOO_LONG
+    statement = replace(
+        _obligation(_on(world, "attachments_only"), responsibility=OPEN, what=over),
+        author=model_author("local-harness"),
+    )
+    (proposal,) = _state(world, statement)
+    for name, arguments in (
+        ("write_approve", {"ids": [proposal]}),
+        ("write_reject", {"proposal": proposal}),
+        ("write_reject", {"proposal": proposal, "confirm": "anything"}),
+    ):
+        assert _text(_write(world, mode, name, arguments)) == LINE_TOO_LONG
+    reject_reason = {"proposal": proposal, "reason": "r" * 1_000}
+    assert _text(_write(world, mode, "write_reject", reject_reason)) == LINE_TOO_LONG
+    assert len(_assertions(world)) == 1
+    # The control: a line of exactly 1,000 characters is shown whole.
+    exact = _what_of_line(STATED_LINE_CHARS)
+    shown = _text(_write(world, mode, "write_assertion", {"items": [_item(scanned, what=exact)]}))
+    assert f"what: {exact}\n" in shown
+    (fitting,) = _state(
+        world,
+        replace(
+            _obligation(_on(world, "attachments_only"), responsibility=OPEN, what=exact),
+            author=model_author("local-harness"),
+        ),
+    )
+    approval = _text(_write(world, mode, "write_approve", {"ids": [fitting]}))
+    assert f"what: {exact}\n" in approval
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_tool_the_server_lacks_is_recorded_with_the_names_of_its_arguments_only(
+    world: World, mode: str
+) -> None:
+    """Ruling F-13 of the 2026-10-12 assertion plan: a misspelled writing
+    tool carries the text it meant to write, and none of it reaches the log."""
+    item = _item(world.ids["attachments_only"], what=PRIVATE_TEXT, reason=PRIVATE_REASON)
+    result = _write(world, mode, "write_assertions", {"items": [item], "confirm": PRIVATE_REASON})
+    assert _text(result).startswith("Error: write_assertions did not run: ")
+    refused = _write(world, mode, "get_event", {"ids": PRIVATE_TEXT})
+    assert refused.is_error
+
+    first, second = _accesses(world)
+    assert first.access.arguments == {"items": None, "confirm": None}
+    found = _strings_in(_access_payloads(world)[0])
+    assert not any(PRIVATE_TEXT in s or PRIVATE_REASON in s for s in found)
+    # The control: a tool the server has keeps what it was given.
+    assert second.access.arguments == {"ids": PRIVATE_TEXT}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_answering_a_proposal_records_its_entry_as_delivered_as_a_list_does(
+    world: World, mode: str
+) -> None:
+    """The preview of an approval or a rejection shows the proposal, so its
+    entry stands in `delivered` with its circles and the rules, and
+    `previously access --circle` finds the call; a proposal written anew
+    shows no entry of the log and records none."""
+    proposal = _proposal(world, "attachments_only")
+    _write(world, mode, "list_obligations", {"proposals": True}, client="claude-code")
+    listed = _last_access(world).access
+    _confirmed(world, mode, "write_reject", {"proposal": proposal})
+    _write(world, mode, "write_assertion", {"items": [_item(world.ids["attachments_only"])]})
+
+    rows = _accesses(world)
+    assert [row.access.name for row in rows] == [
+        "list_obligations",
+        "write_reject",
+        "write_reject",
+        "write_assertion",
+    ]
+    for row in rows[1:3]:
+        assert row.access.delivered == listed.delivered
+        assert row.access.policy_ids["rules"] == listed.policy_ids["rules"]
+    assert [(d.event, d.circles) for d in rows[1].access.delivered] == [(proposal, ("office",))]
+    assert rows[1].access.policy_ids["rules"] != []
+    assert rows[3].access.delivered == ()
+    with world.storage.begin() as conn:
+        found = read_access(world.storage, conn, client=None, circle="office", since=None)
+    assert [row.access.name for row in found] == [
+        "list_obligations",
+        "write_reject",
+        "write_reject",
+    ]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_approve_counts_the_different_proposals_against_its_limit(
+    world: World, mode: str
+) -> None:
+    ids = [*range(1_000, 1_021), 1_000]
+    result = _write(world, mode, "write_approve", {"ids": ids})
+    assert _text(result) == "Error: ids takes 1 to 20 different proposals, this call gave 21"
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_proposal_whose_entry_rests_on_a_hidden_source_elsewhere_is_refused_too(
+    world: World, mode: str
+) -> None:
+    """The proposal's own source is the scanned mail, which `claude-code` may
+    see; the first version of its entry rests on the plain mail, which it
+    may not. The verdict of the entry holds, as `list_obligations` decides
+    it, so the proposal is refused as one that names nothing."""
+    (first,) = _state(world, _obligation(_on(world, "plain")))
+    proposal_statement = replace(
+        _obligation(_on(world, "attachments_only"), responsibility=OPEN, subject=first),
+        author=model_author("local-harness"),
+    )
+    (proposal,) = _state(world, proposal_statement)
+
+    for name, arguments in (
+        ("write_approve", {"ids": [proposal]}),
+        ("write_reject", {"proposal": proposal}),
+    ):
+        assert _text(_write(world, mode, name, arguments)) == (
+            f"Error: event {proposal} is not a proposal this client can answer"
+        )
+    # The control: the client that may see the plain mail is shown the preview.
+    local = _write(world, mode, "write_approve", {"ids": [proposal]}, client="local-harness")
+    assert not local.is_error, _text(local)

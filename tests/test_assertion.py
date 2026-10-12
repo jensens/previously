@@ -12,6 +12,7 @@ from datetime import datetime
 from datetime import timedelta
 from datetime import UTC
 from hypothesis import given
+from hypothesis import settings
 from hypothesis import strategies as st
 from previously.core.assertion import assertion_problem
 from previously.core.assertion import changes
@@ -706,6 +707,8 @@ def counts(
     return approves in gone or (proposal is not None and proposal.responsibility == OPEN)
 
 
+# No deadline: under --cov one example can pass 200 ms and fail the whole run.
+@settings(deadline=None)
 @given(steps=ops, erased=erasures)
 def test_the_winner_is_the_latest_direct_else_the_latest_unanswered_open(
     steps: list[tuple[str, int]], erased: set[int]

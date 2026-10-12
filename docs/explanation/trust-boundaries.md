@@ -97,8 +97,9 @@ An event that doesn't pass comes back as a placeholder without its subject and i
 
 Four properties of this boundary are worth stating on their own.
 
-The first is that a client can't state anything in the operator's name.
-Beyond the record of the call itself, all a client can write through the server is a proposal, or an answer to one that its user confirmed, and only about events it may see.
+The first is that what a client writes through the server, beyond the record of the call itself, rests only on events it may see, and comes in two kinds.
+A proposal never outranks a statement of the operator.
+An approval or a rejection of a proposal is direct, and counts as the operator's only because the client asks its user before it confirms one: a requirement on the client that the server can't check.
 
 The second is that a client is known by its token and not by the network.
 Over HTTP every request needs the bearer token of a client in force, looked up at every request, and only the SHA-256 of a token is ever stored.
