@@ -181,6 +181,10 @@ jobs:
 
       - name: Wait for the version on PyPI
         # The upload has finished, but the index may answer a moment later.
+        # Asked is the simple index, the page `uv` reads in the Dockerfile,
+        # for the wheel of this version. The JSON API answered first for
+        # `v0.1.0a4` on 2026-10-12, and the simple index lagged by about three
+        # minutes, long enough for the image build to find no version.
         # 30 attempts, 10 seconds apart: five minutes of waiting at most,
         # plus the time the requests take.
         env:
@@ -188,7 +192,9 @@ jobs:
         run: |
           echo "waiting for previously==$VERSION on PyPI"
           for i in $(seq 1 30); do
-            if curl -sf "https://pypi.org/pypi/previously/$VERSION/json" > /dev/null; then
+            if curl -sf -H 'Accept: application/vnd.pypi.simple.v1+json' \
+                "https://pypi.org/simple/previously/" \
+                | grep -q "\"previously-$VERSION-py3-none-any.whl\""; then
               echo "available on PyPI"
               exit 0
             fi
