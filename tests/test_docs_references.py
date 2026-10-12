@@ -1704,3 +1704,137 @@ def _write_proposals(db: Engine) -> None:
     now = datetime(2026, 11, 1, tzinfo=UTC)
     write_statements(storage, storage, [proposal("p", None)], recorded_at=now)  # 6
     write_statements(storage, storage, [proposal("q", 2)], recorded_at=now)  # 7
+
+
+def test_the_reference_quotes_the_findings_about_assertions() -> None:
+    """The fifteen findings `verify` reports about an assertion, as `cli.md`
+    quotes them under `verify`: each a reason `core/verify.py` gives, with the
+    first fault of the form, behind `assertion has no valid form: `, held
+    against the sentences `core/assertion.py` returns. Every finding the code
+    gives about an assertion is quoted, so a new one fails here too.
+
+    Measured on 2026-10-12: `approval names no open proposal of its subject`
+    turned into `... of its entry` on the page goes red, and so does a block
+    with one line deleted; the unchanged page is the control.
+    """
+    page = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
+    verify = ROOT / "src" / "previously" / "core" / "verify.py"
+    literal = {parts[0] for parts in _finding_patterns(verify) if len(parts) == 1}
+    returned = _string_constants(verify, "_rejection") | _string_constants(verify, "_version")
+    forms = _message_patterns(ROOT / "src" / "previously" / "core" / "assertion.py")
+    starts = ("assertion ", "approval ", "rejection ", "decision ")
+    in_code = {text for text in literal | returned if text.startswith(starts)}
+    form_prefix = "assertion has no valid form: "
+    quoted: set[str] = set()
+    lines = _quoted_block(page, "Fifteen findings come from assertions")
+    assert len(lines) == 15, lines
+    for line in lines:
+        prefix, _, reason = line.partition(": ")
+        assert re.fullmatch(r"FINDING [0-9]+", prefix), line
+        if reason.startswith(form_prefix):
+            problem = reason.removeprefix(form_prefix)
+            assert any(_is_the_same_sentence(parts, problem) for parts in forms), (
+                f"cli.md quotes the fault {problem!r}, which core/assertion.py never returns"
+            )
+            continue
+        assert reason in in_code, (
+            f"cli.md quotes the finding {reason!r} and core/verify.py gives no such reason"
+        )
+        quoted.add(reason)
+    assert in_code == quoted, f"cli.md leaves out the findings {sorted(in_code - quoted)}"
+
+
+ASSERTIONS_PAGE = DOCS / "reference" / "assertions.md"
+
+
+def test_the_assertions_reference_names_every_key_of_the_payload() -> None:
+    """The keys each table on `assertions.md` names, against the payload
+    `payload_of` writes for an obligation, a decision and a rejection: the
+    common keys, the two of a version, and the ones of each kind.
+
+    Measured on 2026-10-12: the row of `handle` deleted from the page goes
+    red; the unchanged page is the control.
+    """
+    from datetime import date
+    from previously.core.assertion import DECISION
+    from previously.core.assertion import DecisionBody
+    from previously.core.assertion import DIRECT
+    from previously.core.assertion import OBLIGATION
+    from previously.core.assertion import ObligationBody
+    from previously.core.assertion import OPERATOR
+    from previously.core.assertion import payload_of
+    from previously.core.assertion import REJECTION
+    from previously.core.assertion import Source
+    from previously.core.assertion import Statement
+
+    def statement(kind: str, body: ObligationBody | DecisionBody | None) -> Statement:
+        of = 9 if body is None else None
+        return Statement(
+            kind, OPERATOR, DIRECT, (Source(1, None),), None, None, None, None, of, body
+        )
+
+    obligation = set(
+        payload_of(statement(OBLIGATION, ObligationBody("own", "own", "w", None, "open")))
+    )
+    decision = set(
+        payload_of(
+            statement(DECISION, DecisionBody("w", ("own",), date(2026, 1, 1), "valid", None))
+        )
+    )
+    rejection = set(payload_of(statement(REJECTION, None)))
+    page = ASSERTIONS_PAGE.read_text(encoding="utf-8")
+
+    def cells(after: str) -> set[str]:
+        return _first_cells(page, "## The payload", after, name="assertions.md")
+
+    common = cells("Every kind has these keys:")
+    version = cells("An obligation and a decision add")
+    assert common == obligation & decision & rejection
+    assert common | version | cells("An obligation adds:") == obligation
+    assert common | version | cells("A decision adds:") == decision
+    assert common | cells("A rejection adds:") == rejection
+    assert not version & (cells("An obligation adds:") | cells("A decision adds:"))
+    assert cells("An entry of `sources` holds:") == {"event", "units"}
+
+
+def test_the_assertions_reference_examples_have_the_form_the_code_checks() -> None:
+    """Each payload the page shows as an example is one `assertion_problem`
+    finds no fault with, and the three are the three kinds.
+
+    Measured on 2026-10-12: the `due` of the example written `30.11.2026`
+    goes red; the unchanged page is the control.
+    """
+    from previously.core.assertion import assertion_problem
+    from previously.core.assertion import KINDS
+
+    page = ASSERTIONS_PAGE.read_text(encoding="utf-8")
+    section = page.split("### Examples", 1)[1].split("\n## ", 1)[0]
+    blocks = re.findall(r"```json\n(.*?)\n```", section, re.DOTALL)
+    examples = [cast("dict[str, object]", json.loads(block)) for block in blocks]
+    assert [example["assertion"] for example in examples] == list(KINDS)
+    for example in examples:
+        assert assertion_problem(example) is None, (example, assertion_problem(example))
+
+
+def test_the_assertions_reference_holds_the_limits_of_the_code() -> None:
+    """The figures the page states, against the constants that set them: the
+    length of a name and of an address, and the size of a batch on the write
+    path and over MCP.
+
+    Measured on 2026-10-12: `at most 254 characters` turned into `at most
+    255` on the page goes red; the unchanged page is the control.
+    """
+    from previously.core.append import MAX_BATCH
+    from previously.core.assertion import MAX_ADDRESS_LENGTH
+    from previously.core.assertion import MAX_NAME_LENGTH
+    from previously.mcp_server.server import MAX_STATEMENTS
+
+    page = ASSERTIONS_PAGE.read_text(encoding="utf-8")
+    for sentence in (
+        f"has at most {MAX_ADDRESS_LENGTH} characters, exactly one `@`",
+        f"`TEXT` has 1 to {MAX_NAME_LENGTH} characters",
+        f"of 1 to {MAX_NAME_LENGTH} characters, without white space",
+        f"One batch holds 1 to {MAX_BATCH} statements",
+        f"Over MCP, one call holds 1 to {MAX_STATEMENTS}.",
+    ):
+        assert sentence in page, f"assertions.md no longer says {sentence!r}"

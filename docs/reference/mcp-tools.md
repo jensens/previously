@@ -114,8 +114,10 @@ One that alone is longer than a page is cut after a whole line, and a note after
 … truncated — 12 more lines are not shown
 ```
 
-An entry the policy keeps from the client, and an entry whose sources an erasure took, stand as the placeholders above.
-A placeholder holds no text, no actor and no source.
+No call serves the lines left out; `previously obligation ID --history` prints them on the command line.
+
+An entry the policy keeps from the client stands as the placeholder `[withheld: URI — REASON]` below, which holds no text, no actor and no source.
+An entry whose every version an erasure took is in no list, and a `subject` that names it answers as for an id that names nothing.
 
 ### Placeholders
 
@@ -241,7 +243,7 @@ By default it lists those that a person made their own; an entry that only a mod
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
-| `circle` | string | none | Only entries that concern the circle: the circles of its sources, the circles named as parties with `circle:`, and the circles of the addresses named as parties. An entry the policy withholds is found by the circles of its sources alone. |
+| `circle` | string | none | Only entries that concern the circle: the circles of its sources, the circles named as parties with `circle:`, and the circles of the addresses named as parties. An entry the policy withholds is found by the circles of its sources alone, so its placeholder under this filter tells that somebody in its sources belongs to the circle, as a placeholder of `previously` with `circle` does. |
 | `state` | string | none | Only this state: `open`, `fulfilled` or `cancelled`. |
 | `overdue` | true or false | false | Only what's open and due before today's UTC date. |
 | `proposals` | true or false | false | List what has a proposal pending, or stands as one, instead of what stands. |

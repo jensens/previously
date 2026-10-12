@@ -558,6 +558,46 @@ FINDING 9: unknown action "teleport"
 | `action has no valid form` | An event of kind `action` carries no `action` name in its payload, or a redaction's payload doesn't have exactly the form `redact` writes. | The action. |
 | `unknown action "<name>"` | An event of kind `action` carries an `action` name that isn't `redaction`, `policy`, `model_call` or `mcp_access`. | The action. |
 
+Fifteen findings come from assertions, the events of the kind `assertion` ({ref}`assertions-reference`):
+
+```text
+FINDING 57: assertion has no valid form: the sources are empty: an assertion needs at least one source
+FINDING 57: assertion has units
+FINDING 57: assertion names a source that does not stand before it
+FINDING 57: assertion has a subject that names no earlier obligation or decision
+FINDING 57: assertion has a subject of another kind
+FINDING 57: decision replaces no earlier decision
+FINDING 57: approval names no open proposal of its subject
+FINDING 57: approval of a proposal that is already approved or rejected
+FINDING 57: approval does not take the sources of its proposal
+FINDING 57: rejection names no open proposal
+FINDING 57: rejection of a proposal that is already approved or rejected
+FINDING 57: rejection does not take the sources of its proposal
+FINDING 57: assertion names a source that is not an observation
+FINDING 57: assertion names a unit its source does not have
+FINDING 57: assertion stands on an erased source
+```
+
+| Finding | Condition |
+|---|---|
+| `assertion has no valid form: <reason>` | The payload isn't the form of an obligation, a decision or a rejection; the reason is the first fault, such as the one in the block. An assertion with this finding gets no other. |
+| `assertion has units` | The assertion has rows in `unit`; its statement belongs in the payload, which an erasure takes. |
+| `assertion names a source that does not stand before it` | A source names the assertion itself or an event after it in the chain. |
+| `assertion has a subject that names no earlier obligation or decision` | `subject` names no earlier first version of an entry; an erased earlier assertion counts as one, unless an approval named it under another subject. |
+| `assertion has a subject of another kind` | `subject` names an obligation where the version is a decision, or the reverse. |
+| `decision replaces no earlier decision` | `replaces` names neither an earlier decision nor an erased assertion. |
+| `approval names no open proposal of its subject` | `approves` names no earlier proposal of the entry that `subject` names, and no erased assertion. |
+| `approval of a proposal that is already approved or rejected` | An earlier approval or rejection answered the proposal. |
+| `approval does not take the sources of its proposal` | The approval's sources differ from those of the proposal it approves. |
+| `rejection names no open proposal` | `of` names no earlier proposal, and no erased assertion. |
+| `rejection of a proposal that is already approved or rejected` | An earlier approval or rejection answered the proposal. |
+| `rejection does not take the sources of its proposal` | The rejection's sources differ from those of the proposal it rejects. |
+| `assertion names a source that is not an observation` | A source event doesn't exist, or its kind isn't `observation`. |
+| `assertion names a unit its source does not have` | A cited unit isn't a unit of its source event. |
+| `assertion stands on an erased source` | A redaction erased a source event, a cited unit, or, for a source cited whole, a unit of it after the assertion; the erasure didn't take the assertion along. |
+
+Each stands under the assertion.
+
 One finding comes from the blob register:
 
 ```text

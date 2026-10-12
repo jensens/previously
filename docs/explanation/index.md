@@ -19,5 +19,6 @@ delivery
 trust-boundaries
 processing-policy
 mcp-interface
+assertions
 design-records
 ```
