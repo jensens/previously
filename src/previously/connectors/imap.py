@@ -20,7 +20,10 @@ with `EXAMINE` left the flags alone, `BODY[]` in one opened with `SELECT` set
 
 A connection that breaks off, a refusal of the server and a certificate that
 does not verify each become one `ImapError`. No message of this module names
-the password, and none quotes what the server said about a login.
+the password, and none quotes what the server said about a login. A
+connection that cannot be made, a certificate that does not verify and a
+login that is refused are a `MailboxUnreachable`, the one kind of
+`ImapError` that every folder of the mailbox would meet alike.
 """
 
 from datetime import datetime
@@ -62,6 +65,17 @@ class ImapError(PreviouslyError):
     user and the folder where they help; never the password."""
 
 
+class MailboxUnreachable(ImapError):
+    """No session with the mailbox: the server could not be reached, its
+    certificate does not verify, or the login was refused or could not be
+    sent. Nothing of it depends on the folder, so a run over several folders
+    of the mailbox would meet it at every one of them.
+
+    A connection that breaks off during the login is not one: it is the
+    plain `ImapError` of a connection that broke off, and a connection made
+    anew may hold."""
+
+
 class ImapConnector:
     """A mail folder as a connector: `fetch` yields every mail the folder
     holds above the watermark, as raw bytes, oldest first.
@@ -71,6 +85,8 @@ class ImapConnector:
     the run takes in as known. The position is the folder's `UIDVALIDITY`
     and the UID of the mail; a watermark of another `UIDVALIDITY` is of a
     folder that was made anew, and the folder is read from the start.
+    `folder` is the name as the caller gave it, for a caller that reads
+    several folders and says which one a line is about.
 
     `ssl_context` is the caller's: the command line gives the default one,
     which verifies the certificate and the host name. `timeout` is
@@ -93,7 +109,7 @@ class ImapConnector:
         self._port = port
         self._user = user
         self._password = password
-        self._folder = folder
+        self.folder = folder
         self._context = ssl_context
         self._timeout = timeout
         # An IPv6 host in brackets, as an address is written: `::1:993` would
@@ -122,16 +138,16 @@ class ImapConnector:
                 self._host, self._port, ssl_context=self._context, timeout=self._timeout
             )
         except ssl.SSLCertVerificationError as error:
-            raise ImapError(
+            raise MailboxUnreachable(
                 f"the certificate of the IMAP server {self._server} does not verify: "
                 f"{error.verify_message}"
             ) from error
         except imaplib.IMAP4.error as error:
-            raise ImapError(
+            raise MailboxUnreachable(
                 f"cannot connect to the IMAP server {self._server}: {_said(error.args[0])}"
             ) from error
         except OSError as error:
-            raise ImapError(
+            raise MailboxUnreachable(
                 f"cannot connect to the IMAP server {self._server}: {reason_of(error)}"
             ) from error
 
@@ -147,13 +163,13 @@ class ImapConnector:
             except imaplib.IMAP4.abort:
                 raise
             except imaplib.IMAP4.error:
-                raise ImapError(
+                raise MailboxUnreachable(
                     f"the IMAP server {self._server} refused the login of {self._user}"
                 ) from None
             except UnicodeEncodeError:
                 # `imaplib` writes the login as ASCII; a character beyond it
                 # in the password would otherwise end in a stack trace.
-                raise ImapError(
+                raise MailboxUnreachable(
                     f"the login of {self._user} at the IMAP server {self._server} holds a "
                     "character other than ASCII, and previously sends the login in ASCII only"
                 ) from None
@@ -161,14 +177,14 @@ class ImapConnector:
     def _open(self, imap: imaplib.IMAP4_SSL) -> str:
         """Opens the folder read-only and returns its `UIDVALIDITY`."""
         with self._speaking():
-            typ, data = imap.select(_quoted(encode_folder(self._folder)), readonly=True)
-            self._ok(typ, data, f"to open the folder {self._folder!r} of {self._user}")
+            typ, data = imap.select(_quoted(encode_folder(self.folder)), readonly=True)
+            self._ok(typ, data, f"to open the folder {self.folder!r} of {self._user}")
             _, validity = imap.response("UIDVALIDITY")
         value = validity[-1]
         if not isinstance(value, bytes) or not value.isdigit():
             raise ImapError(
                 f"the IMAP server {self._server} names no UIDVALIDITY for the folder "
-                f"{self._folder!r}"
+                f"{self.folder!r}"
             )
         return value.decode("ascii")
 
@@ -182,7 +198,7 @@ class ImapConnector:
         """
         with self._speaking():
             typ, data = imap.uid("SEARCH", "UID", f"{after + 1}:*")
-        self._ok(typ, data, f"the search in the folder {self._folder!r}")
+        self._ok(typ, data, f"the search in the folder {self.folder!r}")
         found: bytes = data[0] or b""
         return sorted(uid for uid in (int(token) for token in found.split()) if uid > after)
 
@@ -191,7 +207,7 @@ class ImapConnector:
         search."""
         with self._speaking():
             typ, data = imap.uid("FETCH", str(uid), "(UID INTERNALDATE BODY.PEEK[])")
-        self._ok(typ, data, f"to fetch uid {uid} from the folder {self._folder!r}")
+        self._ok(typ, data, f"to fetch uid {uid} from the folder {self.folder!r}")
         found = _message(data, uid)
         if found is None:
             return None

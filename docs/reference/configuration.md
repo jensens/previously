@@ -107,16 +107,17 @@ Every other command, and `append` without `--attach` and `verify` without `--blo
 
 ## Mail folder settings
 
-The folder `ingest imap` takes mail in from; see {ref}`cli-reference`.
+The mailbox `ingest imap` takes mail in from, and the folder it reads without `--folder`; see {ref}`cli-reference`.
+One run reads one mailbox: several mailboxes take several runs, each with these settings for its own mailbox.
 
 | Variable | Meaning | Missing at |
 |---|---|---|
 | `PREVIOUSLY_IMAP_ADDRESS` | The IMAP server as `host` or `host:port`, in {ref}`the address form <address-form>`, such as `mail.example.org`. The server's certificate has to name the host. Without a port, it's 993, the port of IMAP over TLS. | `ingest imap` |
 | `PREVIOUSLY_IMAP_USER` | The user that logs in. | `ingest imap` |
 | `PREVIOUSLY_IMAP_PASSWORD` | The user's password, in ASCII; no message prints it. | `ingest imap` |
-| `PREVIOUSLY_IMAP_FOLDER` | The full name of the folder on the server, in plain characters, such as `Kunde Müller`; see below. | `ingest imap` |
+| `PREVIOUSLY_IMAP_FOLDER` | The full name of the folder on the server, in plain characters, such as `Kunde Müller`; see below. Not read when `--folder` names the folders. | `ingest imap` without `--folder` |
 
-`ingest imap` reads all four before it connects to anything, and names the first one missing, as the blob settings do:
+`ingest imap` reads all four, or the first three with `--folder`, before it connects to anything, and names the first one missing, as the blob settings do:
 
 ```text
 Error: PREVIOUSLY_IMAP_FOLDER is not set
@@ -124,12 +125,13 @@ Error: PREVIOUSLY_IMAP_FOLDER is not set
 
 The host, the user and the folder make the name of the watermark, `imap:<user>@<host>/<folder>`, and the port doesn't.
 The host stands there as the address spells it, without the brackets of an IPv6 address.
+Each folder has a watermark of its own, and a folder given with `--folder` has the same one as the same folder in `PREVIOUSLY_IMAP_FOLDER`.
 A change to any of the three starts another watermark, and the folder is read from the start; every mail in the log counts as known.
 
-`PREVIOUSLY_IMAP_FOLDER` is the name the server gives the folder, which for a folder at the top level is the name a mail client shows.
+`PREVIOUSLY_IMAP_FOLDER` and `--folder` take the name the server gives the folder, which for a folder at the top level is the name a mail client shows.
 For a folder inside another, the name holds the names of the folders above it, each followed by the server's hierarchy delimiter, such as `Kunden.Müller` on a server whose delimiter is `.`, or `Kunden/Müller` on one whose delimiter is `/`.
 The server names its delimiter in its answer to the `LIST` command, and a mail client shows only the last part of the name.
-`ingest imap` writes the name in the modified UTF-7 of RFC 3501 itself, so the setting holds it as it reads, umlauts included, and never as `Kunde M&APw-ller`.
+`ingest imap` writes the name in the modified UTF-7 of RFC 3501 itself, so the setting and `--folder` hold it as it reads, umlauts included, and never as `Kunde M&APw-ller`.
 
 `ingest imap` no longer takes the host from `PREVIOUSLY_IMAP_HOST` or the port from `PREVIOUSLY_IMAP_PORT`, the two settings that held them up to `0.1.0a3`.
 When `PREVIOUSLY_IMAP_ADDRESS` is unset or empty and `PREVIOUSLY_IMAP_HOST` is set, it returns 2 with a sentence that names the new setting:

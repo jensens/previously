@@ -520,10 +520,11 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     `PreviouslyError` or `InvalidPayload` and `core/blob.py` raises as
     `BlobError`;
     the refused address and the renamed host of `ingest imap` against
-    `cli.py`, its twelve errors
-    against the messages `connectors/imap.py` raises as `ImapError`, and
-    its line on standard output against the f-string `cli.py` prints it
-    with;
+    `cli.py`, its four errors that end the run against the messages
+    `connectors/imap.py` raises as `MailboxUnreachable`, its eight errors of
+    a folder against those it raises as `ImapError`, behind the folder's
+    prefix, and its line on standard output against the f-string `cli.py`
+    prints it with;
     the fourteen findings it quotes, three from the anchors, ten from
     the hash formats, erasure and action names and one from the blob register, against the
     reasons `core/verify.py` hands to `Finding`; and the four findings about
@@ -668,16 +669,20 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     # `ingest imap`: the refused address and the renamed host out of
     # `cli.py`, the errors of the
     # server and the connection out of `connectors/imap.py`, raised as
-    # `ImapError` and held against that module alone, and the line on
-    # standard output against the one f-string in `cli.py` that says
-    # `appended`, since `_message_patterns` reads standard error only.
+    # `MailboxUnreachable` or `ImapError` and held against that module alone,
+    # and the line on standard output against the one f-string in `cli.py`
+    # that says `appended`, since `_message_patterns` reads standard error
+    # only.
     refused = _quoted_block(page, "is refused the same way, and so is a `PREVIOUSLY_IMAP_HOST`")
     assert len(refused) == 2, refused
     _assert_raised(refused, from_cli, "PreviouslyError")
-    quoted_imap = _quoted_block(page, "Errors of the IMAP server and of the connection")
-    assert len(quoted_imap) == 12, quoted_imap
-    _assert_raised(quoted_imap, _imap_errors(), "ImapError")
-    counts = _quoted_block(page, "`ingest imap` prints one line to standard output")
+    whole = _quoted_block(page, _MAILBOX_ERRORS)
+    assert len(whole) == 4, whole
+    _assert_raised(whole, _mailbox_errors(), "MailboxUnreachable")
+    of_folder = _quoted_block(page, _FOLDER_ERRORS)
+    assert len(of_folder) == 8, of_folder
+    _assert_raised(_behind_the_folder(of_folder), _imap_errors(), "ImapError")
+    counts = _quoted_block(page, "`ingest imap` prints one line to standard output for each folder")
     assert len(counts) == 1, counts
     said = [
         parts
@@ -752,29 +757,72 @@ def _imap_errors() -> list[list[str]]:
     return _raised_patterns(ROOT / "src" / "previously" / "connectors" / "imap.py", "ImapError")
 
 
+def _mailbox_errors() -> list[list[str]]:
+    return _raised_patterns(
+        ROOT / "src" / "previously" / "connectors" / "imap.py", "MailboxUnreachable"
+    )
+
+
+# The sentences that open the two blocks of errors of `ingest imap` in cli.md.
+_MAILBOX_ERRORS = "Errors that every folder of the mailbox would meet alike"
+_FOLDER_ERRORS = "Errors of a folder print one line to standard error"
+# The folder every quoted error of a folder names.
+_QUOTED_FOLDER = "Kunde Müller"
+
+
+def _behind_the_folder(quoted: list[str]) -> list[str]:
+    """Each quoted error of a folder as `Error: ` and the sentence after the
+    folder's prefix, the form `_assert_raised` holds.
+
+    The prefix is held here as well, against the one f-string in `cli.py`
+    that prints an error with a folder in it, or a page quoting
+    `Error: Ordner Kunde Müller: ...` would pass on the strength of the
+    sentence behind it.
+    """
+    tree = ast.parse((ROOT / "src" / "previously" / "cli.py").read_text("utf-8"))
+    printed = [
+        parts
+        for node in ast.walk(tree)
+        if isinstance(node, ast.JoinedStr)
+        and (parts := _static_parts(node))
+        and parts[0].startswith("Error: folder ")
+    ]
+    assert printed == [["Error: folder ", ": ", ""]], printed
+    prefix = f"Error: folder {_QUOTED_FOLDER}: "
+    for line in quoted:
+        assert line.startswith(prefix), f"cli.md quotes the error {line!r} without {prefix!r}"
+    return ["Error: " + line.removeprefix(prefix) for line in quoted]
+
+
 def test_the_reference_quotes_every_error_of_ingest_imap() -> None:
     """Two pages promise that `cli.md` lists every error of `ingest imap`,
-    so every sentence the connector raises as `ImapError` is quoted there —
-    the direction from the code to the page, which the test above does not
-    take. Five were missing until the fix wave of 2026-10-06.
+    so every sentence the connector raises is quoted there — the direction
+    from the code to the page, which the test above does not take. Five were
+    missing until the fix wave of 2026-10-06. Since a run reads several
+    folders, each sentence has to stand in the right one of two blocks: one
+    raised as `MailboxUnreachable` among the errors that end the run, one
+    raised as `ImapError` among the errors of a folder.
 
     The two refusals of the log that come back at every run are held as
-    well: the batch that is too large against what `core/append.py` raises
-    as `BatchTooLarge`, and the variant key held with another content by
-    raising `ArtifactChanged` with the hashes the page shows, two that share
-    their first 64 bits."""
+    well, behind the folder's prefix: the batch that is too large against
+    what `core/append.py` raises as `BatchTooLarge`, and the variant key held
+    with another content by raising `ArtifactChanged` with the hashes the
+    page shows, two that share their first 64 bits."""
     page = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
-    quoted = [
-        line.partition(": ")[2]
-        for line in _quoted_block(page, "Errors of the IMAP server and of the connection")
-    ]
-    for parts in _imap_errors():
-        assert any(_is_the_same_sentence(parts, line) for line in quoted), (
-            f"connectors/imap.py raises {parts!r} as `ImapError` and cli.md quotes no "
-            "such error. Quote it among the errors of the IMAP server."
-        )
+    for raised, after, block in (
+        (_mailbox_errors(), _MAILBOX_ERRORS, _quoted_block(page, _MAILBOX_ERRORS)),
+        (_imap_errors(), _FOLDER_ERRORS, _behind_the_folder(_quoted_block(page, _FOLDER_ERRORS))),
+    ):
+        quoted = [line.partition(": ")[2] for line in block]
+        for parts in raised:
+            assert any(_is_the_same_sentence(parts, line) for line in quoted), (
+                f"connectors/imap.py raises {parts!r} and cli.md quotes no such error "
+                f"in the block after {after!r}. Quote it there."
+            )
 
-    variant, batch = _quoted_block(page, "Two refusals of the log come back at every run")
+    variant, batch = _behind_the_folder(
+        _quoted_block(page, "Two refusals of the log come back at every run")
+    )
     _assert_raised(
         [batch],
         _raised_patterns(ROOT / "src" / "previously" / "core" / "append.py", "BatchTooLarge"),

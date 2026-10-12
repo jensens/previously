@@ -53,7 +53,7 @@ Where a sighting came from still matters, and it isn't lost: it stands in the pa
 
 ## Two sightings of one artifact
 
-A connector reads the same thing more than once, by design: a folder re-read from the start, two copies of a mail in one folder, a mail in two mailboxes.
+A connector reads the same thing more than once, by design: a folder re-read from the start, two copies of a mail in one folder, a mail in two folders or two mailboxes.
 Each sighting arrives under the same source key, and `append` used to answer every one of them with the event it already had, whatever the sighting held.
 That was fine for a mail, which doesn't change, and wrong for anything that does: an issue whose number is its key would keep its first state and lose every edit after it without a word.
 

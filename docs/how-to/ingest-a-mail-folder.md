@@ -2,7 +2,7 @@
 
 # How to take in the mail of a folder
 
-This guide shows you how to set up a mail folder for Previously, take its mail into the log, read what the run says, run it on a schedule, and erase a mail again.
+This guide shows you how to set up a mail folder for Previously, take its mail into the log, read several folders or mailboxes, read what the run says, run it on a schedule, and erase a mail again.
 It uses a Mailu mailbox; any IMAP server that speaks TLS on port 993 works the same way.
 For what a mail turns into, see {ref}`mail-mapping`, and for why, see {ref}`connectors`.
 
@@ -27,7 +27,7 @@ A mail forwarded as quoted text stays the text of the forward, and its original 
 
 ## Set the settings
 
-Export the four settings of the folder, with the values of your server and mailbox:
+Export the four settings of the mailbox and its folder, with the values of your server and mailbox:
 
 ```shell
 export PREVIOUSLY_IMAP_ADDRESS=mail.example.org
@@ -46,7 +46,7 @@ Export `PREVIOUSLY_DSN`, the five settings of the blob store and `PREVIOUSLY_BLO
 
 ```console
 $ previously ingest imap
-imap: 5 appended, 0 known, 0 variants, up to uid 4
+imap: 5 appended, 0 known, 0 variants, up to uid 4 in Kunde Müller
 ```
 
 The folder held four mails, and one of them carried a forwarded mail as an attachment, so the run appended five events.
@@ -54,7 +54,7 @@ Run it again, and it finds nothing new above the UID it reached:
 
 ```console
 $ previously ingest imap
-imap: 0 appended, 0 known, 0 variants, up to uid 4
+imap: 0 appended, 0 known, 0 variants, up to uid 4 in Kunde Müller
 ```
 
 `ingest` doesn't catch the derived views up.
@@ -76,9 +76,37 @@ $ previously chronicle --since 2026-10-06T00:00:00+00:00
 Each mail's first line is its subject.
 The chronicle orders by the `Date` of each mail, not by when it reached the folder, and the forwarded mail inside event 4 stands at its own date, earlier than this window.
 
+## Take in several folders
+
+To read more than one folder of the mailbox, name each one with `--folder`, in the order you want them read:
+
+```console
+$ previously ingest imap --folder "Kunde Müller" --folder Gesendet
+imap: 0 appended, 0 known, 0 variants, up to uid 4 in Kunde Müller
+imap: 0 appended, 3 known, 0 variants, up to uid 2 in Gesendet
+```
+
+Each folder prints a line of its own and keeps a watermark of its own.
+With `--folder`, the run ignores `PREVIOUSLY_IMAP_FOLDER`, so name that folder as well if you still want it read.
+A folder you took in through `PREVIOUSLY_IMAP_FOLDER` before goes on from its watermark when you name it with `--folder`.
+
+In this example, `Gesendet` holds two mails that also lie in `Kunde Müller`, the second one with a mail attached.
+A mail that lies in two folders becomes one event, and the folder read later counts it as known.
+
+If a folder fails, such as one whose name you mistyped, the run prints a line on standard error that starts with `Error: folder` and the folder's name, goes on with the next folder, and returns 2.
+Check the name of that folder, and run the command again.
+A refused login or a server out of reach stops the run at the first folder, because every other folder would meet the same error.
+
+## Take in several mailboxes
+
+A run reads one mailbox, and holds the password of that one mailbox only.
+For a second mailbox, run `ingest imap` a second time, with the four settings of that mailbox.
+Keep the settings of each mailbox in a file of its own, as the next section shows for one, and give each mailbox a schedule entry of its own.
+Runs for two mailboxes may run at the same time.
+
 ## Read what the run says
 
-The line on standard output counts events, not mails:
+Each line on standard output counts events, not mails, for the folder it names at its end:
 
 - `appended` is what this run wrote, variants included.
 - `known` is what the log already held, such as a second copy of a mail in the folder, or every mail of a folder read from the start again.
@@ -86,7 +114,7 @@ The line on standard output counts events, not mails:
   Each one also prints a line on standard error, such as `variant of 20261005101500.4711@example.net: event 6`; look at that event with `previously show` and decide whether it's a mail you want.
 - `up to uid` is where the next run starts.
 
-The command returns 0 when the run went through and 2 when it couldn't, with one sentence on standard error.
+The command returns 0 when it read every folder, and 2 when it couldn't read one or more, with one sentence on standard error for each error.
 If the sentence names the login, check the user and the password; if it names the folder, check its name.
 {ref}`cli-reference` lists every error.
 Any other code means the run didn't end on its own terms: 137 when the memory limit killed the run, 143 when something stopped it, and 1 with a stack trace for an error `previously` doesn't know.
@@ -94,7 +122,7 @@ After an error, run the command again once the cause is gone: the run moves its 
 
 ## Run it on a schedule
 
-Run `ingest imap` and then `project` every 5 to 15 minutes, and never two runs of `ingest imap` at once.
+Run `ingest imap` and then `project` every 5 to 15 minutes, and never two runs of `ingest imap` for the same mailbox at once.
 
 On a host with Docker, put the settings into a file that only root can read, such as `/etc/previously/ingest.env`, one `NAME=value` per line and without quotes, since `--env-file` takes a value as it stands, and add a line like this one with `crontab -e`, as root:
 
@@ -104,10 +132,12 @@ On a host with Docker, put the settings into a file that only root can read, suc
 
 Put in the exact version of a release that has `ingest imap`, the first after `0.1.0a1`, and the network your database and blob store are on, as {ref}`run-the-image` describes.
 `flock -n` skips a run while the last one still runs.
+To read several folders, put `--folder` and a name after `ingest imap` for each folder.
+For a second mailbox, add a second line with its own settings file and its own lock file, such as `/run/previously-ingest-office.lock`.
 `--memory 768m` holds the largest mail Mailu accepts by default, 50 MB, with room to spare: a mail of 49.5 MiB peaked between 529 and 531 MiB in the image, measured on 2026-10-06, and a mail is taken in one at a time, so the peak doesn't grow with the number of mails.
 The run writes each blob to a temporary file before it uploads it, so `/tmp` has to be writable.
 
-In Kubernetes, the platform's operators build the same as a CronJob with `concurrencyPolicy: Forbid`, from the same image, with the same settings in a secret.
+In Kubernetes, the platform's operators build the same as a CronJob with `concurrencyPolicy: Forbid`, from the same image, with the same settings in a secret, the `--folder` options in its arguments, and one CronJob for each mailbox.
 
 ## Erase a mail
 
