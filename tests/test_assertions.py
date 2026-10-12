@@ -34,6 +34,7 @@ from previously.core.assertion import Source
 from previously.core.assertion import Statement
 from previously.core.assertion import Thread
 from previously.core.assertion import Version
+from previously.core.assertions import assertion_decisions
 from previously.core.assertions import assertion_verdict
 from previously.core.assertions import AssertionRefused
 from previously.core.assertions import check_statements
@@ -599,6 +600,27 @@ def test_each_distinct_source_is_decided_and_the_last_wins_when_all_pass() -> No
     assert stopped.chosen is None
     assert stopped.rule_keys == ("circle:huber", "source:gitlab")
     assert reversed_order == stopped
+
+
+def test_the_decisions_of_every_source_are_returned_so_that_no_rule_is_lost() -> None:
+    """When every source passes, `assertion_verdict` is the last decision
+    only; the rules of the other sources are in the decisions."""
+    policy = replace(
+        POLICY,
+        rules={
+            **POLICY.rules,
+            "source:gitlab": Rule("source:gitlab", frozenset({"eu"}), None, frozenset()),
+        },
+    )
+    decisions = assertion_decisions(policy, CLIENT, [_huber()], ("email", "gitlab"))
+    passing = assertion_decisions(policy, CLIENT, [_huber()], ("email",))
+
+    assert [d.rule_keys for d in decisions] == [
+        ("circle:huber", "source:email"),
+        ("circle:huber", "source:gitlab"),
+    ]
+    assert len(passing) == 1
+    assert assertion_decisions(policy, CLIENT, [], ())[0].local_only
 
 
 def test_no_source_at_all_is_decided_once_without_one() -> None:

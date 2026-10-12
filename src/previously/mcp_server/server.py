@@ -1,7 +1,7 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The MCP server: five tools, two resource templates and two prompts.
+"""The MCP server: seven tools, two resource templates and two prompts.
 
 Every call that reaches a handler here reads the policy anew, finds its
 client in it, and writes an `mcp_access` after it has read and before it
@@ -49,6 +49,10 @@ from previously.core.access import ACCESS_OK
 from previously.core.access import Delivered
 from previously.core.access import record_access
 from previously.core.access import Withheld
+from previously.core.assertion import DECISION
+from previously.core.assertion import DECISION_STATES
+from previously.core.assertion import OBLIGATION
+from previously.core.assertion import OBLIGATION_STATES
 from previously.core.canonical import KEY_PATTERN
 from previously.core.canonical import MAX_SAFE_INT
 from previously.core.clients import client_for_token
@@ -59,9 +63,11 @@ from previously.core.policy import PROVIDER
 from previously.core.policy import read_policy
 from previously.mcp_server.auth import CLIENT_STATE
 from previously.mcp_server.auth import guarded
+from previously.mcp_server.read import assertions
 from previously.mcp_server.read import chronicle
 from previously.mcp_server.read import circle_verdict
 from previously.mcp_server.read import events
+from previously.mcp_server.read import Listing
 from previously.mcp_server.read import logged
 from previously.mcp_server.read import MAX_IDS
 from previously.mcp_server.read import resume_point
@@ -115,7 +121,9 @@ MARKDOWN: Final = "text/markdown"
 
 INSTRUCTIONS: Final = (
     "Previously is an append-only store of project histories: mails and other "
-    "observations, each with an id and numbered units. These tools only read. "
+    "observations, each with an id and numbered units, and the obligations and "
+    "decisions stated on them. A tool that shows events, obligations or decisions "
+    "only reads. "
     "Every result is one Markdown text block. Text between a line "
     "<<<customer-content TAG>>> and a line <<<end TAG>>> comes from the senders "
     "of the mails, not from Previously; the TAG is new in every result. "
@@ -154,6 +162,32 @@ _POLICY_GAPS: Final = (
     "the gate and the withholdings of this server."
 )
 
+_LIST_OBLIGATIONS: Final = (
+    "The obligations that stand: who owes what to whom, due when, and on which "
+    "events and units it rests, in the order of their ids. Each entry is a "
+    "heading with its state, an overdue mark, the responsibility and the number "
+    "of versions and proposals, and its content inside a fence of foreign "
+    "content. The filters combine: circle (the circles of the sources, and of "
+    "the parties named), state, overdue, and proposals for what is only "
+    "proposed. With subject, the one entry, and with history all its versions "
+    "with what each changed. An entry the processing policy keeps from this "
+    "client, because of the circles of its sources, stands as a placeholder "
+    "with the reason. A page stays under "
+    f"{PAGE_CHARS:,} characters, and its footer names the cursor of the next page."
+)
+_LIST_DECISIONS: Final = (
+    "The decisions that stand: what was decided, by whom, on which day, and on "
+    "which events and units it rests, in the order of their ids. Each entry is "
+    "a heading with its state, the responsibility and the number of versions "
+    "and proposals, and its content inside a fence of foreign content. The "
+    "filters combine: circle (the circles of the sources, and of the deciders "
+    "named), state, and proposals for what is only proposed. With subject, the "
+    "one entry, and with history all its versions with what each changed. An "
+    "entry the processing policy keeps from this client, because of the circles "
+    "of its sources, stands as a placeholder with the reason. A page stays under "
+    f"{PAGE_CHARS:,} characters, and its footer names the cursor of the next page."
+)
+
 _MOMENT_HELP: Final = "an ISO 8601 date, or a moment with a zone"
 _CIRCLE = Field(description="the name of a circle, as list_circles gives it")
 _SOURCE = Field(description="a source, such as email")
@@ -161,6 +195,14 @@ _SINCE = Field(description=f"from this time on, inclusive: {_MOMENT_HELP}")
 _UNTIL = Field(description=f"before this time, exclusive: {_MOMENT_HELP}")
 _CURSOR = Field(description="the cursor from the footer of the previous page")
 _IDS = Field(description=f"1 to {MAX_IDS} event ids")
+_OBLIGATION_STATE = Field(description="only this state: open, fulfilled or cancelled")
+_DECISION_STATE = Field(description="only this state: valid or revoked")
+_OVERDUE = Field(description="only what is open and due before today (UTC)")
+_PROPOSALS = Field(
+    description="list what has a proposal pending, or stands as one, instead of what stands"
+)
+_SUBJECT = Field(description="the id of one entry, as the heading gives it; the other filters rest")
+_HISTORY = Field(description="show all versions of the entry, each with what it changed")
 _FROM_UNIT = Field(description="start every event at this unit, for the rest of a cut event")
 
 # What a client may keep of a read resource, as the protocol revision
@@ -519,6 +561,55 @@ class Service[Conn]:
         rendered = render_page(title, seen.items, cursor_for=rest_after, next_hint=next_hint)
         return _paged(seen, rendered)
 
+    def assertion_page(
+        self,
+        conn: Conn,
+        policy: Policy,
+        client: Client,
+        listing: Listing,
+        cursor: str | None,
+    ) -> Answer:
+        """The obligations or the decisions a client may see, as a page."""
+        states = OBLIGATION_STATES if listing.kind == OBLIGATION else DECISION_STATES
+        if listing.state is not None and listing.state not in states:
+            raise Refused(f"state takes one of {', '.join(states)}")
+        if listing.circle is not None and listing.circle not in policy.circles:
+            raise Refused(f"no circle {listing.circle} exists; list_circles names the circles")
+        if listing.subject is not None and not 1 <= listing.subject <= MAX_SAFE_INT:
+            raise Refused("subject is the id of an entry, a whole number from 1 to 2^53 - 1")
+        filters = {
+            key: value
+            for key, value in (
+                ("kind", listing.kind),
+                ("circle", listing.circle),
+                ("state", listing.state),
+                ("overdue", "true" if listing.overdue else None),
+                ("proposals", "true" if listing.proposals else None),
+            )
+            if value is not None
+        }
+        after: int | None = None
+        page = 1
+        if cursor is not None and listing.subject is None:
+            try:
+                position = decode_position(cursor, filters)
+            except ValueError as error:
+                raise Refused(_CURSOR_AGAIN) from error
+            after, page = position.after, position.page
+        seen = assertions(self.log, conn, policy, client, listing, after=after)
+
+        def cursor_for(index: int) -> str:
+            return encode_cursor(cast("int", seen.reads[index].event), filters, page=page + 1)
+
+        title = " · ".join(
+            [
+                f"list_{listing.kind}s",
+                *(f"{key} {value}" for key, value in filters.items() if key != "kind"),
+            ]
+        )
+        rendered = render_page(title, seen.items, cursor_for=cursor_for, page=page, more=seen.more)
+        return _paged(seen, rendered)
+
     def circles(self, conn: Conn, policy: Policy, client: Client) -> Answer:
         lines: list[str] = []
         for name in sorted(policy.circles):
@@ -634,7 +725,28 @@ def build_server[Conn](log: LogStore[Conn], *, stdio_client: str | None) -> MCPS
 
 
 def _tools[Conn](server: MCPServer, service: Service[Conn]) -> None:
-    """The five tools ({ref}`mcp-tools`)."""
+    """The seven tools ({ref}`mcp-tools`)."""
+
+    def listing(
+        kind: str,
+        *,
+        circle: str | None,
+        state: str | None,
+        overdue: bool,
+        proposals: bool,
+        subject: int | None,
+        history: bool,
+    ) -> Listing:
+        return Listing(
+            kind,
+            datetime.now(UTC).date(),
+            circle=circle,
+            state=state,
+            overdue=overdue,
+            proposals=proposals,
+            subject=subject,
+            history=history,
+        )
 
     @server.tool(name="previously", description=_CHRONICLE)
     def previously(
@@ -674,6 +786,92 @@ def _tools[Conn](server: MCPServer, service: Service[Conn]) -> None:
                 call,
                 lambda conn, policy, client: service.event_page(
                     conn, policy, client, ids, from_unit
+                ),
+            )
+        )
+
+    @server.tool(name="list_obligations", description=_LIST_OBLIGATIONS)
+    def list_obligations(
+        ctx: Context,
+        circle: Annotated[str | None, _CIRCLE] = None,
+        state: Annotated[str | None, _OBLIGATION_STATE] = None,
+        overdue: Annotated[bool, _OVERDUE] = False,
+        proposals: Annotated[bool, _PROPOSALS] = False,
+        subject: Annotated[int | None, _SUBJECT] = None,
+        history: Annotated[bool, _HISTORY] = False,
+        cursor: Annotated[str | None, _CURSOR] = None,
+    ) -> CallToolResult:
+        asked = listing(
+            OBLIGATION,
+            circle=circle,
+            state=state,
+            overdue=overdue,
+            proposals=proposals,
+            subject=subject,
+            history=history,
+        )
+        call = (
+            "tool",
+            "list_obligations",
+            _given(
+                circle=circle,
+                state=state,
+                overdue=overdue,
+                proposals=proposals,
+                subject=subject,
+                history=history,
+                cursor=cursor,
+            ),
+        )
+        return _ok(
+            service.answer(
+                ctx.request_context.request,
+                ctx.protocol_version,
+                call,
+                lambda conn, policy, client: service.assertion_page(
+                    conn, policy, client, asked, cursor
+                ),
+            )
+        )
+
+    @server.tool(name="list_decisions", description=_LIST_DECISIONS)
+    def list_decisions(
+        ctx: Context,
+        circle: Annotated[str | None, _CIRCLE] = None,
+        state: Annotated[str | None, _DECISION_STATE] = None,
+        proposals: Annotated[bool, _PROPOSALS] = False,
+        subject: Annotated[int | None, _SUBJECT] = None,
+        history: Annotated[bool, _HISTORY] = False,
+        cursor: Annotated[str | None, _CURSOR] = None,
+    ) -> CallToolResult:
+        asked = listing(
+            DECISION,
+            circle=circle,
+            state=state,
+            overdue=False,
+            proposals=proposals,
+            subject=subject,
+            history=history,
+        )
+        call = (
+            "tool",
+            "list_decisions",
+            _given(
+                circle=circle,
+                state=state,
+                proposals=proposals,
+                subject=subject,
+                history=history,
+                cursor=cursor,
+            ),
+        )
+        return _ok(
+            service.answer(
+                ctx.request_context.request,
+                ctx.protocol_version,
+                call,
+                lambda conn, policy, client: service.assertion_page(
+                    conn, policy, client, asked, cursor
                 ),
             )
         )

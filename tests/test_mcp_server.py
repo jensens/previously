@@ -22,6 +22,7 @@ and `local-harness`, processed on the operator's own hardware.
 
 from dataclasses import dataclass
 from dataclasses import replace
+from datetime import date
 from datetime import datetime
 from datetime import UTC
 from mcp.client.client import Client
@@ -30,9 +31,24 @@ from mcp.types import CallToolResult
 from mcp.types import TextContent
 from mcp.types import TextResourceContents
 from previously.contract.types import BlobRef
+from previously.contract.types import ChannelIdentity
+from previously.contract.types import Evidence
+from previously.contract.types import RawEvent
+from previously.contract.types import RawUnit
 from previously.core.access import AccessRow
 from previously.core.access import read_access
 from previously.core.append import append
+from previously.core.assertion import DECISION
+from previously.core.assertion import DecisionBody
+from previously.core.assertion import DIRECT
+from previously.core.assertion import model_author
+from previously.core.assertion import OBLIGATION
+from previously.core.assertion import ObligationBody
+from previously.core.assertion import OPEN
+from previously.core.assertion import OPERATOR
+from previously.core.assertion import Source
+from previously.core.assertion import Statement
+from previously.core.assertions import write_statements
 from previously.core.clients import add_client
 from previously.core.clients import revoke_client
 from previously.core.mail import map_mail
@@ -824,7 +840,7 @@ def test_the_prompts_ask_for_work_and_hold_no_content(world: World, mode: str) -
 # The SHA-256 of the tool list as clients see it: name, description and input
 # schema of every tool, sorted by name, as canonical JSON. A change to any of
 # them is a change of the interface, made deliberately and released.
-TOOLS_SHA256 = "393fe0fd49afaea2289e95e377a42e3b3ed4876e6085396bdabde8d8344bd3fc"
+TOOLS_SHA256 = "d5cab21a01f2e3fe49744970638697c3cfe28c7ab50a65e64e17335beade2913"
 
 
 def tool_list_digest(tools: list[dict[str, object]]) -> str:
@@ -849,6 +865,8 @@ def test_the_tool_list_matches_its_checksum(world: World, mode: str) -> None:
     assert sorted(str(tool["name"]) for tool in tools) == [
         "get_event",
         "list_circles",
+        "list_decisions",
+        "list_obligations",
         "policy_gaps",
         "previously",
         "whoami",
@@ -1298,3 +1316,474 @@ def test_a_cursor_that_does_not_lead_on_is_an_error(world: World, mode: str) -> 
     for event_id in (world.policy_event, 999_999):
         assert _text(_tool(world, mode, "previously", {"cursor": forged(event_id)})) == message
     assert _accesses(world)[-1].access.outcome == "error"
+
+
+# --- obligations and decisions ----------------------------------------------------------
+
+# Where the sources of an assertion stand in the test world, for `claude-code`:
+# the scanned mail belongs to `office`, which has a rule, so an assertion on it
+# is shown; the plain mail also involves `team`, which has none, so one on it is
+# a placeholder; and the blockquote mail belongs to `bauer`, whose rule allows
+# only the EU.
+THE_TEXT = "send the offer for the roof"
+PRIVATE_TEXT = "PRIVATE-WORDING-OF-AN-OBLIGATION"
+PRIVATE_ADDRESS = "someone@elsewhere.example"
+FAR_FUTURE = date(2099, 1, 1)
+LONG_AGO = date(2000, 1, 1)
+_HEADING = re.compile(r"^### previously://event/(\d+) · (\w+) · (.*)$", re.MULTILINE)
+
+
+def _obligation(
+    *sources: Source,
+    what: str = THE_TEXT,
+    due: date | None = FAR_FUTURE,
+    debtor: str = "own",
+    creditor: str = "address:eva.huber@example.org",
+    state: str = "open",
+    subject: int | None = None,
+    responsibility: str = DIRECT,
+    reason: str | None = None,
+) -> Statement:
+    return Statement(
+        OBLIGATION,
+        OPERATOR if responsibility == DIRECT else model_author("claude-code"),
+        responsibility,
+        sources,
+        reason,
+        None,
+        subject,
+        None,
+        None,
+        ObligationBody(debtor, creditor, what, due, state),
+    )
+
+
+def _decision(
+    *sources: Source,
+    what: str = "use slate for the roof",
+    by: tuple[str, ...] = ("own",),
+    state: str = "valid",
+    subject: int | None = None,
+    responsibility: str = DIRECT,
+) -> Statement:
+    return Statement(
+        DECISION,
+        OPERATOR if responsibility == DIRECT else model_author("claude-code"),
+        responsibility,
+        sources,
+        None,
+        None,
+        subject,
+        None,
+        None,
+        DecisionBody(what, by, date(2026, 10, 30), state, None),
+    )
+
+
+def _state(world: World, *statements: Statement) -> tuple[int, ...]:
+    return write_statements(world.storage, world.storage, statements, recorded_at=T0)
+
+
+def _on(world: World, name: str) -> Source:
+    return Source(world.ids[name], None)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_obligation_is_a_heading_from_previously_and_its_content_inside_the_fence(
+    world: World, mode: str
+) -> None:
+    (stated,) = _state(world, _obligation(_on(world, "attachments_only"), due=LONG_AGO))
+    scanned = world.ids["attachments_only"]
+
+    page = _untagged(_text(_tool(world, mode, "list_obligations")))
+
+    assert page.splitlines()[0] == "previously · list_obligations · page 1"
+    assert (
+        f"### previously://event/{stated} · obligation · open · overdue · direct · "
+        "1 version · 0 proposals\n<<<customer-content TAG>>>\n"
+        f"what: {THE_TEXT}\n"
+        "debtor → creditor: own → address:eva.huber@example.org\n"
+        "due: 2000-01-01\n"
+        "reason: none\n"
+        f"sources: previously://event/{scanned}\n"
+        "<<<end TAG>>>"
+    ) in page
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_unit_of_a_source_is_cited_with_its_unit_marker(world: World, mode: str) -> None:
+    scanned = world.ids["attachments_only"]
+    _state(world, _obligation(Source(scanned, (1,)), Source(world.ids["plain"], None)))
+
+    page = _text(_tool(world, mode, "list_obligations", client="local-harness"))
+
+    assert f"sources: previously://event/{scanned}#unit-1, previously://event/" in page
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_overdue_marks_and_filters_only_what_is_open_and_due_before_today(
+    world: World, mode: str
+) -> None:
+    scanned = _on(world, "attachments_only")
+    late, future, undated, fulfilled = _state(
+        world,
+        _obligation(scanned, due=LONG_AGO),
+        _obligation(scanned, due=FAR_FUTURE),
+        _obligation(scanned, due=None),
+        _obligation(scanned, due=LONG_AGO, state="fulfilled"),
+    )
+
+    everything = _text(_tool(world, mode, "list_obligations"))
+    overdue = _text(_tool(world, mode, "list_obligations", {"overdue": True}))
+
+    assert _shown_ids(everything) == [late, future, undated, fulfilled]
+    assert _shown_ids(overdue) == [late]
+    assert everything.count("overdue") == 1
+    assert _last_access(world).access.arguments == {
+        "overdue": True,
+        "proposals": False,
+        "history": False,
+    }
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_state_filters_and_the_other_kind_does_not_appear(world: World, mode: str) -> None:
+    scanned = _on(world, "attachments_only")
+    open_one, done, decided = _state(
+        world,
+        _obligation(scanned),
+        _obligation(scanned, state="fulfilled"),
+        _decision(scanned),
+    )
+
+    fulfilled = _text(_tool(world, mode, "list_obligations", {"state": "fulfilled"}))
+    obligations = _text(_tool(world, mode, "list_obligations"))
+    decisions = _text(_tool(world, mode, "list_decisions"))
+    revoked = _text(_tool(world, mode, "list_decisions", {"state": "revoked"}))
+
+    assert _shown_ids(fulfilled) == [done]
+    assert _shown_ids(obligations) == [open_one, done]
+    assert _shown_ids(decisions) == [decided]
+    assert "decision" in decisions
+    assert "decided by: own\non: 2026-10-30" in decisions
+    assert _shown_ids(revoked) == []
+    assert "No results." in revoked
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_source_in_a_circle_without_a_rule_is_a_placeholder_for_claude_code_and_text_for_local(
+    world: World, mode: str
+) -> None:
+    plain = world.ids["plain"]
+    (stated,) = _state(
+        world,
+        _obligation(Source(plain, None), what=PRIVATE_TEXT, creditor=f"address:{PRIVATE_ADDRESS}"),
+    )
+
+    remote = _text(_tool(world, mode, "list_obligations"))
+    assert remote.splitlines()[-1] == (
+        f"[withheld: previously://event/{stated} — circle team has no rule, so only local "
+        "processing is allowed; this client (claude-code) processes with claude-max, "
+        "which is not local]"
+    )
+    assert PRIVATE_TEXT not in remote
+    assert PRIVATE_ADDRESS not in remote
+    assert f"previously://event/{plain}" not in remote
+    (withheld,) = _last_access(world).access.withheld
+    assert (withheld.event, withheld.reason_code, withheld.circles, withheld.uncovered) == (
+        stated,
+        "no_rule",
+        ("huber", "office", "team"),
+        ("team",),
+    )
+    assert withheld.source == "email"
+    assert _last_access(world).access.delivered == ()
+
+    local = _text(_tool(world, mode, "list_obligations", client="local-harness"))
+    assert PRIVATE_TEXT in local
+    (delivered,) = _last_access(world).access.delivered
+    assert (delivered.event, delivered.units, delivered.circles) == (
+        stated,
+        (),
+        ("huber", "office", "team"),
+    )
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_actor_of_another_circle_changes_nothing_in_the_verdict(world: World, mode: str) -> None:
+    """The creditor is a member of `bauer`, whose rule allows only the EU and
+    would withhold the mail for `claude-code`; the source is the scanned mail
+    of `office`, so the policy goes by that and the entry is shown. Taking the
+    actors into the verdict would withhold it."""
+    (stated,) = _state(
+        world, _obligation(_on(world, "attachments_only"), creditor="address:lea@example.com")
+    )
+
+    page = _text(_tool(world, mode, "list_obligations"))
+
+    assert _shown_ids(page) == [stated]
+    assert "address:lea@example.com" in page
+    (delivered,) = _last_access(world).access.delivered
+    assert delivered.circles == ("office",)
+    assert _last_access(world).access.withheld == ()
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_circle_filter_finds_an_entry_by_its_sources_and_by_its_actors(
+    world: World, mode: str
+) -> None:
+    (stated,) = _state(
+        world, _obligation(_on(world, "attachments_only"), creditor="address:lea@example.com")
+    )
+
+    def listed(circle: str) -> list[int]:
+        return _shown_ids(_text(_tool(world, mode, "list_obligations", {"circle": circle})))
+
+    assert listed("office") == [stated]  # by the source
+    assert listed("bauer") == [stated]  # by the creditor
+    assert listed("huber") == []
+    assert listed("team") == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_placeholder_is_found_by_the_circles_of_its_sources_and_never_by_an_actor(
+    world: World, mode: str
+) -> None:
+    (stated,) = _state(
+        world, _obligation(Source(world.ids["plain"], None), creditor="address:lea@example.com")
+    )
+
+    def found(circle: str) -> str:
+        return _text(_tool(world, mode, "list_obligations", {"circle": circle}))
+
+    assert f"[withheld: previously://event/{stated} — " in found("huber")
+    assert f"[withheld: previously://event/{stated} — " in found("team")
+    assert "No results." in found("bauer")  # an actor's circle would tell too much
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_one_entry_by_subject_and_its_history_with_what_each_version_changed(
+    world: World, mode: str
+) -> None:
+    scanned = _on(world, "attachments_only")
+    (first,) = _state(world, _obligation(scanned))
+    (second,) = _state(
+        world, _obligation(scanned, subject=first, due=date(2099, 2, 1), reason="postponed")
+    )
+
+    entry = _text(_tool(world, mode, "list_obligations", {"subject": first}))
+    history = _untagged(
+        _text(_tool(world, mode, "list_obligations", {"subject": first, "history": True}))
+    )
+
+    assert _shown_ids(entry) == [first]
+    assert "2 versions" in entry
+    assert "due: 2099-02-01" in entry
+    assert f"version {first}" not in entry
+    assert f"version {first} · 2026-10-11T12:00:00.000000Z · direct · human:operator\n" in history
+    assert f"version {second} · 2026-10-11T12:00:00.000000Z · direct · human:operator\n" in history
+    assert "change due: 2099-01-01 → 2099-02-01\n" in history
+    assert "change reason: (none) → postponed" in history
+    assert f"set what: {THE_TEXT}\n" in history
+    assert history.index(f"version {first}") < history.index(f"version {second}")
+    assert _last_access(world).access.arguments == {
+        "overdue": False,
+        "proposals": False,
+        "subject": first,
+        "history": True,
+    }
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_subject_that_is_not_an_entry_of_this_kind_is_an_error_line_and_a_page(
+    world: World, mode: str
+) -> None:
+    (decided,) = _state(world, _decision(_on(world, "attachments_only")))
+
+    page = _text(_tool(world, mode, "list_obligations", {"subject": decided}))
+    assert f"Error: previously://event/{decided} — no obligation stands under this id" in page
+    missing = _text(_tool(world, mode, "list_obligations", {"subject": 9999}))
+    assert "Error: previously://event/9999 — no obligation stands under this id" in missing
+    assert _last_access(world).access.delivered == ()
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_history_is_withheld_with_the_thread_when_a_later_version_cites_a_withheld_source(
+    world: World, mode: str
+) -> None:
+    scanned = _on(world, "attachments_only")
+    (first,) = _state(world, _obligation(scanned, what=PRIVATE_TEXT))
+    _state(world, _obligation(scanned, Source(world.ids["plain"], None), subject=first))
+
+    entry = _text(_tool(world, mode, "list_obligations", {"subject": first, "history": True}))
+
+    assert f"[withheld: previously://event/{first} — circle team has no rule" in entry
+    assert PRIVATE_TEXT not in entry
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_proposal_is_listed_only_with_proposals_and_never_passes_for_an_entry(
+    world: World, mode: str
+) -> None:
+    scanned = _on(world, "attachments_only")
+    (standing, proposed) = _state(
+        world,
+        _obligation(scanned),
+        _obligation(scanned, responsibility=OPEN, what="a proposal"),
+    )
+
+    plain = _text(_tool(world, mode, "list_obligations"))
+    proposals = _text(_tool(world, mode, "list_obligations", {"proposals": True}))
+
+    assert _shown_ids(plain) == [standing]
+    assert _shown_ids(proposals) == [proposed]
+    assert "obligation · proposed · open · open · 1 version · 0 proposals" in proposals
+    assert _last_access(world).access.arguments == {
+        "overdue": False,
+        "proposals": True,
+        "history": False,
+    }
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_every_delivered_and_withheld_entry_is_in_the_access_without_a_word_of_its_text(
+    world: World, mode: str
+) -> None:
+    scanned = _on(world, "attachments_only")
+    shown, hidden = _state(
+        world,
+        _obligation(scanned, what=PRIVATE_TEXT),
+        _obligation(Source(world.ids["plain"], None), what=PRIVATE_TEXT + " 2"),
+    )
+
+    _tool(world, mode, "list_obligations", {"circle": "office"})
+
+    access = _last_access(world).access
+    assert [(d.event, d.units, d.circles) for d in access.delivered] == [(shown, (), ("office",))]
+    assert [(w.event, w.reason_code) for w in access.withheld] == [(hidden, "no_rule")]
+    assert access.arguments == {
+        "circle": "office",
+        "overdue": False,
+        "proposals": False,
+        "history": False,
+    }
+    with world.storage.begin() as conn:
+        stored = [row.payload for row in world.storage.read_by_kind(conn, "action")]
+    assert PRIVATE_TEXT not in json.dumps(stored)
+    assert PRIVATE_ADDRESS not in json.dumps(stored)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_rules_of_every_source_are_in_the_access_and_not_only_the_last(
+    world: World, mode: str
+) -> None:
+    """Two sources of different kinds, each decided on its own: the access
+    names the rule of the first as well, which the verdict, being the last
+    decision, does not carry."""
+    email_rule = set_policy(
+        world.storage,
+        Rule("source:email", frozenset({"any"}), None, frozenset()),
+        statement="for the test",
+        recorded_at=T0,
+    )
+    (tracker,) = append(
+        world.storage,
+        [
+            RawEvent(
+                source="gitlab",
+                external_id="issue-1",
+                occurred_at=INTERNALDATE,
+                evidence=Evidence.VERBATIM,
+                units=(RawUnit(1, "The roof."),),
+                payload={},
+                channel_identities=(ChannelIdentity("gitlab", "from", "office@example.org"),),
+            )
+        ],
+        recorded_at=T0,
+    )
+    gitlab_rule = set_policy(
+        world.storage,
+        Rule("source:gitlab", frozenset({"any"}), None, frozenset()),
+        statement="for the test",
+        recorded_at=T0,
+    )
+    (stated,) = _state(world, _obligation(_on(world, "attachments_only"), Source(tracker, None)))
+
+    page = _text(_tool(world, mode, "list_obligations"))
+
+    assert _shown_ids(page) == [stated]
+    rules = cast("list[int]", _last_access(world).access.policy_ids["rules"])
+    assert email_rule in rules
+    assert gitlab_rule in rules
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_entries_are_never_cut_between_pages_and_the_cursor_goes_on_by_id(
+    world: World, mode: str
+) -> None:
+    scanned = _on(world, "attachments_only")
+    ids = _state(world, *(_obligation(scanned, what=f"{n:02d} " + "x" * 9_000) for n in range(14)))
+
+    first = _text(_tool(world, mode, "list_obligations"))
+    cursor = re.search(r"call again with cursor=(\S+)", first)
+    assert cursor is not None
+    second = _text(_tool(world, mode, "list_obligations", {"cursor": cursor.group(1)}))
+
+    assert len(first) <= PAGE_CHARS
+    assert first.count("<<<customer-content") == first.count("<<<end ")
+    assert _shown_ids(first) + _shown_ids(second) == list(ids)
+    assert 0 < len(_shown_ids(first)) < 14
+    assert "page 2" in second.splitlines()[0]
+    delivered = _accesses(world)[-2].access.delivered
+    assert [d.event for d in delivered] == _shown_ids(first)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_cursor_of_another_filter_or_the_other_tool_is_refused(world: World, mode: str) -> None:
+    scanned = _on(world, "attachments_only")
+    _state(world, *(_obligation(scanned, what="x" * 9_000) for _ in range(14)))
+    first = _text(_tool(world, mode, "list_obligations", {"circle": "office"}))
+    found = re.search(r"cursor=(\S+)", first)
+    assert found is not None
+
+    for name, arguments in (
+        ("list_obligations", {"cursor": found.group(1)}),
+        ("list_obligations", {"cursor": found.group(1), "circle": "huber"}),
+        ("list_decisions", {"cursor": found.group(1), "circle": "office"}),
+    ):
+        result = _tool(world, mode, name, arguments)
+        assert result.is_error
+        assert _text(result).startswith("Error: cursor is not valid for these filters")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_unknown_circle_a_state_of_the_other_kind_and_a_subject_out_of_range_are_errors(
+    world: World, mode: str
+) -> None:
+    for name, arguments, sentence in (
+        ("list_obligations", {"circle": "nobody"}, "no circle nobody exists"),
+        ("list_obligations", {"state": "valid"}, "state takes one of open, fulfilled, cancelled"),
+        ("list_decisions", {"state": "open"}, "state takes one of valid, revoked"),
+        ("list_obligations", {"subject": 0}, "subject is the id of an entry"),
+    ):
+        result = _tool(world, mode, name, arguments)
+        assert result.is_error
+        assert sentence in _text(result)
+        assert _last_access(world).access.outcome == "error"

@@ -522,27 +522,39 @@ def source_identities[Conn](
     return identities, sources
 
 
+def assertion_decisions(
+    policy: Policy,
+    client: Client,
+    identities: Sequence[Mapping[str, object]],
+    sources: Sequence[str | None],
+) -> tuple[Decision, ...]:
+    """The decisions for an assertion (decision 7 of the plan): `decide` once
+    per distinct source, each with the identities of all source events, in
+    the order of the sources. No source at all is decided once, without one.
+
+    Every decision is returned, so that a caller that records which rules
+    decided (the access log of the MCP server) sees the rule of every source
+    and not only of the one that happened to be last.
+    """
+    candidate = Candidate(provider=client.processor, model="", effort=None)
+    order: tuple[str | None, ...] = tuple(sources) or (None,)
+    return tuple(
+        decide(policy, identities=identities, source=source, candidates=(candidate,))
+        for source in order
+    )
+
+
 def assertion_verdict(
     policy: Policy,
     client: Client,
     identities: Sequence[Mapping[str, object]],
     sources: Sequence[str | None],
 ) -> Decision:
-    """The decision for an assertion (decision 7 of the plan): `decide` once
-    per distinct source, each with the identities of all source events. The
-    first decision that chooses nothing is the answer, so the strictest rule
-    holds; when every one chooses, the last.
-
-    No source at all is decided once, without one.
-    """
-    candidate = Candidate(provider=client.processor, model="", effort=None)
-    order: tuple[str | None, ...] = tuple(sources) or (None,)
-    decision = decide(policy, identities=identities, source=order[0], candidates=(candidate,))
-    for source in order[1:]:
-        if decision.chosen is None:
-            break
-        decision = decide(policy, identities=identities, source=source, candidates=(candidate,))
-    return decision
+    """The decision that holds for an assertion: the first of
+    `assertion_decisions` that chooses nothing, so that the strictest rule
+    holds; when every one chooses, the last."""
+    decisions = assertion_decisions(policy, client, identities, sources)
+    return next((d for d in decisions if d.chosen is None), decisions[-1])
 
 
 def _actors(statement: Statement) -> tuple[str, ...]:

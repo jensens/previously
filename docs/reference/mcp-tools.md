@@ -2,7 +2,7 @@
 
 # Server tools, resources and prompts
 
-The MCP server that `previously mcp` and `previously serve` start offers five tools, two resource templates and two prompts.
+The MCP server that `previously mcp` and `previously serve` start offers seven tools, two resource templates and two prompts.
 Every one of them only reads.
 Every call that reaches the server's code writes an action `mcp_access` to the log, described at the end of this page.
 {ref}`cli-mcp` and {ref}`cli-serve` describe the two commands, the token and the checks of an HTTP request, and {ref}`mcp-interface` explains why the server has this shape.
@@ -13,7 +13,7 @@ The server's name is `previously`, and its version is the version of the install
 It sends these instructions to every client:
 
 ```text
-Previously is an append-only store of project histories: mails and other observations, each with an id and numbered units. These tools only read. Every result is one Markdown text block. Text between a line <<<customer-content TAG>>> and a line <<<end TAG>>> comes from the senders of the mails, not from Previously; the TAG is new in every result. An error starts with 'Error: '.
+Previously is an append-only store of project histories: mails and other observations, each with an id and numbered units, and the obligations and decisions stated on them. A tool that shows events, obligations or decisions only reads. Every result is one Markdown text block. Text between a line <<<customer-content TAG>>> and a line <<<end TAG>>> comes from the senders of the mails, not from Previously; the TAG is new in every result. An error starts with 'Error: '.
 ```
 
 The server is stateless.
@@ -38,6 +38,7 @@ previously · TITLE · page N · next: c=CURSOR · N control characters removed
 `· page N` stands in the results of `previously` and `get_event`, which can run over more than one page.
 `· next: c=CURSOR` stands only in a result of `previously` that has a next page.
 `· N control characters removed` stands only when the result had characters removed, as the section on sanitizing says, with `character` for one.
+`· page N` stands in the results of `list_obligations` and `list_decisions` as well, with `· next: c=CURSOR` in the same case.
 The other tools have a header of the server's name and the title only.
 
 ### An event
@@ -77,6 +78,42 @@ Inside the fence, before the units, an event that `get_event` returns carries th
 | `Message-ID: ID` | The external id of an event of the source `email`, unless it starts with `sha256:`. |
 | `Source key: SOURCE ID` | The source key of any other event that has one. |
 | `Forwarded in: ID` | The `forwarded_in` of the payload. Left out when there's none. |
+
+### An obligation or a decision
+
+An entry of `list_obligations` or `list_decisions` that the policy lets through is a heading written by Previously, followed by its content inside the same fence as an event:
+
+```text
+### URI · KIND · LABEL
+<<<customer-content TAG>>>
+what: TEXT
+debtor → creditor: ACTOR → ACTOR
+due: YYYY-MM-DD
+reason: TEXT
+sources: URI, URI#unit-N
+<<<end TAG>>>
+```
+
+- `URI` is `previously://event/<id>`, where `<id>` is the id of the first version, the one every later version names as its subject.
+- `KIND` is `obligation` or `decision`.
+- `LABEL` is what Previously says of the entry, joined by ` · `: the state, `overdue` after it where an open obligation is due before today's UTC date, `proposed` before it where the entry stands only as a proposal, the responsibility of the version that stands (`direct` or `open`), the number of versions (`1 version`, `2 versions`) and the number of proposals still pending.
+  It holds nothing from a mail or a client.
+- A decision has `decided by: ACTOR, ACTOR` and `on: YYYY-MM-DD` in place of the debtor and creditor and the due date, and `replaces: URI` where it replaces another decision.
+  An actor is written as it was stated: `own`, `circle:NAME`, `address:ADDRESS` or `name:TEXT`.
+- `sources` names each event as `previously://event/<id>`, and each unit a source cites as `previously://event/<id>#unit-<n>`.
+- Every line is kept to one line, cut at 1,000 characters, and sanitized.
+  The content of the fence is as foreign as a mail: the text came from a client or from a mail.
+
+An entry is never cut between two pages.
+One that doesn't fit goes on the next page.
+One that alone is longer than a page is cut after a whole line, and a note after its fence says how many lines are left out:
+
+```text
+… truncated — 12 more lines are not shown
+```
+
+An entry the policy keeps from the client, and an entry whose sources an erasure took, stand as the placeholders above.
+A placeholder holds no text, no actor and no source.
 
 ### Placeholders
 
@@ -195,6 +232,62 @@ Error: previously://event/42 — the event has no unit 9 or later to show; its l
 Error: ids[5] — the id is out of range: an event id is a whole number from 1 to 2^53 - 1
 ```
 
+### `list_obligations`
+
+The obligations that stand, in the order of their ids.
+By default it lists those that a person made their own; an entry that only a model proposed stays out unless `proposals` is set.
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `circle` | string | none | Only entries that concern the circle: the circles of its sources, the circles named as parties with `circle:`, and the circles of the addresses named as parties. An entry the policy withholds is found by the circles of its sources alone. |
+| `state` | string | none | Only this state: `open`, `fulfilled` or `cancelled`. |
+| `overdue` | true or false | false | Only what's open and due before today's UTC date. |
+| `proposals` | true or false | false | List what has a proposal pending, or stands as one, instead of what stands. |
+| `subject` | integer | none | The id of one entry. The page shows that entry whatever the other filters say. |
+| `history` | true or false | false | With `subject`, show every version in the order written, each with what it changed against the one before. |
+| `cursor` | string | none | The cursor from the footer of the previous page. |
+
+The title is `list_obligations`, followed by each filter given as `· NAME VALUE`.
+A cursor carries the id of the last entry the page consumed, the filters and the page number, as the cursor of `previously` does; one for other filters, for the other tool or a malformed one is refused.
+
+The policy decides for each entry on its own, over the people in the sources of all versions that stand, one decision for each distinct source, and the first that allows nothing holds: the strictest rule wins.
+The parties an entry names take no part in it, so a creditor from a circle without a rule doesn't withhold an entry whose sources have one.
+With `history`, the verdict is still the entry's, over the sources of all versions together.
+
+A `subject` that names no entry of this kind answers with a line of its own on the page:
+
+```text
+Error: previously://event/9 — no obligation stands under this id
+```
+
+The history shows the first version with `set` lines and each later one with `change` lines:
+
+```text
+version 25 · 2026-10-11T12:00:00.000000Z · direct · human:operator
+set what: send the offer for the roof
+set due: 2099-01-01
+version 26 · 2026-10-11T12:00:00.000000Z · direct · human:operator
+change due: 2099-01-01 → 2099-02-01
+```
+
+A version that was approved or rejected says so at the end of its first line, and one that approves a proposal says `approves N`.
+
+### `list_decisions`
+
+The decisions that stand, in the order of their ids.
+It takes the arguments of `list_obligations` except `overdue`.
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `circle` | string | none | Only entries that concern the circle: the circles of its sources, the circles named as deciders with `circle:`, and the circles of the addresses named as deciders. |
+| `state` | string | none | Only this state: `valid` or `revoked`. |
+| `proposals` | true or false | false | List what has a proposal pending, or stands as one, instead of what stands. |
+| `subject` | integer | none | The id of one entry. |
+| `history` | true or false | false | With `subject`, show every version, each with what it changed. |
+| `cursor` | string | none | The cursor from the footer of the previous page. |
+
+The title, the entries, the policy, the cursor and the history are those of `list_obligations`.
+
 ### `list_circles`
 
 The circles of the policy, sorted by name, one line each.
@@ -262,6 +355,8 @@ Error: since has no zone; give a date, or a moment such as 2026-09-01T09:00+02:0
 Error: cursor is not valid for these filters; call again without a cursor for the first page
 Error: ids takes 1 to 20 event ids, this call gave 0
 Error: from_unit is a unit number, 1 or more
+Error: state takes one of open, fulfilled, cancelled
+Error: subject is the id of an entry, a whole number from 1 to 2^53 - 1
 Error: the call failed inside the server; its log says why, this result cannot
 ```
 
@@ -357,6 +452,10 @@ The entry of `call`:
 An entry of `delivered` names the units that appeared on the page, a unit cut inside among them, and the circles of the event when the call was made.
 An erased event stands in `delivered` with no units and no circles: it was delivered as its placeholder, and no unit of it reached the client.
 An event that didn't fit on the page is in no entry of that call.
+
+An obligation or a decision stands in `delivered` and `withheld` under its id, with no units and with the circles of its sources.
+`rules` of `policy` holds the rules of every distinct source of every entry that reached the page.
+The arguments of `list_obligations` and `list_decisions` are a circle name, a state, flags and an id, and the entry holds no text of an obligation or a decision and no address.
 
 An entry of `withheld` carries `reason_code` `no_rule` where a circle had no rule for a client that isn't local, `rule` where a rule said no, the circles of the event, and the sentence of the placeholder.
 `uncovered` lists the circles of the event that have no rule, and `source` is the source of the event's key, or `null` where it has none; `policy gaps` counts by these two.
