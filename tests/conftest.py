@@ -9,6 +9,7 @@ from alembic import command
 from alembic.config import Config
 from botocore.exceptions import BotoCoreError
 from botocore.exceptions import ClientError
+from database import postgres
 from http.server import BaseHTTPRequestHandler
 from http.server import ThreadingHTTPServer
 from mailserver import MailServer
@@ -26,7 +27,6 @@ from previously.storage.schema import metadata
 from sqlalchemy import create_engine
 from sqlalchemy import Engine
 from sqlalchemy import text
-from testcontainers.community.postgres import PostgresContainer
 from testcontainers.core.container import DockerContainer
 from typing import cast
 from typing import override
@@ -64,7 +64,7 @@ TRUNCATE_ALL = "TRUNCATE " + ", ".join(table.name for table in reversed(metadata
 
 @pytest.fixture(scope="session")
 def engine() -> Iterator[Engine]:
-    with PostgresContainer("postgres:18", driver="psycopg") as container:
+    with postgres() as container:
         db_engine = create_engine(container.get_connection_url())
         config = Config("alembic.ini")
         config.set_main_option("sqlalchemy.url", container.get_connection_url())
@@ -197,7 +197,7 @@ def unmigrated_engine() -> Iterator[Engine]:
     every access to it is supposed to fail, so there is nothing one test could
     spoil for the next.
     """
-    with PostgresContainer("postgres:18", driver="psycopg") as container:
+    with postgres() as container:
         yield create_engine(container.get_connection_url())
 
 
@@ -236,8 +236,8 @@ def s3_settings() -> Iterator[dict[str, str]]:
     One container for the whole run, the way PostgreSQL has one: starting it
     is what costs, and a bucket per test (`blob_store`) keeps the tests apart
     without a second start. The image is named here as a literal, like
-    `postgres:18` above, so that a change of version is a change of this
-    line.
+    `postgres:18` in `tests/database.py`, so that a change of version is a
+    change of this line.
     """
     container = (
         DockerContainer("rustfs/rustfs:1.0.1")

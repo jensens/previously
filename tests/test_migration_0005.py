@@ -7,9 +7,9 @@ reason `tests/test_migration_0003.py` gives."""
 from alembic import command
 from alembic.config import Config
 from alembic.util import CommandError
+from database import postgres
 from sqlalchemy import create_engine
 from sqlalchemy import text
-from testcontainers.community.postgres import PostgresContainer
 
 import pytest
 
@@ -20,7 +20,7 @@ def test_the_downgrade_refuses_once_a_connector_has_a_watermark() -> None:
     with one row it refuses with a sentence, and the database stays at
     `0005_watermark` with the row in place. Without the refusal the next run
     of the connector would find no watermark and read the whole folder again."""
-    with PostgresContainer("postgres:18", driver="psycopg") as container:
+    with postgres() as container:
         engine = create_engine(container.get_connection_url())
         config = Config("alembic.ini")
         config.set_main_option("sqlalchemy.url", container.get_connection_url())
