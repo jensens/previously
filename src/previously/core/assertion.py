@@ -101,8 +101,10 @@ def _address_problem(address: str) -> str | None:
     if address.count("@") != 1 or any(char.isspace() for char in address):
         return "the address of the reference needs exactly one @ and no white space"
     local, _at, domain = address.partition("@")
-    if not local or not domain or _has_forbidden_character(address):
+    if not local or not domain:
         return "the address of the reference needs a part before and after the @"
+    if _has_forbidden_character(address):
+        return "the address of the reference has control characters"
     return None
 
 
@@ -115,9 +117,15 @@ def reference_problem(text: str) -> str | None:
     if text == OWN:
         return None
     if prefix == "circle" and _colon:
-        if _is_label(rest):
+        # The policy accepts any non-blank text as a circle name
+        # (`_check_text` in core/policy.py). The rule is applied here
+        # unchanged instead of exposing a helper from policy.py: a circle the
+        # policy can name has to be referable, and a copy of one line is
+        # cheaper than a new public name. Control characters are the output
+        # side's business.
+        if rest.strip():
             return None
-        return "the circle name of the reference is empty, too long or has control characters"
+        return "the circle name of the reference is empty"
     if prefix == "address" and _colon:
         return _address_problem(rest)
     if prefix == "name" and _colon:
@@ -250,36 +258,46 @@ def _author_problem(author: object) -> str | None:
     return "the author is neither human:operator nor model:<client>"
 
 
-def _sources_problem(sources: object) -> str | None:  # noqa: C901 — one check per rule of the form
+def _units_problem(units: object) -> str | None:
+    if units is None:
+        return None
+    if not isinstance(units, list):
+        return "the units of a source are neither a list nor null"
+    seqs = cast("list[object]", units)
+    if not seqs:
+        return "the units of a source are an empty list: use null for the whole event"
+    if not all(
+        isinstance(seq, int) and not isinstance(seq, bool) and 0 <= seq <= MAX_SAFE_INT
+        for seq in seqs
+    ):
+        return "the units of a source are not whole numbers"
+    ints = cast("list[int]", seqs)
+    if any(later <= earlier for earlier, later in pairwise(ints)):
+        return "the units of a source are not ascending without duplicates"
+    return None
+
+
+def _source_problem(item: object) -> str | None:
+    if not isinstance(item, dict):
+        return "a source is not an object"
+    entry = cast("dict[str, object]", item)
+    if set(entry) != {"event", "units"}:
+        return "a source must have exactly the keys event and units"
+    if not _is_id(entry["event"]):
+        return "a source names an event that is not a whole number of at least 1"
+    return _units_problem(entry["units"])
+
+
+def _sources_problem(sources: object) -> str | None:
     if not isinstance(sources, list):
         return "the sources are not a list"
     items = cast("list[object]", sources)
     if not items:
         return "the sources are empty: an assertion needs at least one source"
     for item in items:
-        if not isinstance(item, dict):
-            return "a source is not an object"
-        entry = cast("dict[str, object]", item)
-        if set(entry) != {"event", "units"}:
-            return "a source must have exactly the keys event and units"
-        if not _is_id(entry["event"]):
-            return "a source names an event that is not a whole number of at least 1"
-        units = entry["units"]
-        if units is None:
-            continue
-        if not isinstance(units, list):
-            return "the units of a source are neither a list nor null"
-        seqs = cast("list[object]", units)
-        if not seqs:
-            return "the units of a source are an empty list: use null for the whole event"
-        if not all(
-            isinstance(seq, int) and not isinstance(seq, bool) and 0 <= seq <= MAX_SAFE_INT
-            for seq in seqs
-        ):
-            return "the units of a source are not whole numbers"
-        ints = cast("list[int]", seqs)
-        if any(later <= earlier for earlier, later in pairwise(ints)):
-            return "the units of a source are not ascending without duplicates"
+        problem = _source_problem(item)
+        if problem is not None:
+            return problem
     return None
 
 
@@ -483,14 +501,17 @@ class Thread:
         return candidates[-1] if candidates else None
 
     def pending(self) -> tuple[Version, ...]:
-        """Open versions newer than the direct winner, neither rejected nor
-        approved; with no direct version, every such open version (the
-        winner among them included)."""
+        """Open versions that are neither rejected nor approved and are not
+        the winner: those newer than the direct winner, or, with no direct
+        version, all of them except the latest, which stands as the proposal.
+        The winner is never in the list."""
         direct = self._direct_winner()
+        candidates = self._candidates()
         if direct is None:
-            return self._candidates()
-        newer = self.versions[self.versions.index(direct) + 1 :]
-        return tuple(v for v in self._candidates() if v in newer)
+            return candidates[:-1]
+        position = self.versions.index(direct)
+        later = {version.id for version in self.versions[position + 1 :]}
+        return tuple(v for v in candidates if v.id in later)
 
 
 @dataclass
@@ -506,35 +527,48 @@ def fold(
 ) -> dict[int, Thread]:
     """The threads standing in `rows`, which are given in chain order.
 
-    Erased rows (payload None) and rows with a form fault are skipped, and so
-    is a version whose `subject` or `approves`, or a rejection whose `of`,
-    names nothing standing of the matching kind; `verify` reports those.
+    Erased rows (payload None) and rows with a form fault are skipped. A thread
+    lives as long as one of its versions stands: it keeps the id of its first
+    version as its name even when that version is erased, and takes its kind
+    from the first version that stands. Also skipped, because `verify` reports
+    them: a version whose `subject` names nothing, a rejection whose `of`
+    names no standing version, and an approval of a proposal that is not open
+    or is already approved or rejected.
     """
     drafts: dict[int, _Draft] = {}
-    thread_of: dict[int, int] = {}  # version id -> subject of its thread
+    thread_of: dict[int, int] = {}  # standing version id -> subject of its thread
+    erased: set[int] = set()
     for row_id, recorded_at, payload in rows:
         if payload is None:
+            erased.add(row_id)
             continue
         statement = parse_statement(payload)
         if statement is None:
             continue
         if statement.kind == REJECTION:
-            target = thread_of.get(cast("int", statement.of))
+            proposal = cast("int", statement.of)
+            target = thread_of.get(proposal)
             if target is not None:
-                drafts[target].rejected.add(cast("int", statement.of))
+                drafts[target].rejected.add(proposal)
             continue
         subject = row_id if statement.subject is None else statement.subject
-        draft = drafts.get(subject)
-        if statement.subject is None:
-            draft = drafts[row_id] = _Draft(statement.kind)
-        elif draft is None or draft.kind != statement.kind:
+        if statement.subject is not None and subject not in drafts and subject not in erased:
+            continue  # names nothing: not a first version, not an erased one
+        draft = drafts.get(subject) or _Draft(statement.kind)  # kept only once a version joins
+        if draft.kind != statement.kind:
             continue
         if statement.approves is not None:
             proposal = next((v for v in draft.versions if v.id == statement.approves), None)
-            if proposal is None or proposal.statement.responsibility != OPEN:
+            if (
+                proposal is None
+                or proposal.statement.responsibility != OPEN
+                or proposal.id in draft.approved
+                or proposal.id in draft.rejected
+            ):
                 continue
             draft.approved.add(proposal.id)
         draft.versions.append(Version(row_id, recorded_at, statement))
+        drafts[subject] = draft
         thread_of[row_id] = subject
     return {
         subject: Thread(

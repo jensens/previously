@@ -321,6 +321,8 @@ def test_a_sentence_never_raises_for_odd_values() -> None:
         "address:" + "a" * 242 + "@example.org",  # 254 characters in all
         "name:Anbieter XY",
         "name:" + "x" * 200,
+        "circle:" + "x" * 300,  # the policy sets no limit on a circle name
+        "circle:a\nb",
         "name:Frau Huber",
     ],
 )
@@ -337,12 +339,13 @@ def test_valid_references(reference: str) -> None:
         ("person:anna", "no known prefix"),
         ("circle:", "circle name"),
         ("circle:  ", "circle name"),
-        ("circle:a\nb", "circle name"),
         ("address:", "needs exactly one @"),
         ("address:anna", "needs exactly one @"),
         ("address:a@b@c", "needs exactly one @"),
         ("address:a b@c.d", "needs exactly one @"),
         ("address:@example.org", "part before and after"),
+        ("address:a\u200b@example.org", "has control characters"),
+        ("address:a\x00@example.org", "has control characters"),
         ("address:anna@", "part before and after"),
         ("address:" + "a" * 243 + "@example.org", "longer than 254"),
         ("name:", "1 to 200"),
@@ -427,7 +430,7 @@ def test_without_a_direct_version_the_latest_open_one_stands_as_proposal() -> No
     assert winner.statement.responsibility == OPEN
 
 
-def test_without_a_direct_version_every_unanswered_proposal_is_pending() -> None:
+def test_without_a_direct_version_a_rejected_proposal_is_not_pending() -> None:
     threads = fold(
         [
             row(1, make_obligation(responsibility=OPEN)),
@@ -436,7 +439,23 @@ def test_without_a_direct_version_every_unanswered_proposal_is_pending() -> None
         ]
     )
 
-    assert [version.id for version in threads[1].pending()] == [2]
+    assert threads[1].pending() == ()
+
+
+def test_the_winning_proposal_is_never_pending() -> None:
+    threads = fold(
+        [
+            row(1, make_obligation(responsibility=OPEN)),
+            row(2, make_obligation(responsibility=OPEN, subject=1)),
+        ]
+    )
+
+    winner = threads[1].winner()
+    assert winner is not None
+    assert winner.id == 2
+    assert [version.id for version in threads[1].pending()] == [1]
+    only = fold([row(1, make_obligation(responsibility=OPEN))])
+    assert only[1].pending() == ()
 
 
 def test_a_rejection_is_attached_to_the_thread_of_its_proposal() -> None:
@@ -531,15 +550,66 @@ def test_an_erased_rejection_leaves_the_proposal_pending() -> None:
     assert [version.id for version in threads[1].pending()] == [2]
 
 
-def test_a_thread_with_an_erased_first_version_is_gone() -> None:
+def test_a_thread_survives_the_erasure_of_its_first_version() -> None:
     threads = fold(
         [
             row(1, make_obligation(), erased=True),
-            row(2, make_obligation(subject=1)),
+            row(2, make_obligation(subject=1, what="later")),
         ]
     )
 
+    assert set(threads) == {1}
+    assert threads[1].subject == 1
+    assert threads[1].kind == OBLIGATION
+    winner = threads[1].winner()
+    assert winner is not None
+    assert winner.id == 2
+
+
+def test_a_thread_takes_its_kind_from_the_first_standing_version() -> None:
+    threads = fold(
+        [
+            row(1, make_decision(), erased=True),
+            row(2, make_decision(subject=1, state="revoked")),
+            row(3, make_obligation(subject=1)),  # another kind: not part of that thread
+        ]
+    )
+
+    assert threads[1].kind == DECISION
+    assert [version.id for version in threads[1].versions] == [2]
+
+
+def test_a_subject_that_never_existed_is_not_revived_by_erasure_elsewhere() -> None:
+    threads = fold([row(1, make_obligation(), erased=True), row(2, make_obligation(subject=9))])
+
     assert threads == {}
+
+
+def test_a_second_approval_of_the_same_proposal_is_skipped() -> None:
+    threads = fold(
+        [
+            row(1, make_obligation()),
+            row(2, make_obligation(responsibility=OPEN, subject=1, what="p")),
+            row(3, make_obligation(subject=1, approves=2, what="p")),
+            row(4, make_obligation(subject=1, approves=2, what="p")),
+        ]
+    )
+
+    assert [version.id for version in threads[1].versions] == [1, 2, 3]
+
+
+def test_an_approval_after_a_rejection_is_skipped() -> None:
+    threads = fold(
+        [
+            row(1, make_obligation()),
+            row(2, make_obligation(responsibility=OPEN, subject=1, what="p")),
+            row(3, make_rejection(2)),
+            row(4, make_obligation(subject=1, approves=2, what="p")),
+        ]
+    )
+
+    assert [version.id for version in threads[1].versions] == [1, 2]
+    assert threads[1].approved == frozenset()
 
 
 def test_a_row_with_a_form_fault_is_skipped() -> None:
@@ -596,7 +666,7 @@ ops = st.lists(
     min_size=1,
     max_size=14,
 )
-erasures = st.sets(st.integers(min_value=2, max_value=15), max_size=6)
+erasures = st.sets(st.integers(min_value=1, max_value=15), max_size=6)
 
 
 def build_rows(
@@ -630,44 +700,50 @@ def test_the_winner_is_the_latest_direct_else_the_latest_unanswered_open(
     thread = fold(rows)[1]
 
     # The expectation is worked out from the rows alone, not from `fold`.
-    parsed = {
-        row_id: parse_statement(payload) for row_id, _at, payload in rows if payload is not None
-    }
-    standing = {row_id: s for row_id, s in parsed.items() if s is not None}
-    # An approval of something that does not stand is not itself a version.
-    for row_id, s in list(standing.items()):
-        if s.approves is not None and s.approves not in standing:
-            del standing[row_id]
-    rejected = {
-        s.of
-        for s in standing.values()
-        if s.kind == REJECTION and s.of in standing and standing[s.of].kind == OBLIGATION
-    }
-    approved = {
-        s.approves
-        for s in standing.values()
-        if s.approves is not None and s.approves in standing and s.subject == 1
-    }
-    direct = [i for i, s in standing.items() if s.kind == OBLIGATION and s.responsibility == DIRECT]
+    versions: list[tuple[int, Statement]] = []
+    rejected: set[int] = set()
+    approved: set[int] = set()
+    for row_id, _at, payload in rows:
+        statement = parse_statement(payload) if payload is not None else None
+        if statement is None:
+            continue
+        if statement.kind == REJECTION:
+            if statement.of in {i for i, _s in versions}:
+                rejected.add(statement.of)
+            continue
+        if statement.approves is not None:
+            proposal = dict(versions).get(statement.approves)
+            if (
+                proposal is None
+                or proposal.responsibility != OPEN
+                or statement.approves in approved | rejected
+            ):
+                continue
+            approved.add(statement.approves)
+        versions.append((row_id, statement))
+    if not versions:
+        assert fold(rows) == {}
+        return
+    thread = fold(rows)[1]
+    direct = [i for i, s in versions if s.responsibility == DIRECT]
     unanswered = [
         i
-        for i, s in standing.items()
-        if s.kind == OBLIGATION
-        and s.responsibility == OPEN
-        and i not in rejected
-        and i not in approved
+        for i, s in versions
+        if s.responsibility == OPEN and i not in rejected and i not in approved
     ]
-    expected = direct[-1] if direct else (unanswered[-1] if unanswered else None)
+    if direct:
+        expected, pending = direct[-1], [i for i in unanswered if i > direct[-1]]
+    else:
+        expected = unanswered[-1] if unanswered else None
+        pending = unanswered[:-1]
 
+    assert [version.id for version in thread.versions] == [i for i, _s in versions]
     winner = thread.winner()
     assert (winner.id if winner else None) == expected
+    assert [version.id for version in thread.pending()] == pending
     if direct:
         assert winner is not None
         assert winner.statement.responsibility == DIRECT
-        newer = [i for i in unanswered if i > direct[-1]]
-        assert [version.id for version in thread.pending()] == newer
-    else:
-        assert [version.id for version in thread.pending()] == unanswered
 
 
 # --- Changes --------------------------------------------------------------------
