@@ -29,7 +29,10 @@ from previously.core.assertion import ObligationBody
 from previously.core.assertion import OPEN
 from previously.core.assertion import overdue
 from previously.core.assertions import assertion_decisions
+from previously.core.assertions import erased_assertion
+from previously.core.assertions import read_source_events
 from previously.core.assertions import read_threads
+from previously.core.assertions import rejections_of
 from previously.core.assertions import source_identities
 from previously.core.assertions import thread_circles
 from previously.core.canonical import MAX_SAFE_INT
@@ -62,6 +65,7 @@ if TYPE_CHECKING:
     from previously.core.assertion import Statement
     from previously.core.assertion import Thread
     from previously.core.assertion import Version
+    from previously.core.assertions import SourceEvents
     from previously.core.decide import Decision
     from previously.core.policy import Client
     from previously.core.policy import Policy
@@ -558,10 +562,13 @@ def statement_lines(statement: Statement) -> list[str]:
     return lines
 
 
-def _history_lines(thread: Thread) -> list[str]:
+def _history_lines(
+    thread: Thread, rejections: Sequence[tuple[int, datetime, Statement]] = ()
+) -> list[str]:
     """Every standing version in chain order: who stated it, and what it
-    changed against the version before it."""
-    lines: list[str] = []
+    changed against the version before it; and among them the rejections,
+    each with its reason, as `previously obligation --history` shows them."""
+    shown: list[tuple[int, list[str]]] = []
     before: Statement | None = None
     for version in thread.versions:
         statement = version.statement
@@ -577,15 +584,20 @@ def _history_lines(thread: Thread) -> list[str]:
             head.append("approved")
         elif statement.approves is not None:
             head.append(f"approves {statement.approves}")
-        lines.append(" · ".join(head))
+        lines = [" · ".join(head)]
         if before is None:
             lines.extend(f"set {line}" for line in statement_lines(statement))
         else:
             lines.extend(
                 f"change {name}: {old} → {new}" for name, old, new in changes(before, statement)
             )
+        shown.append((version.id, lines))
         before = statement
-    return lines
+    for event_id, recorded_at, rejection in rejections:
+        head = f"rejection {event_id} · {iso_utc(recorded_at)} · {rejection.author}"
+        reason = _NONE if rejection.reason is None else rejection.reason
+        shown.append((event_id, [f"{head} · rejects {rejection.of}", f"reason: {reason}"]))
+    return [line for _event_id, lines in sorted(shown) for line in lines]
 
 
 def _label(thread: Thread, winner: Version | None, today: date) -> str:
@@ -602,18 +614,25 @@ def _label(thread: Thread, winner: Version | None, today: date) -> str:
     return f"{state} · {winner.statement.responsibility} · {versions} · {proposals}"
 
 
-def _listed(thread: Thread, listing: Listing) -> bool:
-    """Whether the filters that look at the winner keep the thread. Without
-    `proposals`, only an entry with a direct winner; with it, only one that
-    has a proposal pending or stands as one: a proposal never passes for an
-    entry that stands."""
+def _stands(thread: Thread, listing: Listing) -> bool:
+    """Whether the thread is an entry of the kind the call lists: one whose
+    winner stands. That much decides whether an entry is there at all, and
+    a placeholder says it too."""
     winner = thread.winner()
-    if thread.kind != listing.kind or winner is None or winner.statement.body is None:
-        return False
+    return thread.kind == listing.kind and winner is not None and winner.statement.body is not None
+
+
+def _kept(thread: Thread, listing: Listing) -> bool:
+    """Whether the filters that look at the content keep an entry the client
+    sees. Without `proposals`, an entry with a direct winner, a pending
+    proposal or not; with it, one that has a proposal pending or stands as
+    one: a proposal never passes for an entry that stands."""
+    winner = cast("Version", thread.winner())
+    body = cast("ObligationBody | DecisionBody", winner.statement.body)
     proposed = winner.statement.responsibility == OPEN
-    if listing.proposals != (proposed or bool(thread.pending())):
+    listed = (proposed or bool(thread.pending())) if listing.proposals else not proposed
+    if not listed:
         return False
-    body = winner.statement.body
     if listing.state is not None and body.state != listing.state:
         return False
     return not (
@@ -621,25 +640,32 @@ def _listed(thread: Thread, listing: Listing) -> bool:
     )
 
 
-def _entry[Conn](
-    log: LogStore[Conn],
-    conn: Conn,
+def _entry(
     policy: Policy,
     client: Client,
     thread: Thread,
     listing: Listing,
+    read: SourceEvents,
+    rejections: Sequence[tuple[int, datetime, Statement]] = (),
 ) -> Read | None:
-    """The entry of one thread, shown or as a placeholder, or `None` when the
-    circle filter drops it.
+    """The entry of one thread, shown or as a placeholder, or `None` when a
+    filter drops it.
 
     The policy decides over the identities of the sources of every standing
     version, one decision per distinct source, and the first that chooses
     nothing holds. The actors an assertion names are not in it: they say who
     owes or decided, and no more than that about the people in the sources.
-    A withheld entry is filtered by the circles of its sources alone, so that
-    a placeholder never tells which circle an actor belongs to.
+
+    The policy decides before any filter that looks at the content: a
+    withheld entry passes `state`, `overdue` and `proposals` whatever they
+    ask, so that the same placeholder appears under every one of them and
+    none of them tells what it holds. It is filtered by the circles of its
+    sources alone, so that a placeholder never tells which circle an actor
+    belongs to. With `listing.subject` no filter applies but the circle,
+    which the caller clears. The `rejections` are those a history shows, and
+    the policy decides over their sources too.
     """
-    identities, sources = source_identities(log, conn, thread)
+    identities, sources = read.of(thread, [rejection for _, _, rejection in rejections])
     decisions = assertion_decisions(policy, client, identities, sources)
     rules = tuple(sorted({rule for d in decisions for rule in _rules_of(policy, d)}))
     uri = event_uri(thread.subject)
@@ -653,13 +679,15 @@ def _entry[Conn](
         source = (tuple(sources) or (None,))[blocked]
         entry = Withheld(thread.subject, code, decision.circles, reason, uncovered, source)
         return Read(WithheldMark(uri, reason), entry, rules, thread.subject)
+    if listing.subject is None and not _kept(thread, listing):
+        return None
     winner = thread.winner()
     if listing.circle is not None and (
         winner is None or listing.circle not in thread_circles(policy, identities, winner.statement)
     ):
         return None
     if listing.history or winner is None:
-        lines = _history_lines(thread)
+        lines = _history_lines(thread, rejections)
     else:
         lines = statement_lines(winner.statement)
     item = Stated(uri, thread.kind, _label(thread, winner, listing.today), tuple(lines))
@@ -707,28 +735,44 @@ def assertions[Conn](
     as many as fill a page and one more if it exists; each shown, or a
     placeholder where the policy keeps it from this client.
 
-    With `listing.subject` the one entry, whatever the other filters say, or
-    the error that none of that kind stands under the id.
+    With `listing.subject` the one entry, whatever the other filters say;
+    the placeholder of an erased event when the id names an assertion an
+    erasure took and no entry stands under it; or the error that none of
+    that kind stands under the id.
+
+    An erased id answers as `get_event` answers it, to any client: the
+    kind of an event stays in the log, and whether the assertion was an
+    obligation or a decision went with its payload ({ref}`assertions-erasure`).
     """
     threads = read_threads(log, conn)
     if listing.subject is not None:
-        thread = threads.get(listing.subject)
+        subject = listing.subject
+        uri = event_uri(subject)
+        thread = threads.get(subject)
+        if thread is None and erased_assertion(log, conn, subject):
+            return Seen((Read(ErasedMark(uri), Delivered(subject, (), ()), event=subject),))
         if (
             thread is None
             or thread.kind != listing.kind
             or (thread.winner() is None and not listing.history)
         ):
-            uri = event_uri(listing.subject)
             message = f"no {listing.kind} stands under this id"
-            return Seen((Read(ErrorMark(uri, message), None, event=listing.subject),))
-        read = _entry(log, conn, policy, client, thread, replace(listing, circle=None))
+            return Seen((Read(ErrorMark(uri, message), None, event=subject),))
+        rejections = rejections_of(log, conn, thread) if listing.history else ()
+        beside = [rejection for _, _, rejection in rejections]
+        sources = read_source_events(log, conn, [thread], beside)
+        read = _entry(policy, client, thread, replace(listing, circle=None), sources, rejections)
         return Seen((cast("Read", read),))
+    names = [
+        name
+        for name in sorted(threads)
+        if (after is None or name > after) and _stands(threads[name], listing)
+    ]
+    sources = read_source_events(log, conn, [threads[name] for name in names])
     reads: list[Read] = []
     size = 0
-    for name in sorted(threads):
-        if (after is not None and name <= after) or not _listed(threads[name], listing):
-            continue
-        read = _entry(log, conn, policy, client, threads[name], listing)
+    for name in names:
+        read = _entry(policy, client, threads[name], listing, sources)
         if read is None:
             continue
         if size > PAGE_CHARS:

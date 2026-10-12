@@ -52,6 +52,8 @@ from previously.core.assertion import REJECTION
 from previously.core.assertion import Source
 from previously.core.assertion import Statement
 from previously.core.assertions import write_statements
+from previously.core.chain import link
+from previously.core.chain import prepare
 from previously.core.clients import add_client
 from previously.core.clients import revoke_client
 from previously.core.mail import map_mail
@@ -1626,6 +1628,135 @@ def test_one_entry_by_subject_and_its_history_with_what_each_version_changed(
     }
 
 
+def _rejection(proposal: int, *sources: Source, reason: str | None = None) -> Statement:
+    return Statement(REJECTION, OPERATOR, DIRECT, sources, reason, None, None, None, proposal, None)
+
+
+def _forged(world: World, statement: Statement) -> int:
+    """An assertion on the tip that did not come through `write_statements`."""
+    ready = prepare(
+        kind="assertion", occurred_at=T0, payload=payload_of(statement), units=(), key=None
+    )
+    with world.storage.begin() as conn:
+        tip = world.storage.tip(conn)
+        assert tip is not None
+        row, units = link(ready, event_id=tip.id + 1, prev_hash=tip.hash, recorded_at=T0)
+        world.storage.insert_event(conn, row, units, None)
+    return row.id
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_history_marks_approvals_and_rejections_and_shows_each_rejection_with_its_reason(
+    world: World, mode: str
+) -> None:
+    """Ruling F-18 of the 2026-10-12 assertions plan: the history shows a
+    rejection with its reason, as `previously obligation --history` does,
+    in chain order among the versions; and the marks of a version, which
+    no test held until then."""
+    scanned = _on(world, "attachments_only")
+    (first,) = _state(world, _obligation(scanned))
+    proposed = _obligation(scanned, subject=first, responsibility=OPEN, due=date(2099, 3, 1))
+    taken, refused = _state(world, proposed, proposed)
+    (approval, rejection) = _state(
+        world,
+        replace(proposed, responsibility=DIRECT, subject=first, approves=taken),
+        _rejection(refused, scanned, reason="not what was said"),
+    )
+
+    history = _text(_tool(world, mode, "list_obligations", {"subject": first, "history": True}))
+
+    at = "2026-10-11T12:00:00.000000Z"
+    assert f"version {taken} · {at} · open · model:claude-code · approved\n" in history
+    assert f"version {refused} · {at} · open · model:claude-code · rejected\n" in history
+    assert f"version {approval} · {at} · direct · model:claude-code · approves {taken}\n" in (
+        history
+    )
+    assert (
+        f"rejection {rejection} · {at} · human:operator · rejects {refused}\n"
+        "reason: not what was said\n"
+    ) in history
+    assert history.index(f"version {approval} ") < history.index(f"rejection {rejection} ")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_entry_without_a_version_that_stands_shows_its_history_and_says_so(
+    world: World, mode: str
+) -> None:
+    scanned = _on(world, "attachments_only")
+    (proposed,) = _state(world, _obligation(scanned, responsibility=OPEN))
+    _state(world, _rejection(proposed, scanned))
+
+    history = _text(_tool(world, mode, "list_obligations", {"subject": proposed, "history": True}))
+    entry = _text(_tool(world, mode, "list_obligations", {"subject": proposed}))
+
+    assert (
+        f"### previously://event/{proposed} · obligation · no version stands · "
+        "1 version · 0 proposals\n"
+    ) in history
+    assert "rejects" in history
+    assert "reason: none" in history
+    assert f"Error: previously://event/{proposed} — no obligation stands under this id" in entry
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_rejection_on_a_withheld_source_withholds_the_history_that_shows_it(
+    world: World, mode: str
+) -> None:
+    """A rejection takes the sources of its proposal; one written around the
+    write path that did not would show its reason under a decision that
+    never looked at its sources. The entry without its history, which shows
+    no rejection, is the control."""
+    scanned = _on(world, "attachments_only")
+    (first,) = _state(world, _obligation(scanned))
+    (proposed,) = _state(world, _obligation(scanned, subject=first, responsibility=OPEN))
+    _forged(world, _rejection(proposed, Source(world.ids["plain"], None), reason=PRIVATE_TEXT))
+
+    history = _text(_tool(world, mode, "list_obligations", {"subject": first, "history": True}))
+    entry = _text(_tool(world, mode, "list_obligations", {"subject": first}))
+
+    assert f"[withheld: previously://event/{first} — circle team has no rule" in history
+    assert PRIVATE_TEXT not in history
+    assert _shown_ids(entry) == [first]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_id_whose_versions_are_all_erased_answers_erased_and_leaves_the_lists(
+    world: World, mode: str
+) -> None:
+    """Ruling F-18 of the 2026-10-12 assertions plan: the placeholder of an
+    erased event, as `get_event` gives it, for either kind and with or
+    without the history, since the kind went with the payload. The entry
+    whose first version alone is erased still stands under its id and is
+    the control."""
+    scanned = _on(world, "attachments_only")
+    gone, kept = _state(world, _obligation(scanned), _obligation(scanned, what="kept"))
+    (later,) = _state(world, _obligation(scanned, subject=gone))
+    _state(world, _obligation(scanned, subject=kept))
+    for erased in (gone, later, kept):
+        redact_event(world.storage, world.storage, erased, reason="test", recorded_at=T0)
+
+    for tool, arguments in (
+        ("list_obligations", {"subject": gone}),
+        ("list_decisions", {"subject": gone}),
+        ("list_obligations", {"subject": gone, "history": True}),
+        ("list_obligations", {"subject": later}),
+    ):
+        page = _text(_tool(world, mode, tool, arguments))
+        assert page.splitlines()[-1] == f"[erased: previously://event/{arguments['subject']}]"
+        (delivered,) = _last_access(world).access.delivered
+        assert (delivered.event, delivered.units, delivered.circles) == (
+            arguments["subject"],
+            (),
+            (),
+        )
+    assert _shown_ids(_text(_tool(world, mode, "list_obligations"))) == [kept]
+    assert _shown_ids(_text(_tool(world, mode, "list_obligations", {"subject": kept}))) == [kept]
+
+
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_a_subject_that_is_not_an_entry_of_this_kind_is_an_error_line_and_a_page(
@@ -1678,6 +1809,60 @@ def test_a_proposal_is_listed_only_with_proposals_and_never_passes_for_an_entry(
         "proposals": True,
         "history": False,
     }
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_direct_entry_with_a_pending_proposal_is_listed_and_counted_among_the_proposals(
+    world: World, mode: str
+) -> None:
+    """A proposal pending on an entry that stands directly leaves the entry
+    in the default list, labelled with the proposal, and puts it in the
+    proposals list too, as `previously obligations` does."""
+    scanned = _on(world, "attachments_only")
+    (standing,) = _state(world, _obligation(scanned))
+    _state(world, _obligation(scanned, subject=standing, responsibility=OPEN, what="later"))
+
+    plain = _text(_tool(world, mode, "list_obligations"))
+    proposals = _text(_tool(world, mode, "list_obligations", {"proposals": True}))
+
+    assert _shown_ids(plain) == [standing]
+    assert "obligation · open · direct · 2 versions · 1 proposal" in plain
+    assert _shown_ids(proposals) == [standing]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_placeholder_is_the_same_under_every_filter_that_looks_at_the_content(
+    world: World, mode: str
+) -> None:
+    """The policy decides before `state`, `overdue` and `proposals` look at
+    an entry: were it the other way round, which of them keeps a placeholder
+    would tell what the withheld entry holds. The visible entry beside it is
+    the control: the filters still apply to what the client sees."""
+    hidden, shown = _state(
+        world,
+        _obligation(Source(world.ids["plain"], None), due=FAR_FUTURE),
+        _obligation(_on(world, "attachments_only"), due=FAR_FUTURE),
+    )
+    placeholder = f"[withheld: previously://event/{hidden} — "
+
+    def listed(arguments: dict[str, Any]) -> tuple[list[str], list[int]]:
+        page = _text(_tool(world, mode, "list_obligations", arguments))
+        marks = [line for line in page.splitlines() if line.startswith(placeholder)]
+        return marks, _shown_ids(page)
+
+    everything, visible = listed({})
+    assert len(everything) == 1
+    assert visible == [shown]
+    for arguments, expected in (
+        ({"state": "open"}, [shown]),
+        ({"state": "fulfilled"}, []),
+        ({"overdue": True}, []),
+        ({"overdue": False}, [shown]),
+        ({"proposals": True}, []),
+    ):
+        assert listed(arguments) == (everything, expected), arguments
 
 
 @pytest.mark.db
@@ -2208,6 +2393,28 @@ def test_write_approve_passes_on_why_a_proposal_the_client_sees_cannot_be_approv
     assert again == f"Error: the proposal {proposal} is already approved"
     assert not_one == f"Error: the version {direct} is no proposal: it is direct"
     assert len(_assertions(world)) == 3  # the proposal, one approval, the direct one
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_approve_refuses_a_proposal_a_later_direct_version_overtook(
+    world: World, mode: str
+) -> None:
+    """Ruling F-17 of the 2026-10-12 assertions plan over MCP; the preview
+    of a rejection of the same proposal is the control."""
+    (owned,) = _state(world, _obligation(_on(world, "attachments_only")))
+    (stale,) = _state(
+        world, _obligation(_on(world, "attachments_only"), subject=owned, responsibility=OPEN)
+    )
+    (newer,) = _state(world, _obligation(_on(world, "attachments_only"), subject=owned))
+
+    refused = _text(_write(world, mode, "write_approve", {"ids": [stale]}))
+    rejected = _text(_write(world, mode, "write_reject", {"proposal": stale}))
+
+    assert refused == (
+        f"Error: the proposal {stale} is overtaken: the direct version {newer} came after it"
+    )
+    assert _handle(rejected)
 
 
 @pytest.mark.db

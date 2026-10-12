@@ -48,6 +48,7 @@ from previously.storage.keys import DirectoryKeys
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import Engine
 from sqlalchemy import text
+from typing import cast
 from typing import TYPE_CHECKING
 
 import io
@@ -1731,6 +1732,32 @@ def test_an_approval_or_rejection_without_the_sources_of_its_proposal_is_a_findi
         Finding(approval, "approval does not take the sources of its proposal"),
         Finding(rejection, "rejection does not take the sources of its proposal"),
         Finding(again, "rejection of a proposal that is already approved or rejected"),
+    ]
+
+
+@pytest.mark.db
+def test_an_approval_with_other_content_or_another_author_is_a_finding(db: Engine) -> None:
+    """An approval says the operator made the proposal their own: one with
+    another `what` or another author than its proposal says it of something
+    the proposal never said. The approval with a reason of its own is the
+    control: the reason may differ."""
+    storage = _with_mail(db)
+    proposal = _owed(responsibility=OPEN)
+    first, second, third = _asserted(storage, proposal, proposal, proposal)
+    approval = replace(proposal, responsibility=DIRECT, subject=first, approves=first)
+    body = cast("ObligationBody", proposal.body)
+    other_what = _forged(storage, payload_of(replace(approval, body=replace(body, what="else"))))
+    other_author = _forged(
+        storage,
+        payload_of(
+            replace(approval, subject=second, approves=second, author=model_author("other"))
+        ),
+    )
+    _asserted(storage, replace(approval, subject=third, approves=third, reason="my own words"))
+
+    assert verify(storage) == [
+        Finding(other_what, "approval does not take the content and the author of its proposal"),
+        Finding(other_author, "approval does not take the content and the author of its proposal"),
     ]
 
 

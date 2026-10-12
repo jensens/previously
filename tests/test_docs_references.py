@@ -573,6 +573,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         ("For each unit it skips, one notice goes to standard error", 1),
         ("one notice goes to standard error, naming the blob and those events", 2),
         ("When a string anywhere in the payload of the target", 1),
+        ("For each approval that stands of the target, one notice goes to standard error", 1),
         ("`redact` prints one of two lines to standard output", 2),
         ("`migrate` prints one line to standard output, in one of two forms", 3),
         ("When no event names the blob, `blob get` returns 1", 1),
@@ -1586,8 +1587,9 @@ def _assertions_section() -> str:
 
 def test_the_assertions_reference_quotes_only_sentences_the_code_says() -> None:
     """Every `Error: ` the "Assertions" section of `cli.md` quotes, in a block
-    or inline, is a message `cli.py` raises or, behind an option name, one
-    that `core/assertion.py` returns; and the hint is the sentence `cli.py`
+    or inline, is a message `cli.py` raises, one the write path in
+    `core/assertions.py` refuses with, or, behind an option name, one that
+    `core/assertion.py` returns; and the hint is the sentence `cli.py`
     builds. A sentence changed on the page alone, or in the code alone, fails.
 
     Measured on 2026-10-12: with `already approved` turned into `already
@@ -1602,7 +1604,10 @@ def test_the_assertions_reference_quotes_only_sentences_the_code_says() -> None:
     source = ROOT / "src" / "previously"
     own = [
         parts
-        for parts in _raised_patterns(source / "cli.py", "PreviouslyError")
+        for parts in [
+            *_raised_patterns(source / "cli.py", "PreviouslyError"),
+            *_raised_patterns(source / "core" / "assertions.py", "AssertionRefused"),
+        ]
         if len("".join(parts)) >= 10
     ]
     core = _message_patterns(source / "core" / "assertion.py")
@@ -1707,11 +1712,22 @@ def _write_proposals(db: Engine) -> None:
 
 
 def test_the_reference_quotes_the_findings_about_assertions() -> None:
-    """The fifteen findings `verify` reports about an assertion, as `cli.md`
+    """The sixteen findings `verify` reports about an assertion, as `cli.md`
     quotes them under `verify`: each a reason `core/verify.py` gives, with the
     first fault of the form, behind `assertion has no valid form: `, held
     against the sentences `core/assertion.py` returns. Every finding the code
     gives about an assertion is quoted, so a new one fails here too.
+
+    "Every finding" has three limits, all in how the code's side is
+    collected. A reason counts only when it opens with one of the four
+    words in `starts`: a new finding that opened with another would be
+    missed, and the page could leave it out. A reason handed to `Finding`
+    counts only as a plain string, so one with an interpolation would be
+    missed the same way; the one there is, the fault of the form, is held
+    against `core/assertion.py` instead. And a returned reason counts only
+    from the three functions named below, which is why `_untaken` joined
+    them on 2026-10-12, when the approval's content and author came to be
+    compared there.
 
     Measured on 2026-10-12: `approval names no open proposal of its subject`
     turned into `... of its entry` on the page goes red, and so does a block
@@ -1720,14 +1736,18 @@ def test_the_reference_quotes_the_findings_about_assertions() -> None:
     page = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
     verify = ROOT / "src" / "previously" / "core" / "verify.py"
     literal = {parts[0] for parts in _finding_patterns(verify) if len(parts) == 1}
-    returned = _string_constants(verify, "_rejection") | _string_constants(verify, "_version")
+    returned = (
+        _string_constants(verify, "_rejection")
+        | _string_constants(verify, "_version")
+        | _string_constants(verify, "_untaken")
+    )
     forms = _message_patterns(ROOT / "src" / "previously" / "core" / "assertion.py")
     starts = ("assertion ", "approval ", "rejection ", "decision ")
     in_code = {text for text in literal | returned if text.startswith(starts)}
     form_prefix = "assertion has no valid form: "
     quoted: set[str] = set()
-    lines = _quoted_block(page, "Fifteen findings come from assertions")
-    assert len(lines) == 15, lines
+    lines = _quoted_block(page, "Sixteen findings come from assertions")
+    assert len(lines) == 16, lines
     for line in lines:
         prefix, _, reason = line.partition(": ")
         assert re.fullmatch(r"FINDING [0-9]+", prefix), line

@@ -39,19 +39,23 @@ terminal, in a log of the MCP server, or in front of a client that may not see
 the sources.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from dataclasses import field
 from previously.core.action import retrying
 from previously.core.append import MAX_BATCH
 from previously.core.assertion import assertion_problem
 from previously.core.assertion import DecisionBody
+from previously.core.assertion import DIRECT
 from previously.core.assertion import fold
 from previously.core.assertion import ObligationBody
 from previously.core.assertion import OPEN
+from previously.core.assertion import parse_statement
 from previously.core.assertion import payload_of
 from previously.core.assertion import REJECTION
 from previously.core.assertion import Source
 from previously.core.assertion import Statement
+from previously.core.canonical import canonical
 from previously.core.chain import link
 from previously.core.chain import prepare
 from previously.core.decide import Candidate
@@ -67,7 +71,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Iterable
-    from collections.abc import Mapping
     from collections.abc import Sequence
     from datetime import datetime
     from previously.contract.rows import EventRow
@@ -110,6 +113,29 @@ def read_threads[Conn](log: LogStore[Conn], conn: Conn) -> dict[int, Thread]:
     the log. Nothing is kept beside the log: the state is computed, and an
     erased version falls out of it the moment it is erased."""
     return fold(_rows(log, conn))
+
+
+def rejections_of[Conn](
+    log: LogStore[Conn], conn: Conn, thread: Thread
+) -> tuple[tuple[int, datetime, Statement], ...]:
+    """The rejections that stand of versions of `thread`, in chain order,
+    each with its id and the time it was recorded: a history shows them
+    beside the versions, with their reason."""
+    named = {version.id for version in thread.versions}
+    found: list[tuple[int, datetime, Statement]] = []
+    for event_id, recorded_at, payload in _rows(log, conn):
+        statement = None if payload is None else parse_statement(payload)
+        if statement is not None and statement.kind == REJECTION and statement.of in named:
+            found.append((event_id, recorded_at, statement))
+    return tuple(found)
+
+
+def erased_assertion[Conn](log: LogStore[Conn], conn: Conn, event_id: int) -> bool:
+    """Whether `event_id` is an assertion an erasure took. Its kind stays in
+    the log and its payload does not, so whether it was an obligation or a
+    decision, a first version or a later one, is gone with it."""
+    row = log.events_by_id(conn, [event_id]).get(event_id)
+    return row is not None and row.kind == ASSERTION and row.payload is None
 
 
 def sources_named(payload: Mapping[str, object]) -> tuple[Source, ...]:
@@ -183,6 +209,7 @@ class _View:
     versions: dict[int, tuple[int, Statement]] = field(default_factory=lambda: {})
     approved: set[int] = field(default_factory=lambda: set[int]())
     rejected: set[int] = field(default_factory=lambda: set[int]())
+    direct: dict[int, int] = field(default_factory=lambda: {})  # name -> latest direct version
 
     @classmethod
     def of(cls, threads: Mapping[int, Thread]) -> _View:
@@ -190,10 +217,15 @@ class _View:
         for name, thread in threads.items():
             view.kinds[name] = thread.kind
             for version in thread.versions:
-                view.versions[version.id] = (name, version.statement)
+                view.join(name, version.id, version.statement)
             view.approved |= thread.approved
             view.rejected |= thread.rejected
         return view
+
+    def join(self, name: int, event_id: int, statement: Statement) -> None:
+        self.versions[event_id] = (name, statement)
+        if statement.responsibility == DIRECT:
+            self.direct[name] = event_id
 
     def add(self, event_id: int, statement: Statement) -> None:
         if statement.kind == REJECTION:
@@ -201,7 +233,7 @@ class _View:
             return
         name = event_id if statement.subject is None else statement.subject
         self.kinds.setdefault(name, statement.kind)
-        self.versions[event_id] = (name, statement)
+        self.join(name, event_id, statement)
         if statement.approves is not None:
             self.approved.add(statement.approves)
 
@@ -270,6 +302,17 @@ def _check_version(view: _View, statement: Statement) -> None:
             f"approves names {approves}, which is no proposal of the subject {subject}"
         )
     proposal = _proposal(view, approves)
+    # Only a proposal that is pending, or stands as the entry's proposal, is
+    # approved: one that a direct version after it overtook was made against
+    # an entry that no longer stands, and approving it would put its older
+    # content back over the newer. Rejecting it stays allowed
+    # ({ref}`assertions-approval`; ruling F-17 of the 2026-10-12 assertions
+    # plan).
+    newer = view.direct.get(cast("int", subject), 0)
+    if newer > approves:
+        raise AssertionRefused(
+            f"the proposal {approves} is overtaken: the direct version {newer} came after it"
+        )
     # Approving is making the proposal one's own: the content, the sources
     # and the author stay, and only the responsibility changes.
     # The reason may be the approver's.
@@ -345,6 +388,14 @@ def _check_batch(statements: Sequence[Statement]) -> list[Mapping[str, object]]:
         problem = assertion_problem(payload)
         if problem is not None:
             raise AssertionRefused(f"a statement has no valid form: {problem}")
+        # The canonical form, which `prepare` would refuse later, is checked
+        # here, so that `check_statements` refuses it too and nobody is asked
+        # to confirm what the write then refuses. It names a path and what it
+        # refused, never the string it found there.
+        try:
+            canonical(payload)
+        except InvalidPayload as error:
+            raise AssertionRefused(f"a statement cannot be written: {error}") from error
         payloads.append(payload)
     return payloads
 
@@ -352,16 +403,11 @@ def _check_batch(statements: Sequence[Statement]) -> list[Mapping[str, object]]:
 def _prepare(payloads: Sequence[Mapping[str, object]], recorded_at: datetime) -> list[Prepared]:
     """Prepared once, before the first attempt, as `append` prepares: the
     payload does not depend on anything read under the lock, and a retry only
-    links again."""
-    try:
-        return [
-            prepare(kind=ASSERTION, occurred_at=recorded_at, payload=p, units=(), key=None)
-            for p in payloads
-        ]
-    except InvalidPayload as error:
-        # The canonical form names a path and what it refused, never the
-        # string it found there.
-        raise AssertionRefused(f"a statement cannot be written: {error}") from error
+    links again. `_check_batch` has refused what the canonical form would."""
+    return [
+        prepare(kind=ASSERTION, occurred_at=recorded_at, payload=p, units=(), key=None)
+        for p in payloads
+    ]
 
 
 def _repeated(
@@ -431,17 +477,17 @@ def write_statements[Conn](
     A batch whose handle an assertion in the log carries already writes
     nothing and returns the ids of the assertions that carry it and still
     stand: confirming twice is harmless ({ref}`mcp-writing`; decision 9 of
-    the 2026-10-12 assertions plan). The module
-    docstring says in which order the rest happens and why.
+    the 2026-10-12 assertions plan). The module docstring says in which
+    order the rest happens and why.
 
     The handle lives in the payload, and an erasure takes the payload, so a
     batch whose assertions were all erased since is written again when its
-    handle comes back. That is accepted ({ref}`assertions-limits`; ruling
-    F-7 of the 2026-10-12 assertions plan): the operator erased them, a
-    handle lives ten minutes at most, and the client holds the text anyway.
-    A source key would survive the erasure, and would be a second truth
-    beside the payload. Where only
-    some of the batch were erased, the ids of the ones that stand come back.
+    handle comes back. That is accepted ({ref}`assertions-limits`;
+    ruling F-7 of the 2026-10-12 assertions plan): the operator erased
+    them, a handle lives ten minutes at most, and the client holds the text
+    anyway. A source key would survive the erasure, and would be a second
+    truth beside the payload. Where only some of the batch were erased, the
+    ids of the ones that stand come back.
 
     The caller guarantees that one handle means one content: the lookup
     compares the handle and nothing else. Decision 9 has the MCP server seal
@@ -465,8 +511,9 @@ def write_statements[Conn](
         top = 0 if tip is None else tip.id
         # Every assertion in the log, read in this transaction: fine at the
         # volumes of the pilot, and what an index or a projection would
-        # remove. The final review of the 2026-10-12 assertions plan
-        # measures it at 5 000 assertions ({ref}`assertions-folded`).
+        # remove. Measured on 2026-10-12 at 5,000 assertions, medians of
+        # three: writing one statement took 162 ms, and folding them all on
+        # their own 150 ms ({ref}`assertions-folded`).
         below = _rows(log, conn, up_to=top)
         repeated = _repeated(below, handle)
         if repeated:
@@ -500,29 +547,82 @@ def _identities(payload: Mapping[str, object]) -> list[Mapping[str, object]]:
     ]
 
 
+def _source_events(threads: Iterable[Thread], beside: Iterable[Statement] = ()) -> list[int]:
+    statements = [v.statement for thread in threads for v in thread.versions]
+    return sorted({s.event for statement in [*statements, *beside] for s in statement.sources})
+
+
+@dataclass(frozen=True)
+class SourceEvents:
+    """What the policy needs of the source events of the threads one call
+    reads: the identities each event names and the source each came from,
+    read together by `read_source_events` and looked up per thread by `of`.
+
+    A list decides the policy for every entry it may show, and read one
+    event at a time, the source events were most of the time a list took.
+    Measured on 2026-10-12 at 5,000 assertions, medians of three: the first
+    page of `list_obligations` took 941 ms before and 225 ms after, and
+    `previously obligations --circle` 2,824 ms before and 193 ms after
+    ({ref}`assertions-folded`).
+    """
+
+    read: frozenset[int]  # every event asked for, erased and missing ones included
+    identities: Mapping[int, tuple[Mapping[str, object], ...]]  # an event that stands
+    sources: Mapping[int, str]  # an event with a source key
+
+    def of(
+        self, thread: Thread, beside: Sequence[Statement] = ()
+    ) -> tuple[list[Mapping[str, object]], tuple[str | None, ...]]:
+        """The identities of every source event of every standing version of
+        the thread, and of the statements `beside` it, together, and the
+        distinct sources (the `source` of the source key, `None` for an event
+        without one) of those events, in the order of the events.
+
+        Every version and not only the winner: a list shows the winner and
+        counts the proposals, and the history shows them all, so the
+        strictest rule among all of them is the one that holds. A history
+        shows the rejections too, and passes them `beside`: a rejection takes
+        the sources of its proposal, and one written around the write path
+        that did not would otherwise show its reason under a decision that
+        never looked at its sources. An event read as erased adds no
+        identity; the cascade has erased an assertion on it by then.
+
+        A thread with a source event that was not read is refused with a
+        `ValueError`: an event left out would add no identity, and the policy
+        would decide over fewer people than the sources name.
+        """
+        events = _source_events([thread], beside)
+        if not self.read.issuperset(events):
+            raise ValueError("the source events of this thread were not read")
+        identities = [found for e in events for found in self.identities.get(e, ())]
+        return identities, tuple(dict.fromkeys(self.sources.get(e) for e in events))
+
+
+def read_source_events[Conn](
+    log: LogStore[Conn], conn: Conn, threads: Iterable[Thread], beside: Iterable[Statement] = ()
+) -> SourceEvents:
+    """The source events of every standing version of `threads`, and of the
+    statements `beside` them, in two queries whatever their number: the rows
+    and the source keys."""
+    events = _source_events(threads, beside)
+    rows = log.events_by_id(conn, events)
+    keys = log.source_keys(conn, events)
+    return SourceEvents(
+        frozenset(events),
+        {
+            event_id: tuple(_identities(row.payload))
+            for event_id, row in rows.items()
+            if row.payload is not None
+        },
+        {event_id: key[0] for event_id, key in keys.items()},
+    )
+
+
 def source_identities[Conn](
     log: LogStore[Conn], conn: Conn, thread: Thread
 ) -> tuple[list[Mapping[str, object]], tuple[str | None, ...]]:
-    """The identities of every source event of every standing version of the
-    thread, together, and the distinct sources (the `source` of the source
-    key, `None` for an event without one) of those events, in the order of
-    the events.
-
-    Every version and not only the winner: a list shows the winner and counts
-    the proposals, and the history shows them all, so the strictest rule
-    among all of them is the one that holds. An event read as erased adds no
-    identity; the cascade has erased an assertion on it by then.
-    """
-    events = sorted({s.event for version in thread.versions for s in version.statement.sources})
-    keys = log.source_keys(conn, events)
-    identities: list[Mapping[str, object]] = []
-    for event_id in events:
-        row = next(iter(log.read(conn, event_id, 1)), None)
-        if row is None or row.id != event_id or row.payload is None:
-            continue
-        identities.extend(_identities(row.payload))
-    sources = tuple(dict.fromkeys(keys[e][0] if e in keys else None for e in events))
-    return identities, sources
+    """`SourceEvents.of` for one thread, read for it alone."""
+    return read_source_events(log, conn, [thread]).of(thread)
 
 
 def assertion_decisions(

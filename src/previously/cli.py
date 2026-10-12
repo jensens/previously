@@ -42,16 +42,16 @@ from previously.core.assertion import ObligationBody
 from previously.core.assertion import OPEN
 from previously.core.assertion import OPERATOR
 from previously.core.assertion import overdue
-from previously.core.assertion import parse_statement
 from previously.core.assertion import payload_of
 from previously.core.assertion import reference_problem
 from previously.core.assertion import REJECTION
 from previously.core.assertion import Source as AssertionSource
 from previously.core.assertion import Statement as AssertionStatement
-from previously.core.assertions import ASSERTION
 from previously.core.assertions import check_statements
+from previously.core.assertions import erased_assertion
+from previously.core.assertions import read_source_events
 from previously.core.assertions import read_threads
-from previously.core.assertions import source_identities
+from previously.core.assertions import rejections_of
 from previously.core.assertions import thread_circles
 from previously.core.assertions import write_statements
 from previously.core.blob import fetch_blob
@@ -1339,12 +1339,14 @@ def _cmd_redact(args: argparse.Namespace) -> int:
         result = _redact(storage, args)
         deletion = _delete_obsolete(result)
         catching_up = _catch_up_after(storage)
+        approvals = _approvals_of(storage, args)
     left = [step for step in (deletion, catching_up) if step is not None]
     if left:
         # The units are erased whether or not what follows is finished, and
         # the payload is left as it was either way, so the notice comes beside
         # the sentence of the unfinished redaction too.
         _notice_payload(result, args)
+        _notice_approvals(approvals, args)
         raise _unfinished(result.redaction_id, ", and ".join(left))
     print(_redacted_line(result))
     for event_id in result.cascaded:
@@ -1355,6 +1357,7 @@ def _cmd_redact(args: argparse.Namespace) -> int:
     for address, users in result.kept_blobs.items():
         print(_kept_line(address, users), file=sys.stderr)
     _notice_payload(result, args)
+    _notice_approvals(approvals, args)
     return 0
 
 
@@ -1363,6 +1366,36 @@ def _notice_payload(result: Redacted, args: argparse.Namespace) -> None:
     the target holds the wording of a unit the redaction erased."""
     if result.payload_holds_wording:
         print(_payload_line(args.event_id), file=sys.stderr)
+
+
+def _approvals_of(storage: PostgresStorage, args: argparse.Namespace) -> list[int]:
+    """The approvals that stand of the event `redact event` erased, read
+    after the erasure: none for any other target.
+
+    An approval is a whole statement with the proposal's words and its own
+    sources, and it stands when its proposal is erased on its own
+    ({ref}`assertions-erasure`). Erasing the proposal takes its words out of
+    the proposal and leaves them in the approval, which the line on standard
+    output would not say."""
+    if args.target != "event":
+        return []
+    with storage.snapshot() as conn:
+        threads = read_threads(storage, conn)
+    return sorted(
+        version.id
+        for thread in threads.values()
+        for version in thread.versions
+        if version.statement.approves == args.event_id
+    )
+
+
+def _notice_approvals(approvals: Sequence[int], args: argparse.Namespace) -> None:
+    for approval in approvals:
+        print(
+            f"the approval {approval} still carries the words of the proposal "
+            f"{args.event_id}; redact event {approval} to erase them too",
+            file=sys.stderr,
+        )
 
 
 def _cmd_project(_args: argparse.Namespace) -> int:
@@ -2454,7 +2487,6 @@ def _entries(
     winner; with it, only one that has a pending proposal or stands as one.
     A proposal never passes for a valid entry."""
     today = _utc_today()
-    policy = read_policy(storage, conn) if args.circle is not None else None
     entries: list[tuple[Thread, Version]] = []
     for subject in sorted(threads):
         thread = threads[subject]
@@ -2463,14 +2495,17 @@ def _entries(
             continue
         proposed = winner.statement.responsibility == OPEN
         listed = (proposed or bool(thread.pending())) if args.proposals else not proposed
-        if not listed or not _kept(winner.statement.body, args, today):
-            continue
-        if policy is not None:
-            identities, _sources = source_identities(storage, conn, thread)
-            if args.circle not in thread_circles(policy, identities, winner.statement):
-                continue
-        entries.append((thread, winner))
-    return entries
+        if listed and _kept(winner.statement.body, args, today):
+            entries.append((thread, winner))
+    if args.circle is None:
+        return entries
+    policy = read_policy(storage, conn)
+    sources = read_source_events(storage, conn, [thread for thread, _winner in entries])
+    return [
+        (thread, winner)
+        for thread, winner in entries
+        if args.circle in thread_circles(policy, sources.of(thread)[0], winner.statement)
+    ]
 
 
 def _replaced_by(threads: Mapping[int, Thread]) -> dict[int, int]:
@@ -2669,30 +2704,24 @@ def _history_lines(
     return lines
 
 
-def _rejections_of(
-    storage: PostgresStorage, conn: Connection, thread: Thread
-) -> list[tuple[int, datetime, AssertionStatement]]:
-    named = {version.id for version in thread.versions}
-    found: list[tuple[int, datetime, AssertionStatement]] = []
-    for row in storage.read_by_kind(conn, ASSERTION):
-        statement = None if row.payload is None else parse_statement(row.payload)
-        if statement is not None and statement.kind == REJECTION and statement.of in named:
-            found.append((row.id, row.recorded_at, statement))
-    return found
-
-
 def _show_assertion(args: argparse.Namespace, kind: str) -> int:
     today = _utc_today()
     with _storage() as storage, storage.snapshot() as conn:
         threads = read_threads(storage, conn)
         thread = threads.get(args.id)
         winner = None if thread is None else thread.winner()
+        # An id an erasure took says so rather than that nothing stands: the
+        # kind of the event stays, and whether it was an obligation or a
+        # decision went with its payload ({ref}`assertions-erasure`).
+        if thread is None and erased_assertion(storage, conn, args.id):
+            print(f"assertion {args.id} is erased", file=sys.stderr)
+            return 1
         # A history exists while a version stands, whether or not one wins.
         if thread is None or thread.kind != kind or (winner is None and not args.history):
             print(f"no {kind} stands under event {args.id}", file=sys.stderr)
             return 1
         if args.history or winner is None:
-            lines = _history_lines(thread, _rejections_of(storage, conn, thread))
+            lines = _history_lines(thread, rejections_of(storage, conn, thread))
         else:
             lines = _entry_lines(thread, winner, today, _replaced_by(threads).get(thread.subject))
     for line in lines:

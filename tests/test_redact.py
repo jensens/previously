@@ -681,6 +681,9 @@ class _ContestedLog:
     def read(self, conn: Connection, from_id: int, limit: int) -> Iterator[EventRow]:
         return self._inner.read(conn, from_id, limit)
 
+    def events_by_id(self, conn: Connection, event_ids: Sequence[int]) -> dict[int, EventRow]:
+        return self._inner.events_by_id(conn, event_ids)
+
     def units_by_event(
         self, conn: Connection, event_ids: Sequence[int]
     ) -> dict[int, list[UnitRow]]:

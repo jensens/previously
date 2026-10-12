@@ -41,6 +41,7 @@ from previously.core.action import POLICY
 from previously.core.action import REDACTION
 from previously.core.assertion import assertion_problem
 from previously.core.assertion import DecisionBody
+from previously.core.assertion import ObligationBody
 from previously.core.assertion import OPEN
 from previously.core.assertion import parse_statement
 from previously.core.assertion import REJECTION
@@ -497,13 +498,32 @@ class _Erasures:
 @dataclass(frozen=True)
 class _Joined:
     """A version of an obligation or a decision that stands in its thread:
-    its kind, the name of its thread, its responsibility, and its sources,
-    which an approval or a rejection of it has to take unchanged."""
+    its kind, the name of its thread, its responsibility, and what an
+    approval or a rejection of it has to take unchanged: its sources, and
+    for an approval its content and its author too."""
 
     kind: str
     thread: int
     responsibility: str
     sources: tuple[Source, ...]
+    body: ObligationBody | DecisionBody | None
+    author: str
+
+
+def _untaken(approval: Statement, proposal: _Joined) -> str | None:
+    """What an approval of a standing proposal does not take unchanged.
+
+    The fold counts it all the same. One with other content or another
+    author would say that the operator made the proposal their own when
+    they made something else theirs; one that left a source out would
+    outlive the erasure of that source with the proposal's content. The
+    reason may differ: it is the approver's.
+    """
+    if approval.body != proposal.body or approval.author != proposal.author:
+        return "approval does not take the content and the author of its proposal"
+    if approval.sources != proposal.sources:
+        return "approval does not take the sources of its proposal"
+    return None
 
 
 class _Assertions:
@@ -518,6 +538,16 @@ class _Assertions:
     What it keeps is one small entry per assertion, and the sources of every
     assertion that stands, to be held against the erasures and the units of
     their events once the pass has ended.
+
+    Its limit: an approval that names an erased assertion is accepted,
+    whatever that assertion was. An approval of a proposal erased on its own
+    stands, as the fold has it (ruling F-5 of the 2026-10-12 assertions
+    plan), and the erasure took the payload that said whether the erased
+    assertion was a proposal, of which thread, and with what content. So a
+    hand-written approval that names an erased direct version, an erased
+    rejection or an erased proposal of another thread is no finding, and
+    neither is one whose content its erased proposal never held
+    ({ref}`assertions-limits`).
     """
 
     def __init__(self) -> None:
@@ -628,17 +658,18 @@ class _Assertions:
                 proposal = self._named(approves)
                 if proposal is None or not self._open(proposal) or proposal.thread != subject:
                     return "approval names no open proposal of its subject"
-                # The fold counts it all the same; what differs is that it
-                # would outlive the erasure of a source it left out, with the
-                # proposal's content.
-                if statement.sources != proposal.sources:
-                    reason = "approval does not take the sources of its proposal"
+                reason = _untaken(statement, proposal)
             if self._answered(approves):
                 return "approval of a proposal that is already approved or rejected"
             self._approved.add(approves)
         self._threads.setdefault(subject, statement.kind)
         self._joined[event_id] = _Joined(
-            statement.kind, subject, statement.responsibility, statement.sources
+            statement.kind,
+            subject,
+            statement.responsibility,
+            statement.sources,
+            statement.body,
+            statement.author,
         )
         return reason
 

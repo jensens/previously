@@ -38,6 +38,7 @@ from previously.core.assertions import assertion_decisions
 from previously.core.assertions import assertion_verdict
 from previously.core.assertions import AssertionRefused
 from previously.core.assertions import check_statements
+from previously.core.assertions import read_source_events
 from previously.core.assertions import read_threads
 from previously.core.assertions import source_identities
 from previously.core.assertions import thread_circles
@@ -56,6 +57,7 @@ from previously.core.redact import redact_event
 from previously.core.redact import redact_units
 from previously.core.verify import verify
 from previously.storage.postgres import PostgresStorage
+from sqlalchemy import event
 from typing import TYPE_CHECKING
 
 import pytest
@@ -486,6 +488,37 @@ def test_two_approvals_of_one_proposal_in_one_batch_are_refused(db: Engine) -> N
 
 
 @pytest.mark.db
+def test_a_proposal_a_later_direct_version_overtook_is_not_approved_but_still_rejected(
+    db: Engine,
+) -> None:
+    """Ruling F-17 of the 2026-10-12 assertions plan: a proposal made before
+    the direct version that stands now was made against an entry that no
+    longer stands, and approving it would put its older content back over
+    the newer. The check before the question says the same. The proposal
+    made after the direct version is pending and is the control; once one
+    approval of it is written, the second proposal it was written beside is
+    overtaken too, in one batch as in two."""
+    storage = _setup(db)
+    (owned,) = _write(storage, obligation())
+    made = proposal(subject=owned)
+    (stale,) = _write(storage, made)
+    (newer,) = _write(storage, obligation(subject=owned, due=date(2026, 12, 15)))
+    fresh, beside = _write(storage, made, made)
+    overtaken = f"the proposal {stale} is overtaken: the direct version {newer} came after it"
+
+    assert _refused(storage, approval(made, stale, owned)) == overtaken
+    with storage.begin() as conn, pytest.raises(AssertionRefused) as checked:
+        check_statements(storage, conn, [approval(made, stale, owned)])
+    assert str(checked.value) == overtaken
+    assert _refused(storage, approval(made, fresh, owned), approval(made, beside, owned)) == (
+        f"the proposal {beside} is overtaken: the direct version {beside + 1} came after it"
+    )
+    assert _write(storage, approval(made, fresh, owned)) == (beside + 1,)
+    assert _write(storage, rejection(stale)) == (beside + 2,)
+    assert verify(storage) == []
+
+
+@pytest.mark.db
 def test_an_approval_takes_the_proposal_unchanged(db: Engine) -> None:
     storage = _setup(db)
     made = proposal()
@@ -713,6 +746,26 @@ def test_a_text_the_log_cannot_hold_is_refused_without_the_text(db: Engine) -> N
 
 
 @pytest.mark.db
+def test_the_check_before_the_question_refuses_what_the_canonical_form_refuses(
+    db: Engine,
+) -> None:
+    """Ruling F-19 of the 2026-10-12 assertions plan: `check_statements`
+    refuses with the sentence the write path refuses with. The statement
+    without the surrogate passes, and is the control."""
+    storage = _setup(db)
+    broken = obligation(what="send \ud800 the offer")
+    written = _refused(storage, broken)
+
+    with storage.begin() as conn:
+        with pytest.raises(AssertionRefused) as checked:
+            check_statements(storage, conn, [broken])
+        check_statements(storage, conn, [obligation()])
+
+    assert str(checked.value) == written
+    assert written.startswith("a statement cannot be written: $.what: string not representable")
+
+
+@pytest.mark.db
 def test_an_erased_source_adds_no_identity(db: Engine) -> None:
     """Only a log that came around the cascade has a standing assertion on
     an erased event; its identities are gone with its payload."""
@@ -727,6 +780,52 @@ def test_an_erased_source_adds_no_identity(db: Engine) -> None:
 
     assert [identity["address"] for identity in identities] == [ADDRESS]
     assert sources == ("email",)
+
+
+@pytest.mark.db
+def test_the_source_events_of_many_threads_are_read_in_two_queries(db: Engine) -> None:
+    """The rows and the source keys, one query each, however many threads
+    and source events: read one at a time, they were most of the time a
+    list took. Counted at the engine, on the statements the store sends.
+    Each thread is then what `source_identities` makes of it alone."""
+    storage = PostgresStorage(db)
+    append(storage, [_mail(f"m{n}", ADDRESS) for n in range(1, 6)], recorded_at=NOW)
+    names = [_write(storage, obligation(Source(n, None), Source(n + 1, None)))[0] for n in (1, 3)]
+    with storage.begin() as conn:
+        threads = [read_threads(storage, conn)[name] for name in names]
+    statements: list[str] = []
+
+    def counted(*args: object) -> None:
+        statements.append(str(args[2]))
+
+    event.listen(db, "before_cursor_execute", counted)
+    try:
+        with storage.begin() as conn:
+            found = read_source_events(storage, conn, threads)
+    finally:
+        event.remove(db, "before_cursor_execute", counted)
+
+    assert len(statements) == 2, statements
+    with storage.begin() as conn:
+        for thread in threads:
+            assert found.of(thread) == source_identities(storage, conn, thread)
+
+
+@pytest.mark.db
+def test_a_thread_whose_source_events_were_not_read_is_refused(db: Engine) -> None:
+    """An event left out would add no identity, and the policy would decide
+    over fewer people than the sources name. The thread that was read is the
+    control."""
+    storage = PostgresStorage(db)
+    append(storage, [_mail("m1", ADDRESS), _mail("m2", ADDRESS)], recorded_at=NOW)
+    first, second = _write(storage, obligation(Source(1, None)), obligation(Source(2, None)))
+    with storage.begin() as conn:
+        threads = read_threads(storage, conn)
+        found = read_source_events(storage, conn, [threads[first]])
+
+    assert found.of(threads[first])[1] == ("email",)
+    with pytest.raises(ValueError, match="the source events of this thread were not read"):
+        found.of(threads[second])
 
 
 @pytest.mark.db

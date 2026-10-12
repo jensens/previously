@@ -1982,6 +1982,31 @@ def _append_with_text_in_payload(engine: Engine, text_: str) -> None:
 
 
 @pytest.mark.db
+def test_redacting_an_approved_proposal_says_that_its_approval_keeps_its_words(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling F-19 of the 2026-10-12 assertions plan: the approval stands
+    with the proposal's words when the proposal is erased on its own, and
+    the line on standard output would read as if the words were gone. The
+    redaction of the approval itself, and of a proposal nobody approved,
+    are the controls: neither says it."""
+    storage = _assertion_log(db, monkeypatch)
+    approved, lone = _propose(storage, _debt(), _debt(what="lone"))
+    assert main(["approve", str(approved), "--yes"]) == 0
+    approval = lone + 1
+    capsys.readouterr()
+
+    assert main(["redact", "event", str(approved), "--reason", "r"]) == 0
+    assert capsys.readouterr().err.splitlines()[-1] == (
+        f"the approval {approval} still carries the words of the proposal {approved}; "
+        f"redact event {approval} to erase them too"
+    )
+    for target in (lone, approval):
+        assert main(["redact", "event", str(target), "--reason", "r"]) == 0
+        assert "approval" not in capsys.readouterr().err
+
+
+@pytest.mark.db
 def test_redact_units_on_an_event_of_append_leaves_no_text_and_says_nothing(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5591,6 +5616,28 @@ def test_a_decision_that_is_replaced_says_so_in_the_list_and_in_its_page(
 
 
 @pytest.mark.db
+def test_a_text_the_log_cannot_hold_is_refused_before_the_question(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling F-19 of the 2026-10-12 assertions plan: the check before the
+    question runs the canonical check the write runs, so nobody confirms
+    what the write then refuses. A lone surrogate reaches `--what` the way
+    finding W-1 describes; the same command without it, answered `n`, is
+    the control that the question comes otherwise."""
+    _assertion_log(db, monkeypatch)
+    _answer(monkeypatch, "n\n")
+
+    assert main(_assert_obligation("--what", "send \ud800 the offer")) == 2
+    assert capsys.readouterr() == (
+        "",
+        "Error: a statement cannot be written: $.what: string not representable as UTF-8 "
+        "(surrogates not allowed) — a lone UTF-16 surrogate, for instance\n",
+    )
+    assert main(_assert_obligation()) == 1
+    assert "write? [y/N]" in capsys.readouterr().out
+
+
+@pytest.mark.db
 def test_approve_makes_a_list_of_proposals_the_operators_own(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -5656,6 +5703,27 @@ def test_approving_what_is_answered_already_or_is_no_proposal_is_refused_before_
         assert capsys.readouterr() == ("", f"Error: {sentence}\n")
         assert len(_standing(db)) == count
     assert main(["approve", str(open_one), "--yes"]) == 0
+
+
+@pytest.mark.db
+def test_approving_a_proposal_a_later_direct_version_overtook_is_refused_before_the_question(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling F-17 of the 2026-10-12 assertions plan on the command line;
+    rejecting the same proposal is the control."""
+    storage = _assertion_log(db, monkeypatch)
+    (owned,) = _propose(storage, _debt(responsibility=DIRECT, author=OPERATOR))
+    (stale,) = _propose(storage, _debt(subject=owned, what="later"))
+    (newer,) = _propose(storage, _debt(responsibility=DIRECT, author=OPERATOR, subject=owned))
+    count = len(_standing(db))
+
+    assert main(["approve", str(stale)]) == 2
+    assert capsys.readouterr() == (
+        "",
+        f"Error: the proposal {stale} is overtaken: the direct version {newer} came after it\n",
+    )
+    assert len(_standing(db)) == count
+    assert main(["reject", str(stale), "--yes"]) == 0
 
 
 @pytest.mark.db
@@ -5885,6 +5953,36 @@ def test_a_missing_entry_is_exit_1_and_a_sentence(
     assert capsys.readouterr() == ("", "no obligation stands under event 99\n")
     assert main(["decision", "3"]) == 1
     assert capsys.readouterr() == ("", "no decision stands under event 3\n")
+
+
+@pytest.mark.db
+def test_an_entry_whose_versions_are_all_erased_says_it_is_erased(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling F-18 of the 2026-10-12 assertions plan: an id an erasure took
+    says so, whatever kind is asked for, since the kind went with the
+    payload; the lists leave it out. The entry beside it, whose first version
+    alone is erased, still stands under its id and is the control."""
+    storage = _assertion_log(db, monkeypatch)
+    gone, kept = _propose(
+        storage,
+        _debt(responsibility=DIRECT, author=OPERATOR),
+        _debt(responsibility=DIRECT, author=OPERATOR, what="kept"),
+    )
+    (later,) = _propose(storage, _debt(responsibility=DIRECT, author=OPERATOR, subject=gone))
+    _propose(storage, _debt(responsibility=DIRECT, author=OPERATOR, subject=kept))
+    for erased in (gone, later, kept):
+        redact_event(storage, storage, erased, reason="r", recorded_at=datetime.now(UTC))
+    for argv in (["obligation", str(gone)], ["decision", str(gone)], ["obligation", str(later)]):
+        assert main([*argv]) == 1
+        assert capsys.readouterr() == ("", f"assertion {argv[1]} is erased\n")
+    assert main(["obligation", str(gone), "--history"]) == 1
+    assert capsys.readouterr().err == f"assertion {gone} is erased\n"
+    assert main(["obligations"]) == 0
+    assert capsys.readouterr().out.split("\t")[0] == str(kept)
+    assert main(["obligation", str(kept)]) == 0
+    assert main(["obligation", "99"]) == 1
+    assert capsys.readouterr().err == "no obligation stands under event 99\n"
 
 
 @pytest.mark.db
