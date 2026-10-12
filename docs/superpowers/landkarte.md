@@ -52,8 +52,13 @@ und das Tailnet (Stufe A2); der Zugang zum MCP-Server ist `kubectl
 port-forward` (RG). Das Log dort ist eine Probe: die Daten werden vor dem
 regulären Gebrauch zurückgesetzt, das dauerhafte Log beginnt danach.
 
-Nicht gebaut: die Suche, jede
-Feststellung und jede Entität, jedes schreibende MCP-Werkzeug, KI-Schicht,
+Gebaut, aber noch nicht abgenommen: Einheit 5, die Feststellungen
+(Verpflichtung und Entscheidung mit Quellen, Vorschläge über MCP, Freigabe und
+Ablehnung, die Kaskade der Tilgung), auf dem Zweig `worktree-feststellungen`;
+sie wartet auf die Endprüfung, den Merge und die Abnahme nach F §14 (unten
+unter *Was als Nächstes kommt*).
+
+Nicht gebaut: die Suche, jede Entität und jede Zuordnung, KI-Schicht,
 jeder Konnektor außer dem für IMAP.
 
 ## Was als Nächstes kommt
@@ -96,10 +101,18 @@ Der Betreuer hat den Lauf von kup6s als Bedingung 9 der Einheit 4 genommen
 die Antwort um: die Adress-Einstellungen, die Meldungen, die Anforderung an
 das Netz, der Handoff `handoffs/2026-10-11-kup6s-settings.md`; er ist
 gemergt (PR #14, `347c37b`), `v0.1.0a4` ist am 2026-10-12 veröffentlicht, und
-der Handoff der Einstellungen ist übergeben. Was jetzt kommt, in dieser
-Reihenfolge: 1..n IMAP-Ordner als Eingang (Betreuer, 2026-10-12), gebaut auf
-dem Zweig `worktree-imap-ordner` (unten unter *Erledigt*) und wartend auf den
-Merge, dann als nächste Einheit mit Spec Einheit 5, die Feststellungen.
+der Handoff der Einstellungen ist übergeben. Die 1..n IMAP-Ordner als
+Eingang (Betreuer, 2026-10-12) sind gemergt (PR #16, `739912b`; unten unter
+*Erledigt*). Einheit 5, die Feststellungen, hat ihren Spec
+(`specs/2026-10-12-pilot-feststellungen.md`, eingefroren am 2026-10-12) und
+ist gebaut auf dem Zweig `worktree-feststellungen`, ohne Projektionstabellen
+und ohne Migration (Planentscheidung 1, vom Betreuer am 2026-10-12
+bestätigt); der Handoff `handoffs/2026-10-12-kup6s-assertions.md` liegt bei.
+Was jetzt kommt, in dieser Reihenfolge: die Endprüfung, die die Lesezeit bei
+5 000 Feststellungen misst; der Merge; das Release nach `v0.1.0a4` mit dem
+Handoff; die Abnahme nach F §14 durch den Betreuer. Als nächste Einheit mit
+Spec dann die Zuordnungen (F §1, §15; unten unter *Feststellungen und
+Entitäten*).
 Was die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an
 den Einheiten, zu denen es gehört.
 
@@ -136,7 +149,7 @@ Spec:
 | 2 | Betrieb in kup6s: Datenbank mit Sicherung, Restore-Probe, Bucket, Werkzeug-Pod, CronJobs für Aufnahme, Projektion und Anker | Daten, die bleiben | beginnt beim Image aus Einheit 0; gebaut wird er vom Agenten in kup6s, nie von hier. Was er braucht, sagen die Handoffs `handoffs/2026-10-05-kup6s-delivery.md` und, für die Aufnahme, `handoffs/2026-10-06-kup6s-ingest.md` und, für das Gate, `handoffs/2026-10-09-kup6s-gate.md` und, für den MCP-Server, `handoffs/2026-10-11-kup6s-mcp.md`, englisch; alle vier liegen dort und stehen, wie die Rückmeldungen vom 2026-10-11 sagen (RK, RG), bis auf den Modellserver und das Tailnet; mit `v0.1.0a4` ist am 2026-10-12 `handoffs/2026-10-11-kup6s-settings.md` übergeben |
 | 3 | Gate und Policy: Kreise statt Organisationsprofil, drei Anbieter-Adapter, Audit, die Verarbeitungsprüfung (nicht mehr „Offenlegungsprüfung“: PG §1.2) | die Grenze, hinter der ein Modell Inhalt sieht | `specs/2026-10-09-pilot-gate-und-policy.md`, eingefroren am 2026-10-09; abgenommen mit PR #9 (oben) |
 | 4 | MCP-Lesezugang, mit der Verarbeitungsprüfung davor (die Entscheidung aus Einheit 3, wiederverwendet) | Claude Code fragt das Log | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, das §8 der Architektur ablöst; beide eingefroren am 2026-10-11; abgenommen mit PR #12 (oben) |
-| 5 | Feststellungen: Schreibweg, Verpflichtung und Entscheidung, Projektionen, Freigabe | was festgestellt ist, mit Quelle und Verantwortung | — |
+| 5 | Feststellungen: Schreibweg, Verpflichtung und Entscheidung, Freigabe und Ablehnung, Lesen durch Falten des Logs | was festgestellt ist, mit Quelle und Verantwortung | `specs/2026-10-12-pilot-feststellungen.md`, eingefroren am 2026-10-12; gebaut auf dem Zweig `worktree-feststellungen`, ohne Projektionen (Planentscheidung 1), nicht abgenommen |
 | 6 | KI-Schicht: Vorschläge hinter dem Gate | Protokoll und offene Punkte | — |
 | 7 | Nextcloud-Ordner mit Textextraktion | Dokumente | — |
 
@@ -203,6 +216,9 @@ Ruling oder der Aufgabe,
 mit Abschnitt, **ML** der Spec der Pilot-Einheit 4, des MCP-Lesezugangs, mit
 Abschnitt, **P-ML** dessen Ausführungsprotokoll
 (`sdd/2026-10-11-pilot-mcp-lesezugang/`) mit dem Ruling oder der Aufgabe,
+**F** der Spec der Pilot-Einheit 5, der Feststellungen, mit Abschnitt, **P-F**
+dessen Ausführungsprotokoll (`sdd/2026-10-12-pilot-feststellungen/`) mit dem
+Ruling oder der Aufgabe,
 **PP** der Prüfpunkt vom 2026-10-04 mit der Zeile seines Belegberichts,
 **RK** die Rückmeldung des Agenten in kup6s vom 2026-10-11 auf die Handoffs
 der Auslieferung und der Aufnahme
@@ -264,9 +280,9 @@ ebenso.
 
 - Projekt als Geltungsbereich einer Regel: `project:<name>` ist vorgesehen,
   und der Schreibweg weist es ab, bis es eine Zuordnung von Events zu
-  Projekten gibt (PG §2.3, §11 Punkt 3; Einheit 5).
-- Wie Projekte entworfen werden, zu entscheiden mit Einheit 5 (MK §4.1, §10
-  Punkt 1). Die Idee des Betreuers: ein Projekt als „Kreis von Kreisen“,
+  Projekten gibt (PG §2.3, §11 Punkt 3; die Zuordnungen, F §1).
+- Wie Projekte entworfen werden, zu entscheiden mit dem Spec der Zuordnungen
+  (MK §4.1, §10 Punkt 1; F §1, §15). Die Idee des Betreuers: ein Projekt als „Kreis von Kreisen“,
   rekursiv aufgelöst, mit Unterprojekten — „sind Projekte nur Mengenlehre über
   Identitäten?“ **Die Gegenthese** aus dem Gespräch vom 2026-10-10: Kreise in
   Kreisen tragen (die Policy erbt die strengste Regel, die Chronik umfasst die
@@ -285,35 +301,31 @@ ebenso.
   Events zu einem Kreis als Feststellung wäre derselbe Mechanismus.
   Aufgefallen am 2026-10-11 bei der Frage des Betreuers nach anderen
   Eingängen des MCP-Servers (siehe *MCP-Lesezugang*).
-- Ein zweiter Schreibweg neben `append` für `assertion` und `action`; ihre
-  Idempotenz ist heute „Sache des Aufrufers" (PP, A1 S1 und Zeile 19).
-- `verify` prüft Regeln je Art erst für `action` (eine Handlung braucht eine
-  lesbare Unterart, eine Tilgung genau ihre Form); eine Feststellung ohne
-  `sources` und eine Wahrnehmung ohne `evidence` und ohne Schlüssel bestehen
-  weiter (PP, A1 S2, Messungen M3 und M4).
+- Die Idempotenz einer Handlung ist weiter „Sache des Aufrufers"; der
+  zweite Schreibweg, der der Feststellungen, hat sie über die Kennung des
+  Handles (PP, A1 S1 und Zeile 19; die Hälfte zu `assertion` steht unter
+  *Erledigt*).
+- `verify` prüft Regeln je Art für `action` und, seit Einheit 5, für
+  `assertion`; eine Wahrnehmung ohne `evidence` und ohne Schlüssel besteht
+  weiter (PP, A1 S2, Messungen M3 und M4; die Hälfte zu den Feststellungen
+  steht unter *Erledigt*).
 - Keine Validierung der Nutzlast gegen ein Schema je Art, gegen Architektur
   §4.1 (PP, A1 Zeile 20).
-- `kind` heißt zweierlei: die Event-Art mit drei Werten und die Unterart einer
-  Feststellung, die keine Spalte und noch keinen Ort hat; die Unterart einer
-  Handlung steht seit Stufe 1c in der Nutzlast unter `action` (PP, A1 S3).
 - Wer tilgt: der 1a-Spec nennt für das Tilgungs-Event „Zeitpunkt, Anlass und
   Urheber", es trägt die ersten beiden; das System kennt noch keine Personen
   (1c §12 Punkt 5).
-- Verweise einer Feststellung auf Einheiten sind ungeprüftes JSON; ein Event
-  ohne Einheiten erscheint in `p_chronicle` gar nicht (PP, A1 S4).
-- `p_obligation` passt nicht durch den Projektionsmechanismus, wie die
-  Architektur sie zeigt: die Vorrangregel braucht die `responsibility` der
-  bisherigen Feststellung, und die Spalte fehlt (PP, A1 S5).
+- Ein Event ohne Einheiten erscheint in `p_chronicle` gar nicht (PP, A1 S4;
+  die Hälfte zu den Verweisen einer Feststellung steht unter *Erledigt*).
 - Zuordnung zu Projekten: `p_chronicle` bekommt `project`, der Index seine
   erste Spalte (1b §10 Punkt 6, AA §10 Punkt 9).
 - Weitere Fundorte: dieselbe Mail in einem zweiten Ordner schreibt nichts,
-  nur der erste Fundort steht im Log, unter `found_in`. Mit Einheit 5 wird das
-  Ablegen eine Zuordnung, und die kann mehrfach sein (PI §3.4, §11 Punkt 2;
+  nur der erste Fundort steht im Log, unter `found_in`. Mit den Zuordnungen
+  wird das Ablegen eine Zuordnung, und die kann mehrfach sein (PI §3.4, §11 Punkt 2;
   `connectors.md`).
 - Gesprächsfäden sind eine Form von Vorgang, kein Begriff von Mail: eine Mail
   führt zu einem Termin mit Videokonferenz, der zu einem Chat, und alles
   gehört zu einer Sache (Betreuer, 2026-10-06). Ein Faden ist darum eine
-  Zuordnung über Kanäle hinweg — Feststellung (Einheit 5), als Vorschlag aus
+  Zuordnung über Kanäle hinweg — Feststellung (die Zuordnungen), als Vorschlag aus
   der KI-Schicht hinter dem Gate (Einheit 6). Mail liefert Signale, keine
   Struktur: `In-Reply-To` und `References` unter `headers`, eine Einladung
   als `.ics`-Anhang, ein Link zu einer Konferenz im Text. Offen auch, ob
@@ -321,6 +333,31 @@ ebenso.
   Zitate zu erkennen ist Deutung (PI §3.4, §11 Punkt 10).
 - Fünf der neun Leitsätze (1, 2, 5, 7, 8) hatten noch keinen Kontakt mit Code
   (PP, A1 Frage 4).
+- **Die Zuordnungen, mit eigenem Spec als Nächstes:** Events zu Projekten und
+  Vorgängen, Quellen ohne Adressen zu einem Kreis, weitere Fundorte einer Mail
+  (die Punkte oben). Leitbeispiel des Betreuers (2026-10-12): Robert und er
+  sind im selben Verein und haben beide eine Firma; sie schreiben sich über
+  die Firmenadressen zu Themen des Vereins. Die Organisation folgt also nicht
+  aus der Adresse, sondern aus dem Thema — eine Zuordnung hängt am Inhalt, als
+  Feststellung über Events, nicht an der Identität; das stützt die
+  Gegenthese zu „Projekte sind Mengenlehre über Identitäten" (F §1, §15).
+- Adressbücher als Quelle, 1..n, in beide Richtungen (Betreuer, 2026-10-12):
+  Kontakte etwa aus der Nextcloud lesen ist ein Konnektor, Kontakte werden
+  Wahrnehmungen; neue Adressdaten aus Mails von Neukunden zurückschreiben ist
+  eine Handlung in einem Fremdsystem, mit Befugnis (F §15).
+- Der Identitätsgraph: Personen und Organisationen als Projektionen über
+  Feststellungen, Zuordnungen tragfähiger Verweise (`address:` → `person:`),
+  `circle:` → Organisation, und wer `human:operator` ist. `name:` gehört nicht
+  dazu, es wird je Verpflichtung durch eine neue Fassung präzisiert. Mit dem
+  Graphen fragt das System zurück: ein `name:`, den es keiner Person zuordnen
+  kann, wird eine Rückfrage mit den Kandidaten, die einen Bezug zu den
+  Kreisen der Quellen haben, und die Antwort ist eine neue, direkte Fassung
+  (`list_triage`, `write_triage_answer`, MK §4.2–§4.3; F §2.1, §15).
+- Das Teilen einer Verpflichtung, Aufgaben, die transitive Verantwortung mit
+  Freigabeklassen, die beobachtete Erfüllung — im Piloten ist Erfüllung eine
+  Feststellung mit Quelle, weil kein Konnektor Arbeit sieht (F §1, §4, §15).
+- Ob ein Kreis umbenannt werden kann, ohne dass `circle:`-Verweise in
+  Feststellungen ins Leere zeigen (F §15).
 
 ### Projektionen
 
@@ -753,8 +790,8 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
   Wechsel tauscht die eigene ASGI-Hülle in `mcp_server/auth.py` gegen den
   `TokenVerifier` des SDK (MK §7, §10 Punkt 5).
 - Elicitation als Aufwertung der Bestätigung eines schreibenden Aufrufs, wo ein
-  Client sie meldet, mit dem ersten schreibenden Werkzeug (MK §4.3, §10
-  Punkt 6).
+  Client sie meldet (MK §4.3, §10 Punkt 6). Die ersten schreibenden Werkzeuge
+  kamen mit Einheit 5 ohne sie (unten unter *Feststellungen*).
 - Tasks für lange Läufe, wenn das SDK und ein Client sie haben (MK §10 Punkt 7;
   zur Prüfung von Claude Code siehe *Spätere Teilprojekte*).
 - Der Effekt der Einzäunung von Fremdinhalt auf aktuelle Modelle ist
@@ -802,6 +839,47 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
      (`previously append --source note`) und eine mit Einheiten in Form eines
      Transkripts — je gerendert, je durch die Prüfung (ohne Kreis greift nur
      eine Regel `source:<name>` oder `local_only`).
+
+### Feststellungen (Pilot, Einheit 5)
+
+Was F §15 an andere Einheiten gibt, steht dort (die Zuordnungen und der
+Identitätsgraph oben unter *Feststellungen und Entitäten*, die automatische
+Feststellung unten unter *Spätere Teilprojekte*). Hier steht, was der Bau
+offen ließ (P-F). Die benannten Grenzen, die keiner Arbeit bedürfen, stehen
+auf `assertions.md` unter *What the pilot leaves open*.
+
+- Eine Projektion für Feststellungen, nur wenn die Messung sie verlangt:
+  gelesen wird durch Falten aller Feststellungen aus dem Log, bei jeder Liste
+  und jedem Schreiben (Planentscheidung 1). Die Endprüfung misst die Lesezeit
+  von `obligations` und `list_obligations` bei 5 000 Feststellungen; die Zahl
+  kommt auf `assertions.md` (P-F).
+- Je ein echter Aufruf von `write_assertion` mit Claude Code und mit Vibe, zur
+  Abnahme: das Eingabeschema verschachtelt seine Einträge über `$defs` und
+  `$ref`, und probiert ist es nur gegen den Client des SDK. Flach machen nur,
+  wenn ein Client scheitert (P-F, Aufgabe 5).
+- Die Forderung, dass der Client vor `write_approve` und `write_reject` fragt,
+  hängt allein an seiner Einstellung. Die Doku von Claude Code nennt
+  MCP-Werkzeuge mit `_meta["anthropic/requiresUserInteraction"]`, die in jedem
+  Modus fragen; ob der Server die beiden Werkzeuge so kennzeichnen sollte, ist
+  ungeprüft, und Vibe kennt es nicht (gefunden beim Schreiben der Anleitung,
+  2026-10-12). Die Einstellungen der Anleitung für beide Clients sind
+  ungemessen.
+- Eine Geschichte, die länger ist als eine Seite, wird über MCP nach einer
+  ganzen Zeile gekürzt, und ihr Rest kommt über keinen Aufruf; die
+  Kommandozeile zeigt sie ganz. Ein Weg wäre ein Cursor für die Geschichte
+  (P-F, Aufgabe 4).
+- Zwei Stücke von F, die der Bau nicht hat: der Hinweis auf `address:` in der
+  Vorschau über MCP (F §2.1; nur die Kommandozeile gibt ihn) und „zuletzt
+  geändert am" je Eintrag einer Liste (F §3.5; die Listen zählen Fassungen
+  und Vorschläge, die Geschichte nennt die Zeit jeder Fassung).
+- Geparkt aus den Prüfungen, benannt und nicht verfolgt (P-F): die
+  Hypothesis-Eigenschaft in `tests/test_assertion.py` tilgt die erste Fassung
+  nicht (F-2 decken drei Beispieltests); ein toter Zweig und eine
+  überschriebene Zuweisung dort um die Eigenschaft; der Statussatz
+  `no obligation stands under event ID` steht außerhalb des Zitattests; der
+  Abweisungszweig für das aufgeschobene Schreiben in `mcp_server/server.py`
+  ist ungetestet, weil er einen Stellvertreter für die Datenbank bräuchte;
+  `_cmd_decisions` setzt die Listenfilter auf `args`.
 
 ### Nextcloud-Ordner (Pilot, Einheit 7)
 
@@ -1015,6 +1093,9 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
   (P-AA).
 - `show` druckt Einheiten roh; eine Einheit mit Umbruch bricht die
   Zeilenstruktur (1b §10 Punkt 3).
+- `cli.py` hat rund 3 000 Zeilen (3 034, gezählt am 2026-10-12 mit
+  `wc -l`); die sieben Kommandos der Feststellungen kamen mit Einheit 5 dazu.
+  Ein Schnitt in Module je Gegenstand steht aus (P-F, Aufgabe 3).
 - Eine Obergrenze für `--limit` (P-1b).
 - `N blobs match` zählt getilgte, zu Recht fehlende Blobs mit (Endprüfung,
   ruling E-6 der Endkorrektur).
@@ -1071,6 +1152,10 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
   gemessene Mutation (P-AA).
 - `ruling`-Labels im Baum lösen nicht auf; das Hauptbuch der Stufe 1a ist
   verloren (`CLAUDE.md`).
+- Der Zensus der Ruling-Zitate in `CLAUDE.md`,
+  `grep -rnioE 'ruling (P|T[0-9]+)-[a-z0-9]+' …`, findet die Labels der
+  Einheiten 3 bis 5 nicht, `R-…` und `F-…`; gezählt wird so nur ein Teil.
+  Den Satz ändert der Betreuer (P-F, Aufgabe 6).
 - Der Testlauf ist mit Stufe 1c von rund 31 s auf 87 s gewachsen (`632 passed in 86.80s`, gemessen am 2026-10-05 nach der Endkorrektur): ein
   zweiter Container, und Tests, die wirklich hochladen (P-1c). Mit der
   Aufnahme kam ein dritter, GreenMail, und der Lauf steht bei fast drei
@@ -1141,6 +1226,10 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
 - Teilprojekt 5, KI-Schicht und Triage: die Batch API für Masse, mit der
   KI-Schicht (PG §11 Punkt 10); Prompt- und Templatetexte;
   Rangfunktion der Triage (A §11).
+- Automatische Feststellung mit Rückfrage, Einheit 6 des Piloten: sie muss
+  Inhalt, Organisation und in Folge Projekt herausfinden und im Zweifel
+  fragen (`list_triage`, `write_triage_answer`, MK §4.2–§4.3); ihre Vorschläge
+  kommen über den Weg der Freigabe aus Einheit 5 (F §1, §15).
 - Teilprojekt 8, Bestandsimport: Pilotkunde (E §16). Gemessen lädt `append`
   rund 700 Events in der Sekunde; fünf Millionen Events sind zwei Stunden
   (PP, Bericht C).
@@ -1152,9 +1241,35 @@ stehen auf `mcp-interface.md` unter *What the pilot leaves open*.
 
 ## Erledigt, seit es auf einer Liste stand
 
+- ~~Ein zweiter Schreibweg neben `append` für `assertion`~~ (PP, A1 S1 und
+  Zeile 19, zur Hälfte; F §9) — Einheit 5, Commit `69bd77f`:
+  `write_statements` in `core/assertions.py` sperrt die Quellen, prüft, was
+  eine Feststellung nennt, und schreibt einen Stapel in einer Transaktion,
+  idempotent über die Kennung des Handles. Die Hälfte zu `action` steht oben
+  unter *Feststellungen und Entitäten*.
+- ~~`verify` prüft Regeln je Art erst für `action`; eine Feststellung ohne
+  `sources` besteht~~ (PP, A1 S2, zur Hälfte; F §9) — Einheit 5, Commit
+  `69bd77f`, mit der Fixrunde `c17879b`: die Form je Unterart, nicht leere
+  Quellen, die Grammatik der Verweise, `subject`, `approves`, `of` und
+  `replaces`, Quellen, die Wahrnehmungen sind und nicht getilgt; steht in
+  `cli.md` unter `verify`.
+- ~~`p_obligation` passt nicht durch den Projektionsmechanismus, die
+  Vorrangregel braucht die `responsibility`~~ (PP, A1 S5; F §9) — ohne
+  Projektion beantwortet: jede Fassung trägt ihre `responsibility`, und
+  gelesen wird durch Falten aller Fassungen aus dem Log (Planentscheidung 1,
+  vom Betreuer am 2026-10-12 bestätigt), Commits `97b6e8d` und `482ceb9`.
+  Ob doch eine Projektion kommt, entscheidet die Messung (oben unter
+  *Feststellungen*).
+- ~~`kind` heißt zweierlei: die Unterart einer Feststellung hat keinen Ort~~
+  (PP, A1 S3) — sie steht in der Nutzlast unter `assertion`, wie die einer
+  Handlung unter `action`, Commit `97b6e8d` (F §2).
+- ~~Verweise einer Feststellung auf Einheiten sind ungeprüftes JSON~~ (PP, A1
+  S4, zur Hälfte) — der Schreibweg weist eine fehlende oder getilgte Einheit
+  ab, und `verify` meldet eine, die das Event nicht hat, Commit `69bd77f`.
+
 - ~~1..n IMAP-Ordner als Eingang~~ (Betreuer, 2026-10-12; PI §11 Punkt 3
   hatte einen Ordner je Lauf für den Piloten genügen lassen) — auf dem Zweig
-  `worktree-imap-ordner`, Commit `5626f98`:
+  `worktree-imap-ordner`, Commit `5626f98`, gemergt mit PR #16 (`739912b`):
   `ingest imap --folder NAME`, wiederholbar, ohne die Option weiter
   `PREVIOUSLY_IMAP_FOLDER`; je Ordner die Wasserlinie unter dem bisherigen
   Namen `imap:<user>@<host>/<folder>` und eine Zeile, die den Ordner nennt;

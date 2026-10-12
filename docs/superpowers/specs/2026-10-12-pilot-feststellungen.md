@@ -1,8 +1,80 @@
 # Previously — Pilot, Einheit 5: Feststellungen
 
+> **Eingefrorener Entwurfsbericht, Stand 2026-10-12.**
+> Dieses Dokument wird nicht mehr nachgezogen.
+> Es hält fest, **wie und warum** entschieden wurde, und bleibt dafür im
+> Repository. Die lebende Begründung steht in der Dokumentation unter
+> `docs/` — soweit sie dort steht; wo sie fehlt, ist dieses Dokument die
+> einzige Quelle. Weicht es von der Doku ab, gilt die Doku.
+>
+> Ein neuer Spec für eine neue Stufe entsteht wieder auf Deutsch — das ist
+> die Sprache, in der die Absicht formuliert wird. Er friert ein, sobald
+> seine Explanation-Seiten stehen. Das Einfrieren als **Ablauf**, und die
+> Karte von jedem zitierten Paragraphen zu seiner Seite, stehen in
+> [About the frozen design records](../../explanation/design-records.md).
+
 **Datum:** 2026-10-12
-**Status:** Entwurf, aus dem Brainstorming mit dem Betreuer am 2026-10-12;
-vom Betreuer am selben Tag durchgesehen („ja"), Grundlage des Plans.
+**Status:** eingefroren am 2026-10-12; zuvor Entwurf, aus dem Brainstorming mit
+dem Betreuer am 2026-10-12, vom Betreuer am selben Tag durchgesehen („ja"),
+Grundlage des Plans `docs/superpowers/plans/2026-10-12-pilot-feststellungen.md`.
+Die Abnahme nach §14 folgt dem Merge. Wo der Bau vom Wortlaut abweicht, steht
+es im Plan und im Ausführungsprotokoll
+(`docs/superpowers/sdd/2026-10-12-pilot-feststellungen/`), an diesen Stellen:
+
+- **Keine Projektionstabellen, keine Migration** (§9 „zwei Projektionen,
+  `p_obligation` und `p_decision`", §10 „eine Migration", §11). Gelesen wird
+  durch Falten aller Feststellungen aus dem Log, bei jeder Liste und jedem
+  Schreiben: der Rückfall nach einer Tilgung braucht ohnehin alle Fassungen,
+  die Kreise hängen an der Policy von heute, und der MCP-Server liest nur den
+  Log. Vom Betreuer am 2026-10-12 vor dem Bau bestätigt („schauen wir mal, ob
+  wir ohne Projektionstabellen auskommen — das kann man notfalls
+  nachliefern"; Planentscheidung 1). Die Endprüfung misst die Lesezeit bei
+  5 000 Feststellungen.
+- **Die Form des Handles** (§6.1 „HMAC über Inhalt, Client und Ablauf"):
+  `base64url(kanonisches JSON {client, digest, expires, nonce})` und, nach
+  einem Punkt, `base64url(HMAC-SHA256)`; `digest` ist der SHA-256 der
+  kanonischen Liste der Nutzlasten ohne `handle`, und die Kennung im Log ist
+  der `nonce` (Planentscheidung 9).
+- **Höchstens 20 Feststellungen je Aufruf** über MCP (§6 „mehrere Vorschläge
+  gehen in einem Aufruf"), `MAX_STATEMENTS = 20`; ebenso höchstens 20
+  Vorschläge je `write_approve`. Der Schreibweg selbst nimmt bis zu 500.
+- **Keine Zeile über 1 000 Zeichen über MCP.** Eine Liste kürzt eine Zeile
+  dort, also weisen die schreibenden Werkzeuge eine Feststellung mit längerer
+  Zeile ab, statt sie gekürzt vorzuzeigen; ein Vorschlag mit längerer Zeile
+  lässt sich über MCP weder freigeben noch ablehnen. Die Kommandozeile hat
+  keine Grenze (Ruling F-12).
+- **Eine Fassung von `model:` ist nur als Freigabe direkt** (§3.3, §6), als
+  Regel der Form: der Schreibweg weist jede andere ab, und `verify` meldet
+  sie. Sonst hinge „ein Vorschlag überschreibt nie eine direkte Fassung"
+  allein am Werkzeug. Ablehnungen sind ausgenommen (Ruling F-6).
+- **Quellen müssen Wahrnehmungen sein** (§2 „eine Quelle zeigt auf ein Event,
+  das es gibt"): eine Handlung oder eine Feststellung als Quelle ließe eine
+  Kaskade der Tilgung einer anderen folgen. Darum kaskadieren auch die Tilgung
+  eines Blobs und ein Modellaufruf nicht auf Feststellungen (Ruling F-8).
+- **Eine Quelle ohne Einheiten** (§8 „oder das ganze Event") geht mit einer
+  Tilgung von Einheiten ihres Events nur, wenn die Tilgung jünger ist als die
+  Feststellung: eine Einheit, die beim Schreiben schon getilgt war, ist nicht,
+  worauf sie sich stützt.
+- **Der feste Satz für fehlende und verborgene Quellen** (§6 „mit derselben
+  Meldung wie für ein Event, das es nicht gibt") lautet `Error: event <id> is
+  not one this client can use as a source`; je ein eigener fester Satz gilt
+  ebenso für ein `subject`, ein `replaces` und einen Vorschlag, die es nicht
+  gibt oder die der Client nicht sehen darf (`mcp-tools.md`).
+- **Ein Eintrag ohne stehende Fassung erscheint nicht als getilgt** (§8
+  „gibt es keine, erscheint sie als getilgt"). Er fehlt in jeder Liste, und
+  eine Frage nach ihm wird beantwortet wie die nach einer Kennung, die nichts
+  nennt.
+- **Eine Freigabe steht, wenn ihr Vorschlag für sich getilgt wird** (§3.3,
+  §8), nicht über eine Quelle: sie ist eine ganze, beim Schreiben geprüfte
+  Aussage mit eigenen Quellen (Ruling F-5). Ein Eintrag behält seine Kennung,
+  wenn seine erste Fassung getilgt wird und eine andere steht (Ruling F-2).
+- **Kein Hinweis auf `address:` in der Vorschau über MCP** (§2.1), nur auf der
+  Kommandozeile, und **kein „zuletzt geändert am"** je Eintrag einer Liste
+  (§3.5); beide stehen in der Landkarte.
+
+Die Seiten `assertions.md` (Explanation und Reference), `cli.md`,
+`mcp-tools.md` und die Anleitung `record-what-is-owed-and-decided.md` tragen
+den Stand, und sie gelten.
 
 **Grundlage:** der Design-Record (`2026-10-01-previously-design.md`, §5.2
 Feststellung, §5.3 Zuordnungen, §5.5 Rückkopplung, §6.2 Verpflichtung), die
@@ -446,7 +518,14 @@ Vom Betreuer, nach dem Merge:
 
 ## 15. Was offen bleibt
 
-Beim Einfrieren in die Landkarte, je unter seine Einheit:
+Gepflegt, solange der Spec lebte; beim Einfrieren am 2026-10-12 gingen die
+Punkte in die Landkarte (`docs/superpowers/landkarte.md`), je unter ihre
+Einheit — die Zuordnungen, die Adressbücher, der Identitätsgraph, das Teilen,
+die Aufgaben, die transitive Verantwortung, die beobachtete Erfüllung und das
+Umbenennen eines Kreises unter *Feststellungen und Entitäten*, die
+automatische Feststellung unter *Spätere Teilprojekte* —, zusammen mit dem,
+was die Ausführung offen ließ, unter *Feststellungen (Pilot, Einheit 5)*. Die
+Liste hier ist der Stand dieses Tages.
 
 - **Die Zuordnungen**, mit eigenem Spec als Nächstes: Events zu Projekten und
   Vorgängen, Quellen ohne Adressen zu einem Kreis, weitere Fundorte einer Mail.
