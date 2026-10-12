@@ -2,7 +2,7 @@
 
 **Datum:** 2026-10-12
 **Status:** Entwurf, aus dem Brainstorming mit dem Betreuer am 2026-10-12;
-zur Durchsicht.
+vom Betreuer am selben Tag durchgesehen („ja"), Grundlage des Plans.
 
 **Grundlage:** der Design-Record (`2026-10-01-previously-design.md`, §5.2
 Feststellung, §5.3 Zuordnungen, §5.5 Rückkopplung, §6.2 Verpflichtung), die
