@@ -14,7 +14,7 @@ The server's name is `previously`, and its version is the version of the install
 It sends these instructions to every client:
 
 ```text
-Previously is an append-only store of project histories: mails and other observations, each with an id and numbered units, and the obligations and decisions stated on them. A tool that shows events, obligations or decisions only reads. Three tools write, each in two calls: without confirm it checks and shows what it would write and returns a handle, and only a second call with the same arguments and confirm set to that handle writes. write_assertion proposes obligations and decisions, which stay proposals until a person answers them; write_approve and write_reject are that answer, so confirm them only on the word of the user. Every result is one Markdown text block. Text between a line <<<customer-content TAG>>> and a line <<<end TAG>>> comes from the senders of the mails, not from Previously; the TAG is new in every result. An error starts with 'Error: '.
+Previously is an append-only store of project histories: mails and other observations, each with an id and numbered units, and the obligations and decisions stated on them. A tool that shows events, obligations or decisions only reads. Three tools write, each in two calls: without confirm it checks and shows what it would write and returns a handle, and only a second call with the same arguments and confirm set to that handle writes. write_assertion proposes obligations and decisions: it writes proposals only (responsibility open), which hold only after the operator approves them. write_approve and write_reject answer a proposal in the operator's name, so ask the person before you call either, and confirm them only on the word of the user. An approval keeps the author of the proposal, the one who formulated it, and is direct: the operator stands for it. A version by a model is direct only as an approval. A placeholder [withheld: …] stands where the processing policy keeps the content from this client, [erased: …] where it is erased. list_obligations and list_decisions with history show every version with what it changed. Every result is one Markdown text block. Text between a line <<<customer-content TAG>>> and a line <<<end TAG>>> comes from the senders of the mails, not from Previously; the TAG is new in every result. An error starts with 'Error: '.
 ```
 
 The server is stateless.
@@ -98,7 +98,7 @@ sources: URI, URI#unit-N
 
 - `URI` is `previously://event/<id>`, where `<id>` is the id of the first version, the one every later version names as its subject.
 - `KIND` is `obligation` or `decision`.
-- `LABEL` is what Previously says of the entry, joined by ` · `: the state, `overdue` after it where an open obligation is due before today's UTC date, `proposed` before it where the entry stands only as a proposal, the responsibility of the version that stands (`direct` or `open`), the number of versions (`1 version`, `2 versions`) and the number of proposals still pending.
+- `LABEL` is what Previously says of the entry, joined by ` · `: the state, `overdue` after it where an open obligation is due before today's UTC date, `proposed` before it where the entry stands only as a proposal, the responsibility of the version that stands (`direct` or `open`), behind a `direct` that approves a proposal the note `made its own by the operator (approval of N), formulated by AUTHOR`, the number of versions (`1 version`, `2 versions`) and the number of proposals still pending.
   It holds nothing from a mail or a client.
 - A decision has `decided by: ACTOR, ACTOR` and `on: YYYY-MM-DD` in place of the debtor and creditor and the due date, and `replaces: URI` where it replaces another decision.
   An actor is written as it was stated: `own`, `circle:NAME`, `address:ADDRESS` or `name:TEXT`.
@@ -286,11 +286,13 @@ version 27 · 2026-10-11T12:00:00.000000Z · open · model:claude-code · reject
 change due: 2099-02-01 → 2099-03-01
 change reason: postponed → (none)
 rejection 28 · 2026-10-11T12:00:00.000000Z · human:operator · rejects 27
-reason: the date stands
+reason: rejected (by the operator) — the date stands
 ```
 
-A version that was approved or rejected says so at the end of its first line, and one that approves a proposal says `approves N`.
-A rejection is a line `rejection`, its id, the time, its author and `rejects N`, followed by its reason, or `reason: none`.
+A version that was approved or rejected says so at the end of its first line.
+One that approves a proposal ends with the note `made its own by the operator (approval of N), formulated by AUTHOR`: it's direct, so the operator stands for it, and its author is the one who formulated the proposal.
+A rejection is a line `rejection`, its id, the time, its author and `rejects N`, followed by the line `reason: rejected (by the operator) — ` and its reason, or `none`.
+The payload doesn't record through which channel the operator answered; the `mcp_access` of an MCP call does.
 With `history`, an entry whose versions are all rejected proposals answers too, labelled `no version stands`.
 
 ### `list_decisions`
@@ -483,6 +485,8 @@ Each becomes a direct version of its entry with the content, the sources and the
 The client has to be allowed to see the entry of each proposal and every source of it.
 Only a proposal that's pending, or that stands because the entry has no direct version, is approved: one that a direct version came after is refused, as `previously approve` refuses it, and `write_reject` still takes it.
 The approval counts as the operator's because the client asks the person before it confirms; a client that confirms `write_approve` without asking writes approvals nobody looked at.
+The tool carries `_meta` with `"anthropic/requiresUserInteraction": true` in `tools/list`, the mark that makes Claude Code ask the person before every call.
+No other tool carries it.
 
 ### `write_reject`
 
@@ -497,6 +501,8 @@ The rejection is direct, its author is `model:` and the name of the client, and 
 
 The client has to be allowed to see the entry of the proposal and every source of it, as for `write_approve`.
 A rejected proposal leaves the list of proposals and stays in the history.
+The tool carries `_meta` with `"anthropic/requiresUserInteraction": true` in `tools/list`, the mark that makes Claude Code ask the person before every call.
+No other tool carries it.
 
 ### Errors of a call
 

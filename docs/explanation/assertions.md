@@ -83,6 +83,7 @@ An approval or a rejection is different: it's the answer, and it's direct.
 Over the command line the operator types it himself.
 Over MCP, `write_approve` and `write_reject` count as the operator's only because the client asks the person before it confirms them.
 That's a requirement on the environment and not something Previously can check, in the sense that {ref}`environment-requirements` gives the word: Previously says what it requires, and the configuration of the client meets it.
+Previously marks `write_approve` and `write_reject` as well, with the `anthropic/requiresUserInteraction` mark that Claude Code reads as an ask rule, so that a client which knows the mark has a second guard beside the requirement; a client that doesn't know it gets nothing from it.
 
 Not meeting it carries a concrete risk.
 A client that runs `write_approve` without asking, because it was allowed always or because a mode lets a classifier or nobody decide, writes direct versions that no person looked at.

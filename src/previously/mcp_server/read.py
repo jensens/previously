@@ -23,11 +23,13 @@ from previously.core.access import Delivered
 from previously.core.access import NO_RULE
 from previously.core.access import RULE as RULE_CODE
 from previously.core.access import Withheld
+from previously.core.assertion import approval_note
 from previously.core.assertion import changes
 from previously.core.assertion import DecisionBody
 from previously.core.assertion import ObligationBody
 from previously.core.assertion import OPEN
 from previously.core.assertion import overdue
+from previously.core.assertion import REJECTION_NOTE
 from previously.core.assertions import assertion_decisions
 from previously.core.assertions import erased_assertion
 from previously.core.assertions import read_source_events
@@ -582,8 +584,8 @@ def _history_lines(
             head.append("rejected")
         elif version.id in thread.approved:
             head.append("approved")
-        elif statement.approves is not None:
-            head.append(f"approves {statement.approves}")
+        elif (note := approval_note(statement)) is not None:
+            head.append(note)
         lines = [" · ".join(head)]
         if before is None:
             lines.extend(f"set {line}" for line in statement_lines(statement))
@@ -596,7 +598,9 @@ def _history_lines(
     for event_id, recorded_at, rejection in rejections:
         head = f"rejection {event_id} · {iso_utc(recorded_at)} · {rejection.author}"
         reason = _NONE if rejection.reason is None else rejection.reason
-        shown.append((event_id, [f"{head} · rejects {rejection.of}", f"reason: {reason}"]))
+        shown.append(
+            (event_id, [f"{head} · rejects {rejection.of}", f"reason: {REJECTION_NOTE} — {reason}"])
+        )
     return [line for _event_id, lines in sorted(shown) for line in lines]
 
 
@@ -611,7 +615,10 @@ def _label(thread: Thread, winner: Version | None, today: date) -> str:
         state += " · overdue"
     if winner.statement.responsibility == OPEN:
         state = f"proposed · {state}"
-    return f"{state} · {winner.statement.responsibility} · {versions} · {proposals}"
+    responsibility = winner.statement.responsibility
+    if (note := approval_note(winner.statement)) is not None:
+        responsibility = f"{responsibility} · {note}"
+    return f"{state} · {responsibility} · {versions} · {proposals}"
 
 
 def _stands(thread: Thread, listing: Listing) -> bool:

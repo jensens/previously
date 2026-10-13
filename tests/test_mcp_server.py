@@ -849,10 +849,10 @@ def test_the_prompts_ask_for_work_and_hold_no_content(world: World, mode: str) -
 
 # --- assurance 10: the tool list --------------------------------------------------------
 
-# The SHA-256 of the tool list as clients see it: name, description and input
-# schema of every tool, sorted by name, as canonical JSON. A change to any of
+# The SHA-256 of the tool list as clients see it: name, description, input
+# schema and `_meta` of every tool, sorted by name, as canonical JSON. A change to any of
 # them is a change of the interface, made deliberately and released.
-TOOLS_SHA256 = "45a73803197d866e97fb5f6511787de00988a020fe9a642fdaf7a34aa418cc04"
+TOOLS_SHA256 = "6a5aa49ef01adee082217f1a3b736e9446878ecfa655ec802ff9a63077f0d97b"
 
 
 def tool_list_digest(tools: list[dict[str, object]]) -> str:
@@ -871,7 +871,12 @@ def test_the_tool_list_matches_its_checksum(world: World, mode: str) -> None:
     server = build_server(world.storage, stdio_client="claude-code")
     listed = _session(server, mode, lambda session: session.list_tools())
     tools: list[dict[str, object]] = [
-        {"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema}
+        {
+            "name": tool.name,
+            "description": tool.description,
+            "inputSchema": tool.input_schema,
+            "_meta": tool.meta,
+        }
         for tool in listed.tools
     ]
     assert {str(tool["name"]) for tool in tools} == TOOLS
@@ -888,6 +893,38 @@ def test_the_tool_list_matches_its_checksum(world: World, mode: str) -> None:
         "write_reject",
     ]
     assert tool_list_digest(tools) == TOOLS_SHA256
+
+
+ASK_MARK = "anthropic/requiresUserInteraction"
+
+
+def test_the_instructions_tell_a_client_how_to_read_an_approval_and_to_ask() -> None:
+    """The acceptance run of 2026-10-13 read an approval as another session's
+    decision and confirmed one without asking."""
+    from previously.mcp_server.server import INSTRUCTIONS
+
+    for sentence in (
+        "hold only after the operator approves them",
+        "answer a proposal in the operator's name, so ask the person before you call either",
+        "An approval keeps the author of the proposal, the one who formulated it, and is direct",
+        "A version by a model is direct only as an approval.",
+        "[withheld: …]",
+        "[erased: …]",
+        "with history show every version with what it changed",
+    ):
+        assert sentence in INSTRUCTIONS
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_exactly_the_two_answering_tools_carry_the_ask_mark(world: World, mode: str) -> None:
+    server = build_server(world.storage, stdio_client="claude-code")
+    listed = _session(server, mode, lambda session: session.list_tools())
+    marked = {tool.name for tool in listed.tools if (tool.meta or {}).get(ASK_MARK) is True}
+    assert marked == {"write_approve", "write_reject"}
+    # The control: a tool that proposes only is not marked, and no tool carries the key
+    # with another value.
+    assert all(tool.name in marked or ASK_MARK not in (tool.meta or {}) for tool in listed.tools)
 
 
 # --- assurance 11: both generations ------------------------------------------------------
@@ -1669,14 +1706,47 @@ def test_the_history_marks_approvals_and_rejections_and_shows_each_rejection_wit
     at = "2026-10-11T12:00:00.000000Z"
     assert f"version {taken} · {at} · open · model:claude-code · approved\n" in history
     assert f"version {refused} · {at} · open · model:claude-code · rejected\n" in history
-    assert f"version {approval} · {at} · direct · model:claude-code · approves {taken}\n" in (
-        history
-    )
+    assert (
+        f"version {approval} · {at} · direct · model:claude-code · made its own by the operator "
+        f"(approval of {taken}), formulated by model:claude-code\n"
+    ) in history
     assert (
         f"rejection {rejection} · {at} · human:operator · rejects {refused}\n"
-        "reason: not what was said\n"
+        "reason: rejected (by the operator) — not what was said\n"
     ) in history
     assert history.index(f"version {approval} ") < history.index(f"rejection {rejection} ")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_list_says_an_approval_by_a_model_author_is_the_operators(
+    world: World, mode: str
+) -> None:
+    """A bare `direct` beside `model:claude-code` read as the model's own
+    decision (the acceptance run of 2026-10-13); the label of an approval
+    says whose it is and who formulated it. The control is the entry a person
+    stated directly, whose label stays as it was."""
+    scanned = _on(world, "attachments_only")
+    (own,) = _state(world, _obligation(scanned, what="stated by a person"))
+    (proposal,) = _state(world, _obligation(scanned, responsibility=OPEN, what="proposed"))
+    (approval,) = _state(
+        world,
+        replace(
+            _obligation(scanned, responsibility=OPEN, what="proposed"),
+            responsibility=DIRECT,
+            subject=proposal,
+            approves=proposal,
+        ),
+    )
+
+    text = _text(_tool(world, mode, "list_obligations", {}))
+
+    note = f"made its own by the operator (approval of {proposal}), formulated by model:claude-code"
+    assert (
+        f"previously://event/{proposal} · obligation · open · direct · {note} · 2 versions" in text
+    )
+    assert f"previously://event/{own} · obligation · open · direct · 1 version" in text
+    assert approval > proposal
 
 
 @pytest.mark.db

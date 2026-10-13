@@ -889,12 +889,30 @@ auf `assertions.md` unter *What the pilot leaves open*.
 - Die Forderung, dass der Client vor `write_approve` und `write_reject` fragt,
   hängt allein an seiner Einstellung. Die Doku von Claude Code nennt
   MCP-Werkzeuge mit `_meta["anthropic/requiresUserInteraction"]`, die fragen
-  wie mit einer Ask-Regel; ob der Server die beiden Werkzeuge so kennzeichnen
-  sollte, ist ungeprüft, und Vibe kennt es nicht (gefunden beim Schreiben der
-  Anleitung, 2026-10-12). Claude Code startet ab v2.1.283 im Auto-Modus, in
+  wie mit einer Ask-Regel; Vibe kennt es nicht (gefunden beim Schreiben der
+  Anleitung, 2026-10-12). Seit dem Zweig `mcp-erklaeren` tragen
+  `write_approve` und `write_reject` die Kennzeichnung (und nur sie); ob
+  Claude Code sie gegen Previously einhält, ist ungemessen bis zum nächsten
+  Lauf des Betreuers, und die Ask-Regel bleibt die Forderung. Claude Code startet ab v2.1.283 im Auto-Modus, in
   dem ohne Ask-Regel ein Klassifikator entscheidet; die Anleitung verlinkt
   seit der Fixwelle die Quellen. Die Einstellungen der Anleitung für beide
   Clients sind ungemessen.
+- Der Abnahmelauf vom 2026-10-13 mit Claude Code las die Daten zweimal falsch:
+  die Freigabe 43 stehe als „direct, model:claude-code“, also habe sie „eine
+  andere Claude-Code-Sitzung“ freigegeben, und Previously halte „den Client
+  fest, nicht den Menschen“. Beides ist falsch: eine Freigabe behält den
+  Verfasser des Vorschlags, und `direct` heißt, der Betreiber steht dafür
+  (`assertions.md`); seit F-6 kann eine direkte Fassung eines `model:`-Autors
+  nur eine Freigabe sein. Dazu rief der Client `write_approve` auf, ohne den
+  Betreuer zu fragen, weil die Ask-Regel fehlte. Der Zweig `mcp-erklaeren`
+  antwortet darauf, ohne Skill auf der Seite des Clients: der Server erklärt
+  sich selbst (`INSTRUCTIONS`), Freigaben und Ablehnungen tragen in Liste,
+  Geschichte und Seite der Kommandozeile einen Zusatz („made its own by the
+  operator (approval of N), formulated by AUTHOR“; „rejected (by the
+  operator)“), und die beiden Werkzeuge tragen die Kennzeichnung. Ob Claude
+  Code damit richtig liest und fragt, zeigt erst der nächste Lauf; offen
+  bleibt, über welchen Weg der Betreiber antwortete — die Nutzlast hält das
+  nicht fest, nur `mcp_access` für Aufrufe über MCP.
 - Eine Geschichte, die länger ist als eine Seite, wird über MCP nach einer
   ganzen Zeile gekürzt, und ihr Rest kommt über keinen Aufruf; die
   Kommandozeile zeigt sie ganz. Ein Weg wäre ein Cursor für die Geschichte

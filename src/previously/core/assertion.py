@@ -640,6 +640,29 @@ def _fields_of(statement: Statement) -> dict[str, str]:
     return fields
 
 
+def approval_note(statement: Statement) -> str | None:
+    """How a version that approves a proposal reads where it is shown, or
+    `None` for any other version.
+
+    An approval keeps the author of the proposal, the one who formulated
+    it, and is direct: the operator stands for it
+    ({ref}`assertions-proposals`). Shown as a bare `direct` beside a
+    `model:` author it reads as that model's own decision, which it is not.
+    The payload records no channel, so the note says none.
+    """
+    if statement.approves is None:
+        return None
+    return (
+        f"made its own by the operator (approval of {statement.approves}), "
+        f"formulated by {statement.author}"
+    )
+
+
+REJECTION_NOTE: Final = "rejected (by the operator)"
+"""What a rejection reads as before its reason. Like an approval it is direct,
+and the author is whoever wrote it down, which may be a `model:` client."""
+
+
 def changes(before: Statement, after: Statement) -> tuple[tuple[str, str, str], ...]:
     """The fields that differ, as `(field, before, after)`: the body fields,
     `sources` and `reason`. Computed when read, never stored."""
