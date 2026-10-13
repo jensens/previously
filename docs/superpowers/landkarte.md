@@ -52,11 +52,28 @@ und das Tailnet (Stufe A2); der Zugang zum MCP-Server ist `kubectl
 port-forward` (RG). Das Log dort ist eine Probe: die Daten werden vor dem
 regulären Gebrauch zurückgesetzt, das dauerhafte Log beginnt danach.
 
+Seit dem 2026-10-12 läuft `0.1.0a5` in kup6s (RA). Die vier Prüfungen des
+Handoffs der Einstellungen (`v0.1.0a4`) stehen: das Release läuft, kein Pod
+setzt einen alten Host- oder Port-Namen, die Aufnahme ging von ihrer
+Wasserlinie weiter (`up to uid 9`), `previously-mcp` hört auf `0.0.0.0:8765`
+mit der Probe bei 200 `ok`. Beim Handoff der Feststellungen stehen: Werkzeug-Pod
+und Jobs auf `0.1.0a5` mit Migration `0005_watermark`, der Schlüssel
+`PREVIOUSLY_MCP_CONFIRM_KEY` nur in `previously-mcp`, die vorgesehene Aufnahmezeile, und
+die Vorschau von `write_assertion` über den Server (`handle:`-Zeile, `Nothing
+is written yet`). Die Prüfung „`UPDATE` auf `event` verwehrt“ fiel anders aus: es gelingt, weil
+alle Pods die Rolle `previously` benutzen, die Eigentümerin der Datenbank
+(siehe *Betrieb*). kup6s hat die Umbenennung der Einstellungen in drei Schritten
+ausgerollt (neue Namen neben die alten, dann das Image, dann die alten Namen
+weg); `cut-a-release.md` sagt es jetzt.
+
 Gebaut, aber noch nicht abgenommen: Einheit 5, die Feststellungen
 (Verpflichtung und Entscheidung mit Quellen, Vorschläge über MCP, Freigabe und
 Ablehnung, die Kaskade der Tilgung), auf dem Zweig `worktree-feststellungen`;
 sie wartet auf die Endprüfung, den Merge und die Abnahme nach F §14 (unten
-unter *Was als Nächstes kommt*).
+unter *Was als Nächstes kommt*). Die Abnahme ist zur Hälfte getan: die Vorschau
+von `write_assertion` läuft über den Server in kup6s, bestätigt ist noch nichts
+(`write_approve` und `write_reject` ungetestet), und in Claude Code ist kein
+Werkzeug von Previously „immer erlaubt“, sodass beide fragen (RA).
 
 Nicht gebaut: die Suche, jede Entität und jede Zuordnung, KI-Schicht,
 jeder Konnektor außer dem für IMAP.
@@ -227,7 +244,9 @@ der Auslieferung und der Aufnahme
 (`handoffs/2026-10-11-kup6s-feedback-delivery-and-ingest.md`), englisch, wie
 erhalten, **RG** seine Rückmeldung vom selben Tag auf die Handoffs des Gates
 und des MCP-Servers (`handoffs/2026-10-11-kup6s-feedback-gate-and-mcp.md`),
-ebenso.
+ebenso, **RA** seine Rückmeldung vom 2026-10-12 auf die Handoffs der
+Einstellungen und der Feststellungen
+(`handoffs/2026-10-12-kup6s-feedback-settings-and-assertions.md`), ebenso.
 
 ### Einwurf-Vertrag (`contract`, Teilprojekt 2)
 
@@ -942,10 +961,6 @@ auf `assertions.md` unter *What the pilot leaves open*.
   veröffentlicht, setzt `latest` auf sich zurück: `enable` liest nur die
   Markierung als Vorabversion (P-AL, Prüfung der Aufgabe 4; `delivery.md`,
   `cut-a-release.md`). Folgenlos, solange es keine Wartungslinie gibt.
-- Der Warteschritt in `image` fragt die JSON-Schnittstelle von PyPI, das
-  Image installiert aus dem einfachen Index; hinkt der zweite nach, scheitert
-  der Bau nach PyPI, und „Re-run failed jobs" ist die Abhilfe (P-AL, Prüfung
-  der Aufgabe 4; `cut-a-release.md`).
 - Eine Vorabversion bekommt nur den Image-Tag `<version>`, kein
   `<major>.<minor>`, anders als AL §3.2 Punkt 6: `docker/metadata-action`
   verlängert eine Vorabversion nur zur genauen Fassung (ruling T4-a; P-AL).
@@ -1009,7 +1024,12 @@ auf `assertions.md` unter *What the pilot leaves open*.
   Wasserlinie, der MCP-Server liest und hängt `mcp_access` an, nur `redact`
   ändert Zeilen. Getrennte Rollen wären eine Forderung an die Umgebung samt
   einer Aufteilung in Previously, die es heute nicht gibt (gefunden bei der
-  Rückmeldung von kup6s, 2026-10-11).
+  Rückmeldung von kup6s, 2026-10-11). kup6s bestätigt es am 2026-10-12 (RA):
+  alle Pods nutzen eine Rolle, die Eigentümerin der Datenbank, die
+  Anforderungen an die Umgebung verlangen nicht mehr, und getrennte Rollen,
+  der des Servers beschränkt auf das, was seine Werkzeuge brauchen, würden
+  verengen, was ein gekaperter MCP-Pod mit den Tabellen tun könnte; ob das eine
+  Anforderung wert ist, liege bei uns.
 - `previously migrate` geht nur vorwärts; ein Zurück im Betrieb ist eine
   Wiederherstellung, kein Kommando (AL §12 Punkt 3; `delivery.md`).
 - Der Container-Weg der Anker-Routine ist für `kubectl exec` ungemessen
@@ -1253,6 +1273,20 @@ auf `assertions.md` unter *What the pilot leaves open*.
 
 ## Erledigt, seit es auf einer Liste stand
 
+- ~~Die erste Anfrage nach einem Wechsel des Datenbank-Primärknotens scheitert~~
+  (RA) — der Zweig `worktree-rueckmeldung-a5`, erster Commit `383d0ab`:
+  `from_dsn` erzeugt die Engine mit `pool_pre_ping=True`, ein Test gegen echtes
+  PostgreSQL beendet alle anderen Backends und liest danach (gemessen rot ohne
+  die Prüfung, grün mit). Der Preis ist ein Hin und Zurück je Entnahme aus dem
+  Pool; eine Verbindung, die erst nach der Prüfung stirbt, fängt es nicht.
+- ~~Der Warteschritt in `image` fragt die JSON-Schnittstelle von PyPI, das
+  Image installiert aus dem einfachen Index; hinkt der zweite nach, scheitert
+  der Bau nach PyPI~~ (P-AL, Prüfung der Aufgabe 4) — seit `v0.1.0a4` fragte
+  der Schritt den einfachen Index mit `curl`, und für `v0.1.0a5` sah er die
+  Version nach 2 s, `uv` im Bau fand sie noch gut eine Minute später nicht
+  (RA). Jetzt löst der Schritt die Version mit `uv` selbst auf, wie das
+  `Dockerfile` fragt; Zweig `worktree-rueckmeldung-a5`, erster Commit
+  `383d0ab`. Lokal gegen PyPI gemessen: `0.1.0a5` besteht, `9.9.9` scheitert.
 - ~~Ein zweiter Schreibweg neben `append` für `assertion`~~ (PP, A1 S1 und
   Zeile 19, zur Hälfte; F §9) — Einheit 5, Commit `69bd77f`:
   `write_statements` in `core/assertions.py` sperrt die Quellen, prüft, was
