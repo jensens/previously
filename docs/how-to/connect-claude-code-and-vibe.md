@@ -85,7 +85,7 @@ It listens on `http://127.0.0.1:8765/mcp` and runs until you stop it.
 To reach a server in the Kubernetes cluster instead, forward its port first, such as with `kubectl port-forward svc/previously-mcp 8765:8765`, and use the same address.
 The port-forward doesn't recover by itself: when it dies, the client's calls fail and retry until you start it again, and it proved unstable for longer sessions.
 The lasting answer is a path that stays up: a private network that the clients and the server share, with a name for the server.
-`serve` asks two things of that path: it is encrypted or private, as {ref}`environment-requirements` states, and the name that clients use is in `PREVIOUSLY_MCP_ALLOWED_HOSTS` ({ref}`configuration-reference`), or the requests get the status 421.
+`serve` asks two things of that path: the path is encrypted or private, as {ref}`environment-requirements` states, and the name that clients use is in `PREVIOUSLY_MCP_ALLOWED_HOSTS` ({ref}`configuration-reference`), or the requests get the status 421.
 A tailnet is one way to meet both, and the one measured below: a Tailscale client beside the server joins the network under a name such as `previously-mcp.tailnet.example`, forwards the port to the server on `127.0.0.1`, and Claude Code connects to `http://previously-mcp.tailnet.example:8765/mcp`.
 WireGuard encrypts the path, so plain HTTP inside the tailnet needs no TLS of its own.
 Another private network, or TLS ended in front of `serve`, works as well.
@@ -187,6 +187,6 @@ Claude Code and Mistral Vibe 2.26.1, in its default harness, were measured on 20
 
 Claude Code was measured on 2026-10-13 against `previously serve` `0.1.0a6` in the cluster through a tailnet, not a port-forward: a Tailscale client in userspace beside the server, a self-hosted Headscale control server, plain HTTP inside WireGuard, and the tailnet name of the server in `PREVIOUSLY_MCP_ALLOWED_HOSTS`.
 `whoami` answered through that address, and `previously access` listed the call like every other.
-The tailnet's access policy let one person's machine reach the port, and no rule let the pod reach anyone.
+The access policy of the tailnet let one person's machine reach the port, and no rule let the pod reach anyone.
 
 Not measured: the `[tools.…]` keys of Vibe's configuration, whose names assume `previously_<tool>`, and the mark `anthropic/requiresUserInteraction`, which no release carries yet.
