@@ -1194,6 +1194,12 @@ auf `assertions.md` unter *What the pilot leaves open*.
 
 ### Tore und Werkzeuge
 
+- Ein Wackler, einmal gesehen und nicht wiederholbar:
+  `test_a_mail_that_carries_an_earlier_tag_does_not_close_the_fence[auto]` in
+  `tests/test_mcp_server.py` scheiterte am 2026-10-13 einmal in einem
+  Teillauf; acht Läufe mit wechselnder Reihenfolge danach waren grün. Kommt er
+  wieder, die Saat von `pytest-randomly` aus der Ausgabe notieren und damit
+  nachstellen.
 - Drei geparkte Testlöcher am Doku-Tor (1b §10 Punkt 5).
 - Die Reihenfolge der zwei `stderr`-Hinweise in `cli.md` hält nichts
   mechanisch; `_message_patterns` nimmt auch die `_describe`-Literale auf
