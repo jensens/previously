@@ -1362,6 +1362,8 @@ Error: the database does not answer
 ```
 
 It reaches no MCP, returns no data and writes no `mcp_access`.
+A check that finds the database unreachable, or a connection that the server ended, writes one `WARNING` line to the log, which carries the sentence of the storage error and no traceback.
+A failure of any other kind writes an `ERROR` record with its traceback, and the answer is the same 503.
 Only `GET` on exactly that path passes without a token: another method, or another path such as `/healthz/`, gets the 401 above.
 
 The `Host` header of a request has to name `127.0.0.1`, `localhost`, `[::1]` or a name in `PREVIOUSLY_MCP_ALLOWED_HOSTS`, with any port, or the request gets the status 421.

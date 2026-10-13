@@ -127,6 +127,8 @@ from previously.mcp_server.render import render_text
 from previously.mcp_server.render import sanitize
 from previously.mcp_server.render import Stated
 from previously.mcp_server.render import STATED_LINE_CHARS
+from previously.storage.errors import OperationFailed
+from previously.storage.errors import ServerUnreachable
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -1851,8 +1853,17 @@ def build_app[Conn](
         try:
             with log.snapshot() as conn:
                 log.tip(conn)
+        except (ServerUnreachable, OperationFailed) as error:
+            # A database that does not answer is an expected state, not a
+            # fault of this process: a switchover of the primary refuses
+            # connections for seconds (`ServerUnreachable`) or ends one in
+            # mid-use (`OperationFailed`), measured in kup6s on 2026-10-13.
+            # The storage error's sentence says what a traceback chain of
+            # three or four exceptions would, once per failed check.
+            logger.warning("the readiness probe found no database: %s", error)
+            return False
         except Exception:
-            logger.exception("the readiness probe found no database")
+            logger.exception("the readiness probe failed for an unexpected reason")
             return False
         return True
 

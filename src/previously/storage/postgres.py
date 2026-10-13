@@ -1228,14 +1228,20 @@ def from_dsn(dsn: str) -> PostgresStorage:
 
     A pooled connection can be ended by the server while it sits idle: a
     switchover of the primary does it, and so does a restart of the database.
-    Without a check, the first request afterwards meets that dead connection
-    and fails, and only the next one reconnects. Measured in kup6s on
-    2026-10-12 on `previously serve`, where the readiness probe got a 503 and
-    a client would have got a failed tool call. `pool_pre_ping` sends a
-    trivial statement when a connection is taken from the pool and replaces a
-    dead one before the request uses it. The cost is one round trip for each
-    checkout, which for a request that makes its own queries is small beside
-    them.
+    Without a check, the first request that takes such a connection fails, and
+    only the next one reconnects, however much later it comes. `pool_pre_ping`
+    sends a trivial statement when a connection is taken from the pool and
+    replaces a dead one before the request uses it. The cost is one round trip
+    for each checkout, which for a request that makes its own queries is small
+    beside them.
+
+    What the check does not do is make a switchover cost no request. Measured
+    in kup6s on 2026-10-12 and again on 2026-10-13 on `previously serve`, the
+    failed readiness check fell inside the switchover, while no primary
+    answered, and the requests after it already succeeded. On 2026-10-13 the
+    ping found the pooled connection dead, the new connection was refused, and
+    the 503 was right: the database did not answer. The earlier reading, that
+    the first request after a switchover fails, was a mismeasurement.
     """
     url = _url_of(dsn)
     if url is None:
