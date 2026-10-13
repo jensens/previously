@@ -519,7 +519,24 @@ Hand erproben.
   Klammer, jeder Art. Die Einheit der Zuordnung ist der Abschnitt, nicht die
   Mail (NOTIZEN, *Zerlegung*; Design §5.2): „Absatz 2–4 gehören zum Change
   Request, Absatz 5 zur Rechnung". Heute sind Abschnitte die Einheiten, die die
-  Aufnahme vergibt.
+  Aufnahme vergibt: der Betreff und die Absätze einer Mail (Spec der
+  IMAP-Aufnahme, §3.2).
+- **Menschen bleiben nicht bei einem Thema.** Markus schreibt zum Projekt XZ
+  und am Ende „Ach übrigens, der Caterer hat zugesagt" — was sich nur aus dem
+  Zusammenhang aufs Sommerfest des Vereins bezieht, nicht auf den Kunden XZ
+  (Betreuer, 2026-10-14). „Menschen schreiben nicht brav zwei Mails", und in
+  Transkripten und Chats erst recht nicht. Dann gehören die Einheiten über XZ
+  zum Projekt und die letzte zum Sommerfest: zwei Zuordnungen in einem Event.
+  Steht der Satz mitten in einem Absatz über XZ, ist die Einheit zu grob; dann
+  wird der ganze Absatz beiden zugeordnet. Feinere Stücke — Zeichenbereiche,
+  Zeitbereiche in einem Transkript (NOTIZEN, *Zerlegung*) — sind eine spätere
+  Erweiterung (§18).
+- **Der Zusammenhang kommt aus dem Graphen.** Dass „der Caterer" das
+  Sommerfest meint, steht nicht im Satz: Markus ist im Verein und an XZ
+  beteiligt, beim Verein ist ein Vorgang Sommerfest offen, und in dessen Mails
+  kam ein Caterer vor. Die erkennende KI aus Einheit 6 bekommt ihre Kandidaten
+  aus dem Graphen und entscheidet unter ihnen. Sie kann nur Klammern
+  vorschlagen, die sie nach der Policy sehen darf.
 - **Keine Partition** (Design §5.3): Lücken sind gewollt, Überschneidungen
   erlaubt.
 - **Transitiv nach oben** über `part_of`: was zum Sommerfest gehört, gehört
@@ -568,13 +585,29 @@ ist es da. Deshalb nur `direct`, nur vom Betreiber (§7.6).
 
 ### 9.4 Eine Klammer und das Gate
 
-Ein Event, das einer Klammer zugeordnet ist, bekommt die Kreise dieser Klammer
-dazu — die Kreise, die an ihr beteiligt sind, über `involved_in` und die
-Klammern darüber. Wie das wirkt, hängt davon ab, wer zugeordnet hat:
+**Je Einheit, nicht je Event.** Die Kreise aus den Adressen gelten für das
+ganze Event (§9.2). Die Kreise einer Klammer — die an ihr beteiligt sind, über
+`involved_in` und die Klammern darüber — gelten nur für das, was ihr
+zugeordnet ist: eine Zuordnung des ganzen Events für das ganze Event, eine
+Zuordnung von Einheiten nur für diese Einheiten. Sonst brächte der Nachsatz
+über den Caterer (§8) die Regel des Vorstands über die ganze Mail, und der Teil
+über XZ verschwände vor einem Modell, das ihn sehen darf. Ein Platzhalter je
+Einheit ist schon gebaut: eine getilgte Einheit steht heute als `[erased: …]`
+mitten in einer sonst lesbaren Mail, eine zurückgehaltene stünde genauso da.
+Das gilt auch umgekehrt: darf Vereinsinhalt nur lokal verarbeitet werden, geht
+der Nachsatz nach seiner Zuordnung nicht mehr an ein Modell, das die Mails der
+Firma sehen darf. **Vor der Zuordnung bleibt eine Lücke**, und sie lässt sich
+nicht schließen: solange niemand weiß, dass der Satz zum Verein gehört, gilt
+für ihn die Regel der Firma. Markus hat Vereinsinhalt über den Firmenkanal
+geschickt; erst die Zuordnung erkennt es (Betreuer, 2026-10-14: „das macht es
+zwar komplexer, aber die Realität ist so").
 
-- **Die direkte Zuordnung des Betreibers ordnet ein.** Sie stellt das Event in
-  die Kreise der Klammer und darf damit lockern, wie `in_circle`. Ohne sie
-  bräuchte die private Mail des Caterers zwei Handgriffe für eine Absicht.
+Wie eine Zuordnung auf das Gate wirkt, hängt davon ab, wer zugeordnet hat:
+
+- **Die direkte Zuordnung des Betreibers ordnet ein.** Sie stellt das
+  Zugeordnete in die Kreise der Klammer und darf damit lockern, wie
+  `in_circle`. Ohne sie bräuchte die private Mail des Caterers zwei Handgriffe
+  für eine Absicht.
 - **Eine transitive oder offene Zuordnung verschärft nur.** Die Kreise der
   Klammer kommen hinzu, es gilt die strengste Regel über alle, und der Zustand
   „ohne Kreis, nur lokal" bleibt in dieser Menge erhalten. Eine Zuordnung, die
@@ -583,8 +616,8 @@ Klammern darüber. Wie das wirkt, hängt davon ab, wer zugeordnet hat:
 
 **Warum die Verschärfung bleibt, obwohl sie angreifbar ist.** Der Betreuer fragte,
 ob eine einzelne Mail den Modellzugriff kastrieren kann (2026-10-13). Sie
-kann es nicht: das Gate entscheidet je Event, die Mail eines Unbekannten
-verschärft nur sich selbst. Der echte Angriff liegt tiefer: hat eine Klammer
+kann es nicht: das Gate entscheidet je Event und, wo eine Klammer wirkt, je
+Einheit; die Mail eines Unbekannten verschärft nur sich selbst. Der echte Angriff liegt tiefer: hat eine Klammer
 einen strengen Kreis — einen Kunden mit „nur lokal" —, und bringt eine Mail mit
 eingeschleusten Anweisungen ein Modell dazu, viele Events unter einer Klasse in
 diese Klammer zu hängen, sind sie für das Modell des Betreibers nicht mehr
@@ -803,7 +836,7 @@ Was diese Einheit nicht baut, aber nicht unmöglich machen darf:
 | `core/` (neu) | Freigabeklassen, Einwände, Trefferquote |
 | `core/assertions.py` | der Schreibweg: neue Arten, die Sperre für Zyklen |
 | `core/redact.py`, `core/verify.py` | Kaskade und Form der neuen Arten |
-| `core/decide.py` | Phase 3: Kreise aus dem Graphen, Zeitpunkt, Klammern |
+| `core/decide.py` | Phase 3: Kreise aus dem Graphen, Zeitpunkt, Klammern je Einheit |
 | `mcp_server/` | `in`, `list_entities`, `write_entity`, `write_relation`, `list_triage`, `write_triage_answer`, der Kopf |
 | `cli.py` | `vocabulary`, `entity`, `relate`, `entities`, `chronicle --in`, `--at`, `triage`, `status` |
 | Paket | das Grundvokabular als Datei |
@@ -861,6 +894,9 @@ rot gemessen wird, und einer grünen Kontrolle.
     dazwischen liegt.
 16. **Der Grund einer Verschärfung ist sichtbar:** der Platzhalter nennt die
     Klammer und die Zuordnung.
+17. **Eine Klammer wirkt je Einheit:** ist eine Einheit einer Klammer mit
+    strenger Regel zugeordnet, wird sie zurückgehalten und der Rest des Events
+    nicht; eine Zuordnung des ganzen Events wirkt auf das ganze.
 
 ---
 
@@ -904,7 +940,9 @@ Vom Betreuer, nach dem Merge der jeweiligen Phase:
    Vorstand ihres Zeitpunkts; die direkt an eine private Adresse bleibt nur
    lokal, eine Zuordnung durch ein Modell lockert sie nicht, die des Betreuers
    ordnet sie ein. Eine Mail an den Vorstand von 2019 fällt unter dessen
-   Mitgliedschaft. Die bestehenden Kreise sind umgestellt, und kein Modell
+   Mitgliedschaft. Die Mail von Markus zu XZ mit dem Nachsatz über den
+   Caterer: der Nachsatz steht unter der Regel des Vorstands, der Rest unter
+   der seiner Firma. Die bestehenden Kreise sind umgestellt, und kein Modell
    sieht mehr als vorher.
 
 ---
@@ -932,6 +970,9 @@ Landkarte, je unter ihre Einheit.
   Beziehungen nicht trägt (§3.4); eine belegte Recherche zu Graphdatenbanken
   steht aus.
 - **Übersetzungen von Inhalten** (§4.6).
+- **Feinere Stücke als eine Einheit** für die Zuordnung: Zeichenbereiche in
+  einem Absatz, Zeitbereiche in einem Transkript (§8; NOTIZEN, *Zerlegung*).
+  Bis dahin wird ein Absatz, der zwei Themen mischt, beiden zugeordnet.
 - Ob ein Kreis umbenannt werden kann, ohne dass `circle:`-Verweise in
   Verpflichtungen ins Leere zeigen (F §15): mit Kreisen als Entitäten (§9.1)
   wird die Beschriftung änderbar und der Bezeichner fest; die Verweise aus
