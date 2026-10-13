@@ -77,11 +77,14 @@ from previously.mcp_server.server import build_server
 from previously.mcp_server.server import TOOLS
 from previously.mcp_server.server import write_record
 from previously.storage.postgres import PostgresStorage
+from sqlalchemy import Connection
 from sqlalchemy import create_engine
 from sqlalchemy import Engine
 from sqlalchemy import text
+from sqlalchemy.pool import NullPool
 from typing import Any
 from typing import cast
+from typing import override
 from typing import TYPE_CHECKING
 
 import anyio
@@ -98,6 +101,7 @@ import re
 if TYPE_CHECKING:
     from collections.abc import Awaitable
     from collections.abc import Callable
+    from previously.contract.rows import Tip
 
 T0 = datetime(2026, 10, 11, 12, 0, 0, tzinfo=UTC)
 INTERNALDATE = datetime(2026, 10, 8, 9, 0, 0, tzinfo=UTC)
@@ -1227,6 +1231,76 @@ def test_the_readiness_probe_answers_503_when_the_database_does_not() -> None:
     unreachable = PostgresStorage(create_engine("postgresql+psycopg://p:p@127.0.0.1:9/none"))
     response = _get_without_token(unreachable, "GET", "/healthz")
     assert (response.status_code, response.text) == (503, "Error: the database does not answer")
+
+
+def _probe_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
+    return [r for r in caplog.records if r.name == "previously.mcp_server.server"]
+
+
+def test_a_database_that_refuses_costs_the_probe_one_line_without_a_traceback(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # An expected outage, such as a switchover of the primary: the sentence of
+    # the storage error says what a chain of tracebacks said, once per check.
+    unreachable = PostgresStorage(create_engine("postgresql+psycopg://p:p@127.0.0.1:9/none"))
+    caplog.set_level(logging.DEBUG)
+    assert _get_without_token(unreachable, "GET", "/healthz").status_code == 503
+    (record,) = _probe_records(caplog)
+    assert record.levelno == logging.WARNING
+    assert record.exc_info is None
+    assert record.getMessage().startswith(
+        "the readiness probe found no database: connecting to database none at"
+    )
+
+
+class _EndedByTheServer(PostgresStorage):
+    """A real store whose connection the server ends in the middle of the probe.
+
+    The other kind of failure in a switchover: the connection stood and the
+    server ended it. A second connection calls `pg_terminate_backend` on the
+    probe's own session, so the database does the ending and nothing stands in
+    for it.
+    """
+
+    def __init__(self, engine: Engine, admin: Engine) -> None:
+        super().__init__(engine)
+        self._admin = admin
+
+    @override
+    def tip(self, conn: Connection) -> Tip | None:
+        pid = conn.execute(text("SELECT pg_backend_pid()")).scalar_one()
+        with self._admin.begin() as admin:
+            admin.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})
+        return super().tip(conn)
+
+
+def test_a_connection_the_server_ends_costs_the_probe_one_line_as_well(
+    db: Engine, caplog: pytest.LogCaptureFixture
+) -> None:
+    victim = create_engine(db.url, poolclass=NullPool)
+    caplog.set_level(logging.DEBUG)
+    assert _get_without_token(_EndedByTheServer(victim, db), "GET", "/healthz").status_code == 503
+    (record,) = _probe_records(caplog)
+    assert record.levelno == logging.WARNING
+    assert record.exc_info is None
+    assert "terminating connection due to administrator command" in record.getMessage()
+
+
+def test_an_unexpected_failure_of_the_probe_keeps_its_traceback(
+    db: Engine, caplog: pytest.LogCaptureFixture
+) -> None:
+    # The control: a database that answers but has no schema is no outage of
+    # the database. The probe is 503 as before, and the log keeps the
+    # traceback, because that is a fault somebody has to find.
+    with db.connect().execution_options(isolation_level="AUTOCOMMIT") as admin:
+        admin.execute(text("DROP DATABASE IF EXISTS probe_without_schema"))
+        admin.execute(text("CREATE DATABASE probe_without_schema"))
+    empty = PostgresStorage(create_engine(db.url.set(database="probe_without_schema")))
+    caplog.set_level(logging.DEBUG)
+    assert _get_without_token(empty, "GET", "/healthz").status_code == 503
+    (record,) = _probe_records(caplog)
+    assert record.levelno == logging.ERROR
+    assert record.exc_info is not None
 
 
 @pytest.mark.db

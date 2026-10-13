@@ -864,9 +864,12 @@ def _end_other_backends(engine: Engine) -> None:
 
 @pytest.mark.db
 def test_the_first_read_after_the_server_ended_the_connections_succeeds(db: Engine) -> None:
-    """A switchover of the primary ends the pooled connections, and the first
-    request afterwards must not fail on one of them. The storage is built the
-    way `previously serve` builds it, through `from_dsn`."""
+    """A connection that the server ended while it sat idle, as a switchover
+    of the primary or a restart of the database does, must not fail the next
+    request that takes it from the pool, however much later that comes. The
+    storage is built the way `previously serve` builds it, through `from_dsn`.
+    Kup6s measured on 2026-10-13 that a switchover itself still costs the
+    requests that fall inside it, while no primary answers."""
     storage = from_dsn(db.url.render_as_string(hide_password=False))
     try:
         with storage.begin() as c:

@@ -14,9 +14,13 @@ from sqlalchemy import pool
 config = context.config
 
 # Interpret the config file for Python logging.
-# This line sets up loggers basically.
+# `disable_existing_loggers=False` is load-bearing: the default switches off
+# every logger that exists when this runs and that the file does not name,
+# which includes `previously.mcp_server.server`. Measured on 2026-10-13: after
+# the test session's first migration that logger was `disabled`, so a warning
+# the readiness probe logged never reached a handler and no test could see it.
 if config.config_file_name is not None:
-    fileConfig(config.config_file_name)
+    fileConfig(config.config_file_name, disable_existing_loggers=False)
 
 # add your model's MetaData object here
 # for 'autogenerate' support
