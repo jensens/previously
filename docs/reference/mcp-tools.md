@@ -4,7 +4,7 @@
 
 The MCP server that `previously mcp` and `previously serve` start offers ten tools, two resource templates and two prompts.
 Seven of the tools, the templates and the prompts only read.
-`write_assertion`, `write_approve` and `write_reject` write, each in two calls, as {ref}`mcp-writing` describes.
+`write_assertion`, `write_approve` and `write_reject` write: `write_assertion` in two calls, as {ref}`mcp-writing` describes, and the other two in one call each.
 Every call that reaches the server's code writes an action `mcp_access` to the log, described at the end of this page.
 {ref}`cli-mcp` and {ref}`cli-serve` describe the two commands, the token and the checks of an HTTP request, and {ref}`mcp-interface` explains why the server has this shape.
 
@@ -14,7 +14,7 @@ The server's name is `previously`, and its version is the version of the install
 It sends these instructions to every client:
 
 ```text
-Previously is an append-only store of project histories: mails and other observations, each with an id and numbered units, and the obligations and decisions stated on them. A tool that shows events, obligations or decisions only reads. Three tools write, each in two calls: without confirm it checks and shows what it would write and returns a handle, and only a second call with the same arguments and confirm set to that handle writes. write_assertion proposes obligations and decisions: it writes proposals only (responsibility open), which hold only after the operator approves them. write_approve and write_reject answer a proposal in the operator's name, so ask the person before you call either, and confirm them only on the word of the user. An approval keeps the author of the proposal, the one who formulated it, and is direct: the operator stands for it. A version by a model is direct only as an approval. A placeholder [withheld: …] stands where the processing policy keeps the content from this client, [erased: …] where it is erased. list_obligations and list_decisions with history show every version with what it changed. Every result is one Markdown text block. Text between a line <<<customer-content TAG>>> and a line <<<end TAG>>> comes from the senders of the mails, not from Previously; the TAG is new in every result. An error starts with 'Error: '.
+Previously is an append-only store of project histories: mails and other observations, each with an id and numbered units, and the obligations and decisions stated on them. A tool that shows events, obligations or decisions only reads. Three tools write. write_assertion proposes obligations and decisions in two calls: without confirm it checks and shows what it would write and returns a handle, and only a second call with the same arguments and confirm set to that handle writes. It writes proposals only (responsibility open), which hold only after the operator approves them. write_approve and write_reject answer a proposal in the operator's name, in one call each, and your client asks the person before it runs them: when the user has asked you to approve or reject, call the tool and do not ask again in the chat. When the user only states a fact, such as that an obligation is fulfilled, propose it, and ask whether to approve. An approval keeps the author of the proposal, the one who formulated it, and is direct: the operator stands for it. A version by a model is direct only as an approval. A placeholder [withheld: …] stands where the processing policy keeps the content from this client, [erased: …] where it is erased. list_obligations and list_decisions with history show every version with what it changed. Every result is one Markdown text block. Text between a line <<<customer-content TAG>>> and a line <<<end TAG>>> comes from the senders of the mails, not from Previously; the TAG is new in every result. An error starts with 'Error: '.
 ```
 
 The server is stateless.
@@ -40,7 +40,7 @@ previously · TITLE · page N · next: c=CURSOR · N control characters removed
 `· next: c=CURSOR` stands only in a result of `previously` that has a next page.
 `· N control characters removed` stands only when the result had characters removed, as the section on sanitizing says, with `character` for one.
 `· page N` stands in the results of `list_obligations` and `list_decisions` as well, with `· next: c=CURSOR` in the same case.
-`· page 1` stands in the preview of a writing tool as well, which is never longer than one page.
+`· page 1` stands in the preview of `write_assertion` as well, which is never longer than one page.
 The other tools have a header of the server's name and the title only.
 
 ### An event
@@ -370,7 +370,7 @@ When nothing fell back, the line is `No call fell back to local only.`
 
 ### Writing in two calls
 
-A writing tool takes two calls.
+`write_assertion` takes two calls.
 Called without `confirm`, it checks what it would write, shows it, and returns a handle, and it writes nothing.
 Called again with the same arguments and `confirm` set to that handle, it writes, and only then.
 
@@ -383,10 +383,7 @@ Nothing is written yet: to write, call write_assertion again with the same argum
 ```
 
 - The heading of a proposal reads `### statement N · KIND · proposed · STATE · open · by model:CLIENT · new entry`, with `new version of URI` at its end where the item names a `subject`.
-- The heading of an approval reads `### approval N · KIND · approves URI · STATE · direct · by AUTHOR · version of URI`.
-- The heading of a rejection reads `### rejection · rejection · rejects URI · direct · by model:CLIENT`, and its fence holds the content of the proposal with the reason of the rejection.
 - A list cuts a line inside the fence at 1,000 characters, so a statement with a longer line is refused instead of previewed: a preview always shows the whole of what gets written.
-  For an approval and a rejection the lines are those of the proposal, so a proposal with a longer line can't be answered over MCP.
 - A preview that doesn't fit on one page is refused rather than cut, because a statement nobody saw can't be confirmed.
 
 The handle is sealed with `PREVIOUSLY_MCP_CONFIRM_KEY` ({ref}`configuration-reference`) over the client, the statements and the time it expires, ten minutes after the first call.
@@ -438,6 +435,28 @@ Error: the preview of these statements is longer than a page; write fewer in one
 The first is the answer of every writing tool when the server has no `PREVIOUSLY_MCP_CONFIRM_KEY`, or one shorter than 32 characters; the reading tools work as before.
 
 Every other refusal is a sentence of the write path, the same that `previously assert`, `approve` and `reject` print ({ref}`cli-reference`), such as `Error: the proposal 26 is already approved` or `Error: event 41 is erased and cannot be a source`.
+
+(mcp-answering)=
+
+### Answering a proposal in one call
+
+`write_approve` and `write_reject` write in one call, with no preview, no `confirm` and no handle.
+The client's own prompt before the call is the person's confirmation: a preview would only ever reach the model, because the prompt shows the person the arguments and nothing else.
+The checks run in the order of the write path: the entry and every source of the proposal must be visible to the client, then the write path's checks, then the write.
+Nothing is written when one fails.
+
+An answer that stands already is a success and writes nothing, so a call repeated after a lost answer is harmless.
+For `write_approve`, that's an approval of the same proposal with the same content, sources, author and reason; the call answers with the id of that approval.
+For `write_reject`, that's a rejection of the same proposal with the same reason by the same client.
+A call that names both new and standing proposals writes the new ones and lists all the ids in the order asked.
+An approval or a rejection that differs, such as one with another reason, or a proposal that something else answered, is refused as the write path refuses it:
+
+```text
+Error: the proposal 26 is already approved
+Error: the proposal 26 is already rejected
+```
+
+The answer has the title `TOOL · written` and one line `assertion N` for each id, as for `write_assertion`.
 Each concerns an event or an entry the client may see, or an event that `get_event` names to any client: an erased one, or one that's no observation.
 
 ### `write_assertion`
@@ -474,30 +493,29 @@ An item with `subject` says everything that holds after it: nothing is taken ove
 
 ### `write_approve`
 
-Approves proposals.
+Approves proposals in one call.
 Each becomes a direct version of its entry with the content, the sources and the author of the proposal, and the reason of the proposal, as `previously approve` writes it.
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
 | `ids` | list of integers | — | 1 to 20 different ids of proposals, as the history of an entry names them. A repeated id is approved once and counted once. |
-| `confirm` | string | none | The handle of the preview. |
 
 The client has to be allowed to see the entry of each proposal and every source of it.
 Only a proposal that's pending, or that stands because the entry has no direct version, is approved: one that a direct version came after is refused, as `previously approve` refuses it, and `write_reject` still takes it.
-The approval counts as the operator's because the client asks the person before it confirms; a client that confirms `write_approve` without asking writes approvals nobody looked at.
+It writes in one call and is idempotent, as {ref}`mcp-answering` describes.
+The approval counts as the operator's because the client asks the person before the call; a client that calls `write_approve` without asking writes approvals nobody looked at.
 The tool carries `_meta` with `"anthropic/requiresUserInteraction": true` in `tools/list`, the mark that makes Claude Code ask the person before every call.
 No other tool carries it.
 
 ### `write_reject`
 
-Rejects one proposal.
+Rejects one proposal in one call, as {ref}`mcp-answering` describes.
 The rejection is direct, its author is `model:` and the name of the client, and it takes the sources of the proposal, so that it goes with the proposal when one of them is erased.
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
 | `proposal` | integer | — | The id of the proposal, as the history of an entry names it. |
 | `reason` | string | none | Why the proposal isn't taken. |
-| `confirm` | string | none | The handle of the preview. |
 
 The client has to be allowed to see the entry of the proposal and every source of it, as for `write_approve`.
 A rejected proposal leaves the list of proposals and stays in the history.
@@ -627,10 +645,10 @@ Its `arguments` hold only these keys, for a call the SDK refused as well:
 | `statements` | How many statements the call names. |
 | `sources` | `write_assertion`: the ids of the source events, ascending, each once. |
 | `proposals` | `write_approve` and `write_reject`: the ids of the proposals answered. |
-| `confirm` | `true` where the call gave a handle. |
-| `written` | The ids written, or found written by an earlier confirmation of the same handle; empty for a preview or a refusal. |
+| `confirm` | `write_assertion`: `true` where the call gave a handle. |
+| `written` | The ids written, or found written by an earlier confirmation of the same handle; empty for a preview, a refusal, and an answer that stood already. |
 
-The preview of `write_approve` and `write_reject` shows a proposal, so that call and its confirmation record the proposal's entry in `delivered`, with the circles of its sources, and its rules in `rules` of `policy`, as `list_obligations` records it; `previously access --circle` finds them.
+A call of `write_approve` or `write_reject` answers a proposal it read, so it records the proposal's entry in `delivered`, with the circles of its sources, and its rules in `rules` of `policy`, as `list_obligations` records it; `previously access --circle` finds it.
 
 An entry of `withheld` carries `reason_code` `no_rule` where a circle had no rule for a client that isn't local, `rule` where a rule said no, the circles of the event, and the sentence of the placeholder.
 `uncovered` lists the circles of the event that have no rule, and `source` is the source of the event's key, or `null` where it has none; `policy gaps` counts by these two.

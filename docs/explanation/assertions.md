@@ -81,9 +81,17 @@ Several proposals go in one call, so that a person looks at one preview and conf
 
 An approval or a rejection is different: it's the answer, and it's direct.
 Over the command line the operator types it himself.
-Over MCP, `write_approve` and `write_reject` count as the operator's only because the client asks the person before it confirms them.
+Over MCP, `write_approve` and `write_reject` count as the operator's only because the client asks the person before it calls them.
 That's a requirement on the environment and not something Previously can check, in the sense that {ref}`environment-requirements` gives the word: Previously says what it requires, and the configuration of the client meets it.
 Previously marks `write_approve` and `write_reject` as well, with the `anthropic/requiresUserInteraction` mark that Claude Code reads as an ask rule, so that a client which knows the mark has a second guard beside the requirement; a client that doesn't know it gets nothing from it.
+
+An answer is one call, not two.
+A preview before an approval would only ever reach the model: the prompt of the client shows the person the arguments, such as `ids: [65]`, and the person sees the model's paraphrase of anything more.
+So a second step adds no information for the person, and it costs a second prompt for every approval, which makes using the tools tiring and invites a rule that allows them.
+The prompt of the client, from the ask rule or from the mark, is the person's confirmation, and `write_approve` and `write_reject` write when they're called.
+Instead of a handle, a repeated call is safe because the write path's own checks make it so: an approval that stands already, with the same content and reason, is returned as it stands, and so is a rejection with the same reason.
+Anything that differs is refused, since the proposal was answered by something else.
+`write_assertion` keeps its two steps: it writes proposals only, it doesn't ask the person, and its preview helps the model see what it's about to propose.
 
 Not meeting it carries a concrete risk.
 A client that runs `write_approve` without asking, because it was allowed always or because a mode lets a classifier or nobody decide, writes direct versions that no person looked at.
@@ -96,7 +104,7 @@ No other process writes through a handle, so a copy anywhere else, in the tools 
 Rotating it makes every handle issued before it fail; nothing stored depends on it.
 
 Which client carried an approval stands in the access log, not in the assertion.
-The `mcp_access` of the confirming call names the client and the ids it wrote, so the question "who approved this, and through what" has an answer.
+The `mcp_access` of the writing call names the client and the ids it wrote, so the question "who approved this, and through what" has an answer.
 The assertion itself says what holds and who formulated it, and the way the operator's word reached the log is a fact of the call and not of the statement.
 
 A client proposes only on sources it may see.
@@ -172,7 +180,7 @@ A model call is never a source, because the sources of an assertion have to be o
 That rule keeps the cascade one step deep: a source that was an action or another assertion would make one cascade follow another, and an assertion is meant to say what was observed, in its own words.
 
 The access entry of a writing call holds no text for the same reason.
-It records how many statements a call named, the ids of the sources and the proposals, whether it confirmed, and the ids it wrote, and never the wording.
+It records how many statements a call named, the ids of the sources and the proposals, whether a `write_assertion` call confirmed, and the ids it wrote, and never the wording.
 A text a client derived from a mail would otherwise stand in the access log and outlive the erasure of the mail.
 
 (assertions-mentioned)=
@@ -281,7 +289,7 @@ These limits are known and named; the map of open points holds the ones that cal
 - **`verify` doesn't check that an approval's proposal was pending.**
   The write path refuses to approve a proposal that a direct version came after, and a row written around it that does so is no finding.
 - **A history longer than a page** is cut over MCP after a whole line, and no call serves the rest; `previously obligation ID --history` prints all of it.
-- **A line longer than 1,000 characters** can't be written or answered over MCP, because the preview would cut it.
+- **A line longer than 1,000 characters** can't be written or answered over MCP, because the reading tools would cut it.
   The command line has no such limit, since it shows the whole payload.
 - **The approving client** is in the access log and not in the assertion.
 - **The hint about an address** comes from the command line only; a preview over MCP doesn't suggest `address:`.

@@ -31,10 +31,13 @@ holds the tool list against a checksum, so a change to it is a deliberate
 one ({ref}`mcp-tool-list`).
 
 Three tools write: `write_assertion` proposes, `write_approve` and
-`write_reject` answer a proposal. Each takes two calls, a preview that hands
-back a sealed handle and a call with `confirm=<handle>` that writes
-(`confirm.py`); without the setting `PREVIOUSLY_MCP_CONFIRM_KEY`, or without a
-store to lock the sources with, they answer that writing is not configured.
+`write_reject` answer a proposal. `write_assertion` takes two calls, a preview
+that hands back a sealed handle and a call with `confirm=<handle>` that writes
+(`confirm.py`); an answer is one call, because the client's prompt before it
+is the person's confirmation and a preview would only reach the model
+({ref}`assertions-proposals`). Without the setting `PREVIOUSLY_MCP_CONFIRM_KEY`,
+or without a store to lock the sources with, all three answer that writing is
+not configured.
 A writing call reads and decides in the snapshot as every call does, and
 writes after the snapshot is closed, in a transaction of its own.
 A source, an entry or a proposal the client may not see is refused with the
@@ -80,6 +83,7 @@ from previously.core.assertion import Version
 from previously.core.assertions import AssertionRefused
 from previously.core.assertions import check_statements
 from previously.core.assertions import read_threads
+from previously.core.assertions import rejections_of
 from previously.core.assertions import write_statements
 from previously.core.canonical import KEY_PATTERN
 from previously.core.canonical import MAX_SAFE_INT
@@ -171,15 +175,19 @@ INSTRUCTIONS: Final = (
     "observations, each with an id and numbered units, and the obligations and "
     "decisions stated on them. A tool that shows events, obligations or decisions "
     "only reads. "
-    "Three tools write, each in two calls: without confirm it checks and shows what "
-    "it would write and returns a handle, and only a second call with the same "
-    "arguments and confirm set to that handle writes. write_assertion proposes "
-    "obligations and decisions: it writes proposals only (responsibility open), which "
-    "hold only after the operator approves them. write_approve and write_reject answer a "
-    "proposal in the operator's name, so ask the person before you call either, and "
-    "confirm them only on the word of the user. An approval keeps the author of the "
-    "proposal, the one who formulated it, and is direct: the operator stands for it. "
-    "A version by a model is direct only as an approval. "
+    "Three tools write. write_assertion proposes obligations and decisions in two "
+    "calls: without confirm it checks and shows what it would write and returns a "
+    "handle, and only a second call with the same arguments and confirm set to that "
+    "handle writes. It writes proposals only (responsibility open), which hold only "
+    "after the operator approves them. write_approve and write_reject answer a "
+    "proposal in the operator's name, in one call each, and your client asks the "
+    "person before it runs them: when the user has asked you to approve or reject, "
+    "call the tool and do not ask again in the chat. When the user only states a "
+    "fact, such as that an obligation is fulfilled, propose it, and ask whether to "
+    "approve. "
+    "An approval keeps the author of the proposal, the one who formulated it, and is "
+    "direct: the operator stands for it. A version by a model is direct only as an "
+    "approval. "
     "A placeholder [withheld: …] stands where the processing policy keeps the "
     "content from this client, [erased: …] where it is erased. "
     "list_obligations and list_decisions with history show every version with what "
@@ -273,14 +281,16 @@ _WRITE_APPROVE: Final = (
     f"Approves 1 to {MAX_STATEMENTS} proposals: each becomes a direct version of its "
     "entry with the content, the sources and the author of the proposal, which the "
     "operator now stands for. Only for a proposal whose entry and sources this "
-    "client can see. Two calls, as for write_assertion. A person decides an "
-    "approval: confirm it only on the word of the user."
+    "client can see. One call writes; it is idempotent: an approval that stands "
+    "already is returned, not repeated. A person decides an approval: the client "
+    "asks the person before the call."
 )
 _WRITE_REJECT: Final = (
     "Rejects one proposal, with an optional reason: it leaves what is proposed and "
     "stays in the history. Only for a proposal whose entry and sources this client "
-    "can see. Two calls, as for write_assertion. A person decides a rejection: "
-    "confirm it only on the word of the user."
+    "can see. One call writes; it is idempotent: the same rejection with the same "
+    "reason is returned, not repeated. A person decides a rejection: the client "
+    "asks the person before the call."
 )
 
 _MOMENT_HELP: Final = "an ISO 8601 date, or a moment with a zone"
@@ -959,10 +969,14 @@ class Service[Conn]:
         policy: Policy,
         client: Client,
         ids: Sequence[int],
-        confirm: str | None,
     ) -> Outcome:
         """`write_approve`: each proposal made direct, as `previously
-        approve` makes it; an id named twice is approved once."""
+        approve` makes it, in one call; an id named twice is approved once.
+
+        A proposal that an identical approval made its own already is
+        answered with that approval's id and writes nothing, so that a retry
+        after a lost answer is a success
+        ({ref}`assertions-proposals`)."""
         self.writing()
         unique = list(dict.fromkeys(ids))
         if not 1 <= len(unique) <= MAX_STATEMENTS:
@@ -972,33 +986,34 @@ class Service[Conn]:
         if any(not 1 <= proposal <= MAX_SAFE_INT for proposal in unique):
             raise Refused(f"ids holds an id that is not {_ID_RANGE}")
         threads = read_threads(self.log, conn)
-        statements: list[Statement] = []
+        slots: list[Statement | int] = []
         answered: list[Answered] = []
         for proposal in unique:
             found = self.answerable(conn, policy, client, threads, proposal)
             answered.append(found)
-            statements.append(
-                replace(
-                    found.version.statement,
-                    responsibility=DIRECT,
-                    handle=None,
-                    subject=found.thread.subject,
-                    approves=found.version.id,
-                )
+            approval = replace(
+                found.version.statement,
+                responsibility=DIRECT,
+                handle=None,
+                subject=found.thread.subject,
+                approves=found.version.id,
             )
-        shown = [
-            Stated(
-                f"approval {number}",
-                statement.kind,
-                f"approves {event_uri(cast('int', statement.approves))} · "
-                f"{_state_of(statement)} · {DIRECT} · by {statement.author} · "
-                f"version of {event_uri(cast('int', statement.subject))}",
-                tuple(statement_lines(statement)),
+            standing = next(
+                (
+                    v.id
+                    for v in found.thread.versions
+                    if v.statement.approves == proposal
+                    and replace(v.statement, handle=None) == approval
+                ),
+                None,
             )
-            for number, statement in enumerate(statements, 1)
-        ]
-        return self.staged(
-            conn, client, "write_approve", statements, shown, confirm, _shown_of(answered)
+            slots.append(approval if standing is None else standing)
+        return self.answering(
+            conn,
+            "write_approve",
+            slots,
+            [statement_lines(a) for a in slots if isinstance(a, Statement)],
+            _shown_of(answered),
         )
 
     def rejection_write(
@@ -1008,15 +1023,18 @@ class Service[Conn]:
         client: Client,
         proposal: int,
         reason: str | None,
-        confirm: str | None,
     ) -> Outcome:
         """`write_reject`: a direct rejection by this client, with the
         sources of the proposal, so that it goes with the proposal when one
-        of them is erased."""
+        of them is erased, in one call.
+
+        A second rejection of the same proposal with the same reason by the
+        same client answers with the id of the first and writes nothing."""
         self.writing()
         if not 1 <= proposal <= MAX_SAFE_INT:
             raise Refused(f"proposal is not {_ID_RANGE}")
-        found = self.answerable(conn, policy, client, read_threads(self.log, conn), proposal)
+        threads = read_threads(self.log, conn)
+        found = self.answerable(conn, policy, client, threads, proposal)
         version = found.version
         statement = Statement(
             REJECTION,
@@ -1030,14 +1048,19 @@ class Service[Conn]:
             version.id,
             None,
         )
-        # The preview shows what is rejected: the proposal's content, with
-        # the reason of the rejection and the sources both share.
-        label = f"rejects {event_uri(version.id)} · {DIRECT} · by {statement.author}"
-        rejected = replace(version.statement, reason=reason)
-        shown = [Stated("rejection", REJECTION, label, tuple(statement_lines(rejected)))]
-        return self.staged(
-            conn, client, "write_reject", [statement], shown, confirm, _shown_of([found])
+        standing = next(
+            (
+                event_id
+                for event_id, _at, earlier in rejections_of(self.log, conn, found.thread)
+                if replace(earlier, handle=None) == statement
+            ),
+            None,
         )
+        slot: Statement | int = statement if standing is None else standing
+        # The proposal's content with the reason of the rejection: the lines
+        # the reading tools would cut, as for an approval.
+        lines = [statement_lines(replace(version.statement, reason=reason))]
+        return self.answering(conn, "write_reject", [slot], lines, _shown_of([found]))
 
     def answerable(
         self,
@@ -1054,7 +1077,7 @@ class Service[Conn]:
         proposal is the write path's question, asked of what the client
         sees.
 
-        The preview shows the proposal's content, so the call records the
+        The answer rests on the proposal's content, so the call records the
         thread as delivered, with its circles and rules, as a list would."""
         for thread in threads.values():
             version = next((v for v in thread.versions if v.id == proposal), None)
@@ -1069,6 +1092,52 @@ class Service[Conn]:
             break
         raise Refused(f"event {proposal} is not a proposal this client can answer")
 
+    def answering(
+        self,
+        conn: Conn,
+        tool: str,
+        slots: Sequence[Statement | int],
+        lines: Sequence[Sequence[str]],
+        seen: tuple[tuple[Delivered, ...], tuple[int, ...]],
+    ) -> Outcome:
+        """The one call of an answer to proposals: the client's own prompt
+        before it is the person's confirmation, and the preview of a second
+        call would only ever have reached the model
+        ({ref}`assertions-proposals`).
+
+        `slots` holds, in the order asked, a statement to write or the id of
+        an identical answer that stands already. The checks run on what is
+        to be written, in the order of the write path's: the line bound, the
+        form, then `check_statements`; `answer` runs the write after the
+        snapshot. `seen` is what the access log records as delivered, with
+        the rule ids.
+        """
+        locker, _key = self.writing()
+        # A line the reading tools cut is refused, not cut: the model would
+        # answer a proposal it cannot read whole
+        # ({ref}`assertions-proposals`; ruling F-12 of the 2026-10-12
+        # assertions plan). The raw length is the bound: sanitizing only ever
+        # shortens a line.
+        if any(len(line) > STATED_LINE_CHARS for item in lines for line in item):
+            raise Refused(_LINE_TOO_LONG)
+        fresh = [slot for slot in slots if isinstance(slot, Statement)]
+        if fresh:
+            self.checked(conn, fresh)
+
+        def write() -> Answer:
+            ids: tuple[int, ...] = ()
+            if fresh:
+                try:
+                    ids = write_statements(self.log, locker, fresh, recorded_at=datetime.now(UTC))
+                except AssertionRefused as refused:
+                    raise Refused(str(refused)) from refused
+            written = iter(ids)
+            numbers = [next(written) if isinstance(slot, Statement) else slot for slot in slots]
+            text = render_text(f"{tool} · written", [f"assertion {n}" for n in numbers])
+            return Answer(text, delivered=seen[0], rules=seen[1], written=ids)
+
+        return write
+
     def staged(
         self,
         conn: Conn,
@@ -1077,27 +1146,24 @@ class Service[Conn]:
         statements: Sequence[Statement],
         shown: Sequence[Stated],
         confirm: str | None,
-        seen: tuple[tuple[Delivered, ...], tuple[int, ...]] = ((), ()),
     ) -> Outcome:
-        """The two steps of a writing call, for statements the client may
+        """The two steps of `write_assertion`, for statements the client may
         see. Without `confirm`, the write path's checks and a preview with a
         sealed handle; with it, the handle opened, the checks again with its
         nonce in every statement, and the write, which `answer` runs after
-        the snapshot. `seen` is what the access log records as delivered,
-        with the rule ids, for the preview and for the write alike.
+        the snapshot.
 
         The handle is opened before the checks so that a second
         confirmation finds the statements its nonce wrote and answers with
-        their ids, where the checks would otherwise refuse an approval that
-        is approved already.
+        their ids, where the checks would otherwise refuse a statement that
+        is written already.
         """
         locker, key = self.writing()
         # A line the preview would cut is refused, not cut: the write would
         # carry the whole text, and the reading tools cut at the same place,
         # so no call would ever show what was confirmed
         # ({ref}`assertions-proposals`; ruling F-12 of the 2026-10-12
-        # assertions plan). For an approval and a rejection the
-        # lines are the proposal's, so this holds for what they answer too.
+        # assertions plan).
         # The raw length is the bound: sanitizing only ever shortens a line.
         if any(len(line) > STATED_LINE_CHARS for item in shown for line in item.lines):
             raise Refused(_LINE_TOO_LONG)
@@ -1114,7 +1180,7 @@ class Service[Conn]:
             nonce = secrets.token_urlsafe(16)
             handle = seal(key, client=client.name, payloads=payloads, now=now, nonce=nonce)
             text = _preview(tool, shown, handle, expiry(now))
-            return Answer(text, delivered=seen[0], rules=seen[1], written=())
+            return Answer(text, delivered=(), rules=(), written=())
         try:
             nonce = open_handle(key, confirm, client=client.name, payloads=payloads, now=now)
         except HandleRefused as refused:
@@ -1129,7 +1195,7 @@ class Service[Conn]:
                 raise Refused(str(refused)) from refused
             lines = [f"assertion {event_id}" for event_id in ids]
             text = render_text(f"{tool} · written", lines)
-            return Answer(text, delivered=seen[0], rules=seen[1], written=ids)
+            return Answer(text, delivered=(), rules=(), written=ids)
 
         return write
 
@@ -1290,14 +1356,13 @@ def _event_ids(values: object) -> list[int]:
 def write_record(name: str, arguments: Mapping[str, object]) -> dict[str, object]:
     """What the access entry of a writing call keeps of its arguments
     ({ref}`assertions-erasure`; decision 10 of the 2026-10-12 assertions
-    plan): how many statements, the
-    ids of the sources or of the proposals answered, and whether `confirm`
-    was given; `Service.record` adds the ids written. No text: a text that a
+    plan): how many statements, the ids of the sources or of the proposals
+    answered, and for `write_assertion` whether `confirm` was given;
+    `Service.record` adds the ids written. No text: a text that a
     client derived from a mail would otherwise stand in the log and outlive
     the erasure of the mail. Read leniently, since a call the SDK refused
     has arguments of any form.
     """
-    confirm = arguments.get("confirm") is not None
     if name == "write_assertion":
         items = arguments.get("items")
         listed = cast("list[object]", items) if isinstance(items, list) else []
@@ -1312,17 +1377,12 @@ def write_record(name: str, arguments: Mapping[str, object]) -> dict[str, object
         return {
             "statements": len(listed),
             "sources": sorted(events),
-            "confirm": confirm,
+            "confirm": arguments.get("confirm") is not None,
             "written": [],
         }
     asked = arguments.get("ids") if name == "write_approve" else [arguments.get("proposal")]
     proposals = list(dict.fromkeys(_event_ids(asked)))
-    return {
-        "statements": len(proposals),
-        "proposals": proposals,
-        "confirm": confirm,
-        "written": [],
-    }
+    return {"statements": len(proposals), "proposals": proposals, "written": []}
 
 
 def _minute(moment: datetime) -> str:
@@ -1613,17 +1673,14 @@ def _writing_tools[Conn](server: MCPServer, service: Service[Conn]) -> None:
     def write_approve(
         ctx: Context,
         ids: Annotated[list[int], _PROPOSALS_TO_APPROVE],
-        confirm: Annotated[str | None, _CONFIRM] = None,
     ) -> CallToolResult:
-        given = {"ids": ids, "confirm": confirm}
+        given = {"ids": ids}
         return _ok(
             service.answer(
                 ctx.request_context.request,
                 ctx.protocol_version,
                 ("tool", "write_approve", write_record("write_approve", given)),
-                lambda conn, policy, client: service.approval_write(
-                    conn, policy, client, ids, confirm
-                ),
+                lambda conn, policy, client: service.approval_write(conn, policy, client, ids),
             )
         )
 
@@ -1632,16 +1689,15 @@ def _writing_tools[Conn](server: MCPServer, service: Service[Conn]) -> None:
         ctx: Context,
         proposal: Annotated[int, _PROPOSAL],
         reason: Annotated[str | None, _REJECTION_REASON] = None,
-        confirm: Annotated[str | None, _CONFIRM] = None,
     ) -> CallToolResult:
-        given = {"proposal": proposal, "confirm": confirm}
+        given = {"proposal": proposal}
         return _ok(
             service.answer(
                 ctx.request_context.request,
                 ctx.protocol_version,
                 ("tool", "write_reject", write_record("write_reject", given)),
                 lambda conn, policy, client: service.rejection_write(
-                    conn, policy, client, proposal, reason, confirm
+                    conn, policy, client, proposal, reason
                 ),
             )
         )

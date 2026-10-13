@@ -85,7 +85,8 @@ What it writes stays a proposal, out of every default list, until you approve it
 
 ## Make the client ask before it answers
 
-`write_approve` and `write_reject` count as your own word, so the client has to ask you before it confirms either.
+`write_approve` and `write_reject` count as your own word, so the client has to ask you before it calls either.
+Each is one call: you are asked once, and the call writes.
 Set that up before you let a client answer proposals.
 
 For Claude Code, add an ask rule to your user settings in `~/.claude/settings.json`, with the server named `previously` as in {ref}`connect-claude-code-and-vibe`:
@@ -106,6 +107,7 @@ Without the rule, `auto` mode lets a classifier decide in your place, and Claude
 The same documentation names a mark an MCP tool can carry, `_meta["anthropic/requiresUserInteraction"]`, that makes Claude Code ask for it as an ask rule does.
 `write_approve` and `write_reject` carry it, so Claude Code asks for them even without the rule.
 Nobody has measured that against Previously yet, so keep the ask rule: it's the requirement, and Vibe and other clients may not know the mark.
+With the rule or the mark, one approval costs one prompt, the one that shows the ids; the model has no reason to ask again in the chat once you told it to approve.
 Never add either tool to `allow`.
 
 For Mistral Vibe, its [documentation of MCP servers](https://docs.mistral.ai/vibe/code/cli/mcp-servers) sets a tool to ask in `.vibe/config.toml`, with the tool named after the server and the tool:
@@ -146,7 +148,8 @@ previously reject 73 --reason "Eva asked about it and nobody decided"
 
 Of several proposals on one entry, approve one and reject the others: an approval is a direct version that comes after them, and `approve` refuses a proposal that a direct version came after.
 An approval keeps the proposal's wording and sources; to change a word, approve and then write a new version with `--subject`, or reject and write your own.
-Over MCP, ask Claude Code to approve or reject by the ids its history names; it previews, asks you, and confirms.
+Over MCP, ask Claude Code to approve or reject by the ids its history names; your client asks you once, and the call writes.
+A call repeated after a lost answer is harmless: it returns the approval that stands.
 
 ## Ask what's open
 

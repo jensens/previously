@@ -3,7 +3,7 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The sealed handle of a writing call of the MCP server ({ref}`mcp-tools`).
 
-A writing tool takes two calls. The first checks the statements, shows them,
+`write_assertion` takes two calls. The first checks the statements, shows them,
 and hands back a handle; the second repeats the arguments with
 `confirm=<handle>`, and only that one writes. The handle is
 

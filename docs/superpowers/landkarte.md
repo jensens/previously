@@ -913,6 +913,11 @@ auf `assertions.md` unter *What the pilot leaves open*.
   Code damit richtig liest und fragt, zeigt erst der nächste Lauf; offen
   bleibt, über welchen Weg der Betreiber antwortete — die Nutzlast hält das
   nicht fest, nur `mcp_access` für Aufrufe über MCP.
+  Am selben Tag entschied der Betreuer nach dem Lauf, dass Freigabe und
+  Ablehnung über MCP ein Aufruf sind (eine Freigabe kostete drei Fragen): kein
+  `confirm`, kein Handle, ein wiederholter gleicher Aufruf ist ein Erfolg ohne
+  Schreiben; der Spec trägt die Abweichung im Kopf (§6.1), und gemessen ist
+  auch das erst im nächsten Lauf.
 - Eine Geschichte, die länger ist als eine Seite, wird über MCP nach einer
   ganzen Zeile gekürzt, und ihr Rest kommt über keinen Aufruf; die
   Kommandozeile zeigt sie ganz. Ein Weg wäre ein Cursor für die Geschichte
