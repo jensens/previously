@@ -131,7 +131,10 @@ gemessen (unten unter *Feststellungen*), und ihre Fixwelle ist gelaufen.
 Sie ist gemergt (PR #17, `4735e3f`), `v0.1.0a5` ist am 2026-10-12
 veröffentlicht, der Handoff ist übergeben, und kup6s hat geantwortet (RA). Was
 jetzt kommt: die Abnahme nach F §14 ist gelaufen (2026-10-13, siehe
-*Erledigt*), und der Zweig `mcp-erklaeren` (PR #20) ist zu mergen. Als nächste
+*Erledigt*), der Zweig `mcp-erklaeren` ist gemergt (PR #20, `248a001`) und
+mit `pool_pre_ping` als `v0.1.0a6` am 2026-10-13 veröffentlicht; der Handoff
+`handoffs/2026-10-13-kup6s-a6.md` liegt bei und bittet kup6s, die Umschaltung
+der Primärinstanz zu wiederholen. Als nächste
 Einheit mit Spec dann die Zuordnungen (F §1, §15; unten unter *Feststellungen und
 Entitäten*).
 Was die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an
