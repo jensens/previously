@@ -178,6 +178,7 @@ So a small wrapper of the server's own checks the token, and moving to an author
 
 One request passes without a token: `GET /healthz`, the probe that tells a deployment whether the server is ready.
 It answers `ok` after a trivial query of the database, or 503 when the database doesn't answer, and it reaches no MCP, returns no data and writes no entry.
+A switchover of the database's primary costs no failed request, the probe's included: the storage checks a pooled connection when it takes it from the pool, and replaces one that the old primary ended.
 A probe that carried a token would need a client of its own, and a client can call every tool and read whatever its processor may see, so a deployment would keep a reading credential just to learn whether the server is up.
 The reason for the token, knowing who asked, doesn't reach a route that asks nothing of the log.
 The path is matched exactly and only for `GET`, so it opens no door to anything else.

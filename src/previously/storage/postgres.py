@@ -1225,8 +1225,19 @@ def from_dsn(dsn: str) -> PostgresStorage:
     A pool that keeps none would release them by itself, and was measured on
     2026-10-05 to make `previously project` over 3,000 events take about
     0.75 s instead of 0.55 s, a connection per transaction.
+
+    A pooled connection can be ended by the server while it sits idle: a
+    switchover of the primary does it, and so does a restart of the database.
+    Without a check, the first request afterwards meets that dead connection
+    and fails, and only the next one reconnects. Measured in kup6s on
+    2026-10-12 on `previously serve`, where the readiness probe got a 503 and
+    a client would have got a failed tool call. `pool_pre_ping` sends a
+    trivial statement when a connection is taken from the pool and replaces a
+    dead one before the request uses it. The cost is one round trip for each
+    checkout, which for a request that makes its own queries is small beside
+    them.
     """
     url = _url_of(dsn)
     if url is None:
         raise _unreadable()
-    return PostgresStorage(create_engine(url))
+    return PostgresStorage(create_engine(url, pool_pre_ping=True))

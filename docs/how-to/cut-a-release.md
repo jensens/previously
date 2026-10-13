@@ -73,6 +73,17 @@ If that lists a file, the notes have to say that `previously migrate` runs befor
 Nothing else enforces that order: `migrate` is the only command that compares revisions, and the other commands fail on a schema that's behind only where they touch a table or a column it lacks.
 An older image's `migrate` refuses a database a newer one has migrated; its other commands don't.
 
+If the release renames a setting, the notes give the operator three steps, in this order, each of which runs on its own:
+
+1. Set the new names beside the old ones, on the release that runs now.
+   That release ignores the new names.
+2. Change the image to the new release.
+   It refuses an old name only where the new one is missing, so it starts.
+3. Remove the old names.
+
+An environment that a bot or GitOps updates is safer this way than with one change that renames the settings and the image together: each step can be checked, and a dependency bot can do the second one by itself.
+This is how kup6s rolled out the renamed address settings of `v0.1.0a4`.
+
 ## Publish the release
 
 Publish the release from `main`:
@@ -106,7 +117,7 @@ The jobs run in this order:
 1. `gates` and `tag`, side by side: the six gates, and the tag's form.
 2. `build`: the source archive and the wheel, with the version from the tag.
 3. `publish-pypi`: the upload to PyPI, in the environment `pypi`.
-4. `image`, once for `linux/amd64` and once for `linux/arm64`: wait for the version on PyPI, build and push the image under an intermediate tag `<version>-linux-<arch>`, and run the smoke test against it.
+4. `image`, once for `linux/amd64` and once for `linux/arm64`: wait until `uv` resolves the version on PyPI, build and push the image under an intermediate tag `<version>-linux-<arch>`, and run the smoke test against it.
 5. `manifest`: one manifest list over both images, under the tags people use.
 
 When `manifest` has passed, the release is out.
@@ -140,8 +151,8 @@ Read the table from the job that failed.
 |---|---|---|
 | `gates`, `tag` or `build` | Nothing. | Delete the release and its tag with `gh release delete v0.1.0a1 --cleanup-tag`, fix the cause on `main`, and publish the release again under the same version. |
 | `publish-pypi` | Nothing, unless PyPI shows the version. | Look for the version on `https://pypi.org/project/previously/`. If it isn't there, fix the cause, such as a missing trusted publisher, and rerun the failed jobs. If it's there, even one of its two files, this version stays on PyPI without an image: a rerun repeats the upload, which fails on a file that's already there, so fix the cause on `main` and release the next version. |
-| `image`, while it waits for PyPI | The package on PyPI. | The version didn't show on PyPI within five minutes; rerun the failed jobs. |
-| `image`, in the build or the smoke test | The package on PyPI, and possibly an intermediate tag on `ghcr.io`. | Read the log. If the build found no such version, rerun the failed jobs: the wait asks PyPI's simple index for the version's wheel, the same page the build reads, but one request can reach a copy of that page that's a moment older than the next. If the cause was transient, rerun the failed jobs as well. If it's a defect, fix it on `main` and release the next version: this one stays on PyPI without an image, and its intermediate tags stay unused. |
+| `image`, while it waits for PyPI | The package on PyPI. | The version didn't resolve within five minutes; rerun the failed jobs. The wait asks with `uv`, the client the build uses, so a pass means that client sees the version. |
+| `image`, in the build or the smoke test | The package on PyPI, and possibly an intermediate tag on `ghcr.io`. | Read the log. If the build found no such version, rerun the failed jobs: the wait and the build both ask PyPI through `uv`, but PyPI's CDN can answer one request from a copy that's a moment older than the next. If the cause was transient, rerun the failed jobs as well. If it's a defect, fix it on `main` and release the next version: this one stays on PyPI without an image, and its intermediate tags stay unused. |
 | `manifest` | The package on PyPI, and both intermediate tags on `ghcr.io`. | Rerun the failed jobs. |
 
 Rerun the failed jobs, and only those, with the run's identifier from `gh run list`:
