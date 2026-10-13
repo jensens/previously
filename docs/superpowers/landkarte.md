@@ -69,11 +69,12 @@ weg); `cut-a-release.md` sagt es jetzt.
 Abgenommen: Einheit 5, die Feststellungen (Verpflichtung und Entscheidung mit
 Quellen, Vorschläge über MCP, Freigabe und Ablehnung, die Kaskade der Tilgung),
 gemergt am 2026-10-12 (PR #17, `4735e3f`) und als `v0.1.0a5` veröffentlicht.
-Die Abnahme nach F §14 durch den Betreuer steht noch aus und ist zur Hälfte
-getan: die Vorschau
-von `write_assertion` läuft über den Server in kup6s, bestätigt ist noch nichts
-(`write_approve` und `write_reject` ungetestet), und in Claude Code ist kein
-Werkzeug von Previously „immer erlaubt“, sodass beide fragen (RA).
+Die Abnahme nach F §14 durch den Betreuer ist am 2026-10-13 gelaufen (siehe
+*Erledigt*): Vorschläge von Claude Code und Vibe, Freigabe und Ablehnung auf der
+Kommandozeile und über MCP mit Rückfrage des Clients, Listen, überfällig und
+Geschichte, Tilgung mit Kaskade und `verify` ohne Befund, und die Policy für
+einen zweiten Client. Nicht gelaufen: der Schlüssel der Vibe-Ask-Einstellung
+und die Kennzeichnung `requiresUserInteraction` (braucht ein Release).
 
 Nicht gebaut: die Suche, jede Entität und jede Zuordnung, KI-Schicht,
 jeder Konnektor außer dem für IMAP.
@@ -129,10 +130,9 @@ Die Endprüfung hat am 2026-10-12 die Lesezeit bei 5 000 Feststellungen
 gemessen (unten unter *Feststellungen*), und ihre Fixwelle ist gelaufen.
 Sie ist gemergt (PR #17, `4735e3f`), `v0.1.0a5` ist am 2026-10-12
 veröffentlicht, der Handoff ist übergeben, und kup6s hat geantwortet (RA). Was
-jetzt kommt: die Abnahme nach F §14 durch den Betreuer — Freigabe und Ablehnung
-über MCP und auf der Kommandozeile, eine Tilgung, je ein echter
-`write_assertion`-Aufruf mit Claude Code und Vibe. Als nächste Einheit mit
-Spec dann die Zuordnungen (F §1, §15; unten unter *Feststellungen und
+jetzt kommt: die Abnahme nach F §14 ist gelaufen (2026-10-13, siehe
+*Erledigt*), und der Zweig `mcp-erklaeren` (PR #20) ist zu mergen. Als nächste
+Einheit mit Spec dann die Zuordnungen (F §1, §15; unten unter *Feststellungen und
 Entitäten*).
 Was die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an
 den Einheiten, zu denen es gehört.
@@ -882,10 +882,6 @@ auf `assertions.md` unter *What the pilot leaves open*.
   Ruling F-16), und dieselben Listen brauchen 193, 225 und 224 ms; die
   Zahlen stehen auf `assertions.md`. Die Projektion verlangt die Messung
   damit nicht.
-- Je ein echter Aufruf von `write_assertion` mit Claude Code und mit Vibe, zur
-  Abnahme: das Eingabeschema verschachtelt seine Einträge über `$defs` und
-  `$ref`, und probiert ist es nur gegen den Client des SDK. Flach machen nur,
-  wenn ein Client scheitert (P-F, Aufgabe 5).
 - Die Forderung, dass der Client vor `write_approve` und `write_reject` fragt,
   hängt allein an seiner Einstellung. Die Doku von Claude Code nennt
   MCP-Werkzeuge mit `_meta["anthropic/requiresUserInteraction"]`, die fragen
@@ -895,8 +891,12 @@ auf `assertions.md` unter *What the pilot leaves open*.
   Claude Code sie gegen Previously einhält, ist ungemessen bis zum nächsten
   Lauf des Betreuers, und die Ask-Regel bleibt die Forderung. Claude Code startet ab v2.1.283 im Auto-Modus, in
   dem ohne Ask-Regel ein Klassifikator entscheidet; die Anleitung verlinkt
-  seit der Fixwelle die Quellen. Die Einstellungen der Anleitung für beide
-  Clients sind ungemessen.
+  seit der Fixwelle die Quellen. Gemessen am 2026-10-13: Claude Codes Ask-Regel
+  `mcp__previously__write_approve` greift im Auto-Modus. Ungemessen bleibt die
+  Ask-Einstellung von Vibe: es führt die Werkzeuge als
+  `mcp_previously.<Werkzeug>`, nicht als `previously_<Werkzeug>` wie seine
+  Doku und unsere Anleitung, und ob `[tools.previously_write_approve]`
+  greift, ist offen. Vibe fragt ohnehin bei jedem MCP-Werkzeug (Standard).
 - Der Abnahmelauf vom 2026-10-13 mit Claude Code las die Daten zweimal falsch:
   die Freigabe 43 stehe als „direct, model:claude-code“, also habe sie „eine
   andere Claude-Code-Sitzung“ freigegeben, und Previously halte „den Client
@@ -918,6 +918,12 @@ auf `assertions.md` unter *What the pilot leaves open*.
   `confirm`, kein Handle, ein wiederholter gleicher Aufruf ist ein Erfolg ohne
   Schreiben; der Spec trägt die Abweichung im Kopf (§6.1), und gemessen ist
   auch das erst im nächsten Lauf.
+- Eine Erfüllung, die der Betreiber nur sagt („43 ist heute erfüllt“), hat
+  keine Wahrnehmung als Quelle: der Vorschlag konnte sich nur auf die
+  ursprüngliche Mail stützen, und sein Grund sagte es (Abnahmelauf
+  2026-10-13). Der Einwurfweg `write_submit` (K §4.3, „später“) würde eine
+  solche Aussage zu einer Wahrnehmung machen; bis dahin bleibt der Grund die
+  einzige Spur.
 - Eine Geschichte, die länger ist als eine Seite, wird über MCP nach einer
   ganzen Zeile gekürzt, und ihr Rest kommt über keinen Aufruf; die
   Kommandozeile zeigt sie ganz. Ein Weg wäre ein Cursor für die Geschichte
@@ -1304,6 +1310,22 @@ auf `assertions.md` unter *What the pilot leaves open*.
 
 ## Erledigt, seit es auf einer Liste stand
 
+- ~~Die Abnahme der Einheit 5 nach F §14 durch den Betreuer; je ein echter
+  Aufruf von `write_assertion` mit Claude Code und mit Vibe, das verschachtelte
+  Eingabeschema über `$defs` und `$ref` probiert~~ (P-F, Aufgabe 5) — gelaufen
+  am 2026-10-13 gegen `0.1.0a5` in kup6s, Zweig `mcp-erklaeren`, Commit
+  `8c65e3e` (die Anleitungen). Es liefen: Vorschläge von Claude Code und Vibe;
+  Freigabe und Ablehnung auf der Kommandozeile und über MCP, mit Rückfrage des
+  Clients (Claude Codes Ask-Regel im Auto-Modus, Vibes Standard); Listen,
+  überfällig, Geschichte; Tilgung mit Kaskade, `verify` ohne Befund; die
+  Policy für einen zweiten Client (Vibe sah `ana-u` erst, nachdem seine Kette
+  mit `training no` erklärt war, und die Änderung galt sofort). Das
+  verschachtelte Schema ging in beiden Clients, flach machen ist nicht nötig.
+  Vibe sprach `2025-11-25`. Der `kubectl port-forward` starb im Lauf und löste
+  die Wiederholungen der Clients aus; der Handle fing sie ab, es entstand kein
+  Duplikat; er erholt sich nicht von selbst, Stufe A2 ist die bleibende Antwort.
+  Nicht gelaufen: der Schlüssel der Vibe-Ask-Einstellung und die Kennzeichnung
+  (siehe oben unter *Feststellungen*).
 - ~~Die erste Anfrage nach einem Wechsel des Datenbank-Primärknotens scheitert~~
   (RA) — der Zweig `worktree-rueckmeldung-a5`, erster Commit `383d0ab`:
   `from_dsn` erzeugt die Engine mit `pool_pre_ping=True`, ein Test gegen echtes

@@ -1227,9 +1227,7 @@ def _proposal_label(statement: Statement) -> str:
         if statement.subject is None
         else f"new version of {event_uri(statement.subject)}"
     )
-    return (
-        f"proposed · {_state_of(statement)} · by {statement.author} · {where}"
-    )
+    return f"proposed · {_state_of(statement)} · by {statement.author} · {where}"
 
 
 def _preview(tool: str, shown: Sequence[Stated], handle: str, until: datetime) -> str:
