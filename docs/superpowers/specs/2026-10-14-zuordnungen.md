@@ -128,11 +128,14 @@ genauesten Klammer zugeordnet, die man kennt, und nach oben gilt die
 Zugehörigkeit transitiv (§8). „Gehört zum Verein, welches Thema, weiß ich noch
 nicht" ist dieselbe Zuordnung, nur gröber; eine neue Fassung verfeinert sie.
 
-**Zentral als Zugang, nie autoritativ für Fakten** (NOTIZEN, *Korrektur der
-früheren Einschätzung*): eine Klammer muss nicht perfekt gesetzt sein, um
-etwas zu finden. Falsch wäre nur, eine Frist oder eine Rechnung von einer
-Klammergrenze abhängig zu machen. Diese Unterscheidung trägt die Regeln in §7
-und §9.
+**Eine Klammer hilft beim Finden, sie entscheidet keine Tatsachen** (NOTIZEN,
+*Korrektur der früheren Einschätzung*). Steht eine Mail im falschen Vorgang,
+findet man sie dort, wo man sie nicht sucht — ärgerlich, aber schnell
+korrigiert. Ob eine Frist gilt oder eine Rechnung bezahlt ist, darf deshalb nie
+davon abhängen, zu welcher Klammer eine Mail gehört; das steht in der
+Verpflichtung selbst. Weil eine falsche Zuordnung so wenig kostet, dürfen
+Modelle zuordnen, ohne zu fragen (§7). Beim Gate kostet sie mehr, und dort
+dürfen sie es nicht (§9).
 
 ---
 
