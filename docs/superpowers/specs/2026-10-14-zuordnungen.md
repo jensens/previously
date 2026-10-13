@@ -2,9 +2,11 @@
 
 **Datum:** 2026-10-14
 **Status:** Entwurf, aus dem Brainstorming mit dem Betreuer am 2026-10-13 und
-2026-10-14 („die Basis ist gut und tragfähig"); zur Durchsicht durch den
-Betreuer. Ein Spec für das ganze Modell, gebaut in vier Phasen mit je einem
-eigenen Plan (§1).
+2026-10-14 („die Basis ist gut und tragfähig"); vom Betreuer am 2026-10-14
+durchgesehen („bin durch, der Rest passt"), mit seinen Änderungen beim Lesen
+eingearbeitet. Ein Spec für das ganze Modell, gebaut in vier Phasen mit je
+einem eigenen Plan (§1); er bleibt lebendig, bis die Seiten aller Phasen
+stehen, und friert dann ein.
 
 **Grundlage:** der Design-Record (`2026-10-01-previously-design.md`: Leitsätze
 4, 5, 7 und 8, §5.3 Zuordnungen, §6 die zehn Entitäten, §6.1 Organisation und
