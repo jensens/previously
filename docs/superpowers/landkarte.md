@@ -35,7 +35,7 @@ Anbieter gelaufen (Bedingung 10). Der MCP-Lesezugang ist abgenommen und mit
 `v0.1.0a3` veröffentlicht (Einheit 4, oben). Beide laufen seit dem
 2026-10-11 in kup6s (RG).
 
-In Betrieb ist `v0.1.0a5` in kup6s (RA), nach den Handoffs der Auslieferung, der
+In Betrieb ist `v0.1.0a6` in kup6s (R6), nach den Handoffs der Auslieferung, der
 Aufnahme, des Gates, des MCP-Servers, der Einstellungen und der Feststellungen: Datenbank, Bucket, Werkzeug-Pod, die
 CronJobs `project`, `anchor` (täglich seit dem 2026-10-06) und `verify`, die
 Aufnahme des echten Ordners mit neun Mails (RK); dazu die beiden Schlüssel des
@@ -46,11 +46,25 @@ jedem Pod von Previously alles außer DNS, der Datenbank und den Hosts seiner
 Kommandos (RG). Jede Prüfung der Handoffs ist bestanden, und kup6s weicht an
 fünf Stellen begründet ab — PostgreSQL 18, verschlüsselte Dumps statt Barman
 oder pgBackRest, Zugangsdaten für das ganze Hetzner-Projekt, die Ankerdatei in
-Git bei keinem Dritten, die Restore-Probe von Hand (RK). Nicht gebaut sind
-dort der Modellserver — das Gate lehnt ab, wo nur ein lokales Modell darf —
-und das Tailnet (Stufe A2); der Zugang zum MCP-Server ist `kubectl
-port-forward` (RG). Das Log dort ist eine Probe: die Daten werden vor dem
+Git bei keinem Dritten, die Restore-Probe von Hand (RK). Nicht gebaut ist
+dort der Modellserver — das Gate lehnt ab, wo nur ein lokales Modell darf;
+den Zugang zum MCP-Server gibt seit dem 2026-10-13
+das Tailnet (Stufe A2, R6), `kubectl port-forward` bleibt die Rückfalllinie (RG).
+Das Log dort ist eine Probe: die Daten werden vor dem
 regulären Gebrauch zurückgesetzt, das dauerhafte Log beginnt danach.
+
+Seit dem 2026-10-13 läuft `0.1.0a6` in kup6s (R6): Werkzeug-Pod, Jobs und
+`previously-mcp` auf der neuen Version, die Migration meldet `up to date:
+0005_watermark`. Der Handoff `handoffs/2026-10-13-kup6s-a6.md` steht, beide
+Prüfungen. Die Umschaltung der Primärinstanz auf Probe, am 2026-10-13 um
+13:08 UTC, hat eine Anfrage gekostet, und zwar mitten im Wechsel, als kein
+Primärknoten antwortete; danach antwortete jede Prüfung mit 200 (R6). Die
+Annahme, `pool_pre_ping` spare den Wechsel, hat sich damit nicht bestätigt
+(unten unter *Erledigt*). Stufe A2 steht seit demselben Tag: eine
+Tailscale-Instanz im Pod, ein Headscale als Steuerserver, einfaches HTTP
+innerhalb von WireGuard, der Name des Tailnets in
+`PREVIOUSLY_MCP_ALLOWED_HOSTS`; `whoami` antwortete, `previously access`
+listete den Aufruf (R6).
 
 Seit dem 2026-10-12 läuft `0.1.0a5` in kup6s (RA). Die vier Prüfungen des
 Handoffs der Einstellungen (`v0.1.0a4`) stehen: das Release läuft, kein Pod
@@ -134,7 +148,7 @@ jetzt kommt: die Abnahme nach F §14 ist gelaufen (2026-10-13, siehe
 *Erledigt*), der Zweig `mcp-erklaeren` ist gemergt (PR #20, `248a001`) und
 mit `pool_pre_ping` als `v0.1.0a6` am 2026-10-13 veröffentlicht; der Handoff
 `handoffs/2026-10-13-kup6s-a6.md` liegt bei und bittet kup6s, die Umschaltung
-der Primärinstanz zu wiederholen. Als nächste
+der Primärinstanz zu wiederholen; kup6s hat geantwortet (R6, siehe unten). Als nächste
 Einheit mit Spec dann die Zuordnungen (F §1, §15; unten unter *Feststellungen und
 Entitäten*).
 Was die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an
@@ -182,7 +196,8 @@ ArgoCD und dem CloudNativePG-Operator; das Image kommt von `ghcr.io`; was dort
 entsteht, baut der Agent in kup6s nach dem Handoff (Betreuer, 2026-10-05). Der
 Zugang vom Arbeitsplatz ist `kubectl exec` in den Werkzeug-Pod für die
 Kommandos und, seit dem 2026-10-11, `kubectl port-forward` zu
-`previously-mcp` für die Clients; das Tailnet (Stufe A2) steht noch aus (RG).
+`previously-mcp` für die Clients; das Tailnet (Stufe A2) steht seit dem
+2026-10-13 (R6), der Port-Forward ist die Rückfalllinie (RG).
 
 ## Was vor was kommen muss
 
@@ -251,7 +266,9 @@ erhalten, **RG** seine Rückmeldung vom selben Tag auf die Handoffs des Gates
 und des MCP-Servers (`handoffs/2026-10-11-kup6s-feedback-gate-and-mcp.md`),
 ebenso, **RA** seine Rückmeldung vom 2026-10-12 auf die Handoffs der
 Einstellungen und der Feststellungen
-(`handoffs/2026-10-12-kup6s-feedback-settings-and-assertions.md`), ebenso.
+(`handoffs/2026-10-12-kup6s-feedback-settings-and-assertions.md`), ebenso,
+**R6** seine Rückmeldung vom 2026-10-13 auf den Handoff von `0.1.0a6`
+(`handoffs/2026-10-13-kup6s-feedback-a6.md`), ebenso.
 
 ### Einwurf-Vertrag (`contract`, Teilprojekt 2)
 
@@ -1326,7 +1343,8 @@ auf `assertions.md` unter *What the pilot leaves open*.
   verschachtelte Schema ging in beiden Clients, flach machen ist nicht nötig.
   Vibe sprach `2025-11-25`. Der `kubectl port-forward` starb im Lauf und löste
   die Wiederholungen der Clients aus; der Handle fing sie ab, es entstand kein
-  Duplikat; er erholt sich nicht von selbst, Stufe A2 ist die bleibende Antwort.
+  Duplikat; er erholt sich nicht von selbst, Stufe A2 ist die bleibende Antwort — sie steht
+  seit dem 2026-10-13 (R6), der Port-Forward bleibt die Rückfalllinie.
   Nicht gelaufen: der Schlüssel der Vibe-Ask-Einstellung und die Kennzeichnung
   (siehe oben unter *Feststellungen*).
 - ~~Die erste Anfrage nach einem Wechsel des Datenbank-Primärknotens scheitert~~
@@ -1335,6 +1353,30 @@ auf `assertions.md` unter *What the pilot leaves open*.
   PostgreSQL beendet alle anderen Backends und liest danach (gemessen rot ohne
   die Prüfung, grün mit). Der Preis ist ein Hin und Zurück je Entnahme aus dem
   Pool; eine Verbindung, die erst nach der Prüfung stirbt, fängt es nicht.
+  **Berichtigt am 2026-10-13 (R6):** die Voraussetzung war falsch gemessen. Die
+  Rückmeldung RA hatte behauptet, die erste Anfrage *nach* dem Wechsel
+  scheitere; kup6s misst es erneut: die fehlgeschlagene Prüfung fiel beide Male
+  *in* den Wechsel (2026-10-12 um 23:28:18, der Wechsel lief bis 23:28:28), und
+  die Anfragen danach gelangen schon auf `0.1.0a5`. Auf `0.1.0a6` kostete ein
+  Wechsel eine Anfrage, eine Sekunde nach seinem Beginn: die Prüfung fand die
+  Verbindung tot, und die neue wurde abgewiesen, weil kein Primärknoten
+  antwortete. Dieses 503 ist richtig. `pool_pre_ping` bleibt, aber mit dem
+  wirklichen Grund: es bewahrt die nächste Anfrage davor, an einer Verbindung
+  zu scheitern, die im Leerlauf starb, wie spät sie auch kommt. Der Docstring
+  von `from_dsn`, die Seite `mcp-interface.md` und der Test in
+  `tests/test_storage.py` sagen das jetzt (Zweig `worktree-rueckmeldung-a6`,
+  Commit `ff616c1`).
+- ~~Jede fehlgeschlagene Bereitschaftsprüfung schreibt eine Kette von drei oder
+  vier Tracebacks ins Log~~ (R6) — gefunden und geschlossen am 2026-10-13 im
+  Zweig `worktree-rueckmeldung-a6`, Commit `ff616c1`: `ready()` in
+  `mcp_server/server.py` fängt `ServerUnreachable` (eine abgewiesene
+  Verbindung) und `OperationFailed` (eine Verbindung, die der Server beendete)
+  und schreibt eine `WARNING`-Zeile mit dem Satz des Fehlers; jede andere
+  Ausnahme behält `logger.exception`. Drei Tests gegen echtes PostgreSQL,
+  gemessen rot mit `logger.exception` anstelle der Warnung. Nebenbei gefunden:
+  `migrations/env.py` schaltete über `fileConfig` jeden schon bestehenden
+  Logger ab, im Testlauf nach der ersten Migration auch den des Servers —
+  jetzt `disable_existing_loggers=False`.
 - ~~Der Warteschritt in `image` fragt die JSON-Schnittstelle von PyPI, das
   Image installiert aus dem einfachen Index; hinkt der zweite nach, scheitert
   der Bau nach PyPI~~ (P-AL, Prüfung der Aufgabe 4) — seit `v0.1.0a4` fragte
