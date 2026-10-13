@@ -35,8 +35,8 @@ Anbieter gelaufen (Bedingung 10). Der MCP-Lesezugang ist abgenommen und mit
 `v0.1.0a3` veröffentlicht (Einheit 4, oben). Beide laufen seit dem
 2026-10-11 in kup6s (RG).
 
-In Betrieb ist `v0.1.0a3` in kup6s, nach den Handoffs der Auslieferung, der
-Aufnahme, des Gates und des MCP-Servers: Datenbank, Bucket, Werkzeug-Pod, die
+In Betrieb ist `v0.1.0a5` in kup6s (RA), nach den Handoffs der Auslieferung, der
+Aufnahme, des Gates, des MCP-Servers, der Einstellungen und der Feststellungen: Datenbank, Bucket, Werkzeug-Pod, die
 CronJobs `project`, `anchor` (täglich seit dem 2026-10-06) und `verify`, die
 Aufnahme des echten Ordners mit neun Mails (RK); dazu die beiden Schlüssel des
 Gates nur im Werkzeug-Pod, der allein `api.anthropic.com` und `api.mistral.ai`
@@ -60,17 +60,17 @@ mit der Probe bei 200 `ok`. Beim Handoff der Feststellungen stehen: Werkzeug-Pod
 und Jobs auf `0.1.0a5` mit Migration `0005_watermark`, der Schlüssel
 `PREVIOUSLY_MCP_CONFIRM_KEY` nur in `previously-mcp`, die vorgesehene Aufnahmezeile, und
 die Vorschau von `write_assertion` über den Server (`handle:`-Zeile, `Nothing
-is written yet`). Die Prüfung „`UPDATE` auf `event` verwehrt“ fiel anders aus: es gelingt, weil
-alle Pods die Rolle `previously` benutzen, die Eigentümerin der Datenbank
-(siehe *Betrieb*). kup6s hat die Umbenennung der Einstellungen in drei Schritten
+is written yet`), und `UPDATE` auf `event` für die Rollen von `previously-mcp`
+und Werkzeug-Pod — gegeben, weil alle Pods die Rolle `previously` benutzen, die
+Eigentümerin der Datenbank (siehe *Betrieb*). kup6s hat die Umbenennung der Einstellungen in drei Schritten
 ausgerollt (neue Namen neben die alten, dann das Image, dann die alten Namen
 weg); `cut-a-release.md` sagt es jetzt.
 
-Gebaut, aber noch nicht abgenommen: Einheit 5, die Feststellungen
-(Verpflichtung und Entscheidung mit Quellen, Vorschläge über MCP, Freigabe und
-Ablehnung, die Kaskade der Tilgung), auf dem Zweig `worktree-feststellungen`;
-sie wartet auf die Endprüfung, den Merge und die Abnahme nach F §14 (unten
-unter *Was als Nächstes kommt*). Die Abnahme ist zur Hälfte getan: die Vorschau
+Abgenommen: Einheit 5, die Feststellungen (Verpflichtung und Entscheidung mit
+Quellen, Vorschläge über MCP, Freigabe und Ablehnung, die Kaskade der Tilgung),
+gemergt am 2026-10-12 (PR #17, `4735e3f`) und als `v0.1.0a5` veröffentlicht.
+Die Abnahme nach F §14 durch den Betreuer steht noch aus und ist zur Hälfte
+getan: die Vorschau
 von `write_assertion` läuft über den Server in kup6s, bestätigt ist noch nichts
 (`write_approve` und `write_reject` ungetestet), und in Claude Code ist kein
 Werkzeug von Previously „immer erlaubt“, sodass beide fragen (RA).
@@ -127,9 +127,11 @@ und ohne Migration (Planentscheidung 1, vom Betreuer am 2026-10-12
 bestätigt); der Handoff `handoffs/2026-10-12-kup6s-assertions.md` liegt bei.
 Die Endprüfung hat am 2026-10-12 die Lesezeit bei 5 000 Feststellungen
 gemessen (unten unter *Feststellungen*), und ihre Fixwelle ist gelaufen.
-Was jetzt kommt, in dieser Reihenfolge: die Nachprüfung der Fixwelle; der
-Merge; das Release nach `v0.1.0a4` mit dem Handoff; die Abnahme nach F §14
-durch den Betreuer. Als nächste Einheit mit
+Sie ist gemergt (PR #17, `4735e3f`), `v0.1.0a5` ist am 2026-10-12
+veröffentlicht, der Handoff ist übergeben, und kup6s hat geantwortet (RA). Was
+jetzt kommt: die Abnahme nach F §14 durch den Betreuer — Freigabe und Ablehnung
+über MCP und auf der Kommandozeile, eine Tilgung, je ein echter
+`write_assertion`-Aufruf mit Claude Code und Vibe. Als nächste Einheit mit
 Spec dann die Zuordnungen (F §1, §15; unten unter *Feststellungen und
 Entitäten*).
 Was die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an
