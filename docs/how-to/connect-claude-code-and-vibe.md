@@ -83,6 +83,8 @@ previously serve
 
 It listens on `http://127.0.0.1:8765/mcp` and runs until you stop it.
 To reach a server in the Kubernetes cluster instead, forward its port first, such as with `kubectl port-forward svc/previously-mcp 8765:8765`, and use the same address.
+The port-forward doesn't recover by itself: when it dies, the client's calls fail and retry until you start it again.
+The lasting answer is stage A2, a private network that the clients and the server share.
 A server that clients reach by another host name needs that name in `PREVIOUSLY_MCP_ALLOWED_HOSTS` ({ref}`configuration-reference`).
 
 ## Connect Claude Code
@@ -128,6 +130,11 @@ Vibe's default harness keeps the list of tools across sessions.
 After a release of Previously that changes the tools, start Vibe with `--legacy-harness` until the default harness offers the new ones.
 The first release with assertions is such a release: it adds `list_obligations`, `list_decisions` and the three writing tools, ten tools in all where there were five.
 Whether `/mcp refresh` in Vibe brings the new tools into the default harness hasn't been measured.
+A server added to Vibe's default harness for the first time showed all ten tools.
+
+Vibe 2.26.1 lists the tools as `mcp_previously.<tool>`, such as `mcp_previously.whoami` and `mcp_previously.write_approve`, and not as `previously_<tool>`.
+Vibe asks for permission before every MCP tool call, the reading tools included, with the choices `Allow once`, `for this session`, `Always allow` and `Deny`, and its prompt shows the whole arguments of the call, an assertion's text among them.
+Never choose `Always allow` for `write_approve` or `write_reject`: an approval is the operator's word, and {ref}`record-what-is-owed-and-decided` explains why a client has to ask before it answers.
 
 ## Check the connection
 
@@ -164,8 +171,15 @@ The first two configurations were measured on 2026-10-10, against a test server 
 
 The form of a result that the server uses, one text block, arrived whole in the first two.
 The measurement recorded the key `headers` of the Vibe entry and not the rest of it; `name`, `transport` and `url` above follow [Vibe's documentation of MCP servers](https://docs.mistral.ai/vibe/code/cli/mcp-servers).
-Nothing else on this page was measured with a real client: not the form with standard input and output, and not Vibe against `previously serve`.
+Nothing else on this page was measured with a real client: not the form with standard input and output.
 
-The writing tools haven't met a real client yet.
-The input schema of `write_assertion` nests its items and their sources through `$defs` and `$ref`, and only the client of the MCP SDK has called it so far, in the tests.
-One real call of `write_assertion` from Claude Code and one from Vibe is still owed.
+Claude Code and Mistral Vibe 2.26.1, in its default harness, were measured on 2026-10-13 against `previously serve` `0.1.0a5` in the cluster, through `kubectl port-forward`:
+
+- Vibe listed ten tools for a freshly added server, as `mcp_previously.<tool>`, and called with the protocol revision `2025-11-25`.
+- Vibe asked before every tool call, reading tools included, and showed the full arguments.
+- The input schema of `write_assertion`, which nests its items and their sources through `$defs` and `$ref`, worked in both clients: each wrote proposals through it.
+- The ask rule `mcp__previously__write_approve` in Claude Code worked in auto mode: the client showed `Ask rule mcp__previously__write_approve overrides auto mode for this tool` and offered `Yes`, `Yes, and don't ask again` and `No`.
+- The `kubectl port-forward` died during the run, and the clients retried.
+  The handle of `write_assertion` absorbed the retries: no duplicate was written.
+
+Not measured: the `[tools.…]` keys of Vibe's configuration, whose names assume `previously_<tool>`, and the mark `anthropic/requiresUserInteraction`, which no release carries yet.

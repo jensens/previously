@@ -98,7 +98,7 @@ sources: URI, URI#unit-N
 
 - `URI` is `previously://event/<id>`, where `<id>` is the id of the first version, the one every later version names as its subject.
 - `KIND` is `obligation` or `decision`.
-- `LABEL` is what Previously says of the entry, joined by ` · `: the state, `overdue` after it where an open obligation is due before today's UTC date, `proposed` before it where the entry stands only as a proposal, the responsibility of the version that stands (`direct` or `open`), behind a `direct` that approves a proposal the note `made its own by the operator (approval of N), formulated by AUTHOR`, the number of versions (`1 version`, `2 versions`) and the number of proposals still pending.
+- `LABEL` is what Previously says of the entry, joined by ` · `: the state, `overdue` after it where an open obligation is due before today's UTC date, `proposed` before it where the entry stands only as a proposal, which says that the responsibility is open and is then not named again, `direct` for a version a person made their own, behind a `direct` that approves a proposal the note `made its own by the operator (approval of N), formulated by AUTHOR`, the number of versions (`1 version`, `2 versions`) and the number of proposals still pending.
   It holds nothing from a mail or a client.
 - A decision has `decided by: ACTOR, ACTOR` and `on: YYYY-MM-DD` in place of the debtor and creditor and the due date, and `replaces: URI` where it replaces another decision.
   An actor is written as it was stated: `own`, `circle:NAME`, `address:ADDRESS` or `name:TEXT`.
@@ -382,7 +382,7 @@ expires: YYYY-MM-DD HH:MM:SS UTC
 Nothing is written yet: to write, call write_assertion again with the same arguments and confirm=HANDLE.
 ```
 
-- The heading of a proposal reads `### statement N · KIND · proposed · STATE · open · by model:CLIENT · new entry`, with `new version of URI` at its end where the item names a `subject`.
+- The heading of a proposal reads `### statement N · KIND · proposed · STATE · by model:CLIENT · new entry`, with `new version of URI` at its end where the item names a `subject`.
 - A list cuts a line inside the fence at 1,000 characters, so a statement with a longer line is refused instead of previewed: a preview always shows the whole of what gets written.
 - A preview that doesn't fit on one page is refused rather than cut, because a statement nobody saw can't be confirmed.
 

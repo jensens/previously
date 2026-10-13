@@ -1228,8 +1228,7 @@ def _proposal_label(statement: Statement) -> str:
         else f"new version of {event_uri(statement.subject)}"
     )
     return (
-        f"proposed · {_state_of(statement)} · {statement.responsibility} · "
-        f"by {statement.author} · {where}"
+        f"proposed · {_state_of(statement)} · by {statement.author} · {where}"
     )
 
 

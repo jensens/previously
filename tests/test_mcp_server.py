@@ -1875,7 +1875,7 @@ def test_a_proposal_is_listed_only_with_proposals_and_never_passes_for_an_entry(
 
     assert _shown_ids(plain) == [standing]
     assert _shown_ids(proposals) == [proposed]
-    assert "obligation · proposed · open · open · 1 version · 0 proposals" in proposals
+    assert "obligation · proposed · open · 1 version · 0 proposals" in proposals
     assert _last_access(world).access.arguments == {
         "overdue": False,
         "proposals": True,
@@ -2176,7 +2176,7 @@ def test_write_assertion_without_confirm_previews_and_writes_nothing(
     assert _assertions(world) == []
     assert page.splitlines()[0] == "previously · write_assertion · preview · page 1"
     assert (
-        "### statement 1 · obligation · proposed · open · open · by model:claude-code · "
+        "### statement 1 · obligation · proposed · open · by model:claude-code · "
         "new entry\n<<<customer-content TAG>>>\n"
         f"what: {THE_TEXT}\n"
         "debtor → creditor: own → address:eva.huber@example.org\n"

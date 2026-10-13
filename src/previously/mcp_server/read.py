@@ -613,8 +613,11 @@ def _label(thread: Thread, winner: Version | None, today: date) -> str:
     state = body.state
     if isinstance(body, ObligationBody) and overdue(body, today):
         state += " · overdue"
+    # `proposed` says the responsibility is open; naming it again read as a
+    # duplicate of the state, as in `proposed · open · open` (the acceptance
+    # run of 2026-10-13).
     if winner.statement.responsibility == OPEN:
-        state = f"proposed · {state}"
+        return f"proposed · {state} · {versions} · {proposals}"
     responsibility = winner.statement.responsibility
     if (note := approval_note(winner.statement)) is not None:
         responsibility = f"{responsibility} · {note}"
