@@ -919,36 +919,36 @@ rot gemessen wird, und einer grünen Kontrolle.
 
 9. **Transitiv:** die Chronik einer Klammer enthält, was darunter zugeordnet
    ist, und nichts von daneben; ein Widerruf nimmt es heraus.
-9a. **Das Genauere ersetzt das Allgemeine beim Finden:** eine Einheit mit
+10. **Das Genauere ersetzt das Allgemeine beim Finden:** eine Einheit mit
     eigener Zuordnung erscheint nur in deren Chronik, nicht in der der
     Zuordnung ihres Events.
-10. **Die Chronik nach Klammer filtert innerhalb der Policy:** sie zeigt einem
+11. **Die Chronik nach Klammer filtert innerhalb der Policy:** sie zeigt einem
     Client nichts, was er ohne `in` nicht sähe.
 
 **Phase 3:**
 
-11. **Mitgliedschaft zur Zeit des Events:** eine Mail von 2019 fällt unter die
+12. **Mitgliedschaft zur Zeit des Events:** eine Mail von 2019 fällt unter die
     Mitgliedschaft von 2019, nicht unter die von heute.
-12. **Eine Zuordnung durch ein Modell lockert nie:** ein Event ohne Kreis
+13. **Eine Zuordnung durch ein Modell lockert nie:** ein Event ohne Kreis
     bleibt nur lokal, auch wenn es einer Klammer mit großzügiger Regel
     zugeordnet wird; eine Zuordnung, die lockern würde, wird eine Rückfrage.
-13. **`member_of` und `in_circle` nur direkt:** keine Klasse, kein Modell
+14. **`member_of` und `in_circle` nur direkt:** keine Klasse, kein Modell
     erreicht sie.
-14. **Die Umstellung der bestehenden Kreise gibt nichts frei:** für jedes Event
+15. **Die Umstellung der bestehenden Kreise gibt nichts frei:** für jedes Event
     entscheidet das Gate nach der Umstellung höchstens so großzügig wie
     vorher.
-15. **Das Gate liest nichts, was hinterherhinkt:** eine entfernte
+16. **Das Gate liest nichts, was hinterherhinkt:** eine entfernte
     Mitgliedschaft wirkt beim nächsten Aufruf, ohne dass ein Projektionslauf
     dazwischen liegt.
-16. **Der Grund einer Verschärfung ist sichtbar:** der Platzhalter nennt die
+17. **Der Grund einer Verschärfung ist sichtbar:** der Platzhalter nennt die
     Klammer und die Zuordnung.
-17. **Eine Klammer wirkt je Einheit:** ist eine Einheit einer Klammer mit
+18. **Eine Klammer wirkt je Einheit:** ist eine Einheit einer Klammer mit
     strenger Regel zugeordnet, wird sie zurückgehalten und der Rest des Events
     nicht; eine Zuordnung des ganzen Events wirkt auf das ganze.
-18. **Für das Gate wird nur hinzugefügt:** eine eigene Zuordnung einer
+19. **Für das Gate wird nur hinzugefügt:** eine eigene Zuordnung einer
     Einheit durch ein Modell nimmt ihr keinen Kreis der Zuordnung des ganzen
     Events.
-19. **Metadaten folgen dem Event:** eine Zuordnung einer Einheit ändert nicht,
+20. **Metadaten folgen dem Event:** eine Zuordnung einer Einheit ändert nicht,
     wer die Kopfzeilen sieht; wer eine vom Betreiber gelockerte Einheit sieht,
     sieht ihren Sprecher und ihre Zeit und keine weitere Kopfzeile.
 
