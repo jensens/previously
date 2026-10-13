@@ -924,3 +924,34 @@ zugestimmt hat. Zugangsdaten werden **nicht** aufgelöst — das GitLab der eine
 **Organisationsprotokoll statt Kundenprotokoll.** "Alles mit Mirko" über alle
 Projekte und Rollen — nach Rolle filterbar, nicht nach Rolle zerschnitten.
 Nach 20 Jahren vermutlich die häufiger gebrauchte Ansicht.
+
+## FERNE IDEE: Föderierte Wissensspeicher (2026-10-13)
+
+Jens, beim Brainstorming der Zuordnungen, ausdrücklich „wilde Idee ohne genaue
+Ausprägung" und **nicht jetzt**: erst bleibt alles lokal, das Basissystem
+kommt zuerst.
+
+Ein verteiltes System von Wissensspeichern — persönliche oder für kleine
+Gruppen —, verbunden ein bisschen wie das Fediverse, vielleicht sogar über
+dessen Protokoll. Man bekommt Zugriff auf klar umrissene Teile eines anderen
+Speichers, etwa über zeitlich begrenzte Token. Föderiert werden vielleicht nur
+Ableitungen, keine Originale.
+
+Was schon dazu passt: jeder Speicher ist souverän (Log, Hash-Kette, Anker —
+Herkunft prüfbar); Feststellungen tragen ihre Quellen als Verweise, eine
+Ableitung kann ihre Herkunft zeigen, ohne das Original mitzugeben; ein fremder
+Speicher wäre für das Gate ein weiterer Empfänger neben den Modellen, unter der
+strengsten Regel; eine Freigabe mit Umfang und Gültigkeit hat die Form eines
+späteren Tokens.
+
+Bezugspunkte, ungeprüft aus dem Gedächtnis: ActivityPub (zum Veröffentlichen
+gebaut, privater Zugriff schwach), Solid (persönliche Pods, RDF,
+Zugriffsregeln je Ressource), AT Protocol (Repository je Nutzer aus signierten
+Einträgen im Merkle-Baum), Macaroons und UCAN (Token mit Einschränkungen, die
+man weiter einschränken und weitergeben kann). Das harte Problem: Tilgung über
+Speichergrenzen — eine geteilte Ableitung erreicht die Kaskade nicht.
+
+Was der Spec der Zuordnungen deshalb **nicht verbauen** soll: Verweise, die
+einen Speicher nennen können; eine Zugriffsentscheidung über Empfänger × Event
+× Zeitpunkt, in der ein Empfänger Modell, Person oder Speicher sein kann;
+Freigaben mit Umfang und Gültigkeit.
