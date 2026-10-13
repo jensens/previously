@@ -531,6 +531,25 @@ Hand erproben.
   wird der ganze Absatz beiden zugeordnet. Feinere Stücke — Zeichenbereiche,
   Zeitbereiche in einem Transkript (NOTIZEN, *Zerlegung*) — sind eine spätere
   Erweiterung (§18).
+- **Eine Kante für die meisten Mails.** Die meisten Mails gehören als Ganzes
+  zu einer Klammer: das ist eine Kante vom Event, und seine Einheiten erben sie
+  (Betreuer, 2026-10-14). Eigene Kanten bekommen nur Einheiten, die abweichen.
+  **Beim Finden ersetzt das Genauere das Allgemeine:** hat eine Einheit eigene
+  Zuordnungen, gelten für sie nur diese; der Nachsatz über den Caterer steht im
+  Protokoll des Sommerfests, nicht in dem von XZ. Wer ihn in beiden will, ordnet
+  ihn beiden zu. Für das Gate gilt das nicht (§9.4).
+- **Anhänge.** Ein PDF oder ein Word-Dokument ist heute ein Blob, sein Inhalt
+  wird nicht gelesen; zuordnen lässt sich nur die Mail, die es trägt. Das ist
+  ein echtes Problem — Kunden schicken die wichtige Information oft nur als
+  Anhang (Betreuer, 2026-10-14) — und gehört in die Textextraktion (Landkarte,
+  *Einwurf-Vertrag*), nicht in diese Einheit. Für dann gilt, wie bei einer Mail
+  im Anhang (Spec der IMAP-Aufnahme, §3.6): ein gelesener Anhang wird ein
+  eigenes Event mit eigenen Einheiten, das auf die Mail verweist, und bekommt
+  eigene Zuordnungen — die Bestätigung des Caterers als PDF gehört zum
+  Sommerfest, die Mail, die sie trägt, zu XZ. **Ein Anhang ohne eigene Adressen
+  erbt die Kreise der Mail, mit der er kam**: er hat dieselben Absender und
+  denselben Weg, und ohne die Regel wäre er ohne Kreis und damit nur lokal.
+  Eine angehängte Mail hat eigene Adressen und eigene Kreise.
 - **Der Zusammenhang kommt aus dem Graphen.** Dass „der Caterer" das
   Sommerfest meint, steht nicht im Satz: Markus ist im Verein und an XZ
   beteiligt, beim Verein ist ein Vorgang Sommerfest offen, und in dessen Mails
@@ -601,6 +620,32 @@ nicht schließen: solange niemand weiß, dass der Satz zum Verein gehört, gilt
 für ihn die Regel der Firma. Markus hat Vereinsinhalt über den Firmenkanal
 geschickt; erst die Zuordnung erkennt es (Betreuer, 2026-10-14: „das macht es
 zwar komplexer, aber die Realität ist so").
+
+**Für das Gate wird nur hinzugefügt.** Hat eine Einheit eigene Zuordnungen,
+behält sie für das Gate die Kreise der Zuordnung des ganzen Events und bekommt
+die ihrer eigenen dazu. Fiele der Nachsatz aus XZ heraus und wäre XZ strenger,
+würde er durch die Zuordnung eines Modells lockerer. Nur die direkte Zuordnung
+des Betreibers kann das Allgemeine auch für das Gate ersetzen (unten).
+
+**Die Metadaten gehören dem Event.** Kopfzeilen, Absender, Empfänger, Datum,
+die Namen der Anhänge sind keine Einheit; der Betreff ist eine, Einheit 1. Für
+die Metadaten gelten die Kreise des Events: die aus den Adressen und die aus
+Zuordnungen des ganzen Events, nicht die einzelner Einheiten. Die Kopfzeilen
+sagen, wer an wen geschrieben hat, und genau das beurteilen die Kreise aus den
+Adressen; das Thema eines Absatzes ändert nichts daran. Ein Modell, das den
+Nachsatz nicht sehen darf, sieht trotzdem, dass Markus an diesem Tag geschrieben
+hat — das verrät nichts über den Verein.
+
+**Die Herkunft wandert mit der Einheit.** Bei einer Mail steht der Absender
+einmal im Event, und alle Einheiten teilen ihn; in Transkripten und Chats hat
+jede Einheit ihren eigenen Sprecher und ihre eigene Zeit (Landkarte, *Andere
+Quellen als Mail*). Eine Einheit ist nach diesen Regeln mindestens so streng
+wie die Metadaten ihres Events, bis auf einen Fall: die direkte Zuordnung des
+Betreibers lockert eine Einheit, deren Event nur lokal bleibt. Dann gilt: **wer
+eine Einheit sehen darf, sieht, wer sie gesagt hat und wann**; die übrigen
+Kopfzeilen — Empfänger, Kopie, die anderen Header — nicht (Betreuer,
+2026-10-14). Eine Aussage ohne Sprecher ist wenig wert, und der Betreiber hat
+diese Einheit wissentlich freigegeben.
 
 Wie eine Zuordnung auf das Gate wirkt, hängt davon ab, wer zugeordnet hat:
 
@@ -874,6 +919,9 @@ rot gemessen wird, und einer grünen Kontrolle.
 
 9. **Transitiv:** die Chronik einer Klammer enthält, was darunter zugeordnet
    ist, und nichts von daneben; ein Widerruf nimmt es heraus.
+9a. **Das Genauere ersetzt das Allgemeine beim Finden:** eine Einheit mit
+    eigener Zuordnung erscheint nur in deren Chronik, nicht in der der
+    Zuordnung ihres Events.
 10. **Die Chronik nach Klammer filtert innerhalb der Policy:** sie zeigt einem
     Client nichts, was er ohne `in` nicht sähe.
 
@@ -897,6 +945,12 @@ rot gemessen wird, und einer grünen Kontrolle.
 17. **Eine Klammer wirkt je Einheit:** ist eine Einheit einer Klammer mit
     strenger Regel zugeordnet, wird sie zurückgehalten und der Rest des Events
     nicht; eine Zuordnung des ganzen Events wirkt auf das ganze.
+18. **Für das Gate wird nur hinzugefügt:** eine eigene Zuordnung einer
+    Einheit durch ein Modell nimmt ihr keinen Kreis der Zuordnung des ganzen
+    Events.
+19. **Metadaten folgen dem Event:** eine Zuordnung einer Einheit ändert nicht,
+    wer die Kopfzeilen sieht; wer eine vom Betreiber gelockerte Einheit sieht,
+    sieht ihren Sprecher und ihre Zeit und keine weitere Kopfzeile.
 
 ---
 

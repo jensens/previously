@@ -299,7 +299,13 @@ Einstellungen und der Feststellungen
   für die Anhänge einer Mail mit Einheit 7 (PI §11 Punkt 8). Am 2026-10-11 das
   Erste, was ein Leser der Chronik vermisste: Claude Code fasste über MCP die
   Mails eines Kreises zusammen und konnte die Word- und Excel-Dateien, die die
-  Substanz trugen, nur beim Namen nennen (RG).
+  Substanz trugen, nur beim Namen nennen (RG). Der Betreuer am 2026-10-14:
+  Kunden schicken die wichtige Information oft nur als Anhang, und in der Mail
+  steht wenig — ein PDF, ein Word-Dokument. Der Spec der Zuordnungen
+  (`specs/2026-10-14-zuordnungen.md`, §8) legt schon fest, wie ein gelesener
+  Anhang aussehen soll: ein eigenes Event wie eine Mail im Anhang (PI §3.6),
+  mit eigenen Einheiten und eigenen Zuordnungen, das die Kreise der Mail erbt,
+  mit der es kam, weil es selbst keine Adressen hat.
 - Der Quellschlüssel überlebt jede Tilgung: `source` und `external_id` stehen
   im Event-Hash, und eine Message-ID trägt eine Domain (1c §4.5, §12 Punkt 4).
 - Nach einer Wiederherstellung kann ein getilgtes Event, das mit ihr verloren
