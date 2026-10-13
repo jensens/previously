@@ -179,22 +179,44 @@ jobs:
         id: version
         run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
 
+      - name: Set up uv
+        # For the wait below, which asks the way the Dockerfile asks, and
+        # then for `uv export` in the smoke test, which reads `uv.lock` and
+        # needs no Python: measured on 2026-10-05 with UV_PYTHON_DOWNLOADS=never
+        # in an image that has uv and no interpreter, exit 0. The wait fetches
+        # a Python 3.14 of its own for its throwaway environment.
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+
       - name: Wait for the version on PyPI
-        # The upload has finished, but the index may answer a moment later.
-        # Asked is the simple index, the page `uv` reads in the Dockerfile,
-        # for the wheel of this version. The JSON API answered first for
-        # `v0.1.0a4` on 2026-10-12, and the simple index lagged by about three
-        # minutes, long enough for the image build to find no version.
+        # The upload has finished, but the index may answer a moment later,
+        # and not to every client at once. The wait asks with `uv`, the
+        # client that fails in the Dockerfile: a resolve of the exact version
+        # in a throwaway environment on Python 3.14 (the package requires
+        # it), without dependencies and without a cache, which installs
+        # nothing.
+        #
+        # Asking with `curl` was not enough twice. For `v0.1.0a4` on
+        # 2026-10-12 the JSON API answered first and the simple index lagged
+        # by about three minutes, so the wait asked the simple index. For
+        # `v0.1.0a5` on the same day that `curl` saw the version after 2 s,
+        # and `uv` in the image build still found "no version of
+        # previously==0.1.0a5" about a minute later; run by hand, `uv`
+        # resolved it at 19:57:10 UTC, about two minutes after the upload.
+        # The likely cause is that PyPI's CDN caches a page per `Accept`
+        # header, and `uv` sends another one than `curl` did. Whatever the
+        # cause, only the client that fails can say when it stops failing.
+        #
         # 30 attempts, 10 seconds apart: five minutes of waiting at most,
-        # plus the time the requests take.
+        # plus the time the resolves take.
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           echo "waiting for previously==$VERSION on PyPI"
+          probe="$RUNNER_TEMP/pypi-probe"
+          uv venv --python 3.14 "$probe"
           for i in $(seq 1 30); do
-            if curl -sf -H 'Accept: application/vnd.pypi.simple.v1+json' \
-                "https://pypi.org/simple/previously/" \
-                | grep -q "\"previously-$VERSION-py3-none-any.whl\""; then
+            if uv pip install --python "$probe" --dry-run --no-deps --no-cache \
+                "previously==$VERSION" > /dev/null 2>&1; then
               echo "available on PyPI"
               exit 0
             fi
@@ -246,12 +268,6 @@ jobs:
             PREVIOUSLY_VERSION=${{ steps.version.outputs.version }}
             PREVIOUSLY_REVISION=${{ github.sha }}
             PREVIOUSLY_CREATED=${{ github.event.release.published_at }}
-
-      - name: Set up uv
-        # For `uv export` in the smoke test, which reads `uv.lock` and needs no
-        # Python: measured on 2026-10-05 with UV_PYTHON_DOWNLOADS=never in an
-        # image that has uv and no interpreter, exit 0.
-        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
 
       - name: Smoke test
         # Against the image as pushed: nothing is loaded locally, so
