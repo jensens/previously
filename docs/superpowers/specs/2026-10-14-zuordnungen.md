@@ -145,10 +145,10 @@ dürfen sie es nicht (§9).
 
 | deutsch | Bezeichner | was es ist |
 |---|---|---|
-| Entität | `entity` | ein Knoten: eine deklarierte Art, Felder, Fassungen |
-| Beziehung | `relation` | eine Kante: Subjekt, Art, Objekt, optional ein Zeitraum, Felder, Quellen |
-| Deklaration | `declaration` | eine Handlung im Log: eine Art von Entität oder Beziehung |
-| Verhalten | `behavior` | eine feste Menge im Code, die eine Deklaration einschaltet |
+| Entität | `entity` | ein Ding, über das Previously etwas weiß: ein Projekt, ein Verein, ein Amt. Es hat eine Art, Felder und Fassungen. |
+| Beziehung | `relation` | eine Verbindung zwischen zwei Dingen, oder zwischen einer Mail und einem Ding: „gehört zu", „ist Mitglied von". Optional mit Zeitraum und Feldern, immer mit den Quellen, auf die sie sich stützt. |
+| Deklaration | `declaration` | legt fest, welche Arten von Dingen und Verbindungen es gibt und welche Felder sie tragen. Sie steht als Handlung im Log. |
+| Verhalten | `behavior` | eine Fähigkeit, die im Code programmiert ist, etwa „trägt nach oben" oder „hat einen Zeitraum". Eine Deklaration kann sie für ihre Art einschalten, aber keine neue erfinden. |
 
 Die zehn Entitäten des Design-Records (§6) werden damit vom Code zum
 **Grundvokabular** (§5).
