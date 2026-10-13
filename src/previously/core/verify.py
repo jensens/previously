@@ -39,6 +39,7 @@ from previously.core.action import OK
 from previously.core.action import OUTCOMES
 from previously.core.action import POLICY
 from previously.core.action import REDACTION
+from previously.core.action import VOCABULARY
 from previously.core.assertion import assertion_problem
 from previously.core.assertion import DecisionBody
 from previously.core.assertion import ObligationBody
@@ -70,6 +71,7 @@ from previously.core.redaction import MalformedAction
 from previously.core.redaction import parse
 from previously.core.redaction import RedactionIndex
 from previously.core.sealing import NullSink
+from previously.core.vocabulary import vocabulary_problem
 from typing import cast
 from typing import Protocol
 from typing import TYPE_CHECKING
@@ -715,19 +717,31 @@ class _Assertions:
         return findings
 
 
+def _statement_finding(
+    label: str, event_id: int, problem: str | None, units: Sequence[UnitRow]
+) -> Finding | None:
+    """The finding about an action that is a statement of the operator, a
+    policy event or a vocabulary event, or `None`.
+
+    Such an event holds nothing a source said, so it has no units; one that
+    has them did not come through its write path, and its units could hold
+    anything."""
+    if problem is not None:
+        return Finding(event_id, f"{label} event {problem}")
+    if units:
+        return Finding(event_id, f"{label} event has units")
+    return None
+
+
 def _form_finding(
     name: str, event_id: int, payload: Mapping[str, object], units: Sequence[UnitRow]
 ) -> Finding | None:
-    """The finding about the form of a policy event or a `model_call`, or
+    """The finding about the form of an action of a known name, or
     `None`."""
     if name == POLICY:
-        if (problem := check_payload(payload)) is not None:
-            return Finding(event_id, f"policy event {problem}")
-        # A policy event is a statement of the operator and holds nothing a
-        # source said, so it has no units; one that has them did not come
-        # through `set_policy`, and its units could hold anything.
-        if units:
-            return Finding(event_id, "policy event has units")
+        return _statement_finding("policy", event_id, check_payload(payload), units)
+    if name == VOCABULARY:
+        return _statement_finding("vocabulary", event_id, vocabulary_problem(payload), units)
     if name == MODEL_CALL and (problem := _model_call_problem(payload, units)) is not None:
         return Finding(event_id, f"model_call has no valid form: {problem}")
     if name == MCP_ACCESS:

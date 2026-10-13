@@ -109,8 +109,8 @@ ban-relative-imports = "all"
 [tool.ruff.lint.per-file-ignores]
 "tests/*" = ["S101", "T201"]
 # Printing to stdout is what this module is for — a `# noqa: T201` on each of
-# the seventy-six `print` calls would be the same justification repeated
-# seventy-six times (ruling T9-c of the stage 1a execution, whose ledger is
+# the eighty-one `print` calls would be the same justification repeated
+# eighty-one times (ruling T9-c of the stage 1a execution, whose ledger is
 # lost, so the label resolves nowhere). The count is measured against this
 # configuration with every per-file ignore emptied out, `ruff check --select
 # T201 --config 'lint.per-file-ignores = {}' src/previously/cli.py` — that
@@ -155,7 +155,10 @@ ban-relative-imports = "all"
 # that no entry stands. The fix wave of the final review took it to
 # seventy-six the same day, measured the same way: the notice that an
 # assertion is erased, and the notice that an approval still carries the
-# words of the proposal `redact` erased.
+# words of the proposal `redact` erased. `vocabulary` took it to eighty-one
+# on 2026-10-14, measured the same way: the file `show` prints, the notice
+# that nothing changes, a line of each difference, the notice that nothing was
+# written, and the id of each event written.
 "src/previously/cli.py" = ["T201"]
 
 [tool.ruff.lint.flake8-type-checking]

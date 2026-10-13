@@ -13,5 +13,6 @@ mail-mapping
 policy-and-model-calls
 mcp-tools
 assertions
+vocabulary
 environment
 ```

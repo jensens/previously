@@ -12,6 +12,7 @@ from collections.abc import Callable
 from collections.abc import Generator
 from contextlib import contextmanager
 from contextlib import ExitStack
+from dataclasses import asdict
 from dataclasses import dataclass
 from dataclasses import replace
 from datetime import date
@@ -108,6 +109,16 @@ from previously.core.units import normalize_line_endings
 from previously.core.units import split_plaintext
 from previously.core.verify import BlobCheck
 from previously.core.verify import examine
+from previously.core.vocabulary import apply_vocabulary
+from previously.core.vocabulary import base_vocabulary
+from previously.core.vocabulary import changed_attributes
+from previously.core.vocabulary import differences
+from previously.core.vocabulary import FieldSpec
+from previously.core.vocabulary import parse_file
+from previously.core.vocabulary import read_vocabulary
+from previously.core.vocabulary import refusal as vocabulary_refusal
+from previously.core.vocabulary import render_file
+from previously.core.vocabulary import VocabularyRefused
 from previously.gate.gate import call
 from previously.gate.gate import explain
 from previously.gate.prices import load_prices
@@ -154,6 +165,8 @@ if TYPE_CHECKING:
     from previously.core.redaction import RedactionIndex
     from previously.core.verify import Examination
     from previously.core.verify import Finding
+    from previously.core.vocabulary import KindSpec
+    from previously.core.vocabulary import Vocabulary
     from previously.gate.adapters import Adapter
     from previously.gate.gate import Called
     from sqlalchemy import Connection
@@ -1792,6 +1805,101 @@ def _cmd_policy(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- The vocabulary ---------------------------------------------------------------
+
+
+def _vocabulary_arguments(parser: argparse.ArgumentParser) -> None:
+    what = parser.add_subparsers(dest="what", required=True)
+    sentence = "print the vocabulary in force as a file"
+    showing = what.add_parser("show", help=sentence, description=sentence)
+    showing.add_argument(
+        "--at", metavar="MOMENT", help="the vocabulary of that moment, ISO 8601 with a zone"
+    )
+    sentence = "write what a vocabulary file changes"
+    applying = what.add_parser("apply", help=sentence, description=sentence)
+    applying.add_argument("file", nargs="?", metavar="FILE", help="a vocabulary file")
+    applying.add_argument("--base", action="store_true", help="the vocabulary that ships")
+    applying.add_argument("--yes", action="store_true", help="write without asking")
+
+
+def _vocabulary_source(args: argparse.Namespace) -> str:
+    """The text of the file `apply` was given: the shipped one with `--base`,
+    else the file named."""
+    if args.base == (args.file is not None):
+        raise InvalidPayload("give a FILE or --base, one of the two")
+    if args.base:
+        return base_vocabulary()
+    try:
+        return Path(args.file).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise InvalidPayload(f"{args.file} cannot be read: {error}") from error
+
+
+def _shown(value: object) -> str:
+    return escape_field(json.dumps(value, sort_keys=True, ensure_ascii=False, default=sorted))
+
+
+def _difference_lines(current: Vocabulary, changed: Iterable[KindSpec]) -> list[str]:
+    """One line per kind to write, `add`, `change` or `retire`, and under a
+    change one line per attribute with the old and the new value."""
+    lines: list[str] = []
+    for spec in changed:
+        before = current.kind(spec.declares, spec.name)
+        verb = "add" if before is None else "retire" if spec.retired else "change"
+        lines.append(f"{verb}\t{spec.declares}\t{escape_field(spec.name)}")
+        if before is None or spec.retired:
+            continue
+        for attribute in changed_attributes(before, spec):
+            old, new = getattr(before, attribute), getattr(spec, attribute)
+            lines.append(f"  {attribute}\t{_shown(_plain(old))}\t{_shown(_plain(new))}")
+    return lines
+
+
+def _plain(value: object) -> object:
+    """A spec attribute as something `json` writes."""
+    if isinstance(value, tuple):
+        return [_plain(item) for item in cast("tuple[object, ...]", value)]
+    if isinstance(value, FieldSpec):
+        return asdict(value)
+    return value
+
+
+def _cmd_vocabulary_apply(args: argparse.Namespace) -> int:
+    """Shows each difference, asks, and writes one event per kind that
+    differs. A refusal comes before the question."""
+    specs = parse_file(_vocabulary_source(args))
+    with _storage() as storage:
+        with storage.begin() as conn:
+            current = read_vocabulary(storage, conn)
+        changed = differences(current, specs)
+        if not changed:
+            print("nothing to change")
+            return 0
+        if (sentence := vocabulary_refusal(current, changed)) is not None:
+            raise VocabularyRefused(sentence)
+        for line in _difference_lines(current, changed):
+            print(line)
+        if not _confirmed(args):
+            print("nothing written", file=sys.stderr)
+            return 1
+        ids = apply_vocabulary(storage, specs, recorded_at=datetime.now(UTC))
+    for event_id in ids:
+        print(f"vocabulary event {event_id}")
+    return 0
+
+
+def _cmd_vocabulary(args: argparse.Namespace) -> int:
+    """Prints the vocabulary in force as a file, or writes what a file
+    changes."""
+    if args.what == "apply":
+        return _cmd_vocabulary_apply(args)
+    at = parse_moment(args.at) if args.at else None
+    with _storage() as storage, storage.begin() as conn:
+        vocabulary = read_vocabulary(storage, conn, at=at)
+    print(render_file(vocabulary), end="")
+    return 0
+
+
 # --- The gate ---------------------------------------------------------------------
 #
 # One task for now, `mail_overview`. The caller names the event, never the
@@ -2982,6 +3090,12 @@ COMMANDS: tuple[Command, ...] = (
     Command("chronicle", "print the chronicle in time order", _cmd_chronicle, _chronicle_arguments),
     Command("stats", "print the per-source statistics", _cmd_stats),
     Command("policy", "set and show the processing policy", _cmd_policy, _policy_arguments),
+    Command(
+        "vocabulary",
+        "show or apply the vocabulary of entities and relations",
+        _cmd_vocabulary,
+        _vocabulary_arguments,
+    ),
     Command("gate", "explain or try a model call", _cmd_gate, _gate_arguments),
     Command("client", "add, revoke and list MCP clients", _cmd_client, _client_arguments),
     Command("access", "show what MCP clients saw", _cmd_access, _access_arguments),

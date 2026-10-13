@@ -6217,3 +6217,105 @@ def test_the_history_of_an_entry_without_a_winner_is_shown_and_its_page_is_not(
     assert main(["obligation", str(proposal_id)]) == 1
     assert capsys.readouterr().err == "no obligation stands under event 3\n"
     assert main(["obligation", "99", "--history"]) == 1
+
+
+# --- vocabulary -------------------------------------------------------------------
+
+
+@pytest.mark.db
+def test_vocabulary_apply_base_writes_one_event_per_kind_and_show_prints_the_file(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from previously.core.vocabulary import base_vocabulary
+
+    _setup(db, monkeypatch)
+    assert main(["vocabulary", "apply", "--base", "--yes"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert "add\tentity\tproject" in lines
+    assert lines[-9:] == [f"vocabulary event {n}" for n in range(1, 10)]
+    assert _action_count(db) == 9
+    assert main(["vocabulary", "show"]) == 0
+    assert capsys.readouterr().out == base_vocabulary()
+    assert main(["vocabulary", "apply", "--base", "--yes"]) == 0
+    assert capsys.readouterr().out == "nothing to change\n"
+    assert _action_count(db) == 9
+
+
+@pytest.mark.db
+def test_vocabulary_apply_shows_each_difference_before_it_asks(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """Declining writes nothing; the control is the same file answered with yes."""
+    _setup(db, monkeypatch)
+    assert main(["vocabulary", "apply", "--base", "--yes"]) == 0
+    capsys.readouterr()
+    from previously.core.vocabulary import base_vocabulary
+
+    changed = base_vocabulary().replace('en = "Project"', 'en = "Undertaking"')
+    path = tmp_path / "vocabulary.toml"
+    path.write_text(changed.replace("[relation.holds]", "[relation.holds]\nretired = true"))
+    _answer(monkeypatch, "n\n")
+    assert main(["vocabulary", "apply", str(path)]) == 1
+    captured = capsys.readouterr()
+    assert "retire\trelation\tholds" in captured.out
+    assert "change\tentity\tproject" in captured.out
+    assert "  labels\t" in captured.out
+    assert "nothing written" in captured.err
+    assert _action_count(db) == 9
+    _answer(monkeypatch, "y\n")
+    assert main(["vocabulary", "apply", str(path)]) == 0
+    assert _action_count(db) == 11
+    assert "vocabulary event 10" in capsys.readouterr().out
+
+
+@pytest.mark.db
+def test_vocabulary_apply_needs_a_file_or_base_and_refuses_before_asking(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    _setup(db, monkeypatch)
+    assert main(["vocabulary", "apply", "--yes"]) == 2
+    assert "give a FILE or --base" in capsys.readouterr().err
+    assert main(["vocabulary", "apply", "x.toml", "--base", "--yes"]) == 2
+    assert main(["vocabulary", "apply", str(tmp_path / "missing.toml"), "--yes"]) == 2
+    path = tmp_path / "v.toml"
+    path.write_text('[entity.team]\nlabels = { en = "T" }\nbehaviours = []\n')
+    assert main(["vocabulary", "apply", str(path), "--yes"]) == 2
+    assert "unknown key 'behaviours'" in capsys.readouterr().err
+    path.write_text('[relation.r]\nlabels = { en = "R" }\nfrom = ["nothing"]\nto = ["circle"]\n')
+    assert main(["vocabulary", "apply", str(path)]) == 2
+    captured = capsys.readouterr()
+    assert "no entity kind that stands" in captured.err
+    assert "add\t" not in captured.out
+    assert _action_count(db) == 0
+
+
+@pytest.mark.db
+def test_vocabulary_show_at_reads_the_vocabulary_of_that_moment(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _setup(db, monkeypatch)
+    assert main(["vocabulary", "apply", "--base", "--yes"]) == 0
+    capsys.readouterr()
+    assert main(["vocabulary", "show", "--at", "2000-01-01T00:00:00Z"]) == 0
+    before = capsys.readouterr().out
+    assert "[entity.project]" not in before
+    assert "[entity.circle]" in before
+    assert main(["vocabulary", "show", "--at", "2999-01-01T00:00:00Z"]) == 0
+    assert "[entity.project]" in capsys.readouterr().out
+    assert main(["vocabulary", "show", "--at", "2999-01-01T00:00:00"]) == 2
+
+
+def test_the_help_names_vocabulary_with_its_sentence(capsys: pytest.CaptureFixture[str]) -> None:
+    with pytest.raises(SystemExit):
+        main(["--help"])
+    assert re.search(
+        r"^\s+vocabulary\s+show or apply the vocabulary of entities and relations$",
+        capsys.readouterr().out,
+        re.M,
+    )

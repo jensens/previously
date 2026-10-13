@@ -50,8 +50,9 @@ REDACTION = "redaction"
 POLICY = "policy"
 MODEL_CALL = "model_call"
 MCP_ACCESS = "mcp_access"
+VOCABULARY = "vocabulary"
 
-KNOWN_ACTIONS: frozenset[str] = frozenset({REDACTION, POLICY, MODEL_CALL, MCP_ACCESS})
+KNOWN_ACTIONS: frozenset[str] = frozenset({REDACTION, POLICY, MODEL_CALL, MCP_ACCESS, VOCABULARY})
 
 # What became of a model call. Every call the gate decides on is written,
 # whatever became of it, and only `ok` keeps an answer, in the units.

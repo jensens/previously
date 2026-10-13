@@ -75,6 +75,7 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `obligation`, `decision` | The entry was printed. | No entry of that kind stands under the id, or the id names an assertion an erasure took. | Storage raised an error. |
 | `mcp` | Standard input closed, and the server ended. | Not used. | `PREVIOUSLY_MCP_CLIENT` is unset or names no client in force, or storage raised an error. |
 | `serve` | The server was stopped with an interrupt, such as Ctrl+C. | Not used. | `PREVIOUSLY_MCP_ADDRESS` isn't an address, `PREVIOUSLY_MCP_HOST` is set without it, or storage raised an error. |
+| `vocabulary` | `show` printed the vocabulary, `apply` wrote what the file changes, or found nothing to change. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, including neither a file nor `--base`, or both, the file can't be read or has a fault, the write path refused a kind, or storage raised an error. |
 | `gate` | `explain` printed the decision, whether it allows a call or denies it; `try` made the call, got an answer that matches the schema, and recorded it. | Not used. | The event doesn't exist, the price file can't be read, storage raised an error, or `try` recorded a call that was denied, failed, refused by the model, or answered against the schema. |
 
 `gate try` returns 3 when the call was made and recorded with an answer that matches the schema, and the provider reported another inference region than the one requested; the code differs from 0 so that a script doesn't read past the alarm.
@@ -563,7 +564,7 @@ FINDING 9: unknown action "teleport"
 | `redaction names a target that does not exist` | The event a redaction names doesn't stand before the redaction in the chain, or doesn't have a unit it names; for a redaction of a blob, an event it names doesn't stand before it or doesn't name the blob in the blob register. | The redaction. |
 | `units are erased in part, which version 1 cannot attest` | An event in hash format 1 has some units without content, and others with it. | The event. |
 | `action has no valid form` | An event of kind `action` carries no `action` name in its payload, or a redaction's payload doesn't have exactly the form `redact` writes. | The action. |
-| `unknown action "<name>"` | An event of kind `action` carries an `action` name that isn't `redaction`, `policy`, `model_call` or `mcp_access`. | The action. |
+| `unknown action "<name>"` | An event of kind `action` carries an `action` name that isn't `redaction`, `policy`, `model_call`, `mcp_access` or `vocabulary`. | The action. |
 
 Sixteen findings come from assertions, the events of the kind `assertion` ({ref}`assertions-reference`):
 
@@ -954,6 +955,36 @@ When no call fell back, standard output stays empty, and one notice goes to stan
 ```text
 no call fell back to local only
 ```
+
+(cli-vocabulary)=
+
+## `vocabulary`
+
+Prints the vocabulary of entity kinds and relation kinds in force as a file, or writes what a file changes.
+Every kind is declared by an event of the kind `action` with `payload.action` set to `vocabulary`, written with no source key and no units ({ref}`vocabulary-reference`).
+
+```text
+previously vocabulary show [--at TIME]
+previously vocabulary apply FILE [--yes]
+previously vocabulary apply --base [--yes]
+```
+
+`show` prints the file to standard output.
+`--at` takes an ISO 8601 timestamp with a zone and prints the vocabulary of that moment.
+
+`apply` compares the file with the vocabulary in force and prints one line per kind it would write, before it asks.
+The line is `add`, `change` or `retire`, a tab, `entity` or `relation`, a tab, and the identifier of the kind.
+Under a `change` stands one line per attribute that differs, with the old and the new value.
+A kind the file leaves out is retired, and a built-in kind is never retired.
+`apply` writes one event per kind, in one transaction, and prints `vocabulary event ID` for each.
+A second `apply` of the same file finds nothing to change and prints `nothing to change`.
+A refusal comes before the question, so nobody confirms what can't be written.
+
+| Option | Description |
+|---|---|
+| `FILE` | The vocabulary file to apply. |
+| `--base` | Apply the vocabulary file that ships with the package instead of `FILE`. Give one of the two. |
+| `--yes` | Write without asking. |
 
 (cli-gate)=
 

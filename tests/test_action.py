@@ -12,6 +12,7 @@ from previously.core.action import MCP_ACCESS
 from previously.core.action import MODEL_CALL
 from previously.core.action import POLICY
 from previously.core.action import REDACTION
+from previously.core.action import VOCABULARY
 from previously.core.errors import InvalidPayload
 from previously.core.verify import verify
 from previously.storage.postgres import PostgresStorage
@@ -25,13 +26,14 @@ import pytest
 NOW = datetime(2026, 10, 9, 12, 0, 0, tzinfo=UTC)
 
 
-def test_the_known_actions_are_the_four_names() -> None:
-    assert {REDACTION, POLICY, MODEL_CALL, MCP_ACCESS} == KNOWN_ACTIONS
-    assert (REDACTION, POLICY, MODEL_CALL, MCP_ACCESS) == (
+def test_the_known_actions_are_the_five_names() -> None:
+    assert {REDACTION, POLICY, MODEL_CALL, MCP_ACCESS, VOCABULARY} == KNOWN_ACTIONS
+    assert (REDACTION, POLICY, MODEL_CALL, MCP_ACCESS, VOCABULARY) == (
         "redaction",
         "policy",
         "model_call",
         "mcp_access",
+        "vocabulary",
     )
 
 

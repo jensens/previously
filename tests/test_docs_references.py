@@ -1218,9 +1218,10 @@ def test_the_policy_reference_holds_the_words_the_gate_writes() -> None:
     from previously.gate.tasks.mail_overview import MailOverview
 
     page = POLICY_PAGE.read_text(encoding="utf-8")
-    names = ", ".join(f"`{name}`" for name in ("redaction", "policy", "model_call", "mcp_access"))
-    assert set(KNOWN_ACTIONS) == {"redaction", "policy", "model_call", "mcp_access"}
-    assert "`redaction`, `policy`, `model_call` and `mcp_access`" in page, names
+    names = ("redaction", "policy", "model_call", "mcp_access", "vocabulary")
+    assert set(KNOWN_ACTIONS) == set(names)
+    listed = "`redaction`, `policy`, `model_call`, `mcp_access` and `vocabulary`"
+    assert f"exactly five names there: {listed}" in page
     assert _policy_cells("### The outcomes", "The outcome of a call is one of these:") == set(
         OUTCOMES
     )
