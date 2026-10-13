@@ -35,7 +35,7 @@ Adressen — Aufnahmen, Transkripte, Dateien — einem Kreis angehören können.
   gewählt in anderer Besetzung. `vorstand@` ist ein Verteiler, dessen
   Empfänger sich je Periode ändern. Weder Projekt noch Prozess, mit vielen
   Vorgängen und wechselnden Akteuren.
-- **Robert** (F §15). Robert und der Betreuer sind im selben Verein und haben
+- **Markus** (F §15). Markus und der Betreuer sind im selben Verein und haben
   beide eine Firma; sie schreiben sich über die Firmenadressen zu Themen des
   Vereins. Die Zugehörigkeit folgt aus dem Thema, nicht aus der Adresse.
 - **Der Caterer.** Ein Lieferant bestätigt dem Vorstand das Buffet für das
@@ -526,7 +526,7 @@ Hand erproben.
   `found_in`. Mit den Zuordnungen wird das Ablegen selbst eine Zuordnung, auch
   mehrfach; ob die Aufnahme sie schreibt und unter welcher Stufe, legt der
   Plan von Phase 2 fest.
-- **Robert:** die Mail kommt von seiner Firmenadresse; ihr Kreis ist seine
+- **Markus:** die Mail kommt von seiner Firmenadresse; ihr Kreis ist seine
   Firma, ihre Zuordnung ist Verein › Thema. Die Klammer folgt dem Inhalt, der
   Kreis der Adresse — zwei Achsen, *wer* und *was*.
 
@@ -892,7 +892,7 @@ Vom Betreuer, nach dem Merge der jeweiligen Phase:
    1. März 2019 im Vorstand?" antwortet richtig; ein geändertes Vokabular
    deutet nichts Früheres um. Ein MCP-Client schlägt eine Entität vor, der
    Betreuer gibt sie frei.
-2. **Robert** (Phase 2): eine Mail von Roberts Firmenadresse wird dem
+2. **Markus** (Phase 2): eine Mail von Markus’ Firmenadresse wird dem
    Vereinsthema zugeordnet; `chronicle --in` zeigt das Thema und, eine Stufe
    höher, den Verein. Ein MCP-Client ordnet unter einer Freigabeklasse zu, der
    Betreuer korrigiert eine Zuordnung, die Trefferquote zählt es; ein Einwand

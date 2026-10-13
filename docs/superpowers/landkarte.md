@@ -379,7 +379,7 @@ Einstellungen und der Feststellungen
   (PP, A1 Frage 4).
 - **Die Zuordnungen, mit eigenem Spec als Nächstes:** Events zu Projekten und
   Vorgängen, Quellen ohne Adressen zu einem Kreis, weitere Fundorte einer Mail
-  (die Punkte oben). Leitbeispiel des Betreuers (2026-10-12): Robert und er
+  (die Punkte oben). Leitbeispiel des Betreuers (2026-10-12): Markus und er
   sind im selben Verein und haben beide eine Firma; sie schreiben sich über
   die Firmenadressen zu Themen des Vereins. Die Organisation folgt also nicht
   aus der Adresse, sondern aus dem Thema — eine Zuordnung hängt am Inhalt, als
