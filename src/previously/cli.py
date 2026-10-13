@@ -30,6 +30,7 @@ from previously.core.anchor import format_anchor
 from previously.core.anchor import parse_anchors
 from previously.core.append import append
 from previously.core.append import check_units
+from previously.core.assertion import approval_note
 from previously.core.assertion import assertion_problem
 from previously.core.assertion import changes
 from previously.core.assertion import DECISION
@@ -45,6 +46,7 @@ from previously.core.assertion import overdue
 from previously.core.assertion import payload_of
 from previously.core.assertion import reference_problem
 from previously.core.assertion import REJECTION
+from previously.core.assertion import REJECTION_NOTE
 from previously.core.assertion import Source as AssertionSource
 from previously.core.assertion import Statement as AssertionStatement
 from previously.core.assertions import check_statements
@@ -2529,6 +2531,8 @@ def _state_text(thread: Thread, winner: Version, today: date, replaced_by: int |
         words.append("overdue")
     if replaced_by is not None:
         words.append(f"replaced by {replaced_by}")
+    if winner.statement.approves is not None:
+        words.append("(made its own by the operator)")
     return " ".join(words)
 
 
@@ -2645,6 +2649,7 @@ def _entry_lines(
             ("reason", _NO_VALUE if statement.reason is None else statement.reason),
             ("author", statement.author),
             ("responsibility", statement.responsibility),
+            *(("meaning", note) for note in [approval_note(statement)] if note),
             ("versions", str(len(thread.versions))),
             ("proposals", str(len(thread.pending()))),
         ],
@@ -2675,8 +2680,8 @@ def _history_lines(
             head.append("rejected")
         elif version.id in thread.approved:
             head.append("approved")
-        elif statement.approves is not None:
-            head.append(f"approves {statement.approves}")
+        elif (note := approval_note(statement)) is not None:
+            head.append(escape_field(note))
         body = [
             "\t".join(head),
             f"sources\t{escape_field(_sources_text(statement.sources))}",
@@ -2698,7 +2703,7 @@ def _history_lines(
             )
         )
         reason = _NO_VALUE if rejection.reason is None else rejection.reason
-        shown.append((event_id, [head, f"reason\t{escape_field(reason)}"]))
+        shown.append((event_id, [head, f"reason\t{escape_field(f'{REJECTION_NOTE} — {reason}')}"]))
     for _event_id, body in sorted(shown):
         lines += body
     return lines

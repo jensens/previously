@@ -5657,9 +5657,16 @@ def test_approve_makes_a_list_of_proposals_the_operators_own(
         assert payload["sources"] == written[proposal_id]["sources"]
     assert main(["obligations"]) == 0
     assert capsys.readouterr().out == (
-        f"{first}\topen\t2026-11-30\town -> {_THE_OFFER}\tone\t2 versions\t0 proposals\n"
-        f"{second}\topen\t-\town -> {_THE_OFFER}\ttwo\t2 versions\t0 proposals\n"
+        f"{first}\topen (made its own by the operator)\t2026-11-30\town -> {_THE_OFFER}\tone"
+        "\t2 versions\t0 proposals\n"
+        f"{second}\topen (made its own by the operator)\t-\town -> {_THE_OFFER}\ttwo"
+        "\t2 versions\t0 proposals\n"
     )
+    # The page of an approval says what a direct version by a model means; the
+    # control is the proposal's page, which has no such row.
+    note = f"made its own by the operator (approval of {first}), formulated by model:claude-code"
+    assert main(["obligation", str(first)]) == 0
+    assert f"responsibility\tdirect\nmeaning\t{note}\nversions\t2\n" in capsys.readouterr().out
 
 
 @pytest.mark.db
@@ -6026,8 +6033,9 @@ def test_the_history_lists_every_version_with_the_difference_and_the_rejections(
         f"change\twhat\twrong\t{_WHAT}\n"
         "change\tdue\t2026-11-30\t2026-12-01\n"
         "rejection\t6\tNOW\thuman:operator\trejects 4\n"
-        "reason\tnot said\n"
-        "version\t7\tNOW\tdirect\tmodel:claude-code\tapproves 5\n"
+        "reason\trejected (by the operator) — not said\n"
+        "version\t7\tNOW\tdirect\tmodel:claude-code\t"
+        "made its own by the operator (approval of 5), formulated by model:claude-code\n"
         "sources\tevent 1\n"
         "reason\t(none)\n"
     )

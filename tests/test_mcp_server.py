@@ -849,10 +849,10 @@ def test_the_prompts_ask_for_work_and_hold_no_content(world: World, mode: str) -
 
 # --- assurance 10: the tool list --------------------------------------------------------
 
-# The SHA-256 of the tool list as clients see it: name, description and input
-# schema of every tool, sorted by name, as canonical JSON. A change to any of
+# The SHA-256 of the tool list as clients see it: name, description, input
+# schema and `_meta` of every tool, sorted by name, as canonical JSON. A change to any of
 # them is a change of the interface, made deliberately and released.
-TOOLS_SHA256 = "45a73803197d866e97fb5f6511787de00988a020fe9a642fdaf7a34aa418cc04"
+TOOLS_SHA256 = "cc2e34cefa47cf15666248f578408b5a2e8561929aad0f8d2385a70121bdbf6d"
 
 
 def tool_list_digest(tools: list[dict[str, object]]) -> str:
@@ -871,7 +871,12 @@ def test_the_tool_list_matches_its_checksum(world: World, mode: str) -> None:
     server = build_server(world.storage, stdio_client="claude-code")
     listed = _session(server, mode, lambda session: session.list_tools())
     tools: list[dict[str, object]] = [
-        {"name": tool.name, "description": tool.description, "inputSchema": tool.input_schema}
+        {
+            "name": tool.name,
+            "description": tool.description,
+            "inputSchema": tool.input_schema,
+            "_meta": tool.meta,
+        }
         for tool in listed.tools
     ]
     assert {str(tool["name"]) for tool in tools} == TOOLS
@@ -888,6 +893,40 @@ def test_the_tool_list_matches_its_checksum(world: World, mode: str) -> None:
         "write_reject",
     ]
     assert tool_list_digest(tools) == TOOLS_SHA256
+
+
+ASK_MARK = "anthropic/requiresUserInteraction"
+
+
+def test_the_instructions_tell_a_client_how_to_read_an_approval_and_to_ask() -> None:
+    """The acceptance run of 2026-10-13 read an approval as another session's
+    decision and confirmed one without asking."""
+    from previously.mcp_server.server import INSTRUCTIONS
+
+    for sentence in (
+        "hold only after the operator approves them",
+        "answer a proposal in the operator's name, in one call each",
+        "when the user has asked you to approve or reject, call the tool and do not ask again",
+        "propose it, and ask whether to approve",
+        "An approval keeps the author of the proposal, the one who formulated it, and is direct",
+        "A version by a model is direct only as an approval.",
+        "[withheld: …]",
+        "[erased: …]",
+        "with history show every version with what it changed",
+    ):
+        assert sentence in INSTRUCTIONS
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_exactly_the_two_answering_tools_carry_the_ask_mark(world: World, mode: str) -> None:
+    server = build_server(world.storage, stdio_client="claude-code")
+    listed = _session(server, mode, lambda session: session.list_tools())
+    marked = {tool.name for tool in listed.tools if (tool.meta or {}).get(ASK_MARK) is True}
+    assert marked == {"write_approve", "write_reject"}
+    # The control: a tool that proposes only is not marked, and no tool carries the key
+    # with another value.
+    assert all(tool.name in marked or ASK_MARK not in (tool.meta or {}) for tool in listed.tools)
 
 
 # --- assurance 11: both generations ------------------------------------------------------
@@ -1669,14 +1708,47 @@ def test_the_history_marks_approvals_and_rejections_and_shows_each_rejection_wit
     at = "2026-10-11T12:00:00.000000Z"
     assert f"version {taken} · {at} · open · model:claude-code · approved\n" in history
     assert f"version {refused} · {at} · open · model:claude-code · rejected\n" in history
-    assert f"version {approval} · {at} · direct · model:claude-code · approves {taken}\n" in (
-        history
-    )
+    assert (
+        f"version {approval} · {at} · direct · model:claude-code · made its own by the operator "
+        f"(approval of {taken}), formulated by model:claude-code\n"
+    ) in history
     assert (
         f"rejection {rejection} · {at} · human:operator · rejects {refused}\n"
-        "reason: not what was said\n"
+        "reason: rejected (by the operator) — not what was said\n"
     ) in history
     assert history.index(f"version {approval} ") < history.index(f"rejection {rejection} ")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_list_says_an_approval_by_a_model_author_is_the_operators(
+    world: World, mode: str
+) -> None:
+    """A bare `direct` beside `model:claude-code` read as the model's own
+    decision (the acceptance run of 2026-10-13); the label of an approval
+    says whose it is and who formulated it. The control is the entry a person
+    stated directly, whose label stays as it was."""
+    scanned = _on(world, "attachments_only")
+    (own,) = _state(world, _obligation(scanned, what="stated by a person"))
+    (proposal,) = _state(world, _obligation(scanned, responsibility=OPEN, what="proposed"))
+    (approval,) = _state(
+        world,
+        replace(
+            _obligation(scanned, responsibility=OPEN, what="proposed"),
+            responsibility=DIRECT,
+            subject=proposal,
+            approves=proposal,
+        ),
+    )
+
+    text = _text(_tool(world, mode, "list_obligations", {}))
+
+    note = f"made its own by the operator (approval of {proposal}), formulated by model:claude-code"
+    assert (
+        f"previously://event/{proposal} · obligation · open · direct · {note} · 2 versions" in text
+    )
+    assert f"previously://event/{own} · obligation · open · direct · 1 version" in text
+    assert approval > proposal
 
 
 @pytest.mark.db
@@ -1803,7 +1875,7 @@ def test_a_proposal_is_listed_only_with_proposals_and_never_passes_for_an_entry(
 
     assert _shown_ids(plain) == [standing]
     assert _shown_ids(proposals) == [proposed]
-    assert "obligation · proposed · open · open · 1 version · 0 proposals" in proposals
+    assert "obligation · proposed · open · 1 version · 0 proposals" in proposals
     assert _last_access(world).access.arguments == {
         "overdue": False,
         "proposals": True,
@@ -2104,7 +2176,7 @@ def test_write_assertion_without_confirm_previews_and_writes_nothing(
     assert _assertions(world) == []
     assert page.splitlines()[0] == "previously · write_assertion · preview · page 1"
     assert (
-        "### statement 1 · obligation · proposed · open · open · by model:claude-code · "
+        "### statement 1 · obligation · proposed · open · by model:claude-code · "
         "new entry\n<<<customer-content TAG>>>\n"
         f"what: {THE_TEXT}\n"
         "debtor → creditor: own → address:eva.huber@example.org\n"
@@ -2174,25 +2246,25 @@ def test_confirming_twice_writes_nothing_new_and_answers_the_same_ids(
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_another_client_does_not_redeem_the_handle(world: World, mode: str) -> None:
-    """An approval is the same content whichever client asks for it, so only
-    the binding to the client refuses it here."""
-    proposal = _proposal(world, "attachments_only")
-    arguments: dict[str, Any] = {"ids": [proposal]}
-    preview = _write(world, mode, "write_approve", arguments)
+    """The binding to the client: the handle of a `write_assertion` preview
+    opens for the client it was sealed for and for no other. It moved here
+    from `write_approve`, which has no handle since an answer is one call."""
+    arguments: dict[str, Any] = {"items": [_item(world.ids["attachments_only"])]}
+    preview = _write(world, mode, "write_assertion", arguments)
     handle = _handle(_text(preview))
 
     foreign = _write(
-        world, mode, "write_approve", {**arguments, "confirm": handle}, client="local-harness"
+        world, mode, "write_assertion", {**arguments, "confirm": handle}, client="local-harness"
     )
 
     assert foreign.is_error
     assert _text(foreign) == (
         "Error: the handle was sealed for another client; call again without confirm for a new one"
     )
-    assert len(_assertions(world)) == 1
-    own = _write(world, mode, "write_approve", {**arguments, "confirm": handle})
+    assert _assertions(world) == []
+    own = _write(world, mode, "write_assertion", {**arguments, "confirm": handle})
     assert not own.is_error  # the control: the client it was sealed for redeems it
-    assert len(_assertions(world)) == 2
+    assert len(_assertions(world)) == 1
 
 
 @pytest.mark.db
@@ -2354,20 +2426,16 @@ def test_write_approve_by_a_client_that_may_not_see_a_source_is_refused(
             ("write_approve", {"ids": [proposal]}),
             ("write_approve", {"ids": [999_999]}),
             ("write_reject", {"proposal": proposal}),
-            ("write_approve", {"ids": [proposal], "confirm": "anything"}),
         )
     ]
     assert texts == [
         f"Error: event {proposal} is not a proposal this client can answer",
         "Error: event 999999 is not a proposal this client can answer",
         f"Error: event {proposal} is not a proposal this client can answer",
-        f"Error: event {proposal} is not a proposal this client can answer",
     ]
     assert len(_assertions(world)) == 1
     # The control: the client that may see the mail approves it.
-    _preview, approved = _confirmed(
-        world, mode, "write_approve", {"ids": [proposal]}, client="local-harness"
-    )
+    approved = _write(world, mode, "write_approve", {"ids": [proposal]}, client="local-harness")
     assert not approved.is_error, _text(approved)
     (_, written) = _assertions(world)[-1]
     assert written is not None
@@ -2383,8 +2451,20 @@ def test_write_approve_by_a_client_that_may_not_see_a_source_is_refused(
 def test_write_approve_passes_on_why_a_proposal_the_client_sees_cannot_be_approved(
     world: World, mode: str
 ) -> None:
+    """An approval that differs from the one that stands (here by its reason,
+    as `previously approve --reason` writes it) is no retry and is refused;
+    so is a version that is no proposal."""
     proposal = _proposal(world, "attachments_only")
-    _confirmed(world, mode, "write_approve", {"ids": [proposal, proposal]})
+    (_approval,) = _state(
+        world,
+        replace(
+            _obligation(_on(world, "attachments_only"), what=PRIVATE_TEXT),
+            author=model_author("local-harness"),
+            subject=proposal,
+            approves=proposal,
+            reason="read it",
+        ),
+    )
     (direct,) = _state(world, _obligation(_on(world, "attachments_only")))
 
     again = _text(_write(world, mode, "write_approve", {"ids": [proposal]}))
@@ -2397,11 +2477,66 @@ def test_write_approve_passes_on_why_a_proposal_the_client_sees_cannot_be_approv
 
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
+def test_a_retried_approval_returns_the_id_of_the_one_that_stands_and_writes_nothing(
+    world: World, mode: str
+) -> None:
+    """A lost answer is retried: the second call is a success with the first
+    id. The control is the first call, which writes."""
+    proposal = _proposal(world, "attachments_only")
+    other = _proposal(world, "attachments_only")
+
+    first = _write(world, mode, "write_approve", {"ids": [proposal]})
+    assert not first.is_error, _text(first)
+    (approval,) = [i for i, _p in _assertions(world) if i not in (proposal, other)]
+    count = len(_assertions(world))
+
+    retry = _write(world, mode, "write_approve", {"ids": [proposal]})
+    assert _text(retry) == _text(first)
+    assert _text(retry).endswith(f"assertion {approval}")
+    assert len(_assertions(world)) == count
+    # Half retried, half new: the standing id first, the new one written.
+    mixed = _text(_write(world, mode, "write_approve", {"ids": [proposal, other]}))
+    assert len(_assertions(world)) == count + 1
+    newest = _assertions(world)[-1][0]
+    assert mixed.splitlines()[-2:] == [f"assertion {approval}", f"assertion {newest}"]
+    # The access entry of the retry writes nothing.
+    rows = [row for row in _accesses(world) if row.access.name == "write_approve"]
+    assert [row.access.arguments["written"] for row in rows] == [
+        [approval],
+        [],
+        [newest],
+    ]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_retried_rejection_returns_the_first_unless_the_reason_differs(
+    world: World, mode: str
+) -> None:
+    proposal = _proposal(world, "attachments_only")
+    arguments: dict[str, Any] = {"proposal": proposal, "reason": "not what was said"}
+
+    first = _write(world, mode, "write_reject", arguments)
+    assert not first.is_error, _text(first)
+    count = len(_assertions(world))
+
+    retry = _write(world, mode, "write_reject", arguments)
+    other_reason = _write(world, mode, "write_reject", {**arguments, "reason": "something else"})
+    other_client = _write(world, mode, "write_reject", arguments, client="local-harness")
+
+    assert _text(retry) == _text(first)
+    assert len(_assertions(world)) == count
+    for refused in (other_reason, other_client):
+        assert _text(refused) == f"Error: the proposal {proposal} is already rejected"
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
 def test_write_approve_refuses_a_proposal_a_later_direct_version_overtook(
     world: World, mode: str
 ) -> None:
-    """Ruling F-17 of the 2026-10-12 assertions plan over MCP; the preview
-    of a rejection of the same proposal is the control."""
+    """Ruling F-17 of the 2026-10-12 assertions plan over MCP; the rejection
+    of the same proposal is the control, and it is written."""
     (owned,) = _state(world, _obligation(_on(world, "attachments_only")))
     (stale,) = _state(
         world, _obligation(_on(world, "attachments_only"), subject=owned, responsibility=OPEN)
@@ -2414,7 +2549,8 @@ def test_write_approve_refuses_a_proposal_a_later_direct_version_overtook(
     assert refused == (
         f"Error: the proposal {stale} is overtaken: the direct version {newer} came after it"
     )
-    assert _handle(rejected)
+    assert rejected.startswith("previously · write_reject · written\n\nassertion ")
+    assert len(_assertions(world)) == 4  # owned, stale, newer, the rejection
 
 
 @pytest.mark.db
@@ -2423,13 +2559,12 @@ def test_write_reject_writes_a_direct_rejection_by_the_model_with_the_sources_of
     world: World, mode: str
 ) -> None:
     proposal = _proposal(world, "attachments_only")
-    preview, written = _confirmed(
+    written = _write(
         world, mode, "write_reject", {"proposal": proposal, "reason": "not what was said"}
     )
 
-    assert f"### rejection · rejection · rejects previously://event/{proposal}" in _text(preview)
-    assert "reason: not what was said" in _text(preview)
     assert not written.is_error, _text(written)
+    assert "handle" not in _text(written)
     (_, rejection) = _assertions(world)[-1]
     assert rejection is not None
     assert (
@@ -2479,14 +2614,15 @@ def test_the_access_of_a_write_holds_counts_and_ids_and_no_text_and_no_address(
 ) -> None:
     """Decision 10 of the 2026-10-12 assertions plan: one entry per call, and
     in it the number of statements, the source ids, whether confirm was
-    given and the ids written, and not a word of the text, the reason or an
+    given (for `write_assertion`, the only tool with a handle) and the ids
+    written, and not a word of the text, the reason or an
     address. A call the SDK refuses records the same form."""
     scanned = world.ids["attachments_only"]
     item = _item(scanned, what=PRIVATE_TEXT, creditor=f"address:{PRIVATE_ADDRESS}")
     item["reason"] = PRIVATE_REASON
     _preview, written = _confirmed(world, mode, "write_assertion", {"items": [item]})
     (proposal,) = [event_id for event_id, _ in _assertions(world)]
-    _confirmed(world, mode, "write_reject", {"proposal": proposal, "reason": PRIVATE_REASON})
+    _write(world, mode, "write_reject", {"proposal": proposal, "reason": PRIVATE_REASON})
     refused = _write(
         world,
         mode,
@@ -2500,15 +2636,13 @@ def test_the_access_of_a_write_holds_counts_and_ids_and_no_text_and_no_address(
         ("write_assertion", "ok"),
         ("write_assertion", "ok"),
         ("write_reject", "ok"),
-        ("write_reject", "ok"),
         ("write_assertion", "error"),
     ]
     rejection = _assertions(world)[-1][0]
     assert [row.access.arguments for row in rows] == [
         {"statements": 1, "sources": [scanned], "confirm": False, "written": []},
         {"statements": 1, "sources": [scanned], "confirm": True, "written": [proposal]},
-        {"statements": 1, "proposals": [proposal], "confirm": False, "written": []},
-        {"statements": 1, "proposals": [proposal], "confirm": True, "written": [rejection]},
+        {"statements": 1, "proposals": [proposal], "written": [rejection]},
         {"statements": 1, "sources": [], "confirm": True, "written": []},
     ]
     found = [s for payload in _access_payloads(world) for s in _strings_in(payload)]
@@ -2580,13 +2714,12 @@ def test_a_source_erased_between_the_preview_and_the_confirmation_is_refused_by_
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_over_http_the_handle_is_bound_to_the_client_of_the_token(world: World, mode: str) -> None:
-    proposal = _proposal(world, "attachments_only")
-    arguments: dict[str, Any] = {"ids": [proposal]}
+    arguments: dict[str, Any] = {"items": [_item(world.ids["attachments_only"])]}
 
     def call(client: str, extra: dict[str, Any]) -> CallToolResult:
         token = world.tokens[client]
         return _over_http(
-            world, token, mode, "write_approve", {**arguments, **extra}, confirm_key=KEY
+            world, token, mode, "write_assertion", {**arguments, **extra}, confirm_key=KEY
         )
 
     handle = _handle(_text(call("claude-code", {})))
@@ -2594,8 +2727,8 @@ def test_over_http_the_handle_is_bound_to_the_client_of_the_token(world: World, 
     own = call("claude-code", {"confirm": handle})
 
     assert _text(foreign).startswith("Error: the handle was sealed for another client")
-    assert _text(own).splitlines()[0] == "previously · write_approve · written"
-    assert len(_assertions(world)) == 2
+    assert _text(own).splitlines()[0] == "previously · write_assertion · written"
+    assert len(_assertions(world)) == 1
 
 
 @pytest.mark.db
@@ -2641,16 +2774,15 @@ def test_the_record_of_a_writing_call_reads_arguments_of_any_form() -> None:
         "confirm": True,
         "written": [],
     }
+    # An answer has no handle, so the record has no `confirm` to give.
     assert write_record("write_approve", {"ids": [3, 3, True, "4", 5]}) == {
         "statements": 2,
         "proposals": [3, 5],
-        "confirm": False,
         "written": [],
     }
     assert write_record("write_reject", {"proposal": "text", "reason": "text"}) == {
         "statements": 0,
         "proposals": [],
-        "confirm": False,
         "written": [],
     }
 
@@ -2718,7 +2850,6 @@ def test_a_line_longer_than_a_preview_shows_is_refused_and_one_as_long_is_shown_
     for name, arguments in (
         ("write_approve", {"ids": [proposal]}),
         ("write_reject", {"proposal": proposal}),
-        ("write_reject", {"proposal": proposal, "confirm": "anything"}),
     ):
         assert _text(_write(world, mode, name, arguments)) == LINE_TOO_LONG
     reject_reason = {"proposal": proposal, "reason": "r" * 1_000}
@@ -2736,7 +2867,7 @@ def test_a_line_longer_than_a_preview_shows_is_refused_and_one_as_long_is_shown_
         ),
     )
     approval = _text(_write(world, mode, "write_approve", {"ids": [fitting]}))
-    assert f"what: {exact}\n" in approval
+    assert approval.startswith("previously · write_approve · written\n\nassertion ")
 
 
 @pytest.mark.db
@@ -2765,36 +2896,30 @@ def test_a_tool_the_server_lacks_is_recorded_with_the_names_of_its_arguments_onl
 def test_answering_a_proposal_records_its_entry_as_delivered_as_a_list_does(
     world: World, mode: str
 ) -> None:
-    """The preview of an approval or a rejection shows the proposal, so its
+    """An approval or a rejection answers a proposal it read, so its
     entry stands in `delivered` with its circles and the rules, and
     `previously access --circle` finds the call; a proposal written anew
     shows no entry of the log and records none."""
     proposal = _proposal(world, "attachments_only")
     _write(world, mode, "list_obligations", {"proposals": True}, client="claude-code")
     listed = _last_access(world).access
-    _confirmed(world, mode, "write_reject", {"proposal": proposal})
+    _write(world, mode, "write_reject", {"proposal": proposal})
     _write(world, mode, "write_assertion", {"items": [_item(world.ids["attachments_only"])]})
 
     rows = _accesses(world)
     assert [row.access.name for row in rows] == [
         "list_obligations",
         "write_reject",
-        "write_reject",
         "write_assertion",
     ]
-    for row in rows[1:3]:
-        assert row.access.delivered == listed.delivered
-        assert row.access.policy_ids["rules"] == listed.policy_ids["rules"]
+    assert rows[1].access.delivered == listed.delivered
+    assert rows[1].access.policy_ids["rules"] == listed.policy_ids["rules"]
     assert [(d.event, d.circles) for d in rows[1].access.delivered] == [(proposal, ("office",))]
     assert rows[1].access.policy_ids["rules"] != []
-    assert rows[3].access.delivered == ()
+    assert rows[2].access.delivered == ()
     with world.storage.begin() as conn:
         found = read_access(world.storage, conn, client=None, circle="office", since=None)
-    assert [row.access.name for row in found] == [
-        "list_obligations",
-        "write_reject",
-        "write_reject",
-    ]
+    assert [row.access.name for row in found] == ["list_obligations", "write_reject"]
 
 
 @pytest.mark.db
@@ -2830,6 +2955,6 @@ def test_a_proposal_whose_entry_rests_on_a_hidden_source_elsewhere_is_refused_to
         assert _text(_write(world, mode, name, arguments)) == (
             f"Error: event {proposal} is not a proposal this client can answer"
         )
-    # The control: the client that may see the plain mail is shown the preview.
+    # The control: the client that may see the plain mail answers it.
     local = _write(world, mode, "write_approve", {"ids": [proposal]}, client="local-harness")
     assert not local.is_error, _text(local)

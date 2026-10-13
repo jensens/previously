@@ -85,7 +85,8 @@ What it writes stays a proposal, out of every default list, until you approve it
 
 ## Make the client ask before it answers
 
-`write_approve` and `write_reject` count as your own word, so the client has to ask you before it confirms either.
+`write_approve` and `write_reject` count as your own word, so the client has to ask you before it calls either.
+Each is one call: you are asked once, and the call writes.
 Set that up before you let a client answer proposals.
 
 For Claude Code, add an ask rule to your user settings in `~/.claude/settings.json`, with the server named `previously` as in {ref}`connect-claude-code-and-vibe`:
@@ -103,8 +104,13 @@ For Claude Code, add an ask rule to your user settings in `~/.claude/settings.js
 
 Claude Code's [documentation of permissions](https://code.claude.com/docs/en/permissions#manage-permissions) says that an ask rule prompts even where an allow rule also matches, and in every permission mode, `auto` and `bypassPermissions` included, except `dontAsk`, which refuses the call instead.
 Without the rule, `auto` mode lets a classifier decide in your place, and Claude Code starts in `auto` mode from v2.1.283 on, as its [documentation of permission modes](https://code.claude.com/docs/en/permission-modes) says.
-The same documentation names a mark an MCP tool can carry, `_meta["anthropic/requiresUserInteraction"]`, that makes Claude Code ask for it as an ask rule does; the tools of Previously don't carry it, so the ask rule is what makes Claude Code ask.
+The same documentation names a mark an MCP tool can carry, `_meta["anthropic/requiresUserInteraction"]`, that makes Claude Code ask for it as an ask rule does.
+`write_approve` and `write_reject` carry it, so Claude Code asks for them even without the rule.
+Nobody has measured that against Previously yet, because no release carries the mark, so keep the ask rule: it's the requirement, and Vibe and other clients may not know the mark.
+With the rule or the mark, one approval costs one prompt, the one that shows the ids; the model has no reason to ask again in the chat once you told it to approve.
 Never add either tool to `allow`.
+The rule was measured on 2026-10-13 against `0.1.0a5`: in `auto` mode Claude Code showed `Ask rule mcp__previously__write_approve overrides auto mode for this tool` and offered `Yes`, `Yes, and don't ask again` and `No`.
+Don't choose the second answer for either tool.
 
 For Mistral Vibe, its [documentation of MCP servers](https://docs.mistral.ai/vibe/code/cli/mcp-servers) sets a tool to ask in `.vibe/config.toml`, with the tool named after the server and the tool:
 
@@ -116,7 +122,10 @@ permission = "ask"
 permission = "ask"
 ```
 
-Neither configuration has been measured against Previously yet; check that the client asks before you rely on it.
+Vibe 2.26.1 lists the tools as `mcp_previously.<tool>`, measured on 2026-10-13, and not as `previously_<tool>`, which is the form its documentation gives.
+Whether the keys above match the tools is therefore unmeasured.
+The default of Vibe asks before every MCP tool, the reading tools included, with `Allow once`, `for this session`, `Always allow` and `Deny`, and shows the full arguments.
+Never choose `Always allow` for `write_approve` or `write_reject`.
 
 ## Go through the proposals
 
@@ -144,7 +153,8 @@ previously reject 73 --reason "Eva asked about it and nobody decided"
 
 Of several proposals on one entry, approve one and reject the others: an approval is a direct version that comes after them, and `approve` refuses a proposal that a direct version came after.
 An approval keeps the proposal's wording and sources; to change a word, approve and then write a new version with `--subject`, or reject and write your own.
-Over MCP, ask Claude Code to approve or reject by the ids its history names; it previews, asks you, and confirms.
+Over MCP, ask Claude Code to approve or reject by the ids its history names; your client asks you once, and the call writes.
+A call repeated after a lost answer is harmless: it returns the approval that stands.
 
 ## Ask what's open
 

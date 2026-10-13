@@ -38,6 +38,21 @@ es im Plan und im Ausführungsprotokoll
   einem Punkt, `base64url(HMAC-SHA256)`; `digest` ist der SHA-256 der
   kanonischen Liste der Nutzlasten ohne `handle`, und die Kennung im Log ist
   der `nonce` (Planentscheidung 9).
+- **Freigabe und Ablehnung über MCP sind ein Aufruf, nicht zwei** (§6.1 „die
+  Bestätigung in zwei Schritten"). `write_approve` und `write_reject` haben
+  kein `confirm` und keinen Handle mehr; `write_assertion` behält beide
+  Schritte. Entschieden vom Betreuer am 2026-10-13, nach dem Abnahmelauf mit
+  Claude Code: eine Freigabe kostete drei Fragen (die des Modells im Chat, die
+  Rückfrage des Clients für vorschau, die für die Bestätigung), und „2x fragen
+  ist hier etwas übertrieben. Für mich reicht einmal freigeben, sonst wird die
+  Nutzung anstrengend". Der Grund: die Vorschau erreicht bei einer Antwort nur
+  das Modell, nie die Person, denn deren Abfrage im Client zeigt allein die
+  Argumente (`ids: [65]`); sie bestätigt also die Abfrage des Clients (Ask-Regel
+  oder Kennzeichnung), nicht die Vorschau. Eine wiederholte Freigabe oder
+  Ablehnung, die schon so steht (gleicher Inhalt, gleicher Grund, bei der
+  Ablehnung derselbe Client), antwortet mit der Kennung des Bestehenden und
+  schreibt nichts; jede Abweichung wird abgewiesen wie zuvor. Die Seite
+  `explanation/assertions.md` (`assertions-proposals`) trägt die Begründung.
 - **Höchstens 20 Feststellungen je Aufruf** über MCP (§6 „mehrere Vorschläge
   gehen in einem Aufruf"), `MAX_STATEMENTS = 20`; ebenso höchstens 20
   Vorschläge je `write_approve`. Der Schreibweg selbst nimmt bis zu 500.

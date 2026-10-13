@@ -1262,7 +1262,7 @@ Without `--proposals`, only entries with a direct version appear, and a proposal
 Each line holds seven tab-separated fields, ordered by id:
 
 1. The id.
-2. The state, with `proposed` in front when the entry stands as a proposal, `overdue` behind an open obligation past its date, and `replaced by ID` behind a decision that a standing decision replaces.
+2. The state, with `proposed` in front when the entry stands as a proposal, `overdue` behind an open obligation past its date, and `replaced by ID` behind a decision that a standing decision replaces, and `(made its own by the operator)` at the end where the version that stands approves a proposal.
 3. The due date of an obligation or the day of a decision, or `-` for no date.
 4. `DEBTOR -> CREDITOR`, or the deciders separated by a comma and a space.
 5. The text.
@@ -1279,15 +1279,16 @@ previously obligation ID [--history]
 previously decision ID [--history]
 ```
 
-Prints the version that stands as lines of a name, a tab and a value: `version` with the id of that version, `state`, `overdue` with `yes` only for an overdue obligation, `replaced by` only for a replaced decision, then `due`, `debtor`, `creditor` and `what`, or `on`, `by`, `what` and `replaces`, then `sources`, `reason`, `author`, `responsibility`, `versions` and `proposals`.
+Prints the version that stands as lines of a name, a tab and a value: `version` with the id of that version, `state`, `overdue` with `yes` only for an overdue obligation, `replaced by` only for a replaced decision, then `due`, `debtor`, `creditor` and `what`, or `on`, `by`, `what` and `replaces`, then `sources`, `reason`, `author`, `responsibility`, `meaning` only for a version that approves a proposal, `versions` and `proposals`.
+The value of `meaning` is `made its own by the operator (approval of ID), formulated by AUTHOR`: the version is direct, so the operator stands for it, and its author is the one who formulated the proposal.
 The first line is `obligation ID` or `decision ID`, with `(proposal)` behind it when the version that stands is a proposal.
 A value that isn't set reads `(none)`.
 Each pending proposal adds one line per field it changes, with six tab-separated fields: `proposal`, its id, its author, the field, the old value and the new one, or a line of three fields when it changes nothing.
 
 `--history` prints instead the first line `obligation ID: N versions`, or `1 version`, and then, in chain order, each version and each rejection.
-A version is a line `version`, its id, the time, the responsibility, the author, and when it applies `rejected`, `approved` or `approves ID`, then `sources` and `reason`.
+A version is a line `version`, its id, the time, the responsibility, the author, and when it applies `rejected`, `approved` or the note `made its own by the operator (approval of ID), formulated by AUTHOR`, then `sources` and `reason`.
 The first version adds a `set` line per field; each later one adds a `change` line per field that differs from the version before it, with the old and the new value.
-A rejection is a line `rejection`, its id, the time, its author and `rejects ID`, then `reason`.
+A rejection is a line `rejection`, its id, the time, its author and `rejects ID`, then `reason` with `rejected (by the operator) — ` before the reason.
 
 `--history` also answers for an entry whose versions are all rejected proposals.
 When no obligation or decision of that kind stands under the id, or none of its versions wins and `--history` is absent, the command prints `no obligation stands under event ID` to standard error, with `decision` for a decision, and returns 1.
