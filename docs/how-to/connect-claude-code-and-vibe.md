@@ -189,4 +189,6 @@ Claude Code was measured on 2026-10-13 against `previously serve` `0.1.0a6` in t
 `whoami` answered through that address, and `previously access` listed the call like every other.
 The access policy of the tailnet let one person's machine reach the port, and no rule let the pod reach anyone.
 
-Not measured: the `[tools.…]` keys of Vibe's configuration, whose names assume `previously_<tool>`, and the mark `anthropic/requiresUserInteraction`, which no release carries yet.
+Claude Code 2.1.296 was measured on 2026-10-13 against `0.1.0a6` in `auto` mode without an ask rule for `write_reject`: the mark `anthropic/requiresUserInteraction` alone made it show its prompt before the call.
+
+Not measured: the `[tools.…]` keys of Vibe's configuration, whose names assume `previously_<tool>`.

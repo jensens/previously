@@ -106,10 +106,11 @@ Claude Code's [documentation of permissions](https://code.claude.com/docs/en/per
 Without the rule, `auto` mode lets a classifier decide in your place, and Claude Code starts in `auto` mode from v2.1.283 on, as its [documentation of permission modes](https://code.claude.com/docs/en/permission-modes) says.
 The same documentation names a mark an MCP tool can carry, `_meta["anthropic/requiresUserInteraction"]`, that makes Claude Code ask for it as an ask rule does.
 `write_approve` and `write_reject` carry it, so Claude Code asks for them even without the rule.
-Nobody has measured that against Previously yet, because no release carries the mark, so keep the ask rule: it's the requirement, and Vibe and other clients may not know the mark.
+Keep the ask rule all the same: it's the requirement, and Vibe and other clients don't know the mark.
 With the rule or the mark, one approval costs one prompt, the one that shows the ids; the model has no reason to ask again in the chat once you told it to approve.
 Never add either tool to `allow`.
 The rule was measured on 2026-10-13 against `0.1.0a5`: in `auto` mode Claude Code showed `Ask rule mcp__previously__write_approve overrides auto mode for this tool` and offered `Yes`, `Yes, and don't ask again` and `No`.
+The mark was measured the same day against `0.1.0a6`, with Claude Code 2.1.296 in `auto` mode and no ask rule for `write_reject`: Claude Code showed its prompt before the call.
 Don't choose the second answer for either tool.
 
 For Mistral Vibe, its [documentation of MCP servers](https://docs.mistral.ai/vibe/code/cli/mcp-servers) sets a tool to ask in `.vibe/config.toml`, with the tool named after the server and the tool:
