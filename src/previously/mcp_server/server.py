@@ -201,8 +201,9 @@ INSTRUCTIONS: Final = (
 )
 
 # The mark Claude Code reads on a tool: it asks the person before every call to
-# it, in every permission mode, as an ask rule does
-# (https://code.claude.com/docs/en/permissions).
+# it, as an ask rule does, in every permission mode but `dontAsk`, which
+# refuses the call (https://code.claude.com/docs/en/permissions). Measured on
+# 2026-10-13 with Claude Code 2.1.296 and no ask rule: the prompt came.
 # Only the two tools that answer a proposal in the operator's name carry it
 # ({ref}`assertions-proposals`).
 _ASK_THE_PERSON: Final = {"anthropic/requiresUserInteraction": True}

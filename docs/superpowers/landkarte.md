@@ -87,8 +87,9 @@ Die Abnahme nach F §14 durch den Betreuer ist am 2026-10-13 gelaufen (siehe
 *Erledigt*): Vorschläge von Claude Code und Vibe, Freigabe und Ablehnung auf der
 Kommandozeile und über MCP mit Rückfrage des Clients, Listen, überfällig und
 Geschichte, Tilgung mit Kaskade und `verify` ohne Befund, und die Policy für
-einen zweiten Client. Nicht gelaufen: der Schlüssel der Vibe-Ask-Einstellung
-und die Kennzeichnung `requiresUserInteraction` (braucht ein Release).
+einen zweiten Client. Nicht gelaufen: der Schlüssel der Vibe-Ask-Einstellung.
+Die Kennzeichnung `requiresUserInteraction` ist am selben Tag gegen
+`0.1.0a6` nachgemessen (unter *Feststellungen und Entitäten*).
 
 Nicht gebaut: die Suche, jede Entität und jede Zuordnung, KI-Schicht,
 jeder Konnektor außer dem für IMAP.
@@ -907,9 +908,11 @@ auf `assertions.md` unter *What the pilot leaves open*.
   MCP-Werkzeuge mit `_meta["anthropic/requiresUserInteraction"]`, die fragen
   wie mit einer Ask-Regel; Vibe kennt es nicht (gefunden beim Schreiben der
   Anleitung, 2026-10-12). Seit dem Zweig `mcp-erklaeren` tragen
-  `write_approve` und `write_reject` die Kennzeichnung (und nur sie); ob
-  Claude Code sie gegen Previously einhält, ist ungemessen bis zum nächsten
-  Lauf des Betreuers, und die Ask-Regel bleibt die Forderung. Claude Code startet ab v2.1.283 im Auto-Modus, in
+  `write_approve` und `write_reject` die Kennzeichnung (und nur sie).
+  Gemessen am 2026-10-13 gegen `0.1.0a6` vom Betreuer: Claude Code 2.1.296,
+  neue Sitzung, keine Ask-Regel für `write_reject` — vor dem Aufruf kam der
+  Dialog, die Kennzeichnung allein trägt. Die Ask-Regel bleibt trotzdem die
+  Forderung, weil Vibe und ältere Versionen sie nicht kennen. Claude Code startet ab v2.1.283 im Auto-Modus, in
   dem ohne Ask-Regel ein Klassifikator entscheidet; die Anleitung verlinkt
   seit der Fixwelle die Quellen. Gemessen am 2026-10-13: Claude Codes Ask-Regel
   `mcp__previously__write_approve` greift im Auto-Modus. Ungemessen bleibt die
@@ -929,8 +932,9 @@ auf `assertions.md` unter *What the pilot leaves open*.
   sich selbst (`INSTRUCTIONS`), Freigaben und Ablehnungen tragen in Liste,
   Geschichte und Seite der Kommandozeile einen Zusatz („made its own by the
   operator (approval of N), formulated by AUTHOR“; „rejected (by the
-  operator)“), und die beiden Werkzeuge tragen die Kennzeichnung. Ob Claude
-  Code damit richtig liest und fragt, zeigt erst der nächste Lauf; offen
+  operator)“), und die beiden Werkzeuge tragen die Kennzeichnung. Dass
+  Claude Code damit fragt, ist gemessen (oben); ob es damit richtig liest,
+  zeigt erst der nächste Lauf; offen
   bleibt, über welchen Weg der Betreiber antwortete — die Nutzlast hält das
   nicht fest, nur `mcp_access` für Aufrufe über MCP.
   Am selben Tag entschied der Betreuer nach dem Lauf, dass Freigabe und
@@ -1345,8 +1349,9 @@ auf `assertions.md` unter *What the pilot leaves open*.
   die Wiederholungen der Clients aus; der Handle fing sie ab, es entstand kein
   Duplikat; er erholt sich nicht von selbst, Stufe A2 ist die bleibende Antwort — sie steht
   seit dem 2026-10-13 (R6), der Port-Forward bleibt die Rückfalllinie.
-  Nicht gelaufen: der Schlüssel der Vibe-Ask-Einstellung und die Kennzeichnung
-  (siehe oben unter *Feststellungen*).
+  Nicht gelaufen: der Schlüssel der Vibe-Ask-Einstellung (siehe oben unter
+  *Feststellungen*); die Kennzeichnung ist am selben Tag gegen `0.1.0a6`
+  nachgemessen.
 - ~~Die erste Anfrage nach einem Wechsel des Datenbank-Primärknotens scheitert~~
   (RA) — der Zweig `worktree-rueckmeldung-a5`, erster Commit `383d0ab`:
   `from_dsn` erzeugt die Engine mit `pool_pre_ping=True`, ein Test gegen echtes
