@@ -837,3 +837,59 @@ def test_actions_yields_only_the_actions_of_that_name_in_chain_order(db: Engine)
         assert [r.id for r in storage.actions(c, "mcp_access")] == [2]
         assert list(storage.actions(c, "redaction")) == []
         assert [r.id for r in storage.read_by_kind(c, "action")] == [1, 2, 4, 5, 6]
+
+
+def _end_other_backends(engine: Engine) -> None:
+    """Ends every connection to the database but the caller's own, the way a
+    switchover of the primary ends the pooled ones.
+
+    The suite's own engine pools connections too, and this ends those as well,
+    so it is disposed afterwards: the next test would otherwise start on a
+    dead one.
+    """
+    admin_engine = create_engine(engine.url)
+    try:
+        with admin_engine.connect() as admin:
+            admin.execute(
+                text(
+                    "SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+                    "WHERE datname = current_database() AND pid <> pg_backend_pid()"
+                )
+            )
+            admin.commit()
+    finally:
+        admin_engine.dispose()
+        engine.dispose()
+
+
+@pytest.mark.db
+def test_the_first_read_after_the_server_ended_the_connections_succeeds(db: Engine) -> None:
+    """A switchover of the primary ends the pooled connections, and the first
+    request afterwards must not fail on one of them. The storage is built the
+    way `previously serve` builds it, through `from_dsn`."""
+    storage = from_dsn(db.url.render_as_string(hide_password=False))
+    try:
+        with storage.begin() as c:
+            assert storage.tip(c) is None
+        _end_other_backends(db)
+        with storage.begin() as c:
+            assert storage.tip(c) is None
+    finally:
+        storage.close()
+
+
+@pytest.mark.db
+def test_without_the_pre_ping_the_first_read_after_that_fails(db: Engine) -> None:
+    """The control for the test above: the same sequence on an engine that
+    does not check a connection when it leaves the pool meets the dead
+    connection. It shows that the sequence ends the connections, so the test
+    above is green because of the check and not by luck."""
+    storage = PostgresStorage(create_engine(db.url))
+    try:
+        with storage.begin() as c:
+            assert storage.tip(c) is None
+        _end_other_backends(db)
+        with pytest.raises(StorageError), storage.begin() as c:
+            storage.tip(c)
+    finally:
+        storage.close()
