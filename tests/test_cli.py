@@ -7302,6 +7302,36 @@ def test_the_graph_commands_carry_the_contractual_help(
 
 
 @pytest.mark.db
+def test_a_first_version_of_an_entity_cannot_be_a_retraction(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Measured red with the guard taken out of `_entity_claim`: the
+    command wrote a first version already retracted. The control, the same
+    state with `--subject`, stays green then."""
+    _graph_log(db, monkeypatch, capsys)
+    first = _written(capsys, "entity", "person", "--name", "Anna", "--source", "1")
+    before = len(_standing(db))
+    sentence = _refused(
+        capsys,
+        "entity",
+        "person",
+        "--name",
+        "Bert",
+        "--source",
+        "1",
+        "--state",
+        "retracted",
+        "--yes",
+    )
+    assert sentence == (
+        "--state retracted needs --subject: only an entity that stands can be retracted"
+    )
+    assert len(_standing(db)) == before
+    taken = _written(capsys, "entity", "person", "--subject", str(first), "--state", "retracted")
+    assert dict(_standing(db))[taken]["state"] == "retracted"
+
+
+@pytest.mark.db
 def test_a_first_version_of_a_relation_cannot_be_a_retraction(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

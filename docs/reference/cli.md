@@ -1416,6 +1416,7 @@ Error: --field names "name" twice
 Error: --field period is not a period written FROM..TO; an end may be empty
 Error: --recollection and --source exclude each other
 Error: an entity needs --source or --recollection unless --subject names the one to change
+Error: --state retracted needs --subject: only an entity that stands can be retracted
 Error: --subject 5 names no entity that stands
 ```
 

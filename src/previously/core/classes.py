@@ -40,8 +40,9 @@ from datetime import datetime
 from previously.core.action import APPROVAL_CLASS
 from previously.core.action import retrying
 from previously.core.action import write_action_at
+from previously.core.assertion import author_problem
 from previously.core.assertion import DIRECT
-from previously.core.assertion import MAX_NAME_LENGTH
+from previously.core.assertion import MODEL_PREFIX
 from previously.core.assertion import OPEN
 from previously.core.errors import PreviouslyError
 from previously.core.graph import ClassState
@@ -53,12 +54,11 @@ from previously.core.graph import TRANSITIVE
 from previously.core.hashing import iso_utc
 from previously.core.vocabulary import ACYCLIC
 from previously.core.vocabulary import GATE_TYPES
+from previously.core.vocabulary import is_identifier
 from previously.core.vocabulary import read_vocabulary
 from typing import cast
 from typing import Final
 from typing import TYPE_CHECKING
-
-import re
 
 
 if TYPE_CHECKING:
@@ -69,8 +69,6 @@ if TYPE_CHECKING:
 
 
 _ASSERTIONS: Final = (ENTITY, RELATION)
-_MODEL_PREFIX: Final = "model:"
-_IDENTIFIER = re.compile(r"[a-z][a-z0-9_]{0,39}")
 MAX_THRESHOLD: Final = 100
 
 _KEYS: Final = frozenset(
@@ -111,9 +109,9 @@ class _FormError(Exception):
 
 
 def _identifier(value: object, what: str) -> str:
-    if not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None:
+    if not is_identifier(value):
         raise _FormError(f"has {what} {value!r}, which is no identifier of the form a-z0-9_")
-    return value
+    return cast("str", value)
 
 
 def _flag(value: object, what: str) -> bool:
@@ -123,14 +121,11 @@ def _flag(value: object, what: str) -> bool:
 
 
 def _author(value: object) -> str:
-    if isinstance(value, str) and value.startswith(_MODEL_PREFIX):
-        client = value[len(_MODEL_PREFIX) :]
-        if (
-            0 < len(client) <= MAX_NAME_LENGTH
-            and client.isprintable()
-            and not any(char.isspace() for char in client)
-        ):
-            return value
+    # The author rule of every assertion, narrowed to a model: a class
+    # stands for a client that writes claims, so a client that may write a
+    # claim may have a class, and one that may not, may not.
+    if isinstance(value, str) and value.startswith(MODEL_PREFIX) and author_problem(value) is None:
+        return value
     raise _FormError("has an author that is no model:<client>")
 
 

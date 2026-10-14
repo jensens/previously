@@ -2029,6 +2029,38 @@ def test_what_an_entity_names_is_held_against_what_stood_before_it(db: Engine) -
 
 
 @pytest.mark.db
+def test_an_approval_of_a_proposal_a_direct_version_overtook_is_a_finding(db: Engine) -> None:
+    """The write path refuses it and the fold takes it, so a forged one
+    would quietly replace the direct winner. Measured red with the check
+    taken out of `_Claims`; the control, an objection that came after the
+    direct version and was approved through the write path, stays green."""
+    storage = _with_vocabulary(db)
+    proposal = _thing(author=GUESSER, responsibility=OPEN, confidence=40)
+    (proposed,) = _claimed(storage, proposal)
+    (direct,) = _claimed(storage, _thing(name="Anna Huber", subject=proposed))
+    forged = _forged(
+        storage,
+        claim_payload(
+            replace(proposal, responsibility=DIRECT, subject=proposed, approves=proposed)
+        ),
+    )
+    objection = replace(
+        _thing(name="A. Huber", author=GUESSER, responsibility=OPEN, confidence=40),
+        subject=proposed,
+        contests=forged,
+    )
+    (contested,) = _claimed(storage, objection)
+    _claimed(
+        storage,
+        replace(objection, responsibility=DIRECT, approves=contested, contests=None),
+    )
+
+    assert verify(storage) == [
+        Finding(forged, f"approval of a proposal that the direct version {direct} overtook")
+    ]
+
+
+@pytest.mark.db
 def test_an_approval_of_an_entity_that_does_not_take_it_unchanged_is_a_finding(
     db: Engine,
 ) -> None:

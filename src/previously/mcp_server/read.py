@@ -52,12 +52,12 @@ from previously.core.graph import claim_changes
 from previously.core.graph import ENTITY
 from previously.core.graph import EntityBody
 from previously.core.graph import level_of
-from previously.core.graph import Period
 from previously.core.graph import RECOLLECTION
 from previously.core.graph import RELATION
 from previously.core.graph import RelationBody
 from previously.core.graph import RETRACTED
 from previously.core.graph import TRANSITIVE
+from previously.core.graph import value_text
 from previously.core.graph_write import claim_decisions
 from previously.core.graph_write import claim_sources
 from previously.core.graph_write import read_claim_events
@@ -97,7 +97,6 @@ if TYPE_CHECKING:
     from previously.core.assertions import SourceEvents
     from previously.core.graph import Claim
     from previously.core.graph import ClassState
-    from previously.core.graph import FieldValue
     from previously.core.graph import Graph
     from previously.core.graph import GraphThread
     from previously.core.graph import GraphVersion
@@ -846,8 +845,10 @@ class ThreadVerdict:
     which decide along; `blocked` is the first that chooses nothing, with
     its source, or `None`. `shown` is whether the client sees the thread,
     for a relation as `relation_visible` decides it: a relation that starts
-    at an event is not shown and has no `blocked` either, since phase 1
-    shows none at all.
+    at an event is not shown, since phase 1 shows none at all. `blocked`
+    is not cleared for one: it holds what the decisions of the relation and
+    its entity ends say, as for any other relation, and nothing reads it for
+    a relation.
     """
 
     decisions: tuple[tuple[str | None, Decision], ...]
@@ -1025,21 +1026,7 @@ def graph_version(graph: Graph, event_id: int) -> tuple[GraphThread, GraphVersio
 
 def _name_of(claim: Claim) -> str | None:
     value = claim.body.fields.get(NAME_FIELD)
-    return None if value is None else _value_text(value)
-
-
-def _period_text(period: Period) -> str:
-    start = "(open)" if period.start is None else period.start.isoformat()
-    end = "(open)" if period.end is None else period.end.isoformat()
-    return f"{start} to {end}"
-
-
-def _value_text(value: FieldValue) -> str:
-    if isinstance(value, Period):
-        return _period_text(value)
-    if isinstance(value, date):
-        return value.isoformat()
-    return str(value)
+    return None if value is None else value_text(value)
 
 
 def entity_text(view: GraphView, entity: int, *, ref: bool = False) -> str:
@@ -1090,7 +1077,7 @@ def claim_lines(view: GraphView, vocabulary: Vocabulary, claim: Claim) -> list[s
         else:
             lines.append(f"to: {entity_text(view, cast('int', body.to))}")
         if body.period is not None:
-            lines.append(f"period: {_period_text(body.period)}")
+            lines.append(f"period: {value_text(body.period)}")
     spec = vocabulary.kind(claim.kind, body.type)
     refs = {item.name for item in (spec.fields if spec is not None else ()) if item.type == REF}
     for name in sorted(body.fields):
@@ -1098,7 +1085,7 @@ def claim_lines(view: GraphView, vocabulary: Vocabulary, claim: Claim) -> list[s
         if name in refs and isinstance(value, int):
             text = entity_text(view, value, ref=True)
         else:
-            text = _value_text(value)
+            text = value_text(value)
         lines.append(f"field {name}: {text}")
     lines.append(f"state: {body.state}")
     lines.append(f"reason: {_NONE if claim.reason is None else claim.reason}")
@@ -1197,7 +1184,7 @@ def _relation_lines(
         label = display_label(vocabulary, RELATION, body.type, language=None, default=language)
         parts = [f"relation {event_uri(relation_id)}: {label} {way} {entity_text(view, other)}"]
         if body.period is not None:
-            parts.append(_period_text(body.period))
+            parts.append(value_text(body.period))
         level = level_words(relation, classes)
         if level != [DIRECT]:
             parts.extend(level)

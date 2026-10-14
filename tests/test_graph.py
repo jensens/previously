@@ -1276,14 +1276,13 @@ def test_reaches_finds_a_cycle_back_to_the_start() -> None:
     assert graph.reaches(10, 10, PART_OF)
 
 
-def test_reaches_takes_the_edges_of_a_batch() -> None:
+def test_reaches_leaves_out_the_relations_a_write_replaces() -> None:
     graph = fold_graph([row(1, edge(10, 11)), row(2, edge(11, 12))], ACTIVE_CLASS)
 
-    assert graph.reaches(12, 10, PART_OF, extra=[(12, 10)])
-    assert graph.reaches(12, 12, PART_OF, extra=[(12, 10)])
-    # The batch moves relation 2 elsewhere: its old edge is gone.
+    # The write moves relation 2 elsewhere: its old edge is gone.
     assert not graph.reaches(10, 12, PART_OF, without=frozenset({2}))
-    assert graph.reaches(10, 13, PART_OF, extra=[(11, 13)], without=frozenset({2}))
+    assert graph.reaches(10, 11, PART_OF, without=frozenset({2}))
+    assert graph.reaches(10, 12, PART_OF)
 
 
 def test_reaches_walks_only_what_stands_and_ignores_periods() -> None:

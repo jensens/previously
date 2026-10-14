@@ -3120,6 +3120,12 @@ def _evidence_of(
 
 
 def _entity_claim(args: argparse.Namespace, vocabulary: Vocabulary, graph: Graph) -> Claim:
+    # As for `relate --retract`: a first version that is already retracted
+    # would start an entity that never stood.
+    if args.state == RETRACTED and args.subject is None:
+        raise PreviouslyError(
+            "--state retracted needs --subject: only an entity that stands can be retracted"
+        )
     base = _base_claim(graph, args.subject, ENTITY)
     old = base.body if base is not None and isinstance(base.body, EntityBody) else None
     spec = vocabulary.kind(ENTITY_KIND, args.what)

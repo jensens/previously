@@ -31,6 +31,7 @@ from previously.core.classes import set_class
 from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
 from previously.core.graph import claim_payload
+from previously.core.graph import claim_problem
 from previously.core.graph import ClassState
 from previously.core.graph import ENTITY
 from previously.core.graph import EntityBody
@@ -49,7 +50,9 @@ from previously.core.vocabulary import FieldSpec
 from previously.core.vocabulary import GATE_TYPES
 from previously.core.vocabulary import KindSpec
 from previously.core.vocabulary import parse_file
+from previously.core.vocabulary import to_payload
 from previously.core.vocabulary import Vocabulary
+from previously.core.vocabulary import vocabulary_problem
 from previously.storage.postgres import PostgresStorage
 from typing import cast
 from typing import TYPE_CHECKING
@@ -188,6 +191,67 @@ def test_a_built_in_type_is_a_form_fault(gate: str) -> None:
     problem = class_problem(_payload(types=["project", gate]))
     assert problem is not None
     assert f'"{gate}"' in problem
+
+
+MODEL_AUTHORS = [
+    "model:claude",
+    "model:" + "c" * 200,
+    "model:" + "c" * 201,
+    "model:",
+    "model:a b",
+    "model:x\u202e",
+    "model:x\u00a0",
+    "model:x\u2028",
+    "model:x\ue000",
+    "model:x\U000e0001",
+]
+
+
+@pytest.mark.parametrize("author", MODEL_AUTHORS)
+def test_a_class_takes_the_authors_a_claim_takes(author: str) -> None:
+    """A class stands for a client that writes claims, so the two author
+    rules are one. Measured red with the old rule of `core/classes.py`
+    (`isprintable`), which refused the private-use character a claim
+    takes; the cases of the other authors stayed green."""
+    claim = claim_payload(
+        Claim(
+            ENTITY,
+            author,
+            "open",
+            SOURCES,
+            (Source(1, None),),
+            None,
+            None,
+            None,
+            None,
+            None,
+            40,
+            None,
+            EntityBody("project", None, {"name": "Fair"}, ACTIVE),
+        )
+    )
+
+    assert (class_problem(_payload(author=author)) is None) == (claim_problem(claim) is None)
+
+
+def test_the_class_author_cases_fall_on_both_sides() -> None:
+    """The control for the comparison above: its cases are neither all
+    accepted nor all refused."""
+    verdicts = {author: class_problem(_payload(author=author)) for author in MODEL_AUTHORS}
+
+    assert verdicts["model:claude"] is None
+    assert verdicts["model:x\ue000"] is None
+    assert verdicts["model:" + "c" * 201] is not None
+    assert verdicts["model:x\u202e"] is not None
+
+
+@pytest.mark.parametrize("name", ["claude_projects", "a" * 40, "a" * 41, "Claude", "1st", "x-y"])
+def test_a_class_is_named_by_the_identifiers_a_kind_is_named_by(name: str) -> None:
+    name_field = FieldSpec("name", "text", None, None, True)
+    spec = KindSpec("entity", name, {"en": "A kind"}, (name_field,), frozenset(), None, None, False)
+    declared = vocabulary_problem(to_payload(spec, statement="declare it")) is None
+
+    assert (class_problem(_payload(name=name)) is None) == declared
 
 
 def test_a_missing_or_extra_key_is_a_form_fault() -> None:

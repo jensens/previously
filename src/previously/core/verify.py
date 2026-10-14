@@ -574,25 +574,32 @@ class _Claims:
     What the fold passes over in silence is a finding here, as with an
     obligation, and so is what the write path would have refused or written
     otherwise: the operator's level, the objection against a direct winner,
-    the class of a transitive version, the answer to a pending question,
-    and the cycle rule, which is the write path's own question,
-    `closes_cycle`. The batch a claim was written in is not known here: the
-    claims before it in the batch are rows before it, which the write path
-    folds in the same way. Not held: that a model's open version would have
-    been transitive under a class; an open version stands for nobody.
+    the class of a transitive version, the answer to a pending question, an
+    approval of a proposal that a direct version overtook, and the cycle
+    rule, which is the write path's own question, `closes_cycle`. The batch
+    a claim was written in is not known here: the claims before it in the
+    batch are rows before it, which the write path folds in the same way.
+    Not held: that a model's open version would have been transitive under
+    a class; an open version stands for nobody. Not held either, though the
+    write path refuses them: what a vocabulary event names beyond its form
+    (a kind that does not stand, the retirement of a kind another one needs,
+    a built-in kind reshaped), and what an approval class names beyond its
+    form (a type that does not stand, an acyclic type). The read path makes
+    both harmless, and `docs/superpowers/landkarte.md` keeps the two checks
+    as an open point.
 
     Its cost: each row asks a live view of the fold, which builds again only
     the threads the row before it changed, and a claim of an acyclic kind
-    walks the edges that stood before it, so the pass grows with the square
-    of such claims. Measured on 2026-10-14, one run each, after fix round 1
-    of Task 4 of the 2026-10-14 assignments plan: a chain of `part_of` edges
-    between projects took `verify` 0.57 s at 1,000 edges and 1.77 s at
-    2,000; posts in one organization by `post_in`, no acyclic kind, took
+    walks the edges that stood before it, so the pass grows faster than the
+    number of such claims, at most with its square. Measured on 2026-10-14,
+    one run each, after fix round 1 of Task 4 of the 2026-10-14 assignments
+    plan: a chain of `part_of` edges between projects took `verify` 0.57 s
+    at 1,000 edges and 1.77 s at 2,000, about three times as long for twice
+    the edges; posts in one organization by `post_in`, no acyclic kind, took
     0.56 s at 2,000 relations and 2.67 s at 10,000. With the thread map
-    copied once per row, as before that round, the 10,000 took 4.90 s. The
-    write path walks the acyclic edges once per claim too, and the final
-    review of the plan measures what that means at 10,000 and 100,000
-    relations (decision 14 of the 2026-10-14 assignments plan).
+    copied once per row, as before that round, the 10,000 took 4.90 s. What
+    a whole log costs at 10,000 relations and beyond, as the final review
+    of the plan measured it, is on {ref}`graph-cost`.
     """
 
     def __init__(self) -> None:
@@ -658,6 +665,12 @@ class _Claims:
             return "approval names no open proposal of its subject"
         if answered:
             return "approval of a proposal that is already approved or rejected"
+        # The write path refuses it, and the fold would take it: a forged
+        # approval of an old proposal becomes the newest direct version and
+        # quietly replaces the one that won.
+        newer = max((v.id for v in versions if v.claim.responsibility == DIRECT), default=0)
+        if newer > approves:
+            return f"approval of a proposal that the direct version {newer} overtook"
         if not takes_proposal(replace(claim, sources=proposal.claim.sources), proposal.claim):
             return "approval does not take the content and the author of its proposal"
         if claim.sources != proposal.claim.sources:

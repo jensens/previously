@@ -152,6 +152,14 @@ class Vocabulary:
         return spec.labels[fallback], fallback
 
 
+def is_identifier(value: object) -> bool:
+    """Whether `value` is an identifier as a kind, a field and an approval
+    class are named: a lower-case letter, then up to 39 lower-case letters,
+    digits and underscores. The one rule; `core/graph.py` and
+    `core/classes.py` take it from here."""
+    return isinstance(value, str) and _IDENTIFIER.fullmatch(value) is not None
+
+
 def is_language_tag(text: str) -> bool:
     """Whether `text` is a language tag as a label and a working language
     spell it: two or three lower-case letters and optional subtags."""
@@ -226,9 +234,9 @@ def built_in_kinds() -> tuple[KindSpec, ...]:
 
 
 def _identifier(value: object, what: str) -> str:
-    if not isinstance(value, str) or _IDENTIFIER.fullmatch(value) is None:
+    if not is_identifier(value):
         raise _FormError(f"has {what} {value!r}, which is no identifier of the form a-z0-9_")
-    return value
+    return cast("str", value)
 
 
 def _text(value: object, what: str) -> str:

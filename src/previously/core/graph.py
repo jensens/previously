@@ -38,11 +38,10 @@ from dataclasses import field
 from datetime import date
 from datetime import datetime
 from itertools import pairwise
+from previously.core.assertion import author_problem
 from previously.core.assertion import DIRECT
-from previously.core.assertion import MAX_NAME_LENGTH
 from previously.core.assertion import MODEL_PREFIX
 from previously.core.assertion import OPEN
-from previously.core.assertion import OPERATOR
 from previously.core.assertion import parse_statement
 from previously.core.assertion import REJECTION
 from previously.core.assertion import Source
@@ -52,6 +51,8 @@ from previously.core.vocabulary import CLOSABLE
 from previously.core.vocabulary import DATE
 from previously.core.vocabulary import ENTITY_KIND
 from previously.core.vocabulary import GATE_TYPES
+from previously.core.vocabulary import is_identifier
+from previously.core.vocabulary import is_language_tag
 from previously.core.vocabulary import PERIOD
 from previously.core.vocabulary import PERIOD_BEHAVIOR
 from previously.core.vocabulary import RELATION_KIND
@@ -62,7 +63,6 @@ from typing import Final
 from typing import TYPE_CHECKING
 
 import re
-import unicodedata
 
 
 if TYPE_CHECKING:
@@ -96,11 +96,6 @@ MAX_CONFIDENCE: Final = 100
 MIN_CANDIDATES: Final = 2
 MAX_CANDIDATES: Final = 5
 
-# The same patterns as an identifier and a language tag in
-# core/vocabulary.py, where they are private; tests/test_graph.py holds the
-# two copies against each other.
-_IDENTIFIER = re.compile(r"[a-z][a-z0-9_]{0,39}")
-_LANGUAGE = re.compile(r"[a-z]{2,3}(-[A-Za-z0-9]{1,8})*")
 _DATE_FORM = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
 
 _COMMON_KEYS: Final = frozenset(
@@ -244,30 +239,6 @@ def _date(value: object) -> date | None:
         return None
 
 
-def _has_forbidden_character(text: str) -> bool:
-    # Controls, format characters such as the bidi overrides, and the line
-    # and paragraph separators, as in core/assertion.py.
-    return any(
-        unicodedata.category(char) in ("Cc", "Cf") or char in "\u2028\u2029" for char in text
-    )
-
-
-def _author_problem(author: object) -> str | None:
-    # The rule of core/assertion.py, where it is private; tests/test_graph.py
-    # holds the two against each other on the same authors.
-    if author == OPERATOR:
-        return None
-    if isinstance(author, str) and author.startswith(MODEL_PREFIX):
-        client = author[len(MODEL_PREFIX) :]
-        if (
-            0 < len(client) <= MAX_NAME_LENGTH
-            and not any(char.isspace() for char in client)
-            and not _has_forbidden_character(client)
-        ):
-            return None
-    return "the author is neither human:operator nor model:<client>"
-
-
 # `_units_problem` and `_source_problem` are the rules of core/assertion.py,
 # where they are private; tests/test_graph.py holds them against
 # `assertion_problem` on the same non-empty sources.
@@ -338,7 +309,7 @@ def _scalar_problem(payload: Mapping[str, object]) -> str | None:
     ):
         return f"confidence is neither null nor a whole number from 0 to {MAX_CONFIDENCE}"
     kind = payload["type"]
-    if not isinstance(kind, str) or _IDENTIFIER.fullmatch(kind) is None:
+    if not is_identifier(kind):
         return "the type is not an identifier of the form a-z0-9_"
     return None
 
@@ -428,7 +399,7 @@ def _fields_problem(fields: object) -> str | None:
     if not isinstance(fields, dict):
         return "the fields are not an object"
     for name, value in cast("dict[object, object]", fields).items():
-        if not isinstance(name, str) or _IDENTIFIER.fullmatch(name) is None:
+        if not is_identifier(name):
             return "a field name is not an identifier of the form a-z0-9_"
         problem = _value_problem(value)
         if problem is not None:
@@ -438,9 +409,7 @@ def _fields_problem(fields: object) -> str | None:
 
 def _entity_problem(payload: Mapping[str, object]) -> str | None:
     language = payload["language"]
-    if language is not None and (
-        not isinstance(language, str) or _LANGUAGE.fullmatch(language) is None
-    ):
+    if language is not None and (not isinstance(language, str) or not is_language_tag(language)):
         return "the language is neither null nor a language tag"
     problem = _fields_problem(payload["fields"])
     if problem is not None:
@@ -519,7 +488,7 @@ def claim_problem(payload: Mapping[str, object]) -> str | None:
         return "the assertion kind is neither entity nor relation"
     if frozenset(payload) != keys:
         return "the keys of the payload are not those of the assertion kind"
-    problem = _author_problem(payload["author"])
+    problem = author_problem(payload["author"])
     if problem is not None:
         return problem
     if payload["responsibility"] not in LEVELS:
@@ -892,16 +861,16 @@ class Graph:
         end: int,
         types: frozenset[str],
         *,
-        extra: Iterable[tuple[int, int]] = (),
         without: frozenset[int] = frozenset(),
         levels: frozenset[str] = frozenset(LEVELS),
     ) -> bool:
         """Whether a path of at least one edge leads from entity `start` to
         entity `end` over relations of `types`, whatever their periods.
 
-        `extra` adds edges a batch is about to write, and `without` leaves out
-        the relations, by id, whose current edge the batch replaces. A path
-        from an entity back to itself is a cycle, an edge to itself included.
+        `without` leaves out the relations, by id, whose current edge the
+        write replaces. A path from an entity back to itself is a cycle, an
+        edge to itself included. The edges of a batch come in by folding the
+        batch first, as the write path does (`closes_cycle`).
 
         `levels` keeps the edges whose winner counts at one of them, by
         `level_of`. A proposal must not close a cycle with anything, so an
@@ -920,8 +889,6 @@ class Graph:
             if level_of(version, self.classes) not in levels:
                 continue
             edges.setdefault(body.start, set()).add(cast("int", body.to))
-        for origin, target in extra:
-            edges.setdefault(origin, set()).add(target)
         seen: set[int] = set()
         frontier = [start]
         while frontier:
@@ -1110,7 +1077,10 @@ def _period_text(period: Period | None) -> str:
     return f"{start} to {end}"
 
 
-def _value_text(value: FieldValue) -> str:
+def value_text(value: FieldValue) -> str:
+    """A field value as a person reads it: a date as `YYYY-MM-DD`, a period
+    as `FROM to TO` with `(open)` for an end that is open, an entity id and
+    a text as they are. The MCP tools print fields this way too."""
     if isinstance(value, Period):
         return _period_text(value)
     if isinstance(value, date):
@@ -1141,7 +1111,7 @@ def _texts_of(claim: Claim) -> dict[str, str]:
             texts["to"] = f"entity {body.to}"
         texts["period"] = _period_text(body.period)
     for name in sorted(body.fields):
-        texts[f"fields.{name}"] = _value_text(body.fields[name])
+        texts[f"fields.{name}"] = value_text(body.fields[name])
     texts["state"] = body.state
     texts["evidence"] = claim.evidence
     texts["sources"] = _sources_text(claim.sources)
