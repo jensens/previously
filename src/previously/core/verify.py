@@ -28,6 +28,7 @@ With `blobs`, the check also holds the blob store against the rule of
 """
 
 from dataclasses import dataclass
+from dataclasses import replace
 from previously.contract.blobs import BlobStore
 from previously.contract.blobs import KeyProvider
 from previously.contract.types import Anchor
@@ -43,6 +44,7 @@ from previously.core.action import REDACTION
 from previously.core.action import VOCABULARY
 from previously.core.assertion import assertion_problem
 from previously.core.assertion import DecisionBody
+from previously.core.assertion import DIRECT
 from previously.core.assertion import ObligationBody
 from previously.core.assertion import OPEN
 from previously.core.assertion import parse_statement
@@ -54,9 +56,22 @@ from previously.core.blob import fetch_blob
 from previously.core.canonical import canonical
 from previously.core.chain import read_references
 from previously.core.classes import class_problem
+from previously.core.classes import ClassFold
 from previously.core.errors import AddressMismatch
 from previously.core.errors import CannotOpen
 from previously.core.errors import InvalidPayload
+from previously.core.graph import claim_problem
+from previously.core.graph import conformance_problem
+from previously.core.graph import GRAPH_KINDS
+from previously.core.graph import GraphFold
+from previously.core.graph import GraphVersion
+from previously.core.graph import level_of
+from previously.core.graph import parse_claim
+from previously.core.graph import TRANSITIVE
+from previously.core.graph_write import closes_cycle
+from previously.core.graph_write import EntityTypes
+from previously.core.graph_write import starts_thread
+from previously.core.graph_write import takes_proposal
 from previously.core.hashing import event_hash
 from previously.core.hashing import event_hash_v2
 from previously.core.hashing import HASH_VERSION_1
@@ -74,6 +89,7 @@ from previously.core.redaction import parse
 from previously.core.redaction import RedactionIndex
 from previously.core.sealing import NullSink
 from previously.core.vocabulary import vocabulary_problem
+from previously.core.vocabulary import VocabularyFold
 from typing import cast
 from typing import Protocol
 from typing import TYPE_CHECKING
@@ -89,6 +105,9 @@ if TYPE_CHECKING:
     from previously.contract.rows import UnitRow
     from previously.contract.store import LogStore
     from previously.core.assertion import Statement
+    from previously.core.graph import Claim
+    from previously.core.graph import Graph
+    from previously.core.graph import GraphThread
     from previously.core.hashing import HashableUnit
     from previously.core.redaction import Redaction
 
@@ -451,6 +470,7 @@ class _Erasures:
             return [Finding(row.id, f'unknown action "{name}"')]
         if (finding := _form_finding(name, row.id, row.payload, units)) is not None:
             return [finding]
+        self._assertions.claims.action(name, row.id, row.payload)
         if name == MODEL_CALL and any(unit.content is not None for unit in units):
             self._calls.append((row.id, _inputs_read(row.payload)))
         return []
@@ -530,6 +550,151 @@ def _untaken(approval: Statement, proposal: _Joined) -> str | None:
     return None
 
 
+class _Claims:
+    """The entities and relations one pass has seen, held against what stood
+    before each of them in the chain ({ref}`vocabulary-reference`).
+
+    It folds them row by row as `core/graph.py` does, and beside them the
+    vocabulary and the approval classes as the pass meets their events, so
+    that an entity or a relation is held against the vocabulary and the
+    classes in force where it stands, not against today's. A kind retired
+    since, or a class revoked since, does not make a finding of what was
+    written under it; a claim of a kind declared only after it does.
+
+    What the fold passes over in silence is a finding here, as with an
+    obligation, and the cycle rule is the write path's own question,
+    `closes_cycle`, so that `verify` reports exactly what the write path
+    would have refused. The batch a claim was written in is not known here:
+    the claims before it in the batch are rows before it, which the write
+    path folds in the same way.
+
+    Its cost: the graph is built again from the threads one row changed, and
+    a claim of an acyclic kind walks the edges that stood before it, once per
+    claim, so the pass grows with the square of such claims. Measured on
+    2026-10-14 with a chain of `part_of` edges between projects, one run
+    each: 1,000 edges took `verify` 0.57 s and 2,000 took 1.87 s. The write
+    path walks them once per claim too, and the final review of the plan
+    measures what that means at 10,000 and 100,000 relations (decision 14 of
+    the 2026-10-14 assignments plan).
+    """
+
+    def __init__(self) -> None:
+        self._fold = GraphFold()
+        self._vocabulary = VocabularyFold()
+        self._classes = ClassFold()
+
+    def action(self, name: str, event_id: int, payload: Mapping[str, object]) -> None:
+        """Takes in an action of a sound form: a vocabulary or class event
+        changes what holds for the claims after it, any other changes
+        nothing."""
+        if name == VOCABULARY:
+            self._vocabulary.add(event_id, payload)
+        elif name == APPROVAL_CLASS:
+            self._classes.add(event_id, payload)
+
+    def fold(self, row: EventRow) -> None:
+        """Takes in an assertion row after its findings: an erased one, a
+        rejection, an entity or a relation."""
+        self._fold.add(row.id, row.recorded_at, row.payload, self._classes.classes().states)
+
+    def names(self, version_id: int) -> bool:
+        """Whether `version_id` is a standing version of an entity or a
+        relation."""
+        return self._fold.subject_of(version_id) is not None
+
+    def _found(self, version_id: int) -> tuple[Graph, GraphThread, GraphVersion]:
+        graph = self._fold.graph(self._classes.classes().states)
+        thread = graph.threads[cast("int", self._fold.subject_of(version_id))]
+        return graph, thread, next(v for v in thread.versions if v.id == version_id)
+
+    def rejection_reason(self, statement: Statement) -> str | None:
+        """What is wrong with a rejection of a version of an entity or a
+        relation, which `names` knows: it has to be open or transitive, by
+        `level_of` under the classes in force here, unanswered, and taken
+        with its sources."""
+        graph, thread, version = self._found(cast("int", statement.of))
+        if level_of(version, graph.classes) == DIRECT:
+            return "rejection names no open proposal"
+        if version.id in thread.approved or version.id in thread.rejected:
+            return "rejection of a proposal that is already approved or rejected"
+        if statement.sources != version.claim.sources:
+            return "rejection does not take the sources of its proposal"
+        return None
+
+    def _approval_reason(
+        self, thread: GraphThread | None, claim: Claim, graph: Graph
+    ) -> str | None:
+        """What is wrong with an approval of a version that stands; one of an
+        erased version is accepted, as with an obligation."""
+        approves = cast("int", claim.approves)
+        answered = thread is not None and (
+            approves in thread.approved or approves in thread.rejected
+        )
+        if self._fold.erased(approves):
+            return (
+                "approval of a proposal that is already approved or rejected" if answered else None
+            )
+        versions = () if thread is None else thread.versions
+        proposal = next((v for v in versions if v.id == approves), None)
+        if proposal is None or level_of(proposal, graph.classes) == DIRECT:
+            return "approval names no open proposal of its subject"
+        if answered:
+            return "approval of a proposal that is already approved or rejected"
+        if not takes_proposal(replace(claim, sources=proposal.claim.sources), proposal.claim):
+            return "approval does not take the content and the author of its proposal"
+        if claim.sources != proposal.claim.sources:
+            return "approval does not take the sources of its proposal"
+        return None
+
+    def claim_reason(self, row: EventRow, claim: Claim) -> str | None:
+        """The first thing wrong with what an entity or a relation names,
+        with the vocabulary, its level or the cycle rule, or `None`; then it
+        joins the fold either way, as the fold reads it either way."""
+        classes = self._classes.classes()
+        graph = self._fold.graph(classes.states)
+        subject = claim.subject
+        thread = None if subject is None else graph.threads.get(subject)
+        vocabulary = self._vocabulary.vocabulary()
+        reason: str | None = None
+        if subject is not None and thread is None and not self._fold.erased(subject):
+            reason = "assertion has a subject that names no earlier entity or relation"
+        elif thread is not None and thread.kind != claim.kind:
+            reason = "assertion has a subject of another kind"
+        elif claim.approves is not None:
+            reason = self._approval_reason(thread, claim, graph)
+        contests = claim.contests
+        if reason is None and contests is not None and not self._fold.erased(contests):
+            target = (
+                next((v for v in thread.versions if v.id == contests), None) if thread else None
+            )
+            if target is None or target.claim.responsibility != DIRECT:
+                reason = "objection contests no earlier direct version of its subject"
+        if reason is None:
+            problem = conformance_problem(
+                claim, vocabulary, new_thread=starts_thread(claim), entity_types=EntityTypes(graph)
+            )
+            if problem is not None:
+                reason = f"assertion does not fit the vocabulary of its time: {problem}"
+        if (
+            reason is None
+            and claim.responsibility == TRANSITIVE
+            and not classes.covers(
+                cast("int", claim.under),
+                author=claim.author,
+                kind=claim.kind,
+                type_name=claim.body.type,
+                confidence=claim.confidence,
+                recorded_at=row.recorded_at,
+            )
+        ):
+            reason = "assertion is transitive under no approval class in force for it"
+        level = level_of(GraphVersion(row.id, row.recorded_at, claim), classes.states)
+        if reason is None and closes_cycle(graph, claim, vocabulary, level=level):
+            reason = "relation closes a cycle over a kind that is acyclic"
+        self.fold(row)
+        return reason
+
+
 class _Assertions:
     """The assertions one pass has seen, and the findings about them
     ({ref}`erasure`).
@@ -564,13 +729,20 @@ class _Assertions:
         # Erased versions an approval named, with the subject it named them
         # under: one named under another subject was no thread.
         self._placed: dict[int, int] = {}
+        self.claims = _Claims()
 
     def observe(self, row: EventRow, units: Sequence[UnitRow]) -> list[Finding]:
         """The finding about the form of an assertion or about what it names,
         if any; remembers the rest."""
         if row.payload is None:
             self._erased.add(row.id)
+            self.claims.fold(row)
             return []
+        # An entity or a relation is an assertion of a form of its own, which
+        # `assertion_problem` would call none of obligation, decision and
+        # rejection.
+        if row.payload.get("assertion") in GRAPH_KINDS:
+            return self._claim(row, units)
         problem = assertion_problem(row.payload)
         if problem is not None:
             return [Finding(row.id, f"assertion has no valid form: {problem}")]
@@ -594,6 +766,30 @@ class _Assertions:
         )
         if reason is not None:
             findings.append(Finding(row.id, reason))
+        if statement.kind == REJECTION:
+            self.claims.fold(row)
+        return findings
+
+    def _claim(self, row: EventRow, units: Sequence[UnitRow]) -> list[Finding]:
+        """`observe` for an entity or a relation."""
+        payload = cast("Mapping[str, object]", row.payload)
+        problem = claim_problem(payload)
+        if problem is not None:
+            self.claims.fold(row)
+            return [Finding(row.id, f"assertion has no valid form: {problem}")]
+        findings: list[Finding] = []
+        if units:
+            findings.append(Finding(row.id, "assertion has units"))
+        claim = cast("Claim", parse_claim(payload))
+        if any(source.event >= row.id for source in claim.sources):
+            findings.append(
+                Finding(row.id, "assertion names a source that does not stand before it")
+            )
+        else:
+            self._standing.append((row.id, claim.sources))
+        reason = self.claims.claim_reason(row, claim)
+        if reason is not None:
+            findings.append(Finding(row.id, reason))
         return findings
 
     def _named(self, event_id: int) -> _Joined | None:
@@ -610,6 +806,11 @@ class _Assertions:
         if proposal_id in self._erased:
             return None  # its kind is gone; the fold passes it over
         proposal = self._named(proposal_id)
+        if proposal is None and self.claims.names(proposal_id):
+            # A version of an entity or a relation, which the graph holds
+            # with three levels (decision 5 of the 2026-10-14 assignments
+            # plan).
+            return self.claims.rejection_reason(statement)
         if proposal is None or not self._open(proposal):
             return "rejection names no open proposal"
         if self._answered(proposal_id):

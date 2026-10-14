@@ -28,7 +28,20 @@ from previously.core.assertions import write_statements
 from previously.core.blob import store_blob
 from previously.core.chain import link
 from previously.core.chain import prepare
+from previously.core.classes import ApprovalClass
+from previously.core.classes import set_class
 from previously.core.errors import InvalidPayload
+from previously.core.graph import ACTIVE
+from previously.core.graph import Claim
+from previously.core.graph import claim_payload
+from previously.core.graph import ENTITY
+from previously.core.graph import EntityBody
+from previously.core.graph import RELATION
+from previously.core.graph import RelationBody
+from previously.core.graph import SOURCES
+from previously.core.graph import STANDING
+from previously.core.graph import TRANSITIVE
+from previously.core.graph_write import write_claims
 from previously.core.hashing import unit_digest
 from previously.core.redact import redact_blob
 from previously.core.redact import redact_event
@@ -44,6 +57,12 @@ from previously.core.verify import Examination
 from previously.core.verify import examine
 from previously.core.verify import Finding
 from previously.core.verify import verify
+from previously.core.vocabulary import apply_vocabulary
+from previously.core.vocabulary import base_vocabulary
+from previously.core.vocabulary import ENTITY_KIND
+from previously.core.vocabulary import FieldSpec
+from previously.core.vocabulary import KindSpec
+from previously.core.vocabulary import parse_file
 from previously.storage.keys import DirectoryKeys
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import Engine
@@ -1792,3 +1811,271 @@ def test_a_subject_that_was_no_thread_is_a_finding(db: Engine) -> None:
         Finding(on_erased_version, no_thread),
     ]
     assert on_thread == on_erased_version + 1
+
+
+# --- entities and relations --------------------------------------------------------
+
+
+GUESSER = model_author("claude-code")
+TEAM = KindSpec(
+    ENTITY_KIND,
+    "team",
+    {"en": "Team"},
+    (FieldSpec("name", "text", None, None, True),),
+    frozenset(),
+    None,
+    None,
+    False,
+)
+PEOPLE = ApprovalClass(
+    "people", GUESSER, ENTITY, frozenset({"person"}), 80, None, None, revoked=False, demote=False
+)
+
+
+def _with_vocabulary(db: Engine) -> PostgresStorage:
+    """A mail, then the base vocabulary."""
+    storage = _with_mail(db)
+    apply_vocabulary(storage, parse_file(base_vocabulary()), recorded_at=NOW)
+    return storage
+
+
+def _thing(
+    kind: str = "person",
+    name: str = "Anna",
+    *,
+    author: str = OPERATOR,
+    responsibility: str = DIRECT,
+    subject: int | None = None,
+    approves: int | None = None,
+    under: int | None = None,
+    confidence: int | None = None,
+    contests: int | None = None,
+) -> Claim:
+    return Claim(
+        ENTITY,
+        author,
+        responsibility,
+        SOURCES,
+        (Source(1, None),),
+        None,
+        None,
+        subject,
+        approves,
+        under,
+        confidence,
+        contests,
+        EntityBody(kind, None, {"name": name}, ACTIVE),
+    )
+
+
+def _part(start: int, to: int, *, subject: int | None = None) -> Claim:
+    return Claim(
+        RELATION, OPERATOR, DIRECT, SOURCES, (Source(1, None),), None, None, subject, None, None,
+        None, None, RelationBody("part_of", start, to, None, None, {}, STANDING),
+    )  # fmt: skip
+
+
+def _claimed(storage: PostgresStorage, *claims: Claim) -> tuple[int, ...]:
+    return write_claims(storage, storage, claims, recorded_at=NOW).ids
+
+
+@pytest.mark.db
+def test_entities_and_relations_written_through_the_write_path_are_no_finding(
+    db: Engine,
+) -> None:
+    """The control of the findings below: proposals, an approval, an
+    objection, a transitive version, a rejection and edges of an acyclic
+    kind, all through their write paths."""
+    storage = _with_vocabulary(db)
+    set_class(storage, PEOPLE, statement="people", recorded_at=NOW)
+    proposal = _thing(author=GUESSER, responsibility=OPEN, confidence=40)
+    proposed, transitive, one, two = _claimed(
+        storage,
+        proposal,
+        _thing(name="Bert", author=GUESSER, responsibility=OPEN, confidence=90),
+        _thing("project", "one"),
+        _thing("project", "two"),
+    )
+    _claimed(
+        storage,
+        replace(proposal, responsibility=DIRECT, subject=proposed, approves=proposed),
+        _part(one, two),
+    )
+    _claimed(storage, _thing(name="Anna Huber", author=GUESSER, confidence=10, subject=proposed))
+    write_statements(
+        storage,
+        storage,
+        [Statement(REJECTION, OPERATOR, DIRECT, (Source(1, None),), None, None, None, None,
+                   transitive, None)],
+        recorded_at=NOW,
+    )  # fmt: skip
+
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_an_entity_without_a_valid_form_is_a_finding(db: Engine) -> None:
+    storage = _with_vocabulary(db)
+    bad = _forged(storage, {**claim_payload(_thing()), "confidence": 7})
+
+    assert verify(storage) == [
+        Finding(bad, "assertion has no valid form: the operator gives no confidence")
+    ]
+
+
+@pytest.mark.db
+def test_an_entity_is_held_against_the_vocabulary_of_its_time(db: Engine) -> None:
+    """The kind `team` is declared only after the entity, and retired after
+    the second one: the first is a finding and the second is not."""
+    storage = _with_vocabulary(db)
+    early = _forged(storage, claim_payload(_thing("team", "Board")))
+    base = parse_file(base_vocabulary())
+    apply_vocabulary(storage, (*base, TEAM), recorded_at=NOW)
+    _claimed(storage, _thing("team", "Staff"))
+    apply_vocabulary(storage, base, recorded_at=NOW)
+
+    assert verify(storage) == [
+        Finding(
+            early,
+            "assertion does not fit the vocabulary of its time: "
+            "the type is not declared as a kind of entity in the vocabulary",
+        )
+    ]
+
+
+@pytest.mark.db
+def test_a_transitive_version_under_no_class_in_force_is_a_finding(db: Engine) -> None:
+    """One under a class revoked before it, and one under an id that is no
+    class, are findings; one written under a class revoked after it is not."""
+    storage = _with_vocabulary(db)
+    class_id = set_class(storage, PEOPLE, statement="people", recorded_at=NOW)
+    (fine,) = _claimed(storage, _thing(author=GUESSER, responsibility=OPEN, confidence=90))
+    set_class(storage, replace(PEOPLE, revoked=True), statement="stop", recorded_at=NOW)
+    forged = _thing(
+        name="Bert", author=GUESSER, responsibility=TRANSITIVE, under=class_id, confidence=90
+    )
+    late = _forged(storage, claim_payload(forged))
+    unknown = _forged(storage, claim_payload(replace(forged, under=1)))
+
+    reason = "assertion is transitive under no approval class in force for it"
+    assert verify(storage) == [Finding(late, reason), Finding(unknown, reason)]
+    assert fine < late
+
+
+@pytest.mark.db
+def test_an_edge_that_closes_a_cycle_by_hand_is_a_finding(db: Engine) -> None:
+    storage = _with_vocabulary(db)
+    one, two = _claimed(storage, _thing("project", "one"), _thing("project", "two"))
+    (forward,) = _claimed(storage, _part(one, two))
+    back = _forged(storage, claim_payload(_part(two, one)))
+    # The control: a new version of the edge that turns it around.
+    _forged(storage, claim_payload(_part(two, one, subject=forward)))
+    self_edge = _forged(storage, claim_payload(_part(one, one)))
+
+    reason = "relation closes a cycle over a kind that is acyclic"
+    assert verify(storage) == [Finding(back, reason), Finding(self_edge, reason)]
+
+
+@pytest.mark.db
+def test_what_an_entity_names_is_held_against_what_stood_before_it(db: Engine) -> None:
+    storage = _with_vocabulary(db)
+    (anna,) = _claimed(storage, _thing())
+    (guess,) = _claimed(storage, _thing(name="A.", author=GUESSER, confidence=10))
+    nothing = _forged(storage, claim_payload(_thing(subject=1)))
+    other_kind = _forged(storage, claim_payload(_part(anna, anna, subject=anna)))
+    direct = _forged(
+        storage,
+        claim_payload(_thing(author=GUESSER, subject=anna, approves=anna, confidence=None)),
+    )
+    contested = _forged(
+        storage,
+        claim_payload(
+            _thing(author=GUESSER, responsibility=OPEN, subject=guess, contests=guess, confidence=5)
+        ),
+    )
+
+    assert verify(storage) == [
+        Finding(nothing, "assertion has a subject that names no earlier entity or relation"),
+        Finding(other_kind, "assertion has a subject of another kind"),
+        Finding(direct, "approval names no open proposal of its subject"),
+        Finding(contested, "objection contests no earlier direct version of its subject"),
+    ]
+
+
+@pytest.mark.db
+def test_an_approval_of_an_entity_that_does_not_take_it_unchanged_is_a_finding(
+    db: Engine,
+) -> None:
+    """Three proposals: the fold counts an approval that takes another
+    content or other sources all the same, as with an obligation, so each
+    case gets one of its own."""
+    storage = _with_vocabulary(db)
+    proposals = [
+        _thing(name=name, author=GUESSER, responsibility=OPEN, confidence=40)
+        for name in ("Anna", "Bert", "Clara")
+    ]
+    ids = _claimed(storage, *proposals)
+    first, second, third = (
+        replace(proposal, responsibility=DIRECT, subject=proposed, approves=proposed)
+        for proposal, proposed in zip(proposals, ids, strict=True)
+    )
+    other = _forged(storage, claim_payload(replace(first, confidence=99)))
+    sources = _forged(storage, claim_payload(replace(second, sources=(Source(1, (1,)),))))
+    _claimed(storage, third)
+    twice = _forged(storage, claim_payload(third))
+
+    assert verify(storage) == [
+        Finding(other, "approval does not take the content and the author of its proposal"),
+        Finding(sources, "approval does not take the sources of its proposal"),
+        Finding(twice, "approval of a proposal that is already approved or rejected"),
+    ]
+
+
+@pytest.mark.db
+def test_a_rejection_of_a_version_of_an_entity_is_held_against_its_level(db: Engine) -> None:
+    """A rejection of an open version through the write path is no finding,
+    and in particular not "names no open proposal"; one of a direct version,
+    or one without the version's sources, is."""
+    storage = _with_vocabulary(db)
+    proposed, direct = _claimed(
+        storage, _thing(author=GUESSER, responsibility=OPEN, confidence=40), _thing(name="Bert")
+    )
+
+    def rejecting(of: int, units: tuple[int, ...] | None = None) -> Statement:
+        source = Source(1, units)
+        return Statement(REJECTION, OPERATOR, DIRECT, (source,), None, None, None, None, of, None)
+
+    write_statements(storage, storage, [rejecting(proposed)], recorded_at=NOW)
+    of_direct = _forged(storage, payload_of(rejecting(direct)))
+    again = _forged(storage, payload_of(rejecting(proposed)))
+    (other,) = _claimed(storage, _thing(name="C", author=GUESSER, confidence=40))
+    unsourced = _forged(storage, payload_of(rejecting(other, (1,))))
+
+    assert verify(storage) == [
+        Finding(of_direct, "rejection names no open proposal"),
+        Finding(again, "rejection of a proposal that is already approved or rejected"),
+        Finding(unsourced, "rejection does not take the sources of its proposal"),
+    ]
+
+
+@pytest.mark.db
+def test_an_entity_with_units_or_a_later_source_is_a_finding(db: Engine) -> None:
+    storage = _with_vocabulary(db)
+    with_units = _forged(storage, claim_payload(_thing()), (RawUnit(1, "Anna"),))
+    later = _forged(storage, claim_payload(replace(_thing(), sources=(Source(999, None),))))
+
+    assert verify(storage) == [
+        Finding(with_units, "assertion has units"),
+        Finding(later, "assertion names a source that does not stand before it"),
+    ]
+
+
+@pytest.mark.db
+def test_an_entity_on_a_source_that_is_no_observation_is_a_finding(db: Engine) -> None:
+    storage = _with_vocabulary(db)
+    action = append_action(storage, {"action": "teleport"}, (), recorded_at=NOW)
+    on_action = _forged(storage, claim_payload(replace(_thing(), sources=(Source(action, None),))))
+
+    assert Finding(on_action, "assertion names a source that is not an observation") in verify(
+        storage
+    )

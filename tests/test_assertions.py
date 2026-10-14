@@ -43,7 +43,18 @@ from previously.core.assertions import read_threads
 from previously.core.assertions import source_identities
 from previously.core.assertions import thread_circles
 from previously.core.assertions import write_statements
+from previously.core.classes import ApprovalClass
+from previously.core.classes import set_class
 from previously.core.decide import Decision
+from previously.core.graph import ACTIVE
+from previously.core.graph import Claim
+from previously.core.graph import ENTITY
+from previously.core.graph import EntityBody
+from previously.core.graph import Graph
+from previously.core.graph import SOURCES
+from previously.core.graph import TRANSITIVE
+from previously.core.graph_write import read_graph
+from previously.core.graph_write import write_claims
 from previously.core.policy import ANY
 from previously.core.policy import Circle
 from previously.core.policy import Client
@@ -56,6 +67,9 @@ from previously.core.policy import Rule
 from previously.core.redact import redact_event
 from previously.core.redact import redact_units
 from previously.core.verify import verify
+from previously.core.vocabulary import apply_vocabulary
+from previously.core.vocabulary import base_vocabulary
+from previously.core.vocabulary import parse_file
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import event
 from typing import TYPE_CHECKING
@@ -890,3 +904,121 @@ def test_check_statements_lets_a_repeated_handle_pass_as_the_write_path_does(db:
         check_statements(storage, conn, [proposal(handle="h-1")])
         with pytest.raises(AssertionRefused):
             check_statements(storage, conn, [approval(proposal(), first, first)])
+
+
+# --- rejections of entities and relations ------------------------------------------
+
+
+MODEL = model_author("claude-code")
+
+
+def _with_vocabulary(db: Engine) -> PostgresStorage:
+    storage = _setup(db)
+    apply_vocabulary(storage, parse_file(base_vocabulary()), recorded_at=NOW)
+    return storage
+
+
+def _person(
+    *, author: str = MODEL, responsibility: str = OPEN, confidence: int | None = 40
+) -> Claim:
+    return Claim(
+        ENTITY,
+        author,
+        responsibility,
+        SOURCES,
+        (Source(1, (2,)),),
+        None,
+        None,
+        None,
+        None,
+        None,
+        confidence,
+        None,
+        EntityBody("person", None, {"name": "Anna Huber"}, ACTIVE),
+    )
+
+
+def _claimed(storage: PostgresStorage, claim: Claim) -> int:
+    (written,) = write_claims(storage, storage, [claim], recorded_at=NOW).ids
+    return written
+
+
+def _graph(storage: PostgresStorage) -> Graph:
+    with storage.begin() as conn:
+        return read_graph(storage, conn)
+
+
+@pytest.mark.db
+def test_a_rejection_of_an_open_entity_is_written_and_takes_it_out_of_the_graph(
+    db: Engine,
+) -> None:
+    """Decision 5 of the 2026-10-14 assignments plan: `of` may name an open
+    version of an entity, and the rejection takes its sources unchanged."""
+    storage = _with_vocabulary(db)
+    proposed = _claimed(storage, _person())
+    assert _refused(storage, rejection(proposed)) == (
+        "a rejection takes the sources of its proposal unchanged"
+    )
+    (rejected,) = _write(storage, rejection(proposed, Source(1, (2,))))
+    graph = _graph(storage)
+    assert graph.threads[proposed].rejected == {proposed}
+    assert proposed not in graph.entities()
+    assert _refused(storage, rejection(proposed, Source(1, (2,)))) == (
+        f"the proposal {proposed} is already rejected"
+    )
+    assert rejected == proposed + 1
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_two_rejections_of_one_entity_in_one_batch_are_refused(db: Engine) -> None:
+    storage = _with_vocabulary(db)
+    proposed = _claimed(storage, _person())
+    rejected = rejection(proposed, Source(1, (2,)))
+    assert _refused(storage, rejected, rejected) == f"the proposal {proposed} is already rejected"
+
+
+@pytest.mark.db
+def test_a_direct_or_approved_version_of_an_entity_is_not_rejected(db: Engine) -> None:
+    storage = _with_vocabulary(db)
+    direct = _claimed(storage, _person(author=OPERATOR, responsibility=DIRECT, confidence=None))
+    assert _refused(storage, rejection(direct, Source(1, (2,)))) == (
+        f"the version {direct} is no proposal: it is direct"
+    )
+    proposal_claim = _person()
+    proposed = _claimed(storage, proposal_claim)
+    _claimed(
+        storage,
+        replace(proposal_claim, responsibility=DIRECT, subject=proposed, approves=proposed),
+    )
+    assert _refused(storage, rejection(proposed, Source(1, (2,)))) == (
+        f"the proposal {proposed} is already approved"
+    )
+
+
+@pytest.mark.db
+def test_a_transitive_version_of_an_entity_is_rejected_like_a_proposal(db: Engine) -> None:
+    storage = _with_vocabulary(db)
+    item = ApprovalClass(
+        "people", MODEL, ENTITY, frozenset({"person"}), 80, None, None, revoked=False,
+        demote=False,
+    )  # fmt: skip
+    set_class(storage, item, statement="people", recorded_at=NOW)
+    written = _claimed(storage, _person(confidence=90))
+    (version,) = _graph(storage).threads[written].versions
+    assert version.claim.responsibility == TRANSITIVE
+    _write(storage, rejection(written, Source(1, (2,))))
+    graph = _graph(storage)
+    assert graph.threads[written].rejected == {written}
+    assert written not in graph.entities()
+
+
+@pytest.mark.db
+def test_a_rejection_of_an_entity_is_refused_by_the_preview_with_the_same_sentence(
+    db: Engine,
+) -> None:
+    storage = _with_vocabulary(db)
+    direct = _claimed(storage, _person(author=OPERATOR, responsibility=DIRECT, confidence=None))
+    with storage.begin() as conn, pytest.raises(AssertionRefused) as refused:
+        check_statements(storage, conn, [rejection(direct, Source(1, (2,)))])
+    assert str(refused.value) == f"the version {direct} is no proposal: it is direct"

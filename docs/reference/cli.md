@@ -608,6 +608,28 @@ FINDING 57: assertion stands on an erased source
 
 Each stands under the assertion.
 
+An entity and a relation are assertions too ({ref}`vocabulary-reference`).
+The sixteen findings above hold for them as well: the fault of the form is the first one in the form of an entity or a relation, and an approval or a rejection may name a transitive version where an obligation's names an open one.
+Five more come from entities and relations alone:
+
+```text
+FINDING 61: assertion has a subject that names no earlier entity or relation
+FINDING 61: objection contests no earlier direct version of its subject
+FINDING 61: assertion does not fit the vocabulary of its time: the kind is retired and takes no new entity
+FINDING 61: assertion is transitive under no approval class in force for it
+FINDING 61: relation closes a cycle over a kind that is acyclic
+```
+
+| Finding | Condition |
+|---|---|
+| `assertion has a subject that names no earlier entity or relation` | `subject` names no earlier first version of an entity or a relation; an erased earlier assertion counts as one. |
+| `objection contests no earlier direct version of its subject` | `contests` names neither a direct version of the same entity or relation before it nor an erased assertion. |
+| `assertion does not fit the vocabulary of its time: <reason>` | The entity or relation doesn't fit the vocabulary in force where it stands in the chain, read from the vocabulary events before it; a kind retired later doesn't count against it. The reason is the sentence the write path refuses with. |
+| `assertion is transitive under no approval class in force for it` | `under` names no class that was in force before it in the chain and covers its author, its kind, its type and its confidence at the time it was recorded. |
+| `relation closes a cycle over a kind that is acyclic` | The relation is of a kind with the behavior `acyclic`, and points from an entity to itself, or at one from which its start is reached over relations of its kind that stood before it. |
+
+Each stands under the entity or relation.
+
 One finding comes from the blob register:
 
 ```text

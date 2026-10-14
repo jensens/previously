@@ -22,6 +22,7 @@ from previously.core.classes import ApprovalClass
 from previously.core.classes import class_payload
 from previously.core.classes import class_problem
 from previously.core.classes import Classes
+from previously.core.classes import ClassFold
 from previously.core.classes import ClassRefused
 from previously.core.classes import hit_rates
 from previously.core.classes import read_classes
@@ -570,3 +571,48 @@ def test_the_sample_draws_distinct_versions_of_the_class_sorted_by_id() -> None:
     assert [v.id for v in sample(graph, 901, 10, rng)] == [7]
     assert sample(graph, 12345, 3, rng) == ()
     assert sample(graph, CLASS_EVENT, 0, rng) == ()
+
+
+def test_the_fold_takes_one_event_at_a_time_and_passes_over_what_is_no_sound_one() -> None:
+    folded = ClassFold()
+    before = folded.classes()
+    folded.add(7, None)
+    folded.add(8, {"action": "policy"})
+    folded.add(9, {**class_payload(CLASS, statement="s"), "threshold": 101})
+    assert folded.classes() is before
+    folded.add(10, class_payload(CLASS, statement="s"))
+    folded.add(11, class_payload(replace(CLASS, revoked=True), statement="stop"))
+    after = folded.classes()
+    assert before.by_name == {}
+    assert after.states == {
+        10: ClassState(11, revoked=True, demote=False),
+        11: ClassState(11, revoked=True, demote=False),
+    }
+
+
+def test_covers_asks_whether_a_class_in_force_covers_a_statement() -> None:
+    """`verify` asks it of the `under` of a transitive version: the class
+    has to be one `level` could choose, by the newest event of its name."""
+
+    def covers(
+        class_id: int = 10,
+        *,
+        author: str = MODEL,
+        type_name: str = "project",
+        confidence: int | None = 90,
+    ) -> bool:
+        return _classes((CLASS, 10)).covers(
+            class_id,
+            author=author,
+            kind=ENTITY,
+            type_name=type_name,
+            confidence=confidence,
+            recorded_at=T1,
+        )
+
+    assert covers()
+    assert not covers(confidence=50)
+    assert not covers(confidence=None)
+    assert not covers(type_name="post")
+    assert not covers(author=model_author("other"))
+    assert not covers(11)

@@ -392,24 +392,50 @@ def read_vocabulary[Conn](
     is broken is skipped as `verify` reports it; neither stops the read. An
     event for a built-in kind sets the labels and nothing else.
     """
-    kinds = {(spec.declares, spec.name): spec for spec in built_in_kinds()}
-    ids: dict[tuple[str, str], int] = {}
+    folded = VocabularyFold()
     for row in log.actions(conn, VOCABULARY):
-        payload = row.payload
+        if at is None or row.recorded_at <= at:
+            folded.add(row.id, row.payload)
+    return folded.vocabulary()
+
+
+class VocabularyFold:
+    """The vocabulary built one event at a time, in chain order, the way
+    `read_vocabulary` builds it from the log.
+
+    `verify` holds an entity or a relation against the vocabulary in force
+    where it stands in the chain, and meets the vocabulary events on the
+    way; reading the log again for every statement would cost a read per
+    statement.
+    """
+
+    def __init__(self) -> None:
+        self._kinds = {(spec.declares, spec.name): spec for spec in built_in_kinds()}
+        self._ids: dict[tuple[str, str], int] = {}
+        self._current: Vocabulary | None = None
+
+    def add(self, event_id: int, payload: Mapping[str, object] | None) -> None:
+        """Takes in one event. An erased one, one that is no vocabulary
+        event, and one with a broken form change nothing."""
         if payload is None or payload.get("action") != VOCABULARY:
-            continue
-        if at is not None and row.recorded_at > at:
-            continue
+            return
         try:
             spec, _statement = _parse(payload)
         except _FormError:
-            continue
+            return
         key = (spec.declares, spec.name)
         if key in BUILT_IN:
             spec = replace(_built_in(*key), labels=spec.labels)
-        kinds[key] = spec
-        ids[key] = row.id
-    return Vocabulary(kinds, ids)
+        self._kinds[key] = spec
+        self._ids[key] = event_id
+        self._current = None
+
+    def vocabulary(self) -> Vocabulary:
+        """The vocabulary of the events taken in so far. It does not change
+        when more are taken in later."""
+        if self._current is None:
+            self._current = Vocabulary(dict(self._kinds), dict(self._ids))
+        return self._current
 
 
 # --- Differences and the write path -----------------------------------------------

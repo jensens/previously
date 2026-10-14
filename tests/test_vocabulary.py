@@ -27,6 +27,7 @@ from previously.core.vocabulary import render_file
 from previously.core.vocabulary import to_payload
 from previously.core.vocabulary import Vocabulary
 from previously.core.vocabulary import vocabulary_problem
+from previously.core.vocabulary import VocabularyFold
 from previously.core.vocabulary import VocabularyRefused
 from previously.storage.postgres import PostgresStorage
 from typing import cast
@@ -594,3 +595,18 @@ def test_verify_reports_a_vocabulary_event_of_a_broken_form(db: Engine) -> None:
 
 def test_vocabulary_is_a_known_action() -> None:
     assert "vocabulary" in KNOWN_ACTIONS
+
+
+def test_the_fold_takes_one_event_at_a_time_and_passes_over_what_is_no_sound_one() -> None:
+    """`verify` holds a claim against the vocabulary where it stands, so a
+    vocabulary given out earlier stays as it was when more events come."""
+    folded = VocabularyFold()
+    before = folded.vocabulary()
+    folded.add(7, None)
+    folded.add(8, {"action": "policy"})
+    folded.add(9, {**to_payload(TEAM, statement="add"), "retired": "no"})
+    assert folded.vocabulary() is before
+    folded.add(10, to_payload(TEAM, statement="add"))
+    after = folded.vocabulary()
+    assert (before.kind("entity", "team"), after.kind("entity", "team")) == (None, TEAM)
+    assert after.ids == {("entity", "team"): 10}

@@ -246,17 +246,53 @@ class Classes:
     by_name: Mapping[str, tuple[ApprovalClass, int]]
     states: Mapping[int, ClassState]
 
-    def _covers(
-        self, item: ApprovalClass, *, author: str, kind: str, type_name: str, recorded_at: datetime
-    ) -> bool:
-        return (
-            not item.revoked
+    def _covering(
+        self,
+        *,
+        author: str,
+        kind: str,
+        type_name: str,
+        confidence: int | None,
+        recorded_at: datetime,
+    ) -> list[tuple[int, int]]:
+        """`(threshold, event id)` of every class in force that covers the
+        statement, the event being the newest of its name."""
+        if confidence is None or type_name in GATE_TYPES:
+            return []
+        return [
+            (item.threshold, event_id)
+            for item, event_id in self.by_name.values()
+            if not item.revoked
             and (item.valid_from is None or item.valid_from <= recorded_at)
             and (item.valid_until is None or recorded_at < item.valid_until)
             and item.author == author
             and item.assertion == kind
             and type_name in item.types
+            and confidence >= item.threshold
+        ]
+
+    def covers(
+        self,
+        class_id: int,
+        *,
+        author: str,
+        kind: str,
+        type_name: str,
+        confidence: int | None,
+        recorded_at: datetime,
+    ) -> bool:
+        """Whether the class whose newest event is `class_id` is in force
+        and covers the statement, as `level` decides it. `verify` asks this
+        of the `under` of a transitive version, with the classes in force
+        where the version stands in the chain."""
+        covering = self._covering(
+            author=author,
+            kind=kind,
+            type_name=type_name,
+            confidence=confidence,
+            recorded_at=recorded_at,
         )
+        return any(event_id == class_id for _threshold, event_id in covering)
 
     def level(
         self,
@@ -276,16 +312,13 @@ class Classes:
         the highest threshold wins, then the oldest event. A statement
         without a confidence is covered by none, and a built-in type by none.
         """
-        if confidence is None or type_name in GATE_TYPES:
-            return OPEN, None
-        covering = [
-            (item.threshold, event_id)
-            for item, event_id in self.by_name.values()
-            if self._covers(
-                item, author=author, kind=kind, type_name=type_name, recorded_at=recorded_at
-            )
-            and confidence >= item.threshold
-        ]
+        covering = self._covering(
+            author=author,
+            kind=kind,
+            type_name=type_name,
+            confidence=confidence,
+            recorded_at=recorded_at,
+        )
         if not covering:
             return OPEN, None
         _threshold, event_id = min(covering, key=lambda entry: (-entry[0], entry[1]))
@@ -299,26 +332,47 @@ def read_classes[Conn](log: LogStore[Conn], conn: Conn, *, at: datetime | None =
     An event whose payload was erased counts as nothing, and one whose form
     is broken is skipped as `verify` reports it; neither stops the read.
     """
-    by_name: dict[str, tuple[ApprovalClass, int]] = {}
-    ids: dict[str, list[int]] = {}
+    folded = ClassFold()
     for row in log.actions(conn, APPROVAL_CLASS):
-        payload = row.payload
+        if at is None or row.recorded_at <= at:
+            folded.add(row.id, row.payload)
+    return folded.classes()
+
+
+class ClassFold:
+    """The classes built one event at a time, in chain order, the way
+    `read_classes` builds them from the log; `verify` meets the class events
+    on its way through the chain, as it meets the vocabulary events."""
+
+    def __init__(self) -> None:
+        self._by_name: dict[str, tuple[ApprovalClass, int]] = {}
+        self._ids: dict[str, list[int]] = {}
+        self._current: Classes | None = None
+
+    def add(self, event_id: int, payload: Mapping[str, object] | None) -> None:
+        """Takes in one event. An erased one, one that is no approval class
+        event, and one with a broken form change nothing."""
         if payload is None or payload.get("action") != APPROVAL_CLASS:
-            continue
-        if at is not None and row.recorded_at > at:
-            continue
+            return
         try:
             item, _statement = _parse(payload)
         except _FormError:
-            continue
-        by_name[item.name] = (item, row.id)
-        ids.setdefault(item.name, []).append(row.id)
-    states = {
-        event_id: ClassState(newest, item.revoked, item.demote)
-        for name, (item, newest) in by_name.items()
-        for event_id in ids[name]
-    }
-    return Classes(by_name, states)
+            return
+        self._by_name[item.name] = (item, event_id)
+        self._ids.setdefault(item.name, []).append(event_id)
+        self._current = None
+
+    def classes(self) -> Classes:
+        """The classes of the events taken in so far. They do not change when
+        more are taken in later."""
+        if self._current is None:
+            states = {
+                event_id: ClassState(newest, item.revoked, item.demote)
+                for name, (item, newest) in self._by_name.items()
+                for event_id in self._ids[name]
+            }
+            self._current = Classes(dict(self._by_name), states)
+        return self._current
 
 
 # --- The write path ---------------------------------------------------------------

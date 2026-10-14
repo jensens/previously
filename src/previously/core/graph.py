@@ -957,25 +957,100 @@ def _contestable(draft: _Draft, contests: int, erased: set[int]) -> bool:
     return target is not None and target.claim.responsibility == DIRECT
 
 
-def _reject(
-    payload: Mapping[str, object],
-    drafts: dict[int, _Draft],
-    thread_of: dict[int, int],
-    classes: Mapping[int, ClassState],
-) -> None:
-    """Counts a rejection whose `of` names an open or transitive version, by
-    `level_of` now. One that names a direct version is ignored: the operator
-    stands for that one, and rejecting it would only show it as rejected
-    where it still wins."""
-    statement = parse_statement(payload)
-    if statement is None or statement.of is None:
-        return
-    target = thread_of.get(statement.of)
-    if target is None:
-        return
-    version = drafts[target].version(statement.of)
-    if version is not None and level_of(version, classes) != DIRECT:
-        drafts[target].rejected.add(statement.of)
+class GraphFold:
+    """`fold_graph` one row at a time, for a caller that needs the graph as
+    it stood at each row: `verify`, which holds every entity and relation
+    against what stood before it in the chain, and the write path, which
+    holds each claim of a batch against what the claims before it add.
+
+    `graph` builds again only the threads a row changed since the last call;
+    the others are taken over as they were.
+    """
+
+    def __init__(self) -> None:
+        self._drafts: dict[int, _Draft] = {}
+        self._thread_of: dict[int, int] = {}  # standing version id -> subject of its thread
+        self._erased: set[int] = set()
+        self._threads: dict[int, GraphThread] = {}
+        # Ordered, so that a new thread joins `_threads` in the order its
+        # draft was made, as `fold_graph` orders them.
+        self._touched: dict[int, None] = {}
+
+    def subject_of(self, version_id: int) -> int | None:
+        """The thread a standing version belongs to, or None."""
+        return self._thread_of.get(version_id)
+
+    def erased(self, event_id: int) -> bool:
+        """Whether an erased row of this id was taken in."""
+        return event_id in self._erased
+
+    def add(
+        self,
+        row_id: int,
+        recorded_at: datetime,
+        payload: Mapping[str, object] | None,
+        classes: Mapping[int, ClassState],
+    ) -> None:
+        """Takes in one row, which comes after every row taken in so far.
+        `classes` decide whether a rejection counts, by `level_of` at this
+        row."""
+        if payload is None:
+            self._erased.add(row_id)
+            return
+        if payload.get("assertion") == REJECTION:
+            self._reject(payload, classes)
+            return
+        claim = parse_claim(payload) if payload.get("assertion") in GRAPH_KINDS else None
+        if claim is None:
+            return
+        subject = row_id if claim.subject is None else claim.subject
+        drafts, erased = self._drafts, self._erased
+        if claim.subject is not None and subject not in drafts and subject not in erased:
+            return  # names nothing: not a first version, not an erased one
+        draft = drafts.get(subject) or _Draft(claim.kind)  # kept only once a version joins
+        if draft.kind != claim.kind:
+            return
+        if claim.contests is not None and not _contestable(draft, claim.contests, erased):
+            return
+        if claim.approves is not None:
+            if not _approvable(draft, claim.approves, erased):
+                return
+            draft.approved.add(claim.approves)
+        draft.versions.append(GraphVersion(row_id, recorded_at, claim))
+        drafts[subject] = draft
+        self._thread_of[row_id] = subject
+        self._touched[subject] = None
+
+    def _reject(self, payload: Mapping[str, object], classes: Mapping[int, ClassState]) -> None:
+        """Counts a rejection whose `of` names an open or transitive version,
+        by `level_of` now. One that names a direct version is ignored: the
+        operator stands for that one, and rejecting it would only show it as
+        rejected where it still wins."""
+        statement = parse_statement(payload)
+        if statement is None or statement.of is None:
+            return
+        target = self._thread_of.get(statement.of)
+        if target is None:
+            return
+        version = self._drafts[target].version(statement.of)
+        if version is not None and level_of(version, classes) != DIRECT:
+            self._drafts[target].rejected.add(statement.of)
+            self._touched[target] = None
+
+    def graph(self, classes: Mapping[int, ClassState]) -> Graph:
+        """The graph of the rows taken in so far, under `classes`. It does
+        not change when more rows are taken in later."""
+        for subject in self._touched:
+            draft = self._drafts[subject]
+            self._threads[subject] = GraphThread(
+                subject,
+                draft.kind,
+                tuple(draft.versions),
+                frozenset(draft.rejected),
+                frozenset(draft.approved),
+            )
+        self._touched.clear()
+        return Graph(dict(self._threads), classes)
 
 
 def fold_graph(
@@ -991,48 +1066,13 @@ def fold_graph(
     direct version of its thread. A rejection, parsed with
     `core.assertion.parse_statement`, counts when its `of` names a standing
     open or transitive version of the graph; it is ignored otherwise, since
-    it may reject an obligation or a decision. Approvals and objections that name an erased
-    version stand, as with an obligation.
+    it may reject an obligation or a decision. Approvals and objections that
+    name an erased version stand, as with an obligation.
     """
-    drafts: dict[int, _Draft] = {}
-    thread_of: dict[int, int] = {}  # standing version id -> subject of its thread
-    erased: set[int] = set()
+    folded = GraphFold()
     for row_id, recorded_at, payload in rows:
-        if payload is None:
-            erased.add(row_id)
-            continue
-        if payload.get("assertion") == REJECTION:
-            _reject(payload, drafts, thread_of, classes)
-            continue
-        claim = parse_claim(payload) if payload.get("assertion") in GRAPH_KINDS else None
-        if claim is None:
-            continue
-        subject = row_id if claim.subject is None else claim.subject
-        if claim.subject is not None and subject not in drafts and subject not in erased:
-            continue  # names nothing: not a first version, not an erased one
-        draft = drafts.get(subject) or _Draft(claim.kind)  # kept only once a version joins
-        if draft.kind != claim.kind:
-            continue
-        if claim.contests is not None and not _contestable(draft, claim.contests, erased):
-            continue
-        if claim.approves is not None:
-            if not _approvable(draft, claim.approves, erased):
-                continue
-            draft.approved.add(claim.approves)
-        draft.versions.append(GraphVersion(row_id, recorded_at, claim))
-        drafts[subject] = draft
-        thread_of[row_id] = subject
-    threads = {
-        subject: GraphThread(
-            subject,
-            draft.kind,
-            tuple(draft.versions),
-            frozenset(draft.rejected),
-            frozenset(draft.approved),
-        )
-        for subject, draft in drafts.items()
-    }
-    return Graph(threads, classes)
+        folded.add(row_id, recorded_at, payload, classes)
+    return folded.graph(classes)
 
 
 # --- Reading ----------------------------------------------------------------------
