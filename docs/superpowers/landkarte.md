@@ -104,6 +104,16 @@ ohne Projektionstabelle (Z §10.1). Am Gate ändert sich nichts. Die Seiten steh
 (`explanation/graph.md`, die drei Anleitungen, die Referenz), der Handoff
 `handoffs/2026-10-14-kup6s-graph-phase-1.md` liegt bei.
 
+Seit dem 2026-10-14 läuft `0.1.0a7` in kup6s (R7, Antwort in
+`handoffs/2026-10-14-kup6s-feedback-graph-phase-1.md`): alle vier Prüfungen des
+Handoffs stehen. `previously vocabulary apply --base` hat neun Ereignisse
+geschrieben, `entities` antwortet auf dem leeren Graphen, `list_entities`
+antwortet über MCP, und `previously-mcp` zeigt fünfzehn Werkzeuge. Eine Regel
+für `source:recollection` ist nicht gesetzt. Der übergebene Handoff bleibt
+unverändert; sein Satz, der `member_of` zum Grundvokabular zählt, führte in
+die Irre: `member_of` ist eingebaut (wie `circle` und `in_circle`) und steht
+nicht unter den neun.
+
 Nicht gebaut: die Suche, die Zuordnung von Events (Phase 2), Kreise im Graphen
 und am Gate (Phase 3), Verpflichtungen im Schema (Phase 4), KI-Schicht, jeder
 Konnektor außer dem für IMAP.
@@ -171,7 +181,9 @@ Reihenfolge: die Endprüfung in zwei Paketen mit der Messung von `entities`,
 (Planentscheidung 14), die Zahlen stehen unten unter *Zuordnungen* und auf
 `explanation/graph.md`;
 dann Push und PR; nach dem Merge das Release (die Nummer wählt der Betreuer),
-der Handoff und die Abnahme nach Z §17 Punkt 1, Vellenfeld. Erst danach der
+der Handoff und die Abnahme nach Z §17 Punkt 1, Vellenfeld. Das Release
+(`v0.1.0a7`) und der Handoff sind erledigt (R7); was als Nächstes kommt, ist die
+Abnahme der Phase 1 mit Vellenfeld durch den Betreuer (Z §17 Punkt 1). Erst danach der
 Plan der Phase 2 (unten unter *Zuordnungen (Phasen 1–4)*).
 Was die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an
 den Einheiten, zu denen es gehört.
@@ -1505,6 +1517,21 @@ auf `assertions.md` unter *What the pilot leaves open*.
 
 ## Erledigt, seit es auf einer Liste stand
 
+- ~~Die eingebauten Arten sind in `vocabulary show` nicht zu erkennen~~ (R7) —
+  gefunden am 2026-10-14 in der Antwort von kup6s auf den Handoff der Phase 1
+  (`handoffs/2026-10-14-kup6s-feedback-graph-phase-1.md`): `apply --base` schrieb
+  neun Arten, `show` listete zwölf. Geschlossen im Zweig
+  `worktree-rueckmeldung-a7`: `render_file` setzt über die Tabelle von
+  `circle`, `member_of` und `in_circle` die Zeile `# built in: the gate reads
+  it; only its labels can change`, `parse_file` liest sie als Kommentar, und
+  `vocabulary.toml` trägt sie auch. Zwei Tests, gemessen rot ohne die Zeile
+  (für alle drei und für `member_of` allein), grün danach; die Referenz
+  `vocabulary.md` sagt es.
+- ~~Der Handoff ging mit dem Tag hinaus, bevor das Image auf `ghcr.io` stand~~
+  (R7) — `v0.1.0a7` (2026-10-14): das Tag stand gut neun Minuten vor dem Image,
+  und kup6s wartete. `cut-a-release.md` sagt jetzt, dass ein Handoff oder jede
+  Aufforderung, die neue Version zu ziehen, erst nach `manifest` hinausgeht;
+  Zweig `worktree-rueckmeldung-a7`.
 - ~~`entity … --retract` ohne `--subject` kann eine erste Fassung schreiben,
   die schon widerrufen ist~~ (P-Z1, Aufgabe 5) — Commit `1b5fbf4`:
   `entity … --state retracted` ohne `--subject` wird vor dem Schreiben

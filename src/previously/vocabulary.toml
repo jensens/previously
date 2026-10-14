@@ -1,6 +1,7 @@
 # The vocabulary of entities and relations, as the log holds it.
 # `previously vocabulary apply FILE` writes what differs from the log.
 
+# built in: the gate reads it; only its labels can change
 [entity.circle]
 labels = { de = "Kreis", en = "Circle" }
 behaviors = []
@@ -52,6 +53,7 @@ from = ["person"]
 to = ["post"]
 fields = []
 
+# built in: the gate reads it; only its labels can change
 [relation.in_circle]
 labels = { de = "Im Kreis", en = "In circle" }
 behaviors = []
@@ -68,6 +70,7 @@ fields = [
   { name = "role", type = "text", required = false },
 ]
 
+# built in: the gate reads it; only its labels can change
 [relation.member_of]
 labels = { de = "Mitglied von", en = "Member of" }
 behaviors = ["period"]

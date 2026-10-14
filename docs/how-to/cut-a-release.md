@@ -121,6 +121,8 @@ The jobs run in this order:
 5. `manifest`: one manifest list over both images, under the tags people use.
 
 When `manifest` has passed, the release is out.
+Send a handoff to an environment, or any note that tells an operator to pull the new version, only after that.
+Until then the tag exists but the image may not: for `v0.1.0a7` (2026-10-14) the tag stood about nine minutes before the image was on `ghcr.io`.
 Check that the image is there for both platforms:
 
 ```shell
