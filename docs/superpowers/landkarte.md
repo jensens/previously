@@ -91,8 +91,22 @@ einen zweiten Client. Nicht gelaufen: der Schlüssel der Vibe-Ask-Einstellung.
 Die Kennzeichnung `requiresUserInteraction` ist am selben Tag gegen
 `0.1.0a6` nachgemessen (unter *Feststellungen und Entitäten*).
 
-Nicht gebaut: die Suche, jede Entität und jede Zuordnung, KI-Schicht,
-jeder Konnektor außer dem für IMAP.
+Gebaut, nicht abgenommen: Phase 1 der Zuordnungen, der Kern (Z §3–§7), auf dem
+Zweig `worktree-zuordnungen`, nach dem Spec `specs/2026-10-14-zuordnungen.md`
+(lebendig, nicht eingefroren) und dem Plan `plans/2026-10-14-zuordnungen-phase-1.md`.
+Das Vokabular als Handlung `vocabulary` mit Grundvokabular, Entitäten und
+Beziehungen als Feststellungen mit den drei Stufen `direct`, `transitive` und
+`open`, die Freigabeklassen mit Trefferquote und Stichprobe, Einwände und
+Rückfragen, die Kommandos `vocabulary`, `entity`, `relate`, `entities`,
+`relations`, `classes`, `triage`, `answer` und `status`, fünf MCP-Werkzeuge
+(fünfzehn in allem) und der Kopf mit der Zahl der Einwände. Ohne Migration und
+ohne Projektionstabelle (Z §10.1). Am Gate ändert sich nichts. Die Seiten stehen
+(`explanation/graph.md`, die drei Anleitungen, die Referenz), der Handoff
+`handoffs/2026-10-14-kup6s-graph-phase-1.md` liegt bei.
+
+Nicht gebaut: die Suche, die Zuordnung von Events (Phase 2), Kreise im Graphen
+und am Gate (Phase 3), Verpflichtungen im Schema (Phase 4), KI-Schicht, jeder
+Konnektor außer dem für IMAP.
 
 ## Was als Nächstes kommt
 
@@ -149,9 +163,16 @@ jetzt kommt: die Abnahme nach F §14 ist gelaufen (2026-10-13, siehe
 *Erledigt*), der Zweig `mcp-erklaeren` ist gemergt (PR #20, `248a001`) und
 mit `pool_pre_ping` als `v0.1.0a6` am 2026-10-13 veröffentlicht; der Handoff
 `handoffs/2026-10-13-kup6s-a6.md` liegt bei und bittet kup6s, die Umschaltung
-der Primärinstanz zu wiederholen; kup6s hat geantwortet (R6, siehe unten). Als nächste
-Einheit mit Spec dann die Zuordnungen (F §1, §15; unten unter *Feststellungen und
-Entitäten*).
+der Primärinstanz zu wiederholen; kup6s hat geantwortet (R6, siehe unten). Die Zuordnungen
+haben ihren Spec (`specs/2026-10-14-zuordnungen.md`, lebendig bis die Seiten
+aller Phasen stehen), und Phase 1 ist gebaut (oben). Was jetzt kommt, in dieser
+Reihenfolge: die Endprüfung in zwei Paketen mit der Messung von `entities`,
+`relations --at` und des Kopfes bei 10 000 und 100 000 Beziehungen
+(Planentscheidung 14), die Zahlen stehen unten unter *Zuordnungen* und auf
+`explanation/graph.md`;
+dann Push und PR; nach dem Merge das Release (die Nummer wählt der Betreuer),
+der Handoff und die Abnahme nach Z §17 Punkt 1, Vellenfeld. Erst danach der
+Plan der Phase 2 (unten unter *Zuordnungen (Phasen 1–4)*).
 Was die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an
 den Einheiten, zu denen es gehört.
 
@@ -269,7 +290,10 @@ ebenso, **RA** seine Rückmeldung vom 2026-10-12 auf die Handoffs der
 Einstellungen und der Feststellungen
 (`handoffs/2026-10-12-kup6s-feedback-settings-and-assertions.md`), ebenso,
 **R6** seine Rückmeldung vom 2026-10-13 auf den Handoff von `0.1.0a6`
-(`handoffs/2026-10-13-kup6s-feedback-a6.md`), ebenso.
+(`handoffs/2026-10-13-kup6s-feedback-a6.md`), ebenso, **Z** der Spec der
+Zuordnungen (`specs/2026-10-14-zuordnungen.md`) mit Abschnitt, **P-Z1** das
+Ausführungsprotokoll seiner Phase 1 (`sdd/2026-10-14-zuordnungen-phase-1/`)
+mit dem Ruling oder der Aufgabe.
 
 ### Einwurf-Vertrag (`contract`, Teilprojekt 2)
 
@@ -299,7 +323,13 @@ Einstellungen und der Feststellungen
   für die Anhänge einer Mail mit Einheit 7 (PI §11 Punkt 8). Am 2026-10-11 das
   Erste, was ein Leser der Chronik vermisste: Claude Code fasste über MCP die
   Mails eines Kreises zusammen und konnte die Word- und Excel-Dateien, die die
-  Substanz trugen, nur beim Namen nennen (RG).
+  Substanz trugen, nur beim Namen nennen (RG). Der Betreuer am 2026-10-14:
+  Kunden schicken die wichtige Information oft nur als Anhang, und in der Mail
+  steht wenig — ein PDF, ein Word-Dokument. Der Spec der Zuordnungen
+  (`specs/2026-10-14-zuordnungen.md`, §8) legt schon fest, wie ein gelesener
+  Anhang aussehen soll: ein eigenes Event wie eine Mail im Anhang (PI §3.6),
+  mit eigenen Einheiten und eigenen Zuordnungen, das die Kreise der Mail erbt,
+  mit der es kam, weil es selbst keine Adressen hat.
 - Der Quellschlüssel überlebt jede Tilgung: `source` und `external_id` stehen
   im Event-Hash, und eine Message-ID trägt eine Domain (1c §4.5, §12 Punkt 4).
 - Nach einer Wiederherstellung kann ein getilgtes Event, das mit ihr verloren
@@ -379,7 +409,7 @@ Einstellungen und der Feststellungen
   (PP, A1 Frage 4).
 - **Die Zuordnungen, mit eigenem Spec als Nächstes:** Events zu Projekten und
   Vorgängen, Quellen ohne Adressen zu einem Kreis, weitere Fundorte einer Mail
-  (die Punkte oben). Leitbeispiel des Betreuers (2026-10-12): Robert und er
+  (die Punkte oben). Leitbeispiel des Betreuers (2026-10-12): Markus und er
   sind im selben Verein und haben beide eine Firma; sie schreiben sich über
   die Firmenadressen zu Themen des Vereins. Die Organisation folgt also nicht
   aus der Adresse, sondern aus dem Thema — eine Zuordnung hängt am Inhalt, als
@@ -402,6 +432,144 @@ Einstellungen und der Feststellungen
   Feststellung mit Quelle, weil kein Konnektor Arbeit sieht (F §1, §4, §15).
 - Ob ein Kreis umbenannt werden kann, ohne dass `circle:`-Verweise in
   Feststellungen ins Leere zeigen (F §15).
+
+### Zuordnungen (Phasen 1–4)
+
+Phase 1 ist gebaut, die Seiten stehen (`explanation/graph.md`). Was sie offen
+lässt, mit ihrem Ausführungsprotokoll (`sdd/2026-10-14-zuordnungen-phase-1/`,
+das mit der Endprüfung ins Repository kommt):
+
+- **Der Rest von einem Bit beim Zyklus.** Ein Modell wird für einen Zyklus nie
+  abgewiesen, und keine Klasse deckt eine Art mit dem Verhalten `acyclic`, so
+  dass seine Fassung davon immer `open` bleibt (P-Z1, Ruling T6-a). Übrig
+  bleibt: `write_approve` und `write_triage_answer` über MCP weisen eine
+  Freigabe, die einen Zyklus schlösse, mit einem Satz ab, der einem von der
+  Person bestätigten Aufruf ein Bit über Kanten sagt, die der Client nicht
+  sehen darf (`mcp-tools.md`, `explanation/graph.md`). Der Preis ist gewollt;
+  zu entscheiden bleibt, ob eine spätere Phase ihn ganz abträgt (Z §9.4).
+- **`verify` wächst überlinear über azyklischen Kanten, etwa quadratisch.**
+  Jede Kante einer azyklischen Art wird gegen die Kanten davor geprüft.
+  Gemessen von der Endprüfung am 2026-10-14, nur Kanten `part_of`, Median
+  aus drei Läufen, ohne Befund: als Kette 1 000 Kanten 0,84 s, 2 000 2,34 s,
+  5 000 14,84 s; als Baum 0,78 s, 2,10 s, 13,05 s — zweieinhalbmal so viele
+  Kanten, sechsmal so lang; eine Kette aus 10 000 Kanten 78,6 s, ein Lauf.
+  (Aufgabe 4 hatte 0,57 s und 1,77 s für die Kette gemessen; die Zahlen der
+  Endprüfung ersetzen sie.) Ein ganzes Log mit 10 000 Beziehungen (1 000
+  davon `part_of` als Baum) prüfte `verify` in 2,77 s, bei 2 000 in 0,62 s,
+  bei 100 000 in 135 s, ein Lauf auf festem Stand von `9967268` (P-Z1,
+  Ruling T4-c). Als täglicher Job bleibt das tragbar; wächst der Graph weit
+  darüber, wird die Prüfung auf Zyklen in `verify` inkrementell, spätestens
+  mit Phase 2.
+- **Jeder MCP-Aufruf faltet den ganzen Graphen für die Zahl im Kopf.** Um die
+  anhängigen Einwände zu zählen, faltet `Service.answer` vor jedem Werkzeug
+  den Graphen und fragt die Policy nach den Quellen jedes Einwands, auch bei
+  `whoami` und den Werkzeugen der Einheit 5, die den Graphen sonst nie lesen.
+  Gemessen von der Endprüfung am 2026-10-14, Median aus drei Läufen, bei
+  10 000 Beziehungen und 5 000 Entitäten: `whoami` 0,52 s, `list_entities`
+  1,72 s, `read_graph` 0,47 s, `previously entities` 0,53 s, ein Schreiben
+  0,47 s, `verify` 2,77 s; bei 2 000 Beziehungen `whoami` 0,10 s,
+  `list_entities` 0,28 s, `verify` 0,62 s. Bis 10 000 wächst es linear. Bei
+  100 000 Beziehungen und 50 000 Entitäten, auf festem Stand von `9967268`
+  (i7-11370H): `read_graph` 7,35 s (Median aus drei), in Einzelläufen
+  `whoami` 7,69 s, `list_entities` 23,7 s, mit 20 Einwänden 7,33 s und
+  24,2 s; aus dem ersten Lauf `entities` 7,59 s, `relations --at` 7,50 s,
+  ein Schreiben 7,34 s — sechzehnmal so lang für zehnmal so viel. Bei
+  10 000 tragen Listen, Schreiben und Kopf noch, `list_entities` liegt mit
+  1,7 s schon über einer Sekunde; bei 100 000 trägt keins davon. Phase 1 nimmt die Kosten
+  hin (Ruling F-c): ein Zwischenspeicher, der am Tip hängt, verfällt mit dem
+  Zugriffseintrag jedes Aufrufs, und beim Piloten mit einigen hundert
+  Aussagen sind es Millisekunden. **Phase 2 braucht eine Projektion oder eine
+  inkrementelle Faltung, bevor die Daten wachsen** (Planentscheidung 14,
+  Z §3.4); `explanation/graph.md` trägt die Zahlen. Die Messungen der
+  Aufgabe 6 (`whoami` bei 1 000 Entitäten ohne Beziehungen 53 ms, bei 5 000
+  153 ms) stehen dort daneben.
+- **`verify` hält vom Vokabular und von den Freigabeklassen nur die Form
+  fest.** Der Schreibweg weist beim Vokabular eine Art ab, die eine Art nennt,
+  die nicht steht (auch einen `ref` auf eine Beziehungsart), das Stilllegen
+  einer Art, die eine andere braucht, und eine umgeformte eingebaute Art
+  (`core/vocabulary.py`, `refusal`); bei einer Klasse eine Art, die nicht
+  steht, und eine azyklische Art (`core/classes.py`, `_refusal`). `verify`
+  prüft davon nur die Form. Schaden richtet das nicht an, der Lesepfad
+  neutralisiert beides (nur Beschriftungen einer eingebauten Art,
+  `conformance_problem` weist Enden von Arten ab, die nicht stehen,
+  `_covering` prüft azyklisch); der Docstring von `_Claims` sagt es seit der
+  Endprüfung. `verify` faltet das Vokabular schon in Kettenfolge
+  (`VocabularyFold`) und könnte je Event `refusal(before, [spec])` fragen
+  (P-Z1, Endprüfung M3).
+- **Offene Enden und offene Kanten zählen als stehend.** `EntityTypes`
+  (`graph_write.py`) und `Graph.entities()` geben auch Entitäten zurück, die
+  nur ein Modell vorgeschlagen hat, und `relations()` offene Gewinner. Eine
+  direkte Beziehung des Betreibers oder eine Freigabe kann also auf eine nur
+  vorgeschlagene Entität zeigen, auch ein direktes `member_of` auf einen
+  vorgeschlagenen `circle`. In Phase 1 harmlos. Phase 2 (`chronicle --in`)
+  und Phase 3 (das Gate) müssen beide Enden und die Kante nach Stufe filtern;
+  das Gate liest nur direkte Enden (P-Z1, Endprüfung M4).
+- **Die eingebauten Arten stehen im Code, `verify` misst alte Aussagen an der
+  heutigen Form.** `VocabularyFold.add` ersetzt die Form einer eingebauten
+  Art an jeder Stelle durch die des Codes. Gibt Phase 3 `member_of` weitere
+  `from`-Arten (Adresse, Domain) und `in_circle` ein Ereignis als Beginn, wird
+  jedes frühere `member_of` am neuen Code gemessen; nimmt sie `person` oder
+  `organization` aus `from`, werden Mitgliedschaften der Phase 1 zu Befunden.
+  Unter Phase 3: die Verbindungen einer eingebauten Art dürfen nur wachsen,
+  oder ihre Form bekommt eine Version (P-Z1, Endprüfung M5).
+- **Triage, Freigabe und Antwort stehen zweimal, je Oberfläche einmal.**
+  `cli.py` `_waiting` entspricht `mcp_server/read.py` `waiting_versions`,
+  `_approval_of` dem `replace(…)` in `graph_approval_write`, die Antwort in
+  `cli.py` der in `triage_answer_write`. Z §7.5 will, dass `status` und der
+  MCP-Kopf dasselbe zeigen, und zwei Sortierungen laufen auseinander.
+  Mechanisch: `waiting_versions`, `approval_of(thread, version, reason)` und
+  `answer_of(question, choice, reason)` nach `core/graph_write.py`, von beiden
+  benutzt; die vorhandenen Tests halten es (P-Z1, Endprüfung M8).
+- **Der Platzhalter einer verborgenen Entität verschwindet, wenn ihr letzter
+  Vorschlag abgelehnt wird.** `list_entities` zeigt für jede verborgene
+  Entität mit Gewinner einen Platzhalter; ein Faden ohne Gewinner fällt
+  heraus (`read.py`, `entities`). Das ist ein Bit über Aktivität auf einem
+  verborgenen Faden, die Art Signal, die Ruling T6-b aus der Triage genommen
+  hat; Verpflichtungen verhalten sich ebenso. Zu entscheiden, ob ein
+  Platzhalter bleibt, solange der Faden besteht (P-Z1, Endprüfung).
+- **Ein Ereignis als Beginn einer Beziehung, was Phase 2 ändern muss.** Die
+  Form (`RelationBody.start: int | Source`) nimmt es schon an,
+  `conformance_problem` weist es in Phase 1 mit einem Satz ab, und `reaches`,
+  `closes_cycle`, `relation_ends` und `relation_visible` überspringen es.
+  Phase 2 ändert: die Abweisung und den `int`-Cast in `_ends_conformance`,
+  `EntityTypes` und die Enden, und `relation_visible`, das für jeden
+  Source-Beginn `False` gibt (P-Z1, Endprüfung).
+- **Das Vokabular kann sich zwischen Vorschau und Schreiben von `vocabulary
+  apply FILE` ändern.** `_cmd_vocabulary_apply` zeigt die Unterschiede aus
+  einer Transaktion, `apply_vocabulary` rechnet sie unter dem Tip neu und
+  schreibt, was dann abweicht; ein Vokabular-Event dazwischen wird
+  überschrieben, ohne gezeigt worden zu sein. Dasselbe Muster wie bei
+  `policy`, mit einem Betreiber harmlos. `--base` rechnet die fehlenden Arten
+  seit der Endprüfung in der Schreib-Transaktion (P-Z1, Ruling F-a).
+- **`cli.py` teilen.** 4 274 Zeilen zur Endprüfung; die Befehle des Graphen
+  stehen in einem Block (etwa Zeilen 2 995–3 950) und könnten ohne
+  Verhaltensänderung `previously/cli_graph.py` werden (P-Z1, Endprüfung).
+- **Zurückgestellte Kleinigkeiten, die Erinnerung verdienen:**
+  - Aufgabe 1: Eine Art, die eine eingebaute nennt, lässt sich stilllegen,
+    ohne dass die Prüfung der Verweise greift — `person` stilllegen, während
+    das eingebaute `member_of` sie nennt, wird nicht abgewiesen und ist
+    ungetestet.
+  - Aufgabe 3: Die Trefferquote zählt eine Fassung als korrigiert, wenn eine
+    spätere transitive Fassung desselben Fadens freigegeben wird (folgt dem
+    Auftrag, ungeprüft festgehalten), und der Gleichstand zweier Klassen
+    nimmt die Kennung des jüngsten Ereignisses je Name, so dass eine neu
+    gesetzte Klasse ihr Dienstalter gegen eine gleichrangige verliert.
+  - Aufgabe 5: Die Spalte der Art zeigt die Beschriftung und nicht den
+    Bezeichner, so dass eine Liste nicht unmittelbar `--type` füttert (die
+    Seite einer Entität zeigt beides).
+  - Aufgabe 1: `_text` in `core/vocabulary.py` nimmt `isprintable()` und weist
+    damit ein geschütztes Leerzeichen in einer Beschriftung ab. Strenger ist
+    sicher; mit einer gemeinsamen Textregel zusammenzulegen, wenn sie kommt.
+  - Aufgabe 1: `tests/test_wheel.py` baut das Wheel zweimal. Kostet nur
+    Testzeit.
+- **Phasen 2 bis 4 selbst**, im Spec ausgearbeitet und nicht gebaut: die
+  Zuordnung von Events und Einheiten an Klammern mit `chronicle --in` und
+  `in` über MCP (Z §8, Phase 2), Kreise im Graphen, die das Gate liest, mit
+  der schweren Prüfung der Sicherheitsgrenze (Z §9, Phase 3), und
+  Verpflichtungen und Entscheidungen im Schema (Z §11, Phase 4). Jede mit
+  eigenem Plan, Merge, Release und Abnahme (Z §1, §17); die Relationen
+  `concerns` und `in_circle` mit Ereignis als Beginn kommen mit Phase 2
+  (P-Z1, Ruling P-2).
 
 ### Projektionen
 
@@ -1234,7 +1402,10 @@ auf `assertions.md` unter *What the pilot leaves open*.
   `tests/test_mcp_server.py` scheiterte am 2026-10-13 einmal in einem
   Teillauf; acht Läufe mit wechselnder Reihenfolge danach waren grün. Kommt er
   wieder, die Saat von `pytest-randomly` aus der Ausgabe notieren und damit
-  nachstellen.
+  nachstellen. Diagnose (Endprüfung von Phase 1): der Test scheitert, wenn
+  der Zufallsanteil des Markers eine lange Folge von Ziffern enthält, die die
+  Zahlenprüfung des Testrahmens als Zahl über 2^53 liest; das Auftreten hängt
+  also an der Zufallsfolge und nicht an der Reihenfolge der Tests.
 - Drei geparkte Testlöcher am Doku-Tor (1b §10 Punkt 5).
 - Die Reihenfolge der zwei `stderr`-Hinweise in `cli.md` hält nichts
   mechanisch; `_message_patterns` nimmt auch die `_describe`-Literale auf
@@ -1333,6 +1504,16 @@ auf `assertions.md` unter *What the pilot leaves open*.
   Nachtrag).
 
 ## Erledigt, seit es auf einer Liste stand
+
+- ~~`entity … --retract` ohne `--subject` kann eine erste Fassung schreiben,
+  die schon widerrufen ist~~ (P-Z1, Aufgabe 5) — Commit `1b5fbf4`:
+  `entity … --state retracted` ohne `--subject` wird vor dem Schreiben
+  abgewiesen, wie `relate --retract`; ein Test, gemessen rot ohne die
+  Prüfung (Endprüfung M12).
+- ~~Eine direkte, stehende Beziehung, die Kandidaten trägt, wird auf einem
+  Faden mit anhängiger Rückfrage abgewiesen~~ (P-Z1, Aufgabe 4) — kann nicht
+  eintreten: `_to_problem` in `core/graph.py` weist Kandidaten an jeder nicht
+  offenen Fassung schon als Formfehler ab (Endprüfung, Ruling F-d).
 
 - ~~Die Abnahme der Einheit 5 nach F §14 durch den Betreuer; je ein echter
   Aufruf von `write_assertion` mit Claude Code und mit Vibe, das verschachtelte

@@ -12,6 +12,7 @@ from collections.abc import Callable
 from collections.abc import Generator
 from contextlib import contextmanager
 from contextlib import ExitStack
+from dataclasses import asdict
 from dataclasses import dataclass
 from dataclasses import replace
 from datetime import date
@@ -59,6 +60,13 @@ from previously.core.assertions import write_statements
 from previously.core.blob import fetch_blob
 from previously.core.blob import store_blob
 from previously.core.chain import read_references
+from previously.core.classes import ApprovalClass
+from previously.core.classes import class_payload
+from previously.core.classes import class_refusal
+from previously.core.classes import hit_rates
+from previously.core.classes import read_classes
+from previously.core.classes import sample
+from previously.core.classes import set_class
 from previously.core.clients import add_client
 from previously.core.clients import client_rows
 from previously.core.clients import revoke_client
@@ -74,6 +82,28 @@ from previously.core.errors import RedactionRefused
 from previously.core.errors import SinkUnwritable
 from previously.core.errors import SourceUnreadable
 from previously.core.gaps import gaps
+from previously.core.graph import ACTIVE
+from previously.core.graph import Claim
+from previously.core.graph import claim_changes
+from previously.core.graph import claim_payload
+from previously.core.graph import conformance_problem
+from previously.core.graph import ENTITY
+from previously.core.graph import ENTITY_STATES
+from previously.core.graph import EntityBody
+from previously.core.graph import FieldValue
+from previously.core.graph import level_of
+from previously.core.graph import Period
+from previously.core.graph import RECOLLECTION
+from previously.core.graph import RELATION
+from previously.core.graph import RelationBody
+from previously.core.graph import RETRACTED
+from previously.core.graph import SOURCES
+from previously.core.graph import STANDING
+from previously.core.graph import TRANSITIVE
+from previously.core.graph_write import check_claims
+from previously.core.graph_write import decided
+from previously.core.graph_write import read_graph
+from previously.core.graph_write import write_claims
 from previously.core.hashing import is_address
 from previously.core.hashing import iso_utc
 from previously.core.identity import artifact_hash_of
@@ -108,6 +138,26 @@ from previously.core.units import normalize_line_endings
 from previously.core.units import split_plaintext
 from previously.core.verify import BlobCheck
 from previously.core.verify import examine
+from previously.core.vocabulary import apply_vocabulary
+from previously.core.vocabulary import base_vocabulary
+from previously.core.vocabulary import changed_attributes
+from previously.core.vocabulary import DATE
+from previously.core.vocabulary import differences
+from previously.core.vocabulary import differing_kinds
+from previously.core.vocabulary import display_label
+from previously.core.vocabulary import ENTITY_KIND
+from previously.core.vocabulary import FieldSpec
+from previously.core.vocabulary import is_language_tag
+from previously.core.vocabulary import missing_kinds
+from previously.core.vocabulary import NAME_FIELD
+from previously.core.vocabulary import parse_file
+from previously.core.vocabulary import PERIOD
+from previously.core.vocabulary import read_vocabulary
+from previously.core.vocabulary import REF
+from previously.core.vocabulary import refusal as vocabulary_refusal
+from previously.core.vocabulary import RELATION_KIND
+from previously.core.vocabulary import render_file
+from previously.core.vocabulary import VocabularyRefused
 from previously.gate.gate import call
 from previously.gate.gate import explain
 from previously.gate.prices import load_prices
@@ -129,6 +179,7 @@ import ipaddress
 import json
 import mimetypes
 import os
+import random
 import re
 import signal
 import ssl
@@ -147,6 +198,9 @@ if TYPE_CHECKING:
     from previously.core.assertion import Thread
     from previously.core.assertion import Version
     from previously.core.decide import Decision
+    from previously.core.graph import Graph
+    from previously.core.graph import GraphThread
+    from previously.core.graph import GraphVersion
     from previously.core.policy import Policy
     from previously.core.policy import Statement
     from previously.core.redact import Redacted
@@ -154,6 +208,8 @@ if TYPE_CHECKING:
     from previously.core.redaction import RedactionIndex
     from previously.core.verify import Examination
     from previously.core.verify import Finding
+    from previously.core.vocabulary import KindSpec
+    from previously.core.vocabulary import Vocabulary
     from previously.gate.adapters import Adapter
     from previously.gate.gate import Called
     from sqlalchemy import Connection
@@ -1792,6 +1848,134 @@ def _cmd_policy(args: argparse.Namespace) -> int:
     return 0
 
 
+# --- The vocabulary ---------------------------------------------------------------
+
+
+def _vocabulary_arguments(parser: argparse.ArgumentParser) -> None:
+    what = parser.add_subparsers(dest="what", required=True)
+    sentence = "print the vocabulary in force as a file"
+    showing = what.add_parser("show", help=sentence, description=sentence)
+    showing.add_argument(
+        "--at", metavar="MOMENT", help="the vocabulary of that moment, ISO 8601 with a zone"
+    )
+    sentence = "write what a vocabulary file changes"
+    applying = what.add_parser("apply", help=sentence, description=sentence)
+    applying.add_argument("file", nargs="?", metavar="FILE", help="a vocabulary file")
+    applying.add_argument(
+        "--base",
+        action="store_true",
+        help="add the kinds of the vocabulary that ships which the log does not hold",
+    )
+    applying.add_argument("--yes", action="store_true", help="write without asking")
+
+
+def _vocabulary_source(args: argparse.Namespace) -> str:
+    """The text of the file `apply` was given: the shipped one with `--base`,
+    else the file named."""
+    if args.base == (args.file is not None):
+        raise InvalidPayload("give a FILE or --base, one of the two")
+    if args.base:
+        return base_vocabulary()
+    try:
+        return Path(args.file).read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as error:
+        raise InvalidPayload(f"{args.file} cannot be read: {error}") from error
+
+
+def _shown(value: object) -> str:
+    return escape_field(json.dumps(value, sort_keys=True, ensure_ascii=False, default=sorted))
+
+
+def _difference_lines(current: Vocabulary, changed: Iterable[KindSpec]) -> list[str]:
+    """One line per kind to write, `add`, `change` or `retire`, and under a
+    change one line per attribute with the old and the new value."""
+    lines: list[str] = []
+    for spec in changed:
+        before = current.kind(spec.declares, spec.name)
+        verb = "add" if before is None else "retire" if spec.retired else "change"
+        lines.append(f"{verb}\t{spec.declares}\t{escape_field(spec.name)}")
+        if before is None or spec.retired:
+            continue
+        for attribute in changed_attributes(before, spec):
+            old, new = getattr(before, attribute), getattr(spec, attribute)
+            lines.append(f"  {attribute}\t{_shown(_plain(old))}\t{_shown(_plain(new))}")
+    return lines
+
+
+def _plain(value: object) -> object:
+    """A spec attribute as something `json` writes."""
+    if isinstance(value, tuple):
+        return [_plain(item) for item in cast("tuple[object, ...]", value)]
+    if isinstance(value, FieldSpec):
+        return asdict(value)
+    return value
+
+
+def _differing_lines(current: Vocabulary, kept: Sequence[KindSpec]) -> list[str]:
+    """For `apply --base`: one line per kind the base holds in another form
+    than the log, `differs`, and under it one line per attribute with the
+    value in the log and the value in the base; then the sentence that says
+    how to take such a change."""
+    lines: list[str] = []
+    for spec in kept:
+        before = current.kind(spec.declares, spec.name)
+        if before is None:
+            continue
+        lines.append(f"differs\t{spec.declares}\t{escape_field(spec.name)}")
+        for attribute in changed_attributes(before, spec):
+            old, new = getattr(before, attribute), getattr(spec, attribute)
+            lines.append(f"  {attribute}\t{_shown(_plain(old))}\t{_shown(_plain(new))}")
+    if lines:
+        lines.append(
+            "--base changes no kind the log holds; to take a difference, edit the output "
+            "of `previously vocabulary show` and apply that file"
+        )
+    return lines
+
+
+def _cmd_vocabulary_apply(args: argparse.Namespace) -> int:
+    """Shows each difference, asks, and writes one event per kind that
+    differs. A refusal comes before the question.
+
+    With `--base`, only the kinds the log does not hold are written; a kind
+    the log holds in another form is named and left as it stands, so running
+    it after an update never retires or reshapes the operator's own kinds."""
+    specs = parse_file(_vocabulary_source(args))
+    with _storage() as storage:
+        with storage.begin() as conn:
+            current = read_vocabulary(storage, conn)
+        if args.base:
+            changed, kept = missing_kinds(current, specs), differing_kinds(current, specs)
+        else:
+            changed, kept = differences(current, specs), ()
+        if changed and (sentence := vocabulary_refusal(current, changed)) is not None:
+            raise VocabularyRefused(sentence)
+        for line in [*_difference_lines(current, changed), *_differing_lines(current, kept)]:
+            print(line)
+        if not changed:
+            print("nothing to change")
+            return 0
+        if not _confirmed(args):
+            print("nothing written", file=sys.stderr)
+            return 1
+        ids = apply_vocabulary(storage, specs, recorded_at=datetime.now(UTC), add_only=args.base)
+    for event_id in ids:
+        print(f"vocabulary event {event_id}")
+    return 0
+
+
+def _cmd_vocabulary(args: argparse.Namespace) -> int:
+    """Prints the vocabulary in force as a file, or writes what a file
+    changes."""
+    if args.what == "apply":
+        return _cmd_vocabulary_apply(args)
+    at = parse_moment(args.at) if args.at else None
+    with _storage() as storage, storage.begin() as conn:
+        vocabulary = read_vocabulary(storage, conn, at=at)
+    print(render_file(vocabulary), end="")
+    return 0
+
+
 # --- The gate ---------------------------------------------------------------------
 #
 # One task for now, `mail_overview`. The caller names the event, never the
@@ -2359,15 +2543,70 @@ def _proposal_of(threads: Mapping[int, Thread], event_id: int) -> tuple[Thread, 
     raise PreviouslyError(f"event {event_id} is no proposal that stands")
 
 
+def _approval_of(thread: GraphThread, version: GraphVersion, reason: str | None) -> Claim:
+    """The claim that makes a version of an entity or a relation the
+    operator's own: the content, sources, author and confidence of the
+    version, direct and pointing at it. The write path takes nothing else
+    as an approval."""
+    return replace(
+        version.claim,
+        responsibility=DIRECT,
+        reason=version.claim.reason if reason is None else reason,
+        handle=None,
+        subject=thread.subject,
+        approves=version.id,
+        under=None,
+        contests=None,
+    )
+
+
+def _approve_claims(
+    args: argparse.Namespace,
+    storage: PostgresStorage,
+    conn: Connection,
+    graph: Graph,
+    ids: Sequence[int],
+) -> list[Claim]:
+    claims: list[Claim] = []
+    for event_id in ids:
+        found = _graph_version_of(graph, event_id)
+        if found is None:
+            raise PreviouslyError(f"event {event_id} is no proposal that stands")
+        asked = found[1].claim.body
+        if isinstance(asked, RelationBody) and asked.candidates is not None:
+            raise PreviouslyError(
+                f"event {event_id} is a question: answer it with answer {event_id} --choose ID"
+            )
+        claims.append(_approval_of(found[0], found[1], args.reason))
+    return list(check_claims(storage, conn, claims, recorded_at=datetime.now(UTC)))
+
+
+def _named_by_threads(threads: Mapping[int, Thread]) -> set[int]:
+    return {version.id for thread in threads.values() for version in thread.versions}
+
+
 def _cmd_approve(args: argparse.Namespace) -> int:
     """Makes each proposal the operator's own: a direct version with the
     content, sources and author of the proposal, pointing at it. An id named
-    twice is approved once."""
+    twice is approved once. A proposal may be an obligation or a decision,
+    or a version of an entity or a relation, an objection or a transitive
+    version among them; one call names one family."""
     with _storage() as storage:
         with storage.snapshot() as conn:
             threads = read_threads(storage, conn)
+            ids = list(dict.fromkeys(args.ids))
+            named = _named_by_threads(threads)
+            graph = read_graph(storage, conn) if not named.issuperset(ids) else None
+            if graph is not None and any(_graph_version_of(graph, i) for i in ids):
+                if any(event_id in named for event_id in ids):
+                    raise PreviouslyError(
+                        "one call approves obligations and decisions, or entities and "
+                        "relations, not both"
+                    )
+                claims = _approve_claims(args, storage, conn, graph, ids)
+                return _write_claims_asked(args, storage, claims)
             statements: list[AssertionStatement] = []
-            for event_id in dict.fromkeys(args.ids):
+            for event_id in ids:
                 thread, version = _proposal_of(threads, event_id)
                 proposal = version.statement
                 statements.append(
@@ -2385,22 +2624,29 @@ def _cmd_approve(args: argparse.Namespace) -> int:
         return _write_asked(args, storage, statements)
 
 
+def _rejection_of(
+    storage: PostgresStorage, conn: Connection, event_id: int, reason: str | None
+) -> AssertionStatement:
+    """The rejection of an obligation's or decision's proposal, or of an
+    open or transitive version of an entity or a relation, which takes the
+    sources of what it rejects."""
+    threads = read_threads(storage, conn)
+    if event_id in _named_by_threads(threads):
+        sources = _proposal_of(threads, event_id)[1].statement.sources
+    else:
+        found = _graph_version_of(read_graph(storage, conn), event_id)
+        if found is None:
+            raise PreviouslyError(f"event {event_id} is no proposal that stands")
+        sources = found[1].claim.sources
+    return AssertionStatement(
+        REJECTION, OPERATOR, DIRECT, sources, reason, None, None, None, event_id, None
+    )
+
+
 def _cmd_reject(args: argparse.Namespace) -> int:
     with _storage() as storage:
         with storage.snapshot() as conn:
-            _thread, version = _proposal_of(read_threads(storage, conn), args.id)
-            statement = AssertionStatement(
-                REJECTION,
-                OPERATOR,
-                DIRECT,
-                version.statement.sources,
-                args.reason,
-                None,
-                None,
-                None,
-                version.id,
-                None,
-            )
+            statement = _rejection_of(storage, conn, args.id, args.reason)
             check_statements(storage, conn, [statement])
         _preview([statement])
         return _write_asked(args, storage, [statement])
@@ -2772,6 +3018,972 @@ def _entry_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--history", action="store_true", help="every version, in chain order")
 
 
+# --- entities and relations ---------------------------------------------------------
+#
+# An entity or a relation is stated the way an obligation is: the operator's
+# own way is the command line, so the author is `human:operator` and the
+# responsibility direct, and nothing here asks the policy. What a person reads
+# is the label the vocabulary gives a kind, in the working language of the
+# entity or in `PREVIOUSLY_LANGUAGE`, and a version that today's vocabulary
+# would not take is marked, never changed or hidden ({ref}`vocabulary-reference`).
+
+_ID_FORM = re.compile(r"\d{1,16}", re.ASCII)
+_LANGUAGE_VARIABLE = "PREVIOUSLY_LANGUAGE"
+_DEFAULT_LANGUAGE = "en"
+_NOT_FITTING = "(does not fit the vocabulary)"
+_CLASS_REVOKED = "(class revoked)"
+_TRIAGE_KINDS = ("objection", "question", "proposal")
+
+
+def _language() -> str:
+    """`PREVIOUSLY_LANGUAGE`, or `en`: the language a label is shown in for
+    an entity that names no working language of its own."""
+    value = os.environ.get(_LANGUAGE_VARIABLE)
+    if not value:
+        return _DEFAULT_LANGUAGE
+    if not is_language_tag(value):
+        raise PreviouslyError(f"{_LANGUAGE_VARIABLE} is not a language tag such as en or pt-BR")
+    return value
+
+
+def _parse_period(option: str, text: str) -> Period:
+    """`FROM..TO`, each end a date written `YYYY-MM-DD` or empty for an
+    open end."""
+    start, dots, end = text.partition("..")
+    if not dots or ".." in end:
+        raise PreviouslyError(f"{option} is not a period written FROM..TO; an end may be empty")
+    return Period(
+        _parse_day(option, start) if start else None, _parse_day(option, end) if end else None
+    )
+
+
+def _parse_field_value(spec: FieldSpec, text: str) -> FieldValue:
+    """The value of `--field` as the declared type of the field reads it."""
+    option = f"--field {spec.name}"
+    if spec.type == DATE:
+        return _parse_day(option, text)
+    if spec.type == PERIOD:
+        return _parse_period(option, text)
+    if spec.type == REF:
+        if _ID_FORM.fullmatch(text) is None:
+            raise PreviouslyError(f"{option} is not the id of an entity")
+        return int(text)
+    return text
+
+
+def _parse_fields(args: argparse.Namespace, spec: KindSpec) -> dict[str, FieldValue]:
+    """Every `--field NAME=VALUE`, and `--name` as `--field name=…`, read by
+    the type the kind declares for the field."""
+    given: list[str] = list(args.field or ())
+    if getattr(args, "name", None) is not None:
+        given.append(f"{NAME_FIELD}={args.name}")
+    declared = {item.name: item for item in spec.fields}
+    found: dict[str, FieldValue] = {}
+    for item in given:
+        name, equals, text = item.partition("=")
+        if not equals or not name:
+            raise PreviouslyError(f"--field is not NAME=VALUE: {item!r}")
+        if name not in declared:
+            raise PreviouslyError(f'--field names "{name}", which the kind does not declare')
+        if name in found:
+            raise PreviouslyError(f'--field names "{name}" twice')
+        found[name] = _parse_field_value(declared[name], text)
+    return found
+
+
+def _base_claim(graph: Graph, subject: int | None, kind: str) -> Claim | None:
+    """The claim that stands under `--subject`, from which a version fills
+    what it leaves out: the winner, a proposal included, and for a thread
+    with no winner left its latest version."""
+    if subject is None:
+        return None
+    thread = graph.threads.get(subject)
+    if thread is None or thread.kind != kind:
+        raise PreviouslyError(f"--subject {subject} names no {kind} that stands")
+    return (thread.winner(graph.classes) or thread.versions[-1]).claim
+
+
+def _evidence_of(
+    args: argparse.Namespace, base: Claim | None
+) -> tuple[str, tuple[AssertionSource, ...]] | None:
+    """What the version rests on: `--source`, or `--recollection` for what
+    the operator stands for from memory, or what the base rests on. `None`
+    where nothing is given and there is no base."""
+    sources = tuple(_parse_source(text) for text in args.source or ())
+    if args.recollection and sources:
+        raise PreviouslyError("--recollection and --source exclude each other")
+    if args.recollection:
+        return RECOLLECTION, ()
+    if sources:
+        return SOURCES, sources
+    return None if base is None else (base.evidence, base.sources)
+
+
+def _entity_claim(args: argparse.Namespace, vocabulary: Vocabulary, graph: Graph) -> Claim:
+    # As for `relate --retract`: a first version that is already retracted
+    # would start an entity that never stood.
+    if args.state == RETRACTED and args.subject is None:
+        raise PreviouslyError(
+            "--state retracted needs --subject: only an entity that stands can be retracted"
+        )
+    base = _base_claim(graph, args.subject, ENTITY)
+    old = base.body if base is not None and isinstance(base.body, EntityBody) else None
+    spec = vocabulary.kind(ENTITY_KIND, args.what)
+    if spec is None:
+        raise PreviouslyError(f"{args.what} is not declared as a kind of entity in the vocabulary")
+    given = _parse_fields(args, spec)
+    evidence = _evidence_of(args, base)
+    if evidence is None:
+        raise PreviouslyError(
+            "an entity needs --source or --recollection unless --subject names the one to change"
+        )
+    kept = old.fields if old is not None and old.type == args.what else dict[str, FieldValue]()
+    body = EntityBody(
+        args.what,
+        args.language if args.language is not None else (old.language if old else None),
+        {**kept, **given},
+        args.state or (old.state if old is not None else ACTIVE),
+    )
+    return Claim(
+        ENTITY,
+        OPERATOR,
+        DIRECT,
+        evidence[0],
+        evidence[1],
+        args.reason,
+        None,
+        args.subject,
+        None,
+        None,
+        None,
+        None,
+        body,
+    )
+
+
+def _relation_claim(args: argparse.Namespace, vocabulary: Vocabulary, graph: Graph) -> Claim:
+    if args.retract and args.subject is None:
+        raise PreviouslyError(
+            "--retract needs --subject: only a relation that stands can be retracted"
+        )
+    base = _base_claim(graph, args.subject, RELATION)
+    old = base.body if base is not None and isinstance(base.body, RelationBody) else None
+    spec = vocabulary.kind(RELATION_KIND, args.what)
+    if spec is None:
+        raise PreviouslyError(
+            f"{args.what} is not declared as a kind of relation in the vocabulary"
+        )
+    given = _parse_fields(args, spec)
+    evidence = _evidence_of(args, base)
+    start = args.start if args.start is not None else (old.start if old else None)
+    end = args.to if args.to is not None else (old.to if old else None)
+    absent = [
+        flag
+        for flag, missing in (
+            ("--from", start is None),
+            ("--to", end is None),
+            ("--source or --recollection", evidence is None),
+        )
+        if missing
+    ]
+    if absent or start is None or evidence is None:
+        raise PreviouslyError(
+            f"a relation needs {_joined(absent)} unless --subject names the one to change"
+        )
+    before = old.period if old is not None else None
+    period = before
+    if args.from_date is not None or args.to_date is not None:
+        period = Period(
+            _parse_day("--from-date", args.from_date)
+            if args.from_date is not None
+            else (before.start if before else None),
+            _parse_day("--to-date", args.to_date)
+            if args.to_date is not None
+            else (before.end if before else None),
+        )
+    kept = old.fields if old is not None and old.type == args.what else dict[str, FieldValue]()
+    body = RelationBody(
+        args.what,
+        start,
+        end,
+        None,
+        period,
+        {**kept, **given},
+        RETRACTED if args.retract else STANDING,
+    )
+    return Claim(
+        RELATION,
+        OPERATOR,
+        DIRECT,
+        evidence[0],
+        evidence[1],
+        args.reason,
+        None,
+        args.subject,
+        None,
+        None,
+        None,
+        None,
+        body,
+    )
+
+
+def _preview_claims(claims: Sequence[Claim]) -> None:
+    for claim in claims:
+        print(_json_line(claim_payload(claim), indent=2))
+
+
+def _write_claims_asked(
+    args: argparse.Namespace, storage: PostgresStorage, claims: Sequence[Claim]
+) -> int:
+    """Shows the claims as they will be written, asks, writes, and prints
+    `assertion <id>` for each. The levels shown are the ones the write is
+    held to: a class or a direct version that changed since refuses it."""
+    _preview_claims(claims)
+    if not _confirmed(args):
+        print("nothing written", file=sys.stderr)
+        return 1
+    written = write_claims(
+        storage,
+        storage,
+        claims,
+        recorded_at=datetime.now(UTC),
+        expect=[decided(claim) for claim in claims],
+    )
+    for event_id in written.ids:
+        print(f"assertion {event_id}")
+    return 0
+
+
+def _stated(
+    args: argparse.Namespace, build: Callable[[argparse.Namespace, Vocabulary, Graph], Claim]
+) -> int:
+    with _storage() as storage:
+        with storage.snapshot() as conn:
+            claim = build(args, read_vocabulary(storage, conn), read_graph(storage, conn))
+            claims = check_claims(storage, conn, [claim], recorded_at=datetime.now(UTC))
+        return _write_claims_asked(args, storage, claims)
+
+
+# --- reading the graph --------------------------------------------------------------
+
+
+def _field_text(value: FieldValue) -> str:
+    if isinstance(value, Period):
+        return f"{'' if value.start is None else value.start.isoformat()}.." + (
+            "" if value.end is None else value.end.isoformat()
+        )
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
+
+
+def _period_text(period: Period | None) -> str:
+    return _NO_VALUE if period is None else _field_text(period)
+
+
+def _period_cell(period: Period | None) -> str:
+    return "-" if period is None else _field_text(period)
+
+
+def _name_of(claim: Claim) -> str:
+    value = claim.body.fields.get(NAME_FIELD)
+    return _NO_VALUE if value is None else _field_text(value)
+
+
+def _kinds_of(graph: Graph) -> dict[int, str]:
+    """The kind of every entity that has a winner, a retracted one included:
+    what a version is held against when the vocabulary is asked whether it
+    still fits."""
+    kinds: dict[int, str] = {}
+    for subject, thread in graph.threads.items():
+        winner = thread.winner(graph.classes)
+        if thread.kind == ENTITY and winner is not None:
+            kinds[subject] = winner.claim.body.type
+    return kinds
+
+
+def _end_text(graph: Graph, entity: int) -> str:
+    """An end of a relation: its id and name, or what became of it. A
+    relation whose end is gone stays in the list and says so."""
+    thread = graph.threads.get(entity)
+    if thread is None or thread.kind != ENTITY:
+        return f"{entity} (erased)"
+    winner = thread.winner(graph.classes)
+    if winner is None:
+        return f"{entity} (none stands)"
+    if winner.claim.body.state == RETRACTED:
+        return f"{entity} (retracted)"
+    return f"{entity} {_name_of(winner.claim)}"
+
+
+def _marks(
+    vocabulary: Vocabulary, graph: Graph, kinds: Mapping[int, str], version: GraphVersion
+) -> list[str]:
+    """What a person must know about a version beside its content: that
+    today's vocabulary would not take it, and that the class it stands under
+    was revoked. Neither changes the version."""
+    claim = version.claim
+    body = claim.body
+    marks: list[str] = []
+    ends = (
+        [body.start, *([body.to] if body.to is not None else body.candidates or ())]
+        if isinstance(body, RelationBody)
+        else []
+    )
+    # An end that is gone cannot be judged, and the line shows it as gone.
+    judged = all(end in kinds for end in ends if isinstance(end, int))
+    if (
+        judged
+        and conformance_problem(claim, vocabulary, new_thread=False, entity_types=kinds) is not None
+    ):
+        marks.append(_NOT_FITTING)
+    state = graph.classes.get(claim.under) if claim.under is not None else None
+    if (
+        claim.responsibility == TRANSITIVE
+        and state is not None
+        and state.revoked
+        and not state.demote
+    ):
+        marks.append(_CLASS_REVOKED)
+    return marks
+
+
+def _state_words(graph: Graph, version: GraphVersion) -> str:
+    level = level_of(version, graph.classes)
+    lead = {OPEN: "proposed ", TRANSITIVE: "transitive "}.get(level, "")
+    return f"{lead}{version.claim.body.state}"
+
+
+def _kind_label(vocabulary: Vocabulary, declares: str, claim: Claim, default: str) -> str:
+    language = claim.body.language if isinstance(claim.body, EntityBody) else None
+    return escape_field(
+        display_label(vocabulary, declares, claim.body.type, language=language, default=default)
+    )
+
+
+def _claim_label(graph: Graph, claim: Claim) -> str:
+    """A short text for a claim: the name of an entity, the two ends of a
+    relation, and for a question the candidates in place of the end."""
+    body = claim.body
+    if isinstance(body, EntityBody):
+        return escape_field(_name_of(claim))
+    start = _end_text(graph, body.start) if isinstance(body.start, int) else "(an event)"
+    if body.to is not None:
+        return escape_field(f"{start} -> {_end_text(graph, body.to)}")
+    candidates = ", ".join(_end_text(graph, item) for item in body.candidates or ())
+    return escape_field(f"{start} -> ? ({candidates})")
+
+
+def _entity_line(
+    graph: Graph,
+    vocabulary: Vocabulary,
+    kinds: Mapping[int, str],
+    thread: GraphThread,
+    winner: GraphVersion,
+    default: str,
+) -> str:
+    return "\t".join(
+        (
+            str(thread.subject),
+            _state_words(graph, winner),
+            _kind_label(vocabulary, ENTITY_KIND, winner.claim, default),
+            escape_field(_name_of(winner.claim)),
+            _plural(len(thread.versions), "version"),
+            _plural(len(thread.pending(graph.classes)), "proposal"),
+            *_marks(vocabulary, graph, kinds, winner),
+        )
+    )
+
+
+def _cmd_entities(args: argparse.Namespace) -> int:
+    default = _language()
+    with _storage() as storage, storage.snapshot() as conn:
+        graph = read_graph(storage, conn)
+        vocabulary = read_vocabulary(storage, conn)
+    kinds = _kinds_of(graph)
+    for subject in sorted(graph.threads):
+        thread = graph.threads[subject]
+        winner = thread.winner(graph.classes)
+        if thread.kind != ENTITY or winner is None:
+            continue
+        body = winner.claim.body
+        proposed = level_of(winner, graph.classes) == OPEN
+        listed = (
+            (proposed or bool(thread.pending(graph.classes))) if args.proposals else not proposed
+        )
+        # A retracted entity is out of the list unless asked for by name, or
+        # unless what stands of it is a proposal.
+        gone = body.state == RETRACTED and args.state != RETRACTED and not args.proposals
+        kept = (args.type is None or body.type == args.type) and (
+            args.state is None or body.state == args.state
+        )
+        if listed and kept and not gone:
+            print(_entity_line(graph, vocabulary, kinds, thread, winner, default))
+    return 0
+
+
+def _relation_line(
+    graph: Graph,
+    vocabulary: Vocabulary,
+    kinds: Mapping[int, str],
+    thread: GraphThread,
+    winner: GraphVersion,
+    default: str,
+) -> str:
+    body = cast("RelationBody", winner.claim.body)
+    start = _end_text(graph, body.start) if isinstance(body.start, int) else "(an event)"
+    return "\t".join(
+        (
+            str(thread.subject),
+            _state_words(graph, winner),
+            _kind_label(vocabulary, RELATION_KIND, winner.claim, default),
+            escape_field(start),
+            escape_field(_end_text(graph, cast("int", body.to))),
+            _period_cell(body.period),
+            _plural(len(thread.versions), "version"),
+            *_marks(vocabulary, graph, kinds, winner),
+        )
+    )
+
+
+def _cmd_relations(args: argparse.Namespace) -> int:
+    default = _language()
+    at = _parse_day("--at", args.at) if args.at is not None else None
+    as_of = parse_moment(args.as_of) if args.as_of is not None else None
+    with _storage() as storage, storage.snapshot() as conn:
+        graph = read_graph(storage, conn, as_of=as_of)
+        vocabulary = read_vocabulary(storage, conn)
+    kinds = _kinds_of(graph)
+    found = graph.relations(at=at)
+    for subject in sorted(found):
+        winner = found[subject]
+        body = cast("RelationBody", winner.claim.body)
+        kept = (
+            (args.type is None or body.type == args.type)
+            and (args.start is None or body.start == args.start)
+            and (args.to is None or body.to == args.to)
+            and level_of(winner, graph.classes) != OPEN
+        )
+        if kept:
+            print(_relation_line(graph, vocabulary, kinds, graph.threads[subject], winner, default))
+    return 0
+
+
+def _claim_fields(claim: Claim) -> list[tuple[str, str]]:
+    """What a claim says, as the names `claim_changes` uses, so that the
+    first version of a history and the changes after it read alike."""
+    body = claim.body
+    fields = [("type", body.type)]
+    if isinstance(body, EntityBody):
+        fields.append(("language", _NO_VALUE if body.language is None else body.language))
+    else:
+        fields.append(("from", str(body.start) if isinstance(body.start, int) else "(an event)"))
+        if body.candidates is not None:
+            fields.append(("to", "candidates " + ", ".join(str(item) for item in body.candidates)))
+        else:
+            fields.append(("to", str(body.to)))
+        fields.append(("period", _period_text(body.period)))
+    fields += [(f"fields.{name}", _field_text(body.fields[name])) for name in sorted(body.fields)]
+    fields.append(("state", body.state))
+    return fields
+
+
+def _claim_change_lines(lead: str, before: Claim, after: Claim) -> list[str]:
+    return [
+        f"{lead}\t{escape_field(name)}\t{escape_field(old)}\t{escape_field(new)}"
+        for name, old, new in claim_changes(before, after)
+    ]
+
+
+def _entity_lines(
+    graph: Graph,
+    vocabulary: Vocabulary,
+    kinds: Mapping[int, str],
+    thread: GraphThread,
+    winner: GraphVersion,
+    default: str,
+) -> list[str]:
+    """The page of one entity: what stands, the relations it is an end of,
+    and the pending versions as what they would change."""
+    claim = winner.claim
+    body = cast("EntityBody", claim.body)
+    marks = _marks(vocabulary, graph, kinds, winner)
+    lead = {OPEN: " (proposal)", TRANSITIVE: " (transitive)"}.get(
+        level_of(winner, graph.classes), ""
+    )
+    lines = [
+        " ".join([f"entity {thread.subject}{lead}", *marks]),
+        f"version\t{winner.id}",
+        f"type\t{escape_field(body.type)}\t{_kind_label(vocabulary, ENTITY_KIND, claim, default)}",
+        f"state\t{body.state}",
+        f"language\t{escape_field(_NO_VALUE if body.language is None else body.language)}",
+    ]
+    lines += [
+        f"field\t{escape_field(name)}\t{escape_field(_field_text(body.fields[name]))}"
+        for name in sorted(body.fields)
+    ]
+    lines += [
+        f"sources\t{escape_field(_sources_text(claim.sources) or _NO_VALUE)}",
+        f"evidence\t{claim.evidence}",
+        f"reason\t{escape_field(_NO_VALUE if claim.reason is None else claim.reason)}",
+        f"author\t{escape_field(claim.author)}",
+        f"responsibility\t{claim.responsibility}",
+        f"versions\t{len(thread.versions)}",
+        f"proposals\t{len(thread.pending(graph.classes))}",
+    ]
+    relations = graph.relations()
+    for subject in sorted(relations):
+        relation = relations[subject]
+        related = cast("RelationBody", relation.claim.body)
+        if related.start == thread.subject:
+            way, other = "out", cast("int", related.to)
+        elif related.to == thread.subject and isinstance(related.start, int):
+            way, other = "in", related.start
+        else:
+            continue
+        label = display_label(
+            vocabulary, RELATION_KIND, related.type, language=None, default=default
+        )
+        lines.append(
+            "\t".join(
+                (
+                    "relation",
+                    str(subject),
+                    escape_field(label),
+                    way,
+                    escape_field(_end_text(graph, other)),
+                    _period_cell(related.period),
+                    _state_words(graph, relation),
+                )
+            )
+        )
+    for pending in thread.pending(graph.classes):
+        head = f"proposal\t{pending.id}\t{escape_field(pending.claim.author)}"
+        lines += _claim_change_lines(head, claim, pending.claim) or [head]
+    return lines
+
+
+def _entity_history_lines(
+    graph: Graph,
+    vocabulary: Vocabulary,
+    kinds: Mapping[int, str],
+    thread: GraphThread,
+) -> list[str]:
+    """Every version in chain order, each as it was written, with its
+    difference to the one before. Today's vocabulary marks a version it
+    would not take; it never rewrites one."""
+    lines = [f"entity {thread.subject}: {_plural(len(thread.versions), 'version')}"]
+    for position, version in enumerate(thread.versions):
+        claim = version.claim
+        head = [
+            "version",
+            str(version.id),
+            iso_utc(version.recorded_at),
+            claim.responsibility,
+            escape_field(claim.author),
+        ]
+        if version.id in thread.rejected:
+            head.append("rejected")
+        elif version.id in thread.approved:
+            head.append("approved")
+        head += _marks(vocabulary, graph, kinds, version)
+        lines += [
+            "\t".join(head),
+            f"sources\t{escape_field(_sources_text(claim.sources) or _NO_VALUE)}",
+            f"reason\t{escape_field(_NO_VALUE if claim.reason is None else claim.reason)}",
+        ]
+        if position == 0:
+            lines += [
+                f"set\t{escape_field(name)}\t{escape_field(text)}"
+                for name, text in _claim_fields(claim)
+            ]
+        else:
+            lines += _claim_change_lines("change", thread.versions[position - 1].claim, claim)
+    return lines
+
+
+def _show_entity(args: argparse.Namespace) -> int:
+    default = _language()
+    subject = int(args.what)
+    with _storage() as storage, storage.snapshot() as conn:
+        graph = read_graph(storage, conn)
+        vocabulary = read_vocabulary(storage, conn)
+        thread = graph.threads.get(subject)
+        if thread is None and erased_assertion(storage, conn, subject):
+            print(f"assertion {subject} is erased", file=sys.stderr)
+            return 1
+    winner = None if thread is None else thread.winner(graph.classes)
+    if thread is None or thread.kind != ENTITY or (winner is None and not args.history):
+        print(f"no entity stands under event {subject}", file=sys.stderr)
+        return 1
+    kinds = _kinds_of(graph)
+    if args.history or winner is None:
+        lines = _entity_history_lines(graph, vocabulary, kinds, thread)
+    else:
+        lines = _entity_lines(graph, vocabulary, kinds, thread, winner, default)
+    for line in lines:
+        print(line)
+    return 0
+
+
+def _cmd_entity(args: argparse.Namespace) -> int:
+    """With the id of an entity, shows it; with a kind, states one."""
+    touched = (args.name, args.field, args.language, args.state, args.subject, args.reason)
+    if _ID_FORM.fullmatch(args.what) is not None:
+        if any(item is not None for item in touched) or args.source or args.recollection:
+            raise PreviouslyError(
+                "an id shows an entity; to change one, give its kind and --subject"
+            )
+        return _show_entity(args)
+    if args.history:
+        raise PreviouslyError("--history shows an entity; give its id")
+    return _stated(args, _entity_claim)
+
+
+def _cmd_relate(args: argparse.Namespace) -> int:
+    return _stated(args, _relation_claim)
+
+
+# --- what waits ---------------------------------------------------------------------
+
+
+def _waiting(graph: Graph) -> dict[str, list[GraphVersion]]:
+    """What waits for the operator, in the order a person works through it:
+    objections to what he stands for, questions, and then every other
+    proposal. A version is in one of the three, and a proposal that stands
+    as the winner of its thread counts as one."""
+    found: dict[str, list[GraphVersion]] = {kind: [] for kind in _TRIAGE_KINDS}
+    for thread in graph.threads.values():
+        winner = thread.winner(graph.classes)
+        waiting = list(thread.pending(graph.classes))
+        if winner is not None and level_of(winner, graph.classes) == OPEN:
+            waiting.append(winner)
+        objections = {version.id for version in thread.objections(graph.classes)}
+        question = thread.question(graph.classes)
+        for version in waiting:
+            if version.id in objections:
+                found["objection"].append(version)
+            elif question is not None and version.id == question.id:
+                found["question"].append(version)
+            else:
+                found["proposal"].append(version)
+    for versions in found.values():
+        versions.sort(key=lambda version: version.id)
+    return found
+
+
+def _cmd_triage(args: argparse.Namespace) -> int:
+    del args
+    default = _language()
+    with _storage() as storage, storage.snapshot() as conn:
+        graph = read_graph(storage, conn)
+        vocabulary = read_vocabulary(storage, conn)
+    for kind, versions in _waiting(graph).items():
+        for version in versions:
+            claim = version.claim
+            declares = ENTITY_KIND if isinstance(claim.body, EntityBody) else RELATION_KIND
+            print(
+                "\t".join(
+                    (
+                        kind,
+                        str(version.id),
+                        _kind_label(vocabulary, declares, claim, default),
+                        _claim_label(graph, claim),
+                        escape_field(claim.author),
+                    )
+                )
+            )
+    return 0
+
+
+def _cmd_status(args: argparse.Namespace) -> int:
+    del args
+    with _storage() as storage, storage.snapshot() as conn:
+        graph = read_graph(storage, conn)
+    waiting = _waiting(graph)
+    for kind in _TRIAGE_KINDS:
+        print(f"{kind}s\t{len(waiting[kind])}")
+    return 0
+
+
+def _cmd_answer(args: argparse.Namespace) -> int:
+    """Answers a question with one of its candidates: an approval of the
+    question that names the candidate as the end, which keeps the model's
+    sources and author and makes the operator stand for it. To answer with
+    anything else, reject the question first and state the relation."""
+    with _storage() as storage:
+        with storage.snapshot() as conn:
+            graph = read_graph(storage, conn)
+            found = _graph_version_of(graph, args.id)
+            question = None if found is None else found[0].question(graph.classes)
+            if found is None or question is None or question.id != args.id:
+                raise PreviouslyError(f"event {args.id} is no question that waits")
+            asked = cast("RelationBody", question.claim.body)
+            if args.choose not in (asked.candidates or ()):
+                # The sentence of the write path for a direct answer. An
+                # approval that names a stranger would be refused there with
+                # the sentence about a changed proposal, which says nothing
+                # of the cause; a test holds the two sentences equal.
+                raise PreviouslyError(
+                    f"the answer names {args.choose}, which is none of the candidates"
+                )
+            answer = replace(
+                question.claim,
+                responsibility=DIRECT,
+                reason=question.claim.reason if args.reason is None else args.reason,
+                handle=None,
+                subject=found[0].subject,
+                approves=question.id,
+                under=None,
+                contests=None,
+                body=replace(asked, to=args.choose, candidates=None),
+            )
+            claims = check_claims(storage, conn, [answer], recorded_at=datetime.now(UTC))
+        return _write_claims_asked(args, storage, claims)
+
+
+def _graph_version_of(graph: Graph, event_id: int) -> tuple[GraphThread, GraphVersion] | None:
+    for thread in graph.threads.values():
+        for version in thread.versions:
+            if version.id == event_id:
+                return thread, version
+    return None
+
+
+# --- approval classes ---------------------------------------------------------------
+
+
+def _class_state(item: ApprovalClass) -> str:
+    if not item.revoked:
+        return "active"
+    return "revoked and demoted" if item.demote else "revoked"
+
+
+def _window(item: ApprovalClass) -> str:
+    start = "" if item.valid_from is None else iso_utc(item.valid_from)
+    end = "" if item.valid_until is None else iso_utc(item.valid_until)
+    return f"{start}..{end}" if start or end else "-"
+
+
+def _cmd_classes_set(args: argparse.Namespace) -> int:
+    """Shows the class as it will be written, asks, and writes one event.
+    A refusal comes before the question, so nobody confirms what cannot be
+    written."""
+    with _storage() as storage:
+        with storage.snapshot() as conn:
+            if args.what == "add":
+                item = ApprovalClass(
+                    args.name,
+                    args.author,
+                    args.assertion,
+                    frozenset(args.type),
+                    args.threshold,
+                    parse_moment(args.valid_from) if args.valid_from is not None else None,
+                    parse_moment(args.valid_until) if args.valid_until is not None else None,
+                    False,
+                    False,
+                )
+            else:
+                current = read_classes(storage, conn).by_name.get(args.name)
+                if current is None:
+                    raise PreviouslyError(f"no approval class is named {args.name}")
+                item = replace(current[0], revoked=True, demote=args.demote)
+            sentence = class_refusal(storage, conn, item, statement=args.statement)
+        if sentence is not None:
+            raise PreviouslyError(sentence)
+        print(_json_line(class_payload(item, statement=args.statement), indent=2))
+        if not _confirmed(args):
+            print("nothing written", file=sys.stderr)
+            return 1
+        event_id = set_class(storage, item, statement=args.statement, recorded_at=datetime.now(UTC))
+    print(f"approval class event {event_id}")
+    return 0
+
+
+def _cmd_classes_list(args: argparse.Namespace) -> int:
+    del args
+    with _storage() as storage, storage.snapshot() as conn:
+        classes = read_classes(storage, conn)
+        rates = {rate.name: rate for rate in hit_rates(read_graph(storage, conn), classes)}
+    for name in sorted(classes.by_name):
+        item, event_id = classes.by_name[name]
+        rate = rates[name]
+        print(
+            "\t".join(
+                (
+                    escape_field(name),
+                    escape_field(item.author),
+                    item.assertion,
+                    ",".join(sorted(item.types)),
+                    str(item.threshold),
+                    _window(item),
+                    _class_state(item),
+                    f"{rate.total} total, {rate.confirmed} confirmed, "
+                    f"{rate.corrected} corrected, {rate.standing} standing",
+                    f"(event {event_id})",
+                )
+            )
+        )
+    return 0
+
+
+def _cmd_classes_sample(args: argparse.Namespace) -> int:
+    """A random few of the versions a class let through, for the operator
+    to check by eye ({ref}`vocabulary-reference`)."""
+    if args.count < 1:
+        raise PreviouslyError(f"--count must be at least 1, got {args.count}")
+    default = _language()
+    with _storage() as storage, storage.snapshot() as conn:
+        classes = read_classes(storage, conn)
+        graph = read_graph(storage, conn)
+        vocabulary = read_vocabulary(storage, conn)
+    current = classes.by_name.get(args.name)
+    if current is None:
+        raise PreviouslyError(f"no approval class is named {args.name}")
+    for version in sample(graph, current[1], args.count, random.SystemRandom()):
+        claim = version.claim
+        declares = ENTITY_KIND if isinstance(claim.body, EntityBody) else RELATION_KIND
+        subject = claim.subject if claim.subject is not None else version.id
+        print(
+            "\t".join(
+                (
+                    str(version.id),
+                    str(subject),
+                    declares,
+                    _kind_label(vocabulary, declares, claim, default),
+                    _claim_label(graph, claim),
+                    str(claim.confidence),
+                    escape_field(claim.author),
+                )
+            )
+        )
+    return 0
+
+
+def _cmd_classes(args: argparse.Namespace) -> int:
+    if args.what == "list":
+        return _cmd_classes_list(args)
+    if args.what == "sample":
+        return _cmd_classes_sample(args)
+    return _cmd_classes_set(args)
+
+
+# --- arguments of the commands above ------------------------------------------------
+
+
+def _recalling(form: argparse.ArgumentParser) -> None:
+    form.add_argument(
+        "--recollection",
+        action="store_true",
+        help="rests on your own memory, with no source; in place of --source",
+    )
+
+
+def _entity_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "what", metavar="TYPE|ID", help="the kind to state, or the id of the entity to show"
+    )
+    parser.add_argument("--name", help="the name; short for --field name=…")
+    parser.add_argument(
+        "--field",
+        action="append",
+        metavar="NAME=VALUE",
+        help="a field of the kind, read by its type: text, a date YYYY-MM-DD, a "
+        "period FROM..TO with either end empty, or an entity id; may repeat",
+    )
+    parser.add_argument("--language", help="the working language of the entity, such as de")
+    parser.add_argument("--state", choices=ENTITY_STATES, help="active unless --subject")
+    _asserting(parser)
+    _recalling(parser)
+    parser.add_argument(
+        "--history", action="store_true", help="with an id: every version, in chain order"
+    )
+
+
+def _relate_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("what", metavar="TYPE", help="the kind of the relation")
+    parser.add_argument(
+        "--from", dest="start", type=int, metavar="ID", help="the entity it starts at"
+    )
+    parser.add_argument("--to", type=int, metavar="ID", help="the entity it points at")
+    parser.add_argument("--from-date", help="the first day it holds, YYYY-MM-DD")
+    parser.add_argument("--to-date", help="the last day it holds, YYYY-MM-DD; ends a relation")
+    parser.add_argument(
+        "--field",
+        action="append",
+        metavar="NAME=VALUE",
+        help="a field of the kind, read by its type; may repeat",
+    )
+    parser.add_argument("--retract", action="store_true", help="with --subject: take it back")
+    _asserting(parser)
+    _recalling(parser)
+
+
+def _entities_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--type", help="only this kind")
+    parser.add_argument("--state", choices=ENTITY_STATES, help="only this state")
+    parser.add_argument(
+        "--proposals",
+        action="store_true",
+        help="list what has a proposal pending, or stands as one, instead of what stands",
+    )
+
+
+def _relations_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--type", help="only this kind")
+    parser.add_argument(
+        "--from", dest="start", type=int, metavar="ID", help="only from this entity"
+    )
+    parser.add_argument("--to", type=int, metavar="ID", help="only to this entity")
+    parser.add_argument("--at", metavar="DAY", help="only what holds on this day, YYYY-MM-DD")
+    parser.add_argument(
+        "--as-of",
+        metavar="MOMENT",
+        help="the graph as it stood at that moment, ISO 8601 with a zone",
+    )
+
+
+def _classes_arguments(parser: argparse.ArgumentParser) -> None:
+    what = parser.add_subparsers(dest="what", required=True)
+    sentence = "allow a model to stand for a class of statements"
+    adding = what.add_parser("add", help=sentence, description=sentence)
+    adding.add_argument("name", help="the name of the class")
+    adding.add_argument("--author", required=True, help="the model, model:CLIENT")
+    adding.add_argument("--assertion", required=True, choices=(ENTITY, RELATION))
+    adding.add_argument(
+        "--type", action="append", required=True, help="a kind it covers; may repeat"
+    )
+    adding.add_argument("--threshold", type=int, required=True, help="least confidence, 0 to 100")
+    adding.add_argument("--from", dest="valid_from", help="valid from this moment, ISO 8601")
+    adding.add_argument("--until", dest="valid_until", help="valid until this moment, excluded")
+    adding.add_argument("--statement", required=True, help="one sentence: why")
+    adding.add_argument("--yes", action="store_true", help="write without asking")
+    sentence = "take a class back"
+    revoking = what.add_parser("revoke", help=sentence, description=sentence)
+    revoking.add_argument("name", help="the name of the class")
+    revoking.add_argument(
+        "--demote", action="store_true", help="everything under it counts as a proposal again"
+    )
+    revoking.add_argument("--statement", required=True, help="one sentence: why")
+    revoking.add_argument("--yes", action="store_true", help="write without asking")
+    sentence = "list the classes with their hit rate"
+    what.add_parser("list", help=sentence, description=sentence)
+    sentence = "show a random few of the versions a class let through"
+    sampling = what.add_parser("sample", help=sentence, description=sentence)
+    sampling.add_argument("name", help="the name of the class")
+    sampling.add_argument("--count", type=int, default=5, help="how many; 5 unless given")
+
+
+def _answer_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("id", metavar="ID", type=int, help="a question")
+    parser.add_argument(
+        "--choose", type=int, required=True, metavar="ID", help="one of its candidates"
+    )
+    parser.add_argument("--reason", help="why; the reason of the question stays if left out")
+    parser.add_argument("--yes", action="store_true", help="write without asking")
+
+
 # --- MCP clients ---------------------------------------------------------------
 
 
@@ -2887,7 +4099,8 @@ def _cmd_mcp(_args: argparse.Namespace) -> int:
     Nothing is printed: standard output is the protocol.
     `PREVIOUSLY_MCP_CONFIRM_KEY` is passed on unread: without it, or shorter
     than 32 characters, the writing tools answer that writing is not
-    configured, and the key is never printed.
+    configured, and the key is never printed. `PREVIOUSLY_LANGUAGE` is the
+    language the labels of kinds are shown in, as on the command line.
 
     The server module is imported here and not at the head, as the adapters
     of the gate are: the MCP SDK, Starlette and uvicorn add about 0.3 s to
@@ -2903,13 +4116,20 @@ def _cmd_mcp(_args: argparse.Namespace) -> int:
     name = os.environ.get(CLIENT_VARIABLE)
     if not name:
         raise PreviouslyError(f"{CLIENT_VARIABLE} is not set: name the client this process serves")
+    language = _language()
     with _storage() as storage:
         with storage.begin() as conn:
             if name not in read_policy(storage, conn).clients:
                 raise PreviouslyError(
                     f'no client "{name}" is in force; add it with previously client add'
                 )
-        run_stdio(storage, name, locker=storage, confirm_key=os.environ.get(KEY_VARIABLE))
+        run_stdio(
+            storage,
+            name,
+            locker=storage,
+            confirm_key=os.environ.get(KEY_VARIABLE),
+            language=language,
+        )
     return 0
 
 
@@ -2932,7 +4152,8 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
     Every request needs the bearer token of a client in force. The host check
     against DNS rebinding lets through the loopback names and those in
     `PREVIOUSLY_MCP_ALLOWED_HOSTS`, separated by commas or blanks.
-    `PREVIOUSLY_MCP_CONFIRM_KEY` is passed on as `_cmd_mcp` passes it.
+    `PREVIOUSLY_MCP_CONFIRM_KEY` and `PREVIOUSLY_LANGUAGE` are passed on as
+    `_cmd_mcp` passes them.
 
     The server module is imported here for the reason `_cmd_mcp` gives.
     """
@@ -2940,6 +4161,7 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
     from previously.mcp_server.server import run_http
 
     host, port = _mcp_address()
+    language = _language()
     allowed = (os.environ.get("PREVIOUSLY_MCP_ALLOWED_HOSTS") or "").replace(",", " ").split()
     where = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
     with _storage() as storage:
@@ -2951,6 +4173,7 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
             allowed_hosts=allowed,
             locker=storage,
             confirm_key=os.environ.get(KEY_VARIABLE),
+            language=language,
         )
     return 0
 
@@ -2982,6 +4205,12 @@ COMMANDS: tuple[Command, ...] = (
     Command("chronicle", "print the chronicle in time order", _cmd_chronicle, _chronicle_arguments),
     Command("stats", "print the per-source statistics", _cmd_stats),
     Command("policy", "set and show the processing policy", _cmd_policy, _policy_arguments),
+    Command(
+        "vocabulary",
+        "show or apply the vocabulary of entities and relations",
+        _cmd_vocabulary,
+        _vocabulary_arguments,
+    ),
     Command("gate", "explain or try a model call", _cmd_gate, _gate_arguments),
     Command("client", "add, revoke and list MCP clients", _cmd_client, _client_arguments),
     Command("access", "show what MCP clients saw", _cmd_access, _access_arguments),
@@ -2992,6 +4221,24 @@ COMMANDS: tuple[Command, ...] = (
     Command("obligation", "show one obligation", _cmd_obligation, _entry_arguments),
     Command("decisions", "list what was decided", _cmd_decisions, _decisions_arguments),
     Command("decision", "show one decision", _cmd_decision, _entry_arguments),
+    Command("entity", "state an entity, or show one", _cmd_entity, _entity_arguments),
+    Command("relate", "state a relation between two entities", _cmd_relate, _relate_arguments),
+    Command("entities", "list the entities", _cmd_entities, _entities_arguments),
+    Command("relations", "list the relations", _cmd_relations, _relations_arguments),
+    Command(
+        "classes",
+        "allow a model to stand for a class of statements",
+        _cmd_classes,
+        _classes_arguments,
+    ),
+    Command("triage", "list what waits for an answer", _cmd_triage),
+    Command(
+        "answer",
+        "answer a question with one of its candidates",
+        _cmd_answer,
+        _answer_arguments,
+    ),
+    Command("status", "show what waits", _cmd_status),
     Command("mcp", "serve MCP over stdio", _cmd_mcp),
     Command("serve", "serve MCP over HTTP", _cmd_serve),
 )

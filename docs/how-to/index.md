@@ -15,6 +15,9 @@ ingest-a-mail-folder
 set-a-policy-and-try-a-call
 connect-claude-code-and-vibe
 record-what-is-owed-and-decided
+keep-a-club-and-its-offices
+adapt-the-vocabulary
+let-a-model-stand-for-a-class
 add-a-migration
 rebuild-a-projection
 run-the-image

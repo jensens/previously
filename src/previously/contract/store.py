@@ -11,11 +11,12 @@ the repository in bash or fish:
         | sed 's/.*\.//' | sort -u | wc -l
 
 The files are every module of `core` that names `LogStore`, twelve that day
-with `core/assertions.py`, and the count is not copied from the method list of
-the implementation. Where `__pycache__` directories exist, `grep -rl` lists
-their compiled files as well, and the first `grep` takes no name out of them,
-so the count stays the same. The
-docstring is raw so that the text in this file is the command, backslashes as
+with `core/assertions.py`, and fifteen on 2026-10-14, when `core/vocabulary.py`,
+`core/classes.py` and `core/graph_write.py` joined them and the count stayed
+fifteen; it is not copied from the method list of the implementation.
+Where `__pycache__` directories exist, `grep -rl` lists their compiled files
+as well, and the first `grep` takes no name out of them, so the count stays
+the same. The docstring is raw so that the text in this file is the command, backslashes as
 they stand. Until 2026-10-11 the command named its files one by one, six of
 them, and the sentence beside it called those "the six modules that name
 `LogStore` today" long after `grep -rl` found more: nine at the start of the
@@ -42,11 +43,14 @@ The protocol declares sixteen: `observations` came on 2026-10-11 with the MCP
 server, and `core` does not call it: `mcp_server/read.py` does, to read the
 chronicle of a circle from the log (decision 3 of the 2026-10-11 MCP read
 access plan). `grep -ohE 'log\.[a-z_]*\(' src/previously/mcp_server/*.py`
-names the seven the server calls, `observations` among them, counted on
-2026-10-12; the sentence said six until then, a count no longer true. Typing `core`
-against this protocol instead of against `PostgresStorage` removes the edge
-`core -> storage.postgres`, and with it the two named exemptions in
-`.importlinter` and the test that guarded them ({ref}`module-boundaries`).
+names the eight the server calls, `observations` among them, counted on
+2026-10-14; the eighth is `read_by_kind`, with which `mcp_server/read.py`
+reads the rejections of a version of an entity or a relation. The sentence
+said six until 2026-10-12 and seven until 2026-10-14, each a count no longer
+true by then. Typing `core` against this protocol instead of against
+`PostgresStorage` removes the edge `core -> storage.postgres`, and with it
+the two named exemptions in `.importlinter` and the test that guarded them
+({ref}`module-boundaries`).
 
 `Conn` is the connection type. Only `storage` knows what it is; `core` passes
 it back to the store it came from and never looks inside.

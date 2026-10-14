@@ -245,7 +245,11 @@ def _date(value: object) -> date | None:
         return None
 
 
-def _author_problem(author: object) -> str | None:
+def author_problem(author: object) -> str | None:
+    """The sentence about an author that is neither the operator nor a
+    model client, or `None`. The one rule for every kind of assertion and
+    for the author of an approval class: `core/graph.py` and
+    `core/classes.py` take it from here."""
     if author == OPERATOR:
         return None
     if isinstance(author, str) and author.startswith(MODEL_PREFIX):
@@ -310,7 +314,7 @@ def _optional_id_problem(payload: Mapping[str, object], key: str) -> str | None:
 
 
 def _common_problem(payload: Mapping[str, object]) -> str | None:
-    problem = _author_problem(payload["author"])
+    problem = author_problem(payload["author"])
     if problem is not None:
         return problem
     if payload["responsibility"] not in RESPONSIBILITIES:

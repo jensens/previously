@@ -758,3 +758,34 @@ def test_the_tag_of_a_page_with_a_stated_entry_skips_one_that_occurs_in_its_line
         candidates=iter(["0000abcd", "1111abcd"]),
     )
     assert _tags(page) == ["1111abcd"]
+
+
+# --- the objections pending in the header --------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("count", "suffix"),
+    [(0, ""), (1, " · 1 objection pending"), (2, " · 2 objections pending")],
+)
+def test_the_header_names_the_objections_pending_after_the_title(count: int, suffix: str) -> None:
+    """Between the title and the page, in a page as in a text result, and
+    nothing at all for none, so that a header without objections reads as
+    it did before there were any."""
+    items = [_shown("x" * 20_000, event_id=n) for n in range(1, 6)]
+    page = render_page("circle h_da", items, cursor_for=_cursor_for, page=2, objections=count)
+    assert page.text.splitlines()[0] == (
+        f"previously · circle h_da{suffix} · page 2 · next: c={page.next_cursor}"
+    )
+    text = render_text("whoami", ["client x"], objections=count)
+    assert text.splitlines()[0] == f"previously · whoami{suffix}"
+    removed = render_text("whoami", ["client \x1b[31mx"], objections=count)
+    assert removed.splitlines()[0] == f"previously · whoami{suffix} · 5 control characters removed"
+
+
+def test_the_objections_do_not_move_the_page_past_its_limit() -> None:
+    """The header grows by the note, and the page still ends before the
+    limit, as the measure of what fits counts the header too."""
+    items = [_shown("x" * 1_000, event_id=n) for n in range(1, 200)]
+    page = render_page("circle h_da", items, cursor_for=_cursor_for, objections=12)
+    assert len(page.text) <= PAGE_CHARS
+    assert " · 12 objections pending · page 1 · " in page.text.splitlines()[0]

@@ -29,3 +29,11 @@ def test_the_wheel_carries_every_migration(tmp_path: Path) -> None:
     assert REVISIONS, "no revision found in the tree"
     for revision in REVISIONS:
         assert f"previously/migrations/versions/{revision}" in names
+
+
+def test_the_wheel_carries_the_base_vocabulary(tmp_path: Path) -> None:
+    builder = WheelBuilder(str(ROOT))
+    (built,) = builder.build(directory=str(tmp_path), versions=["standard"])
+    with zipfile.ZipFile(built) as wheel:
+        shipped = wheel.read("previously/vocabulary.toml").decode("utf-8")
+    assert shipped == (ROOT / "src/previously/vocabulary.toml").read_text(encoding="utf-8")

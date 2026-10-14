@@ -1,0 +1,90 @@
+# The vocabulary of entities and relations, as the log holds it.
+# `previously vocabulary apply FILE` writes what differs from the log.
+
+[entity.circle]
+labels = { de = "Kreis", en = "Circle" }
+behaviors = []
+fields = [
+  { name = "name", type = "text", required = true },
+]
+
+[entity.matter]
+labels = { de = "Vorgang", en = "Matter" }
+behaviors = ["closable", "period"]
+fields = [
+  { name = "name", type = "text", required = true },
+  { name = "period", type = "period", required = false },
+]
+
+[entity.organization]
+labels = { de = "Organisation", en = "Organization" }
+behaviors = []
+fields = [
+  { name = "name", type = "text", required = true },
+]
+
+[entity.person]
+labels = { de = "Person", en = "Person" }
+behaviors = []
+fields = [
+  { name = "name", type = "text", required = true },
+]
+
+[entity.post]
+labels = { de = "Amt", en = "Post" }
+behaviors = []
+fields = [
+  { name = "name", type = "text", required = true },
+]
+
+[entity.project]
+labels = { de = "Projekt", en = "Project" }
+behaviors = ["closable", "period"]
+fields = [
+  { name = "name", type = "text", required = true },
+  { name = "period", type = "period", required = false },
+]
+
+[relation.holds]
+labels = { de = "Hat inne", en = "Holds" }
+behaviors = ["period"]
+from = ["person"]
+to = ["post"]
+fields = []
+
+[relation.in_circle]
+labels = { de = "Im Kreis", en = "In circle" }
+behaviors = []
+from = []
+to = ["circle"]
+fields = []
+
+[relation.involved_in]
+labels = { de = "Beteiligt an", en = "Involved in" }
+behaviors = ["period"]
+from = ["circle", "organization", "person"]
+to = ["matter", "project"]
+fields = [
+  { name = "role", type = "text", required = false },
+]
+
+[relation.member_of]
+labels = { de = "Mitglied von", en = "Member of" }
+behaviors = ["period"]
+from = ["organization", "person"]
+to = ["circle"]
+fields = []
+
+[relation.part_of]
+labels = { de = "Teil von", en = "Part of" }
+behaviors = ["acyclic", "transitive"]
+from = ["matter", "project"]
+to = ["organization", "project"]
+fields = []
+
+[relation.post_in]
+labels = { de = "Amt in", en = "Post in" }
+behaviors = []
+from = ["post"]
+to = ["organization"]
+fields = []

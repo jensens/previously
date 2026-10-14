@@ -1,7 +1,7 @@
 # Previously — an append-only knowledge store for project histories
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
-"""The MCP server: ten tools, two resource templates and two prompts.
+"""The MCP server: fifteen tools, two resource templates and two prompts.
 
 Every call that reaches a handler here reads the policy anew, finds its
 client in it, and writes an `mcp_access` after it has read and before it
@@ -30,20 +30,25 @@ The descriptions are declarative and name no customer data, and a test
 holds the tool list against a checksum, so a change to it is a deliberate
 one ({ref}`mcp-tool-list`).
 
-Three tools write: `write_assertion` proposes, `write_approve` and
-`write_reject` answer a proposal. `write_assertion` takes two calls, a preview
-that hands back a sealed handle and a call with `confirm=<handle>` that writes
-(`confirm.py`); an answer is one call, because the client's prompt before it
-is the person's confirmation and a preview would only reach the model
-({ref}`assertions-proposals`). Without the setting `PREVIOUSLY_MCP_CONFIRM_KEY`,
-or without a store to lock the sources with, all three answer that writing is
-not configured.
+Six tools write: `write_assertion` proposes obligations and decisions,
+`write_entity` and `write_relation` state entities and relations at the level
+the write path decides, and `write_approve`, `write_reject` and
+`write_triage_answer` answer a proposal or a question. The first three take
+two calls, a preview that hands back a sealed handle and a call with
+`confirm=<handle>` that writes (`confirm.py`); an answer is one call, because
+the client's prompt before it is the person's confirmation and a preview would
+only reach the model ({ref}`assertions-proposals`). Without the setting
+`PREVIOUSLY_MCP_CONFIRM_KEY`, or without a store to lock the sources with, all
+six answer that writing is not configured.
 A writing call reads and decides in the snapshot as every call does, and
 writes after the snapshot is closed, in a transaction of its own.
-A source, an entry or a proposal the client may not see is refused with the
-sentence an id that names nothing gets, so that the answer does not tell that
-it exists. The access entry of a writing call holds counts and ids, and never
-the text it wrote ({ref}`mcp-tools`).
+A source, an entry, an entity or a proposal the client may not see is
+refused with the sentence an id that names nothing gets, so that the answer
+does not tell that it exists. The access entry of a writing call holds counts
+and ids, and never the text it wrote ({ref}`mcp-tools`).
+
+The header of every result counts the objections pending that the client may
+see, counted once per call in its snapshot ({ref}`mcp-tools`).
 """
 
 from contextvars import ContextVar
@@ -90,33 +95,71 @@ from previously.core.canonical import MAX_SAFE_INT
 from previously.core.clients import client_for_token
 from previously.core.errors import InvalidPayload
 from previously.core.gaps import gaps
+from previously.core.graph import ACTIVE
+from previously.core.graph import Claim
+from previously.core.graph import claim_payload
+from previously.core.graph import claim_problem
+from previously.core.graph import conformance_problem
+from previously.core.graph import ENTITY
+from previously.core.graph import ENTITY_STATES
+from previously.core.graph import EntityBody
+from previously.core.graph import Graph
+from previously.core.graph import GraphThread
+from previously.core.graph import GraphVersion
+from previously.core.graph import Period
+from previously.core.graph import RELATION
+from previously.core.graph import RelationBody
+from previously.core.graph import SOURCES
+from previously.core.graph import STANDING
+from previously.core.graph import TRANSITIVE
+from previously.core.graph_write import check_claims
+from previously.core.graph_write import decided
+from previously.core.graph_write import GraphRefused
+from previously.core.graph_write import read_graph
+from previously.core.graph_write import starts_thread
+from previously.core.graph_write import write_claims
 from previously.core.policy import CIRCLE
 from previously.core.policy import CLIENT
 from previously.core.policy import PROVIDER
 from previously.core.policy import read_policy
+from previously.core.vocabulary import DATE
+from previously.core.vocabulary import GATE_TYPES
+from previously.core.vocabulary import is_language_tag
+from previously.core.vocabulary import read_vocabulary
 from previously.mcp_server.auth import CLIENT_STATE
 from previously.mcp_server.auth import guarded
 from previously.mcp_server.confirm import expiry
 from previously.mcp_server.confirm import HandleRefused
 from previously.mcp_server.confirm import key_of
 from previously.mcp_server.confirm import open_handle
+from previously.mcp_server.confirm import open_sealed
 from previously.mcp_server.confirm import payload_digest
 from previously.mcp_server.confirm import seal
 from previously.mcp_server.read import assertions
 from previously.mcp_server.read import chronicle
 from previously.mcp_server.read import circle_verdict
+from previously.mcp_server.read import claim_lines
+from previously.mcp_server.read import entities
+from previously.mcp_server.read import EntityListing
 from previously.mcp_server.read import event_hidden
 from previously.mcp_server.read import event_uri
 from previously.mcp_server.read import events
+from previously.mcp_server.read import graph_rejections
+from previously.mcp_server.read import graph_version
+from previously.mcp_server.read import graph_view
+from previously.mcp_server.read import kind_label
 from previously.mcp_server.read import Listing
 from previously.mcp_server.read import logged
 from previously.mcp_server.read import MAX_IDS
+from previously.mcp_server.read import objections_seen
 from previously.mcp_server.read import resume_point
 from previously.mcp_server.read import rule_ids
 from previously.mcp_server.read import source_verdict
 from previously.mcp_server.read import statement_lines
 from previously.mcp_server.read import thread_hidden
 from previously.mcp_server.read import thread_seen
+from previously.mcp_server.read import triage
+from previously.mcp_server.read import TRIAGE_SECTIONS
 from previously.mcp_server.render import CURSOR_REFUSED
 from previously.mcp_server.render import decode_position
 from previously.mcp_server.render import encode_cursor
@@ -137,6 +180,7 @@ from typing import Annotated
 from typing import Any
 from typing import cast
 from typing import Final
+from typing import Protocol
 from typing import TYPE_CHECKING
 
 import asyncio
@@ -156,10 +200,14 @@ if TYPE_CHECKING:
     from mcp.server.context import ServerRequestContext
     from previously.contract.store import LogStore
     from previously.contract.store import RedactionStore
+    from previously.core.graph import FieldValue
+    from previously.core.graph_write import Decided
     from previously.core.policy import Client
     from previously.core.policy import Policy
     from previously.core.policy import Provider
     from previously.core.policy import Rule
+    from previously.core.vocabulary import Vocabulary
+    from previously.mcp_server.read import GraphView
     from previously.mcp_server.read import Seen
     from previously.mcp_server.render import Page
     from starlette.applications import Starlette
@@ -174,17 +222,32 @@ MARKDOWN: Final = "text/markdown"
 
 INSTRUCTIONS: Final = (
     "Previously is an append-only store of project histories: mails and other "
-    "observations, each with an id and numbered units, and the obligations and "
-    "decisions stated on them. A tool that shows events, obligations or decisions "
-    "only reads. "
-    "Three tools write. write_assertion proposes obligations and decisions in two "
+    "observations, each with an id and numbered units, the obligations and "
+    "decisions stated on them, and the entities they are about with the relations "
+    "between them. A tool that shows events, obligations, decisions, entities or "
+    "what waits only reads. "
+    "Six tools write. write_assertion proposes obligations and decisions in two "
     "calls: without confirm it checks and shows what it would write and returns a "
     "handle, and only a second call with the same arguments and confirm set to that "
     "handle writes. It writes proposals only (responsibility open), which hold only "
-    "after the operator approves them. write_approve and write_reject answer a "
-    "proposal in the operator's name, in one call each, and your client asks the "
-    "person before it runs them: when the user has asked you to approve or reject, "
-    "call the tool and do not ask again in the chat. When the user only states a "
+    "after the operator approves them. "
+    "An entity is a person, an organization, a circle or another thing a history is "
+    "about, and a relation says how two entities stand to each other, such as a "
+    "member of a board; the operator's vocabulary declares their kinds and fields. "
+    "write_entity and write_relation state them in the same two calls. Give every "
+    "item an honest confidence from 0 to 100: the server decides the level from the "
+    "operator's approval classes, transitive where a class lets you stand for it, "
+    "a proposal otherwise. A version that contradicts what the operator stated "
+    "directly becomes an objection to it and never replaces it. When it is unclear "
+    "which entity a relation points at, give it candidates, which asks the operator a "
+    "question, and do not guess. list_triage shows the objections, questions and "
+    "proposals that wait, and the first line of every result counts the objections "
+    "pending. "
+    "write_approve and write_reject answer a proposal in the operator's name, in one "
+    "call each, and so does write_triage_answer for a question, with one of its "
+    "candidates; your client asks the person before it runs them: when the user has "
+    "asked you to approve or reject, call the tool and do not ask again in the chat. "
+    "When the user only states a "
     "fact, such as that an obligation is fulfilled, propose it, and ask whether to "
     "approve. "
     "An approval keeps the author of the proposal, the one who formulated it, and is "
@@ -204,8 +267,8 @@ INSTRUCTIONS: Final = (
 # it, as an ask rule does, in every permission mode but `dontAsk`, which
 # refuses the call (https://code.claude.com/docs/en/permissions). Measured on
 # 2026-10-13 with Claude Code 2.1.296 and no ask rule: the prompt came.
-# Only the two tools that answer a proposal in the operator's name carry it
-# ({ref}`assertions-proposals`).
+# Only the three tools that answer a proposal or a question in the operator's
+# name carry it ({ref}`assertions-proposals`).
 _ASK_THE_PERSON: Final = {"anthropic/requiresUserInteraction": True}
 
 _CHRONICLE: Final = (
@@ -281,19 +344,79 @@ _WRITE_ASSERTION: Final = (
     "Confirming the same handle again writes nothing and returns the same ids."
 )
 _WRITE_APPROVE: Final = (
-    f"Approves 1 to {MAX_STATEMENTS} proposals: each becomes a direct version of its "
-    "entry with the content, the sources and the author of the proposal, which the "
-    "operator now stands for. Only for a proposal whose entry and sources this "
-    "client can see. One call writes; it is idempotent: an approval that stands "
-    "already is returned, not repeated. A person decides an approval: the client "
-    "asks the person before the call."
+    f"Approves 1 to {MAX_STATEMENTS} proposals, of obligations and decisions or of "
+    "entities and relations, not both in one call: each becomes a direct version of "
+    "its entry with the content, the sources and the author of the proposal, which "
+    "the operator now stands for; an objection or a transitive version is approved "
+    "the same way, and a question is answered with write_triage_answer. Only for a "
+    "proposal whose entry and sources this client can see. One call writes; it is "
+    "idempotent: an approval that stands already is returned, not repeated. A "
+    "person decides an approval: the client asks the person before the call."
 )
 _WRITE_REJECT: Final = (
-    "Rejects one proposal, with an optional reason: it leaves what is proposed and "
-    "stays in the history. Only for a proposal whose entry and sources this client "
-    "can see. One call writes; it is idempotent: the same rejection with the same "
-    "reason is returned, not repeated. A person decides a rejection: the client "
-    "asks the person before the call."
+    "Rejects one proposal, of an obligation, a decision, an entity or a relation, an "
+    "objection, a question or a transitive version among them, with an optional "
+    "reason: it leaves what is proposed and stays in the history. Only for a "
+    "proposal whose entry and sources this client can see. One call writes; it is "
+    "idempotent: the same rejection with the same reason is returned, not repeated. "
+    "A person decides a rejection: the client asks the person before the call."
+)
+_LIST_ENTITIES: Final = (
+    "The entities that stand, of the kinds the operator's vocabulary declares, in "
+    "the order of their ids. Each entry is a heading with the label of its kind, "
+    "its state, its level (direct, transitive under an approval class, or proposed), "
+    "the number of versions and proposals and the objections that contest it, and "
+    "inside a fence of foreign content its fields, its reason, its sources and the "
+    "relations it is an end of. The filters combine: type (a kind of the "
+    "vocabulary), state, and proposals for what is only proposed. With subject, the "
+    "one entity, and with history all its versions with what each changed. An "
+    "entity the processing policy keeps from this client, because of the circles "
+    "of its sources, stands as a placeholder with the reason, and a relation is "
+    "shown only where this client sees its sources and both its ends. A page stays "
+    f"under {PAGE_CHARS:,} characters, and its footer names the cursor of the next page."
+)
+_LIST_TRIAGE: Final = (
+    "What waits for the operator among entities and relations this client can see, "
+    "by id within each section: first the objections, versions by a model that "
+    "contradict what the operator stated directly, then the questions, relations "
+    "that name candidates in place of an end, then every other proposal, each with "
+    "what it says and what it would change. What waits on an entity or a relation "
+    "the processing policy keeps from this client is left out, without a "
+    f"placeholder. A page stays under {PAGE_CHARS:,} characters, and its footer names "
+    "the cursor of the next page."
+)
+_WRITE_ENTITY: Final = (
+    f"States 1 to {MAX_STATEMENTS} entities, each of a kind the vocabulary declares and "
+    "resting on observations this client can see, by model:<this client>. Each item "
+    "carries the confidence of this client, 0 to 100, and the server decides the "
+    "level from it: transitive where an approval class of the operator covers this "
+    "client, the kind and the confidence, so that the operator stands for it in "
+    "advance, and a proposal otherwise. A version of an entity the operator stated "
+    "directly is an objection to that version and never replaces it. An item with "
+    "subject is a new, complete version of that entity. Two calls: without confirm, "
+    "the entities are checked and shown with the level each would get, with a "
+    "handle, and nothing is written; with the same items and confirm set to that "
+    "handle, within ten minutes, they are written and their ids returned. A "
+    "confirmation after an approval class or a direct version changed what the "
+    "preview showed is refused. Confirming the same handle again writes nothing and "
+    "returns the same ids."
+)
+_WRITE_RELATION: Final = (
+    f"States 1 to {MAX_STATEMENTS} relations from one entity to another, each of a kind "
+    "the vocabulary declares, between entities this client can see, and resting on "
+    "observations it can see. Where it is unclear which entity a relation points at, "
+    "it names 2 to 5 candidates in place of to, and asks the operator a question "
+    "instead of guessing; a question is always a proposal. The confidence, the "
+    "level, an objection, subject and the two calls are those of write_entity."
+)
+_WRITE_TRIAGE_ANSWER: Final = (
+    "Answers a question with one of its candidates, with an optional reason: the "
+    "approval of the question with the candidate as the end, a direct version with "
+    "the sources and the author of the question, which the operator now stands for. "
+    "Only for a question that waits and whose relation and sources this client can "
+    "see. One call writes; it is idempotent: the same answer again is returned, not "
+    "repeated. A person decides an answer: the client asks the person before the "
+    "call."
 )
 
 _MOMENT_HELP: Final = "an ISO 8601 date, or a moment with a zone"
@@ -319,6 +442,17 @@ _PROPOSALS_TO_APPROVE = Field(
 )
 _PROPOSAL = Field(description="the id of a proposal, as the history of an entry names it")
 _REJECTION_REASON = Field(description="why the proposal is not taken")
+_ENTITY_TYPES = Field(description="only entities of these kinds, as the vocabulary names them")
+_ENTITY_STATE = Field(description="only this state: active, closed or retracted")
+_ENTITY_SUBJECT = Field(
+    description="the id of one entity, as the heading gives it; the other filters rest"
+)
+_ENTITY_HISTORY = Field(description="show all versions of the entity, each with what it changed")
+_ENTITY_ITEMS = Field(description=f"1 to {MAX_STATEMENTS} entities")
+_RELATION_ITEMS = Field(description=f"1 to {MAX_STATEMENTS} relations")
+_QUESTION = Field(description="the id of the question, as list_triage names it")
+_CHOICE = Field(description="the id of the candidate the relation points at")
+_ANSWER_REASON = Field(description="why this candidate, for the history")
 _REFERENCE_HELP: Final = "own, circle:NAME, address:ADDRESS or name:TEXT"
 
 
@@ -377,6 +511,87 @@ class StatementItem(BaseModel):
     ] = None
 
 
+class PeriodItem(BaseModel):
+    """When something held, as write_entity and write_relation take it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    start: Annotated[
+        str | None,
+        Field(alias="from", description="the first day, YYYY-MM-DD; left out for an open start"),
+    ] = None
+    end: Annotated[
+        str | None,
+        Field(alias="to", description="the last day, YYYY-MM-DD; left out for an open end"),
+    ] = None
+
+
+_FIELDS_HELP: Final = (
+    "the fields its kind declares, by name: a text, a date YYYY-MM-DD, a period, or "
+    "the id of an entity for a reference"
+)
+_CONFIDENCE_HELP: Final = (
+    "how sure this client is, a whole number from 0 to 100; the server decides the level from it"
+)
+
+
+class EntityItem(BaseModel):
+    """An entity as write_entity takes it."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Annotated[str, Field(description="the kind of entity, as the vocabulary declares it")]
+    fields: Annotated[
+        dict[str, str | int | PeriodItem], Field(description=f"{_FIELDS_HELP}; name among them")
+    ]
+    sources: Annotated[list[SourceItem], Field(description="the events it rests on, at least one")]
+    confidence: Annotated[int, Field(description=_CONFIDENCE_HELP)]
+    language: Annotated[
+        str | None, Field(description="the working language of the entity, such as de or en")
+    ] = None
+    state: Annotated[
+        str | None, Field(description="active, closed or retracted; active when left out")
+    ] = None
+    reason: Annotated[str | None, Field(description="why this version, for the history")] = None
+    subject: Annotated[
+        int | None,
+        Field(description="the id of the entity this is a new, complete version of"),
+    ] = None
+
+
+class RelationItem(BaseModel):
+    """A relation as write_relation takes it: to an entity, or to candidates."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: Annotated[str, Field(description="the kind of relation, as the vocabulary declares it")]
+    start: Annotated[int, Field(alias="from", description="the id of the entity it starts at")]
+    sources: Annotated[list[SourceItem], Field(description="the events it rests on, at least one")]
+    confidence: Annotated[int, Field(description=_CONFIDENCE_HELP)]
+    to: Annotated[
+        int | None, Field(description="the id of the entity it points at; or give candidates")
+    ] = None
+    candidates: Annotated[
+        list[int] | None,
+        Field(description="2 to 5 ids of entities it may point at, for a question; or give to"),
+    ] = None
+    period: Annotated[
+        PeriodItem | None,
+        Field(description="when it held, for a kind with the behavior period"),
+    ] = None
+    fields: Annotated[dict[str, str | int | PeriodItem] | None, Field(description=_FIELDS_HELP)] = (
+        None
+    )
+    state: Annotated[
+        str | None, Field(description="standing or retracted; standing when left out")
+    ] = None
+    reason: Annotated[str | None, Field(description="why this version, for the history")] = None
+    subject: Annotated[
+        int | None,
+        Field(description="the id of the relation this is a new, complete version of"),
+    ] = None
+
+
 # What a client may keep of a read resource, as the protocol revision
 # 2026-07-28 lets a server say: nothing past the answer, and only for the
 # client that asked, since what a resource shows depends on who reads it.
@@ -411,7 +626,16 @@ _LINE_TOO_LONG: Final = (
 )
 _ID_RANGE: Final = "a whole number from 1 to 2^53 - 1"
 _DAY: Final = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
-WRITERS: Final = frozenset({"write_assertion", "write_approve", "write_reject"})
+WRITERS: Final = frozenset(
+    {
+        "write_assertion",
+        "write_approve",
+        "write_reject",
+        "write_entity",
+        "write_relation",
+        "write_triage_answer",
+    }
+)
 # Every tool the server registers, which the test of the tool list holds
 # against what a client lists: a call of any other name is recorded without
 # the values of its arguments.
@@ -423,6 +647,8 @@ TOOLS: Final = WRITERS | {
     "list_circles",
     "whoami",
     "policy_gaps",
+    "list_entities",
+    "list_triage",
 }
 
 # What the access log keeps of a caller's arguments: text cut to this length,
@@ -505,6 +731,31 @@ class _Mark:
 _CALL: ContextVar[_Mark | None] = ContextVar("previously_mcp_call", default=None)
 
 
+@dataclass(frozen=True)
+class _Folded:
+    """The graph the running call folded, once, in its snapshot, and the
+    objections pending in it that the call's client may see."""
+
+    graph: Graph
+    objections: int
+
+
+# What `Service.answer` folds for the running call, before the call's own
+# work: the header of every result the call renders names the objections
+# from here, a written one after the snapshot too ({ref}`mcp-tools`), and a
+# tool that reads the graph takes this one rather than folding the log a
+# second time (ruling T6-c of the 2026-10-14 assignments plan).
+# A context variable rather than an argument through every body: the fold
+# belongs to the call and not to any one tool, and a call runs in one context
+# from its fold to its last line.
+_FOLDED: ContextVar[_Folded | None] = ContextVar("previously_mcp_graph", default=None)
+
+
+def _pending() -> int:
+    folded = _FOLDED.get()
+    return 0 if folded is None else folded.objections
+
+
 def moment(text: str | None, what: str) -> datetime | None:
     """A date (midnight UTC) or a moment with a zone, or `Refused`."""
     if text is None:
@@ -579,7 +830,9 @@ class Service[Conn]:
     client: `stdio_client` on stdio, the HTTP wrapper's state otherwise.
 
     It writes only with both a `locker`, the store that locks the sources
-    while a statement is written, and a `key` to seal handles with.
+    while a statement is written, and a `key` to seal handles with. The
+    labels of kinds are shown in an entity's working language, else in
+    `language`.
     """
 
     def __init__(
@@ -589,11 +842,13 @@ class Service[Conn]:
         stdio_client: str | None,
         locker: RedactionStore[Conn] | None = None,
         key: bytes | None = None,
+        language: str = "en",
     ) -> None:
         self.log = log
         self.stdio_client = stdio_client
         self.locker = locker
         self.key = key
+        self.language = language
 
     def client_name(self, request: object) -> str | None:
         if self.stdio_client is not None:
@@ -654,6 +909,7 @@ class Service[Conn]:
         name = self.client_name(request)
         answer = Answer(render_error(_FAILED), error=True)
         policy_ids: dict[str, object] = {}
+        pending = None
         try:
             if name is None:
                 raise Refused(_NO_CLIENT)
@@ -669,6 +925,10 @@ class Service[Conn]:
                     "processor": policy.ids.get((PROVIDER, client.processor)),
                     "rules": [],
                 }
+                graph = read_graph(self.log, conn)
+                pending = _FOLDED.set(
+                    _Folded(graph, objections_seen(self.log, conn, policy, client, graph))
+                )
                 outcome = body(conn, policy, client)
             answer = outcome if isinstance(outcome, Answer) else outcome()
             policy_ids["rules"] = list(answer.rules)
@@ -677,6 +937,8 @@ class Service[Conn]:
         except Exception:
             logger.exception("an MCP call failed")
         finally:
+            if pending is not None:
+                _FOLDED.reset(pending)
             if name is not None:
                 self.record(name, policy_ids, call, answer, era)
         return answer
@@ -786,7 +1048,14 @@ class Service[Conn]:
             return encode_cursor(cast("int", seen.reads[index].event), filters, page=page + 1)
 
         title = " · ".join(["chronicle", *(f"{key} {value}" for key, value in filters.items())])
-        rendered = render_page(title, seen.items, cursor_for=cursor_for, page=page, more=seen.more)
+        rendered = render_page(
+            title,
+            seen.items,
+            cursor_for=cursor_for,
+            page=page,
+            more=seen.more,
+            objections=_pending(),
+        )
         return _paged(seen, rendered)
 
     def event_page(
@@ -807,7 +1076,9 @@ class Service[Conn]:
             return f"call get_event with ids=[{rest}]{start}"
 
         title = f"get_event · {len(seen.reads)} of {len(ids)} ids"
-        rendered = render_page(title, seen.items, cursor_for=rest_after, next_hint=next_hint)
+        rendered = render_page(
+            title, seen.items, cursor_for=rest_after, next_hint=next_hint, objections=_pending()
+        )
         return _paged(seen, rendered)
 
     def assertion_page(
@@ -856,7 +1127,14 @@ class Service[Conn]:
                 *(f"{key} {value}" for key, value in filters.items() if key != "kind"),
             ]
         )
-        rendered = render_page(title, seen.items, cursor_for=cursor_for, page=page, more=seen.more)
+        rendered = render_page(
+            title,
+            seen.items,
+            cursor_for=cursor_for,
+            page=page,
+            more=seen.more,
+            objections=_pending(),
+        )
         return _paged(seen, rendered)
 
     def circles(self, conn: Conn, policy: Policy, client: Client) -> Answer:
@@ -871,7 +1149,7 @@ class Service[Conn]:
                 f"{members} {'member' if members == 1 else 'members'} · "
                 f"this client {sees}"
             )
-        return Answer(render_text("circles", lines))
+        return Answer(render_text("circles", lines, objections=_pending()))
 
     def statement(self, conn: Conn, event_id: int) -> str:
         row = next(iter(self.log.read(conn, event_id, 1)), None)
@@ -898,7 +1176,7 @@ class Service[Conn]:
         lines.append(
             f"- content of no circle and no source rule: {_seen(verdict.sees, verdict.reason)}"
         )
-        return Answer(render_text("whoami", lines))
+        return Answer(render_text("whoami", lines, objections=_pending()))
 
     def gaps(self, conn: Conn, since: str | None) -> Answer:
         found = gaps(self.log, conn, since=moment(since, "since"))
@@ -907,7 +1185,7 @@ class Service[Conn]:
         ]
         if not lines:
             lines = ["No call fell back to local only."]
-        return Answer(render_text("policy gaps", lines))
+        return Answer(render_text("policy gaps", lines, objections=_pending()))
 
     # --- the writing tools ----------------------------------------------------------
 
@@ -989,6 +1267,11 @@ class Service[Conn]:
         if any(not 1 <= proposal <= MAX_SAFE_INT for proposal in unique):
             raise Refused(f"ids holds an id that is not {_ID_RANGE}")
         threads = read_threads(self.log, conn)
+        named = {version.id for thread in threads.values() for version in thread.versions}
+        if not named.issuperset(unique):
+            graph_outcome = self.graph_approval_write(conn, policy, client, threads, unique)
+            if graph_outcome is not None:
+                return graph_outcome
         slots: list[Statement | int] = []
         answered: list[Answered] = []
         for proposal in unique:
@@ -1037,6 +1320,12 @@ class Service[Conn]:
         if not 1 <= proposal <= MAX_SAFE_INT:
             raise Refused(f"proposal is not {_ID_RANGE}")
         threads = read_threads(self.log, conn)
+        if all(
+            version.id != proposal for thread in threads.values() for version in thread.versions
+        ):
+            graph_outcome = self.graph_rejection_write(conn, policy, client, proposal, reason)
+            if graph_outcome is not None:
+                return graph_outcome
         found = self.answerable(conn, policy, client, threads, proposal)
         version = found.version
         statement = Statement(
@@ -1136,7 +1425,9 @@ class Service[Conn]:
                     raise Refused(str(refused)) from refused
             written = iter(ids)
             numbers = [next(written) if isinstance(slot, Statement) else slot for slot in slots]
-            text = render_text(f"{tool} · written", [f"assertion {n}" for n in numbers])
+            text = render_text(
+                f"{tool} · written", [f"assertion {n}" for n in numbers], objections=_pending()
+            )
             return Answer(text, delivered=seen[0], rules=seen[1], written=ids)
 
         return write
@@ -1197,7 +1488,7 @@ class Service[Conn]:
             except AssertionRefused as refused:
                 raise Refused(str(refused)) from refused
             lines = [f"assertion {event_id}" for event_id in ids]
-            text = render_text(f"{tool} · written", lines)
+            text = render_text(f"{tool} · written", lines, objections=_pending())
             return Answer(text, delivered=(), rules=(), written=ids)
 
         return write
@@ -1208,13 +1499,736 @@ class Service[Conn]:
         except AssertionRefused as refused:
             raise Refused(str(refused)) from refused
 
+    # --- entities and relations -----------------------------------------------------
 
-def _shown_of(answered: Sequence[Answered]) -> tuple[tuple[Delivered, ...], tuple[int, ...]]:
+    def entity_page(
+        self,
+        conn: Conn,
+        policy: Policy,
+        client: Client,
+        listing: EntityListing,
+        cursor: str | None,
+    ) -> Answer:
+        """The entities a client may see, as a page."""
+        if listing.state is not None and listing.state not in ENTITY_STATES:
+            raise Refused(f"state takes one of {', '.join(ENTITY_STATES)}")
+        if listing.subject is not None and not 1 <= listing.subject <= MAX_SAFE_INT:
+            raise Refused("subject is the id of an entity, a whole number from 1 to 2^53 - 1")
+        filters = {
+            key: value
+            for key, value in (
+                ("kind", ENTITY),
+                ("types", None if listing.types is None else ", ".join(listing.types)),
+                ("state", listing.state),
+                ("proposals", "true" if listing.proposals else None),
+            )
+            if value is not None
+        }
+        after: int | None = None
+        page = 1
+        if cursor is not None and listing.subject is None:
+            try:
+                position = decode_position(cursor, filters)
+            except ValueError as error:
+                raise Refused(_CURSOR_AGAIN) from error
+            after, page = position.after, position.page
+        seen = entities(
+            self.log,
+            conn,
+            policy,
+            client,
+            listing,
+            after=after,
+            language=self.language,
+            graph=self.graph_now(conn),
+        )
+
+        def cursor_for(index: int) -> str:
+            return encode_cursor(cast("int", seen.reads[index].event), filters, page=page + 1)
+
+        title = " · ".join(
+            [
+                "list_entities",
+                *(f"{key} {value}" for key, value in filters.items() if key != "kind"),
+            ]
+        )
+        rendered = render_page(
+            title,
+            seen.items,
+            cursor_for=cursor_for,
+            page=page,
+            more=seen.more,
+            objections=_pending(),
+        )
+        return _paged(seen, rendered)
+
+    def triage_page(self, conn: Conn, policy: Policy, client: Client, cursor: str | None) -> Answer:
+        """What waits for the operator that a client may see, as a page. A
+        cursor names the section of the last item and its id."""
+        after: tuple[str, int] | None = None
+        page = 1
+        if cursor is not None:
+            for section in TRIAGE_SECTIONS:
+                try:
+                    position = decode_position(cursor, _triage_filters(section))
+                except ValueError:
+                    continue
+                after, page = (section, position.after), position.page
+                break
+            else:
+                raise Refused(_CURSOR_AGAIN)
+        seen = triage(
+            self.log,
+            conn,
+            policy,
+            client,
+            after=after,
+            language=self.language,
+            graph=self.graph_now(conn),
+        )
+
+        def cursor_for(index: int) -> str:
+            filters = _triage_filters(seen.sections[index])
+            return encode_cursor(cast("int", seen.reads[index].event), filters, page=page + 1)
+
+        rendered = render_page(
+            "list_triage",
+            seen.items,
+            cursor_for=cursor_for,
+            page=page,
+            more=seen.more,
+            objections=_pending(),
+        )
+        return _paged(seen, rendered)
+
+    def graph_now(self, conn: Conn) -> Graph:
+        """The graph the running call folded in `answer`, or, outside a
+        call, the one folded now."""
+        folded = _FOLDED.get()
+        return read_graph(self.log, conn) if folded is None else folded.graph
+
+    def graph_of(self, conn: Conn, policy: Policy, client: Client) -> tuple[GraphView, Vocabulary]:
+        """The graph as the client may see it, and the vocabulary, in the
+        call's snapshot."""
+        graph = self.graph_now(conn)
+        return graph_view(self.log, conn, policy, client, graph), read_vocabulary(self.log, conn)
+
+    def entity_write(
+        self,
+        conn: Conn,
+        policy: Policy,
+        client: Client,
+        items: Sequence[EntityItem],
+        confirm: str | None,
+    ) -> Outcome:
+        """`write_entity`: the items as entities of this client, at the
+        level the write path gives them."""
+        self.writing()
+        _count_items(items)
+        vocabulary = read_vocabulary(self.log, conn)
+        claims = [
+            _entity_claim(number, item, client.name, vocabulary)
+            for number, item in enumerate(items, 1)
+        ]
+        return self.claims_staged(conn, policy, client, "write_entity", claims, confirm)
+
+    def relation_write(
+        self,
+        conn: Conn,
+        policy: Policy,
+        client: Client,
+        items: Sequence[RelationItem],
+        confirm: str | None,
+    ) -> Outcome:
+        """`write_relation`: the items as relations of this client, at the
+        level the write path gives them."""
+        self.writing()
+        _count_items(items)
+        vocabulary = read_vocabulary(self.log, conn)
+        claims = [
+            _relation_claim(number, item, client.name, vocabulary)
+            for number, item in enumerate(items, 1)
+        ]
+        return self.claims_staged(conn, policy, client, "write_relation", claims, confirm)
+
+    def claims_staged(
+        self,
+        conn: Conn,
+        policy: Policy,
+        client: Client,
+        tool: str,
+        claims: Sequence[Claim],
+        confirm: str | None,
+    ) -> Outcome:
+        """The two steps of `write_entity` and `write_relation`, as `staged`
+        takes them for `write_assertion`.
+
+        What the client may not see is refused first, with the sentence of
+        what does not exist: a source, a subject, an end, an entity a `ref`
+        names (Review Focus 3 of the 2026-10-14 assignments plan). Without
+        `confirm`, `check_claims` decides the level of every claim, and the
+        preview shows it and seals it into the handle beside the claims as
+        the client gave them; with it, `write_claims` is held to what was
+        sealed, and refuses a claim whose level, class or contested version
+        moved in between (Review Focus 2), instead of writing it otherwise
+        than the preview showed.
+        """
+        locker, key = self.writing()
+        for claim in claims:
+            for source in claim.sources:
+                if event_hidden(self.log, conn, policy, client, source.event):
+                    raise Refused(
+                        f"event {source.event} is not one this client can use as a source"
+                    )
+        view, vocabulary = self.graph_of(conn, policy, client)
+        _refuse_unseen(view, vocabulary, claims)
+        lines = [claim_lines(view, vocabulary, claim) for claim in claims]
+        # As in `staged`: a line the preview would cut is refused, not cut.
+        if any(len(line) > STATED_LINE_CHARS for item in lines for line in item):
+            raise Refused(_LINE_TOO_LONG)
+        payloads = [claim_payload(claim) for claim in claims]
+        try:
+            payload_digest(payloads)
+        except InvalidPayload as error:
+            raise Refused(f"a statement cannot be written: {error}") from error
+        now = datetime.now(UTC)
+        if confirm is None:
+            levelled = self.claims_checked(conn, claims, now)
+            shown = [
+                Stated(
+                    f"statement {number}",
+                    claim.kind,
+                    _claim_label(claim, kind_label(vocabulary, claim, self.language)),
+                    tuple(item),
+                )
+                for number, (claim, item) in enumerate(zip(levelled, lines, strict=True), 1)
+            ]
+            nonce = secrets.token_urlsafe(16)
+            handle = seal(
+                key,
+                client=client.name,
+                payloads=payloads,
+                now=now,
+                nonce=nonce,
+                decided=[decided(claim) for claim in levelled],
+            )
+            return Answer(_preview(tool, shown, handle, expiry(now)), written=())
+        try:
+            opened = open_sealed(
+                key, confirm, client=client.name, payloads=payloads, now=now, decisions=True
+            )
+        except HandleRefused as refused:
+            raise Refused(str(refused)) from refused
+        sealed = [replace(claim, handle=opened.nonce) for claim in claims]
+        expect = cast("tuple[Decided, ...]", opened.decided)
+
+        def write() -> Answer:
+            try:
+                written = write_claims(
+                    self.log, locker, sealed, recorded_at=datetime.now(UTC), expect=expect
+                )
+            except GraphRefused as refused:
+                raise Refused(str(refused)) from refused
+            lines = [
+                f"assertion {event_id} · {level}"
+                for event_id, level in zip(written.ids, written.levels, strict=True)
+            ]
+            text = render_text(f"{tool} · written", lines, objections=_pending())
+            return Answer(text, written=written.ids)
+
+        return write
+
+    def claims_checked(
+        self, conn: Conn, claims: Sequence[Claim], now: datetime
+    ) -> tuple[Claim, ...]:
+        try:
+            return check_claims(self.log, conn, claims, recorded_at=now)
+        except GraphRefused as refused:
+            raise Refused(str(refused)) from refused
+
+    def graph_answerable(
+        self, conn: Conn, policy: Policy, client: Client, view: GraphView, proposal: int
+    ) -> GraphAnswered | None:
+        """The version of an entity or a relation `proposal` names, when the
+        client may see its thread and every source of the version, as
+        `answerable` asks of an obligation; `None` otherwise, for the
+        caller to refuse with the sentence of an id that names nothing."""
+        found = graph_version(view.graph, proposal)
+        if found is None:
+            return None
+        thread, version = found
+        if not view.seen(thread.subject) or any(
+            event_hidden(self.log, conn, policy, client, source.event)
+            for source in version.claim.sources
+        ):
+            return None
+        verdict = view.verdict(thread.subject)
+        return GraphAnswered(
+            thread, version, view.delivered(thread.subject, verdict), view.rules(verdict)
+        )
+
+    def can_answer(
+        self,
+        conn: Conn,
+        policy: Policy,
+        client: Client,
+        threads: Mapping[int, Thread],
+        proposal: int,
+    ) -> bool:
+        try:
+            self.answerable(conn, policy, client, threads, proposal)
+        except Refused:
+            return False
+        return True
+
+    def graph_approval_write(
+        self,
+        conn: Conn,
+        policy: Policy,
+        client: Client,
+        threads: Mapping[int, Thread],
+        ids: Sequence[int],
+    ) -> Outcome | None:
+        """`write_approve` for versions of entities and relations, as
+        `previously approve` writes them: `None` where no id names one the
+        client may see, so that the call goes on as one for obligations.
+
+        One call answers one family, as on the command line. Whether an id
+        names an obligation is asked of what the client may see, so that the
+        refusal of a mixed call does not tell that a hidden one exists."""
+        view, vocabulary = self.graph_of(conn, policy, client)
+        named = {version.id for thread in threads.values() for version in thread.versions}
+        found = {
+            proposal: self.graph_answerable(conn, policy, client, view, proposal)
+            for proposal in ids
+            if proposal not in named
+        }
+        if not any(found.values()):
+            return None
+        if any(
+            self.can_answer(conn, policy, client, threads, proposal)
+            for proposal in ids
+            if proposal in named
+        ):
+            raise Refused(
+                "one call approves obligations and decisions, or entities and relations, not both"
+            )
+        slots: list[Claim | int] = []
+        answered: list[GraphAnswered] = []
+        for proposal in ids:
+            item = found.get(proposal)
+            if item is None:
+                raise Refused(f"event {proposal} is not a proposal this client can answer")
+            asked = item.version.claim.body
+            _refuse_gate_kind(proposal, asked)
+            if isinstance(asked, RelationBody) and asked.candidates is not None:
+                raise Refused(f"event {proposal} is a question: answer it with write_triage_answer")
+            answered.append(item)
+            approval = replace(
+                item.version.claim,
+                responsibility=DIRECT,
+                handle=None,
+                subject=item.thread.subject,
+                approves=item.version.id,
+                under=None,
+                contests=None,
+            )
+            slots.append(_standing(item.thread, proposal, approval))
+        lines = [claim_lines(view, vocabulary, slot) for slot in slots if isinstance(slot, Claim)]
+        return self.claims_answering(conn, "write_approve", slots, lines, _shown_of(answered))
+
+    def graph_rejection_write(
+        self,
+        conn: Conn,
+        policy: Policy,
+        client: Client,
+        proposal: int,
+        reason: str | None,
+    ) -> Outcome | None:
+        """`write_reject` for a version of an entity or a relation: a direct
+        rejection by this client with the sources of the version, as for an
+        obligation; `None` where `proposal` names none the client may see."""
+        view, vocabulary = self.graph_of(conn, policy, client)
+        found = self.graph_answerable(conn, policy, client, view, proposal)
+        if found is None:
+            return None
+        version = found.version
+        statement = Statement(
+            REJECTION,
+            model_author(client.name),
+            DIRECT,
+            version.claim.sources,
+            reason,
+            None,
+            None,
+            None,
+            version.id,
+            None,
+        )
+        standing = next(
+            (
+                event_id
+                for event_id, _at, earlier in graph_rejections(self.log, conn, found.thread)
+                if replace(earlier, handle=None) == statement
+            ),
+            None,
+        )
+        slot: Statement | int = statement if standing is None else standing
+        lines = [claim_lines(view, vocabulary, replace(version.claim, reason=reason))]
+        return self.answering(conn, "write_reject", [slot], lines, _shown_of([found]))
+
+    def triage_answer_write(
+        self,
+        conn: Conn,
+        policy: Policy,
+        client: Client,
+        question: int,
+        choice: int,
+        reason: str | None,
+    ) -> Outcome:
+        """`write_triage_answer`: the approval of a question with `to` set to
+        one of its candidates, its author and sources kept, as `previously
+        answer` writes it, in one call.
+
+        A question the client may not see is refused with the sentence of
+        one that does not wait, and so is a version that is no question or
+        one already answered otherwise. The same answer standing already is
+        answered with its id and writes nothing."""
+        self.writing()
+        if not 1 <= question <= MAX_SAFE_INT:
+            raise Refused(f"question is not {_ID_RANGE}")
+        if not 1 <= choice <= MAX_SAFE_INT:
+            raise Refused(f"choice is not {_ID_RANGE}")
+        view, vocabulary = self.graph_of(conn, policy, client)
+        found = self.graph_answerable(conn, policy, client, view, question)
+        no_question = f"event {question} is no question that waits"
+        asked = None if found is None else found.version.claim.body
+        if found is None or not isinstance(asked, RelationBody) or asked.candidates is None:
+            raise Refused(no_question)
+        _refuse_gate_kind(question, asked)
+        version, thread = found.version, found.thread
+        answer = replace(
+            version.claim,
+            responsibility=DIRECT,
+            reason=version.claim.reason if reason is None else reason,
+            handle=None,
+            subject=thread.subject,
+            approves=version.id,
+            under=None,
+            contests=None,
+            body=replace(asked, to=choice, candidates=None),
+        )
+        slot = _standing(thread, question, answer)
+        if isinstance(slot, Claim):
+            waiting = thread.question(view.graph.classes)
+            if waiting is None or waiting.id != question:
+                raise Refused(no_question)
+            if choice not in asked.candidates:
+                # The write path's sentence for an answer of the operator,
+                # which `previously answer` gives too: an approval naming a
+                # stranger would be refused there for a changed proposal,
+                # which says nothing of the cause.
+                raise Refused(f"the answer names {choice}, which is none of the candidates")
+        lines = [claim_lines(view, vocabulary, answer)]
+        return self.claims_answering(conn, "write_triage_answer", [slot], lines, _shown_of([found]))
+
+    def claims_answering(
+        self,
+        conn: Conn,
+        tool: str,
+        slots: Sequence[Claim | int],
+        lines: Sequence[Sequence[str]],
+        seen: tuple[tuple[Delivered, ...], tuple[int, ...]],
+    ) -> Outcome:
+        """`answering` for entities and relations: the one call of an
+        approval or an answer. The checks of the write path run in the
+        snapshot, and the write after it is held to the levels they gave,
+        as a confirmation of `write_entity` is."""
+        locker, _key = self.writing()
+        if any(len(line) > STATED_LINE_CHARS for item in lines for line in item):
+            raise Refused(_LINE_TOO_LONG)
+        fresh = [slot for slot in slots if isinstance(slot, Claim)]
+        now = datetime.now(UTC)
+        levelled = self.claims_checked(conn, fresh, now) if fresh else ()
+        expect = [decided(claim) for claim in levelled]
+
+        def write() -> Answer:
+            ids: tuple[int, ...] = ()
+            if fresh:
+                try:
+                    ids = write_claims(
+                        self.log, locker, fresh, recorded_at=datetime.now(UTC), expect=expect
+                    ).ids
+                except GraphRefused as refused:
+                    raise Refused(str(refused)) from refused
+            written = iter(ids)
+            numbers = [next(written) if isinstance(slot, Claim) else slot for slot in slots]
+            text = render_text(
+                f"{tool} · written", [f"assertion {n}" for n in numbers], objections=_pending()
+            )
+            return Answer(text, delivered=seen[0], rules=seen[1], written=ids)
+
+        return write
+
+
+def _refuse_gate_kind(proposal: int, body: EntityBody | RelationBody) -> None:
+    """Refuses to make a circle or a membership direct over MCP.
+
+    The gate reads these kinds, and its membership must not stand on a
+    model's word: the ask mark of `write_approve` and `write_triage_answer`
+    is a hint the client may stop asking for ("don't ask again"), and the log
+    could not tell such an approval from the operator's. So only the operator
+    approves one, on the command line ({ref}`graph-gate-kinds`). The client
+    can see the version already, so the sentence tells it nothing new; it
+    comes after the check that the version is one it may see."""
+    if body.type in GATE_TYPES:
+        raise Refused(
+            f"event {proposal} is of a kind the gate reads; "
+            "a circle or a membership is approved on the command line"
+        )
+
+
+class _Shown(Protocol):
+    """What a writing call found and showed: `Answered` for an obligation
+    or a decision, `GraphAnswered` for an entity or a relation."""
+
+    @property
+    def delivered(self) -> Delivered: ...
+
+    @property
+    def rules(self) -> tuple[int, ...]: ...
+
+
+def _shown_of(answered: Sequence[_Shown]) -> tuple[tuple[Delivered, ...], tuple[int, ...]]:
     """The delivered entries of the threads of `answered`, each once, and
     the ids of their rules, ascending."""
     delivered = {found.delivered.event: found.delivered for found in answered}
     rules = sorted({rule for found in answered for rule in found.rules})
     return tuple(delivered.values()), tuple(rules)
+
+
+@dataclass(frozen=True)
+class GraphAnswered:
+    """A version of an entity or a relation a writing call answers, found
+    and visible to the client, with what the access log records of it, as
+    `Answered` holds it for an obligation."""
+
+    thread: GraphThread
+    version: GraphVersion
+    delivered: Delivered
+    rules: tuple[int, ...]
+
+
+def _standing(thread: GraphThread, proposal: int, approval: Claim) -> Claim | int:
+    """The id of an approval of `proposal` identical to `approval` that
+    stands already, so that a retry after a lost answer writes nothing; else
+    `approval` itself, to be written."""
+    return next(
+        (
+            version.id
+            for version in thread.versions
+            if version.claim.approves == proposal
+            and replace(version.claim, handle=None) == approval
+        ),
+        approval,
+    )
+
+
+def _triage_filters(section: str) -> dict[str, str]:
+    """What a cursor of `list_triage` carries besides the id: the section
+    the id is in, and the tool, so that a cursor of a list is refused."""
+    return {"kind": "triage", "section": section}
+
+
+def _count_items(items: Sequence[object]) -> None:
+    if not 1 <= len(items) <= MAX_STATEMENTS:
+        raise Refused(f"items takes 1 to {MAX_STATEMENTS} statements, this call gave {len(items)}")
+
+
+def _refuse_unseen(view: GraphView, vocabulary: Vocabulary, claims: Sequence[Claim]) -> None:
+    """Refuses a claim that names what the client may not see, with the
+    sentence of what does not exist (Review Focus 3 of the 2026-10-14
+    assignments plan): a subject, an end of a relation, an entity a `ref`
+    field names.
+
+    It runs before the write path, claim by claim in the order given, and it
+    holds every claim against the vocabulary as the write path would, but
+    with only the entities the client sees: so a claim that names a hidden
+    entity is refused here with the sentence a missing one gets, and one
+    that names a missing entity gets the same sentence here too, before the
+    write path could refuse another claim of the batch first. The form is
+    checked first, as the write path checks it, since it says nothing of the
+    log. A subject of the other kind is left to the write path, which names
+    the kind of what the client sees."""
+    entity_types = view.entity_types()
+    for claim in claims:
+        problem = claim_problem(claim_payload(claim))
+        if problem is not None:
+            raise Refused(f"a statement has no valid form: {problem}")
+        thread = None
+        if claim.subject is not None:
+            thread = view.graph.threads.get(claim.subject)
+            if thread is None or not view.seen(claim.subject):
+                raise Refused(
+                    f"the subject {claim.subject} names no entity or relation that stands"
+                )
+            if thread.kind != claim.kind:
+                continue
+        problem = conformance_problem(
+            claim,
+            vocabulary,
+            new_thread=starts_thread(claim, thread),
+            entity_types=entity_types,
+        )
+        if problem is not None:
+            raise Refused(problem)
+
+
+def _claim_label(claim: Claim, kind: str) -> str:
+    """What the preview says of a claim outside the fence: its kind, the
+    level the write path decided, an objection, its author and what it
+    is a version of. Nothing in it comes from the client but the author's
+    name, which is its own."""
+    parts = [kind]
+    if claim.responsibility == TRANSITIVE:
+        parts.append(f"transitive under {event_uri(cast('int', claim.under))}")
+    elif claim.responsibility == OPEN:
+        parts.append("proposed")
+    else:
+        parts.append(claim.responsibility)
+    if claim.contests is not None:
+        parts.append(f"objection to {event_uri(claim.contests)}")
+    parts.append(f"by {claim.author}")
+    if claim.subject is None:
+        parts.append(f"new {claim.kind}")
+    else:
+        parts.append(f"new version of {event_uri(claim.subject)}")
+    return " · ".join(parts)
+
+
+def _period_of(number: int, item: PeriodItem) -> Period:
+    """A period as the payload carries it, each end a date written
+    `YYYY-MM-DD` or open."""
+    refusal = f"item {number}: a period is not written with dates YYYY-MM-DD"
+    ends: list[date | None] = []
+    for text in (item.start, item.end):
+        if text is None:
+            ends.append(None)
+            continue
+        if _DAY.fullmatch(text) is None:
+            raise Refused(refusal)
+        try:
+            ends.append(date.fromisoformat(text))
+        except ValueError as error:
+            raise Refused(refusal) from error
+    return Period(ends[0], ends[1])
+
+
+def _date_or_text(text: str) -> date | str:
+    if _DAY.fullmatch(text) is None:
+        return text
+    try:
+        return date.fromisoformat(text)
+    except ValueError:
+        return text
+
+
+def _fields_of(
+    number: int,
+    given: Mapping[str, str | int | PeriodItem] | None,
+    declares: str,
+    kind: str,
+    vocabulary: Vocabulary,
+) -> dict[str, FieldValue]:
+    """The fields of an item as the payload carries them: a period as a
+    period, and a text in a field the kind declares as a date as that date.
+    Anything else is passed on as given, for the vocabulary check of the
+    write path to refuse with its sentence, which names a field only as
+    the vocabulary declares it."""
+    spec = vocabulary.kind(declares, kind)
+    dates = {item.name for item in (spec.fields if spec is not None else ()) if item.type == DATE}
+    found: dict[str, FieldValue] = {}
+    for name, value in (given or {}).items():
+        if isinstance(value, PeriodItem):
+            found[name] = _period_of(number, value)
+        elif isinstance(value, str) and name in dates:
+            found[name] = _date_or_text(value)
+        else:
+            found[name] = value
+    return found
+
+
+def _sources_of(number: int, items: Sequence[SourceItem]) -> tuple[Source, ...]:
+    return tuple(
+        Source(
+            _event_id(number, source.event), None if source.units is None else tuple(source.units)
+        )
+        for source in items
+    )
+
+
+def _entity_claim(number: int, item: EntityItem, client: str, vocabulary: Vocabulary) -> Claim:
+    """The entity an item of `write_entity` states, by `model:<client>` and
+    open until the write path decides its level. The form of the payload and
+    the vocabulary are the write path's checks; this one refuses only what
+    the arguments cannot say."""
+    body = EntityBody(
+        item.type,
+        item.language,
+        _fields_of(number, item.fields, ENTITY, item.type, vocabulary),
+        ACTIVE if item.state is None else item.state,
+    )
+    return Claim(
+        ENTITY,
+        model_author(client),
+        OPEN,
+        SOURCES,
+        _sources_of(number, item.sources),
+        item.reason,
+        None,
+        _optional_id(number, item.subject),
+        None,
+        None,
+        item.confidence,
+        None,
+        body,
+    )
+
+
+def _relation_claim(number: int, item: RelationItem, client: str, vocabulary: Vocabulary) -> Claim:
+    """The relation an item of `write_relation` states, to an entity or, as
+    a question, to candidates, as `_entity_claim` builds an entity."""
+    if (item.to is None) == (item.candidates is None):
+        raise Refused(f"item {number}: a relation names to or candidates, one of the two")
+    candidates = (
+        None
+        if item.candidates is None
+        else tuple(_event_id(number, candidate) for candidate in item.candidates)
+    )
+    body = RelationBody(
+        item.type,
+        _event_id(number, item.start),
+        _optional_id(number, item.to),
+        candidates,
+        None if item.period is None else _period_of(number, item.period),
+        _fields_of(number, item.fields, RELATION, item.type, vocabulary),
+        STANDING if item.state is None else item.state,
+    )
+    return Claim(
+        RELATION,
+        model_author(client),
+        OPEN,
+        SOURCES,
+        _sources_of(number, item.sources),
+        item.reason,
+        None,
+        _optional_id(number, item.subject),
+        None,
+        None,
+        item.confidence,
+        None,
+        body,
+    )
 
 
 def _state_of(statement: Statement) -> str:
@@ -1238,7 +2252,9 @@ def _preview(tool: str, shown: Sequence[Stated], handle: str, until: datetime) -
     handle with its expiry outside it. A preview is never cut, neither a line
     (`Service.staged` refuses a line longer than a preview shows) nor the
     page: what is not shown cannot be confirmed."""
-    page = render_page(f"{tool} · preview", shown, cursor_for=lambda _index: "")
+    page = render_page(
+        f"{tool} · preview", shown, cursor_for=lambda _index: "", objections=_pending()
+    )
     if page.consumed < len(shown):
         raise Refused(_PREVIEW_TOO_LONG)
     return "\n".join(
@@ -1307,12 +2323,7 @@ def _proposed(number: int, item: StatementItem, client: str) -> Statement:
         raise Refused(
             f"item {number}: {_article(item.kind)} {item.kind} needs {' and '.join(needed)}"
         )
-    sources = tuple(
-        Source(
-            _event_id(number, source.event), None if source.units is None else tuple(source.units)
-        )
-        for source in item.sources
-    )
+    sources = _sources_of(number, item.sources)
     body: ObligationBody | DecisionBody
     if item.kind == OBLIGATION:
         body = ObligationBody(
@@ -1356,28 +2367,43 @@ def _event_ids(values: object) -> list[int]:
 def write_record(name: str, arguments: Mapping[str, object]) -> dict[str, object]:
     """What the access entry of a writing call keeps of its arguments
     ({ref}`assertions-erasure`; decision 10 of the 2026-10-12 assertions
-    plan): how many statements, the ids of the sources or of the proposals
-    answered, and for `write_assertion` whether `confirm` was given;
-    `Service.record` adds the ids written. No text: a text that a
+    plan, decision 15 of the 2026-10-14 assignments plan): how many
+    statements, the ids of the sources or of the proposals answered, the
+    entities a relation or an answer names, and for the tools of two calls
+    whether `confirm` was given; `Service.record` adds the ids written. No text: a text that a
     client derived from a mail would otherwise stand in the log and outlive
     the erasure of the mail. Read leniently, since a call the SDK refused
     has arguments of any form.
     """
-    if name == "write_assertion":
+    if name in ("write_assertion", "write_entity", "write_relation"):
         items = arguments.get("items")
         listed = cast("list[object]", items) if isinstance(items, list) else []
         events: set[int] = set()
+        ends: set[int] = set()
         for item in listed:
-            found = (
-                cast("dict[str, object]", item).get("sources") if isinstance(item, dict) else None
-            )
+            entry = cast("dict[str, object]", item) if isinstance(item, dict) else {}
+            found = entry.get("sources")
             for source in cast("list[object]", found) if isinstance(found, list) else []:
                 if isinstance(source, dict):
                     events.update(_event_ids([cast("dict[str, object]", source).get("event")]))
-        return {
+            candidates = entry.get("candidates")
+            named = cast("list[object]", candidates) if isinstance(candidates, list) else []
+            ends.update(_event_ids([entry.get("from"), entry.get("to"), *named]))
+        record: dict[str, object] = {
             "statements": len(listed),
             "sources": sorted(events),
             "confirm": arguments.get("confirm") is not None,
+            "written": [],
+        }
+        if name == "write_relation":
+            record["ends"] = sorted(ends)
+        return record
+    if name == "write_triage_answer":
+        question = _event_ids([arguments.get("question")])
+        return {
+            "statements": len(question),
+            "proposals": question,
+            "ends": _event_ids([arguments.get("choice")]),
             "written": [],
         }
     asked = arguments.get("ids") if name == "write_approve" else [arguments.get("proposal")]
@@ -1436,6 +2462,7 @@ def build_server[Conn](
     stdio_client: str | None,
     locker: RedactionStore[Conn] | None = None,
     confirm_key: str | None = None,
+    language: str = "en",
 ) -> MCPServer:
     """The server against `log`. With `stdio_client` every call is that
     client's; without, a call is the client the HTTP wrapper named.
@@ -1443,8 +2470,14 @@ def build_server[Conn](
     The writing tools write with `locker`, the store of `log` that locks
     rows, and seal their handles with `confirm_key`; without either, or with
     a key shorter than 32 characters, they answer that writing is not
-    configured, and the reading tools work as before."""
-    service = Service(log, stdio_client=stdio_client, locker=locker, key=key_of(confirm_key))
+    configured, and the reading tools work as before. `language` is the one
+    a label of a kind is shown in for an entity without a working language,
+    the `PREVIOUSLY_LANGUAGE` of the command line."""
+    if not is_language_tag(language):
+        raise ValueError("the language is not a language tag such as en or pt-BR")
+    service = Service(
+        log, stdio_client=stdio_client, locker=locker, key=key_of(confirm_key), language=language
+    )
     server: MCPServer = MCPServer(
         SERVER_NAME,
         version=version("previously"),
@@ -1454,6 +2487,7 @@ def build_server[Conn](
     )
     server.middleware.append(service.safety_net)
     _tools(server, service)
+    _graph_tools(server, service)
     _writing_tools(server, service)
     _resources(server, service)
     _prompts(server, service)
@@ -1461,7 +2495,7 @@ def build_server[Conn](
 
 
 def _tools[Conn](server: MCPServer, service: Service[Conn]) -> None:
-    """The seven tools that read ({ref}`mcp-tools`)."""
+    """The seven tools that read events and assertions ({ref}`mcp-tools`)."""
 
     def listing(
         kind: str,
@@ -1647,8 +2681,64 @@ def _tools[Conn](server: MCPServer, service: Service[Conn]) -> None:
         )
 
 
+def _graph_tools[Conn](server: MCPServer, service: Service[Conn]) -> None:
+    """The two tools that read entities, relations and what waits
+    ({ref}`mcp-tools`)."""
+
+    @server.tool(name="list_entities", description=_LIST_ENTITIES)
+    def list_entities(
+        ctx: Context,
+        types: Annotated[list[str] | None, _ENTITY_TYPES] = None,
+        state: Annotated[str | None, _ENTITY_STATE] = None,
+        proposals: Annotated[bool, _PROPOSALS] = False,
+        subject: Annotated[int | None, _ENTITY_SUBJECT] = None,
+        history: Annotated[bool, _ENTITY_HISTORY] = False,
+        cursor: Annotated[str | None, _CURSOR] = None,
+    ) -> CallToolResult:
+        asked = EntityListing(
+            types=None if types is None else tuple(types),
+            state=state,
+            proposals=proposals,
+            subject=subject,
+            history=history,
+        )
+        call = (
+            "tool",
+            "list_entities",
+            _given(
+                types=types,
+                state=state,
+                proposals=proposals,
+                subject=subject,
+                history=history,
+                cursor=cursor,
+            ),
+        )
+        return _ok(
+            service.answer(
+                ctx.request_context.request,
+                ctx.protocol_version,
+                call,
+                lambda conn, policy, client: service.entity_page(
+                    conn, policy, client, asked, cursor
+                ),
+            )
+        )
+
+    @server.tool(name="list_triage", description=_LIST_TRIAGE)
+    def list_triage(ctx: Context, cursor: Annotated[str | None, _CURSOR] = None) -> CallToolResult:
+        return _ok(
+            service.answer(
+                ctx.request_context.request,
+                ctx.protocol_version,
+                ("tool", "list_triage", _given(cursor=cursor)),
+                lambda conn, policy, client: service.triage_page(conn, policy, client, cursor),
+            )
+        )
+
+
 def _writing_tools[Conn](server: MCPServer, service: Service[Conn]) -> None:
-    """The three tools that write ({ref}`mcp-tools`): the arguments of each
+    """The six tools that write ({ref}`mcp-tools`): the arguments of each
     are recorded as `write_record` keeps them, never as given."""
 
     @server.tool(name="write_assertion", description=_WRITE_ASSERTION)
@@ -1665,6 +2755,61 @@ def _writing_tools[Conn](server: MCPServer, service: Service[Conn]) -> None:
                 ("tool", "write_assertion", write_record("write_assertion", given)),
                 lambda conn, policy, client: service.assertion_write(
                     conn, policy, client, items, confirm
+                ),
+            )
+        )
+
+    @server.tool(name="write_entity", description=_WRITE_ENTITY)
+    def write_entity(
+        ctx: Context,
+        items: Annotated[list[EntityItem], _ENTITY_ITEMS],
+        confirm: Annotated[str | None, _CONFIRM] = None,
+    ) -> CallToolResult:
+        given = {"items": [item.model_dump(by_alias=True) for item in items], "confirm": confirm}
+        return _ok(
+            service.answer(
+                ctx.request_context.request,
+                ctx.protocol_version,
+                ("tool", "write_entity", write_record("write_entity", given)),
+                lambda conn, policy, client: service.entity_write(
+                    conn, policy, client, items, confirm
+                ),
+            )
+        )
+
+    @server.tool(name="write_relation", description=_WRITE_RELATION)
+    def write_relation(
+        ctx: Context,
+        items: Annotated[list[RelationItem], _RELATION_ITEMS],
+        confirm: Annotated[str | None, _CONFIRM] = None,
+    ) -> CallToolResult:
+        given = {"items": [item.model_dump(by_alias=True) for item in items], "confirm": confirm}
+        return _ok(
+            service.answer(
+                ctx.request_context.request,
+                ctx.protocol_version,
+                ("tool", "write_relation", write_record("write_relation", given)),
+                lambda conn, policy, client: service.relation_write(
+                    conn, policy, client, items, confirm
+                ),
+            )
+        )
+
+    @server.tool(name="write_triage_answer", description=_WRITE_TRIAGE_ANSWER, meta=_ASK_THE_PERSON)
+    def write_triage_answer(
+        ctx: Context,
+        question: Annotated[int, _QUESTION],
+        choice: Annotated[int, _CHOICE],
+        reason: Annotated[str | None, _ANSWER_REASON] = None,
+    ) -> CallToolResult:
+        given = {"question": question, "choice": choice}
+        return _ok(
+            service.answer(
+                ctx.request_context.request,
+                ctx.protocol_version,
+                ("tool", "write_triage_answer", write_record("write_triage_answer", given)),
+                lambda conn, policy, client: service.triage_answer_write(
+                    conn, policy, client, question, choice, reason
                 ),
             )
         )
@@ -1832,11 +2977,15 @@ def build_app[Conn](
     allowed_hosts: Sequence[str],
     locker: RedactionStore[Conn] | None = None,
     confirm_key: str | None = None,
+    language: str = "en",
 ) -> Starlette:
     """The ASGI app of `previously serve`: Streamable HTTP under `/mcp`,
     answers as JSON, stateless so that both generations are served, behind the
-    token check. `locker` and `confirm_key` are those of `build_server`."""
-    server = build_server(log, stdio_client=None, locker=locker, confirm_key=confirm_key)
+    token check. `locker`, `confirm_key` and `language` are those of
+    `build_server`."""
+    server = build_server(
+        log, stdio_client=None, locker=locker, confirm_key=confirm_key, language=language
+    )
     app = server.streamable_http_app(
         stateless_http=True,
         json_response=True,
@@ -1873,10 +3022,17 @@ def build_app[Conn](
 
 
 def run_stdio[Conn](
-    log: LogStore[Conn], client: str, *, locker: RedactionStore[Conn], confirm_key: str | None
+    log: LogStore[Conn],
+    client: str,
+    *,
+    locker: RedactionStore[Conn],
+    confirm_key: str | None,
+    language: str = "en",
 ) -> None:
     """Serves MCP over stdin and stdout for `client` until stdin closes."""
-    server = build_server(log, stdio_client=client, locker=locker, confirm_key=confirm_key)
+    server = build_server(
+        log, stdio_client=client, locker=locker, confirm_key=confirm_key, language=language
+    )
     asyncio.run(server.run_stdio_async())
 
 
@@ -1888,7 +3044,14 @@ def run_http[Conn](
     allowed_hosts: Sequence[str],
     locker: RedactionStore[Conn],
     confirm_key: str | None,
+    language: str = "en",
 ) -> None:
     """Serves the app of `build_app` with uvicorn until it is stopped."""
-    app = build_app(log, allowed_hosts=allowed_hosts, locker=locker, confirm_key=confirm_key)
+    app = build_app(
+        log,
+        allowed_hosts=allowed_hosts,
+        locker=locker,
+        confirm_key=confirm_key,
+        language=language,
+    )
     uvicorn.run(app, host=host, port=port, log_level="warning")

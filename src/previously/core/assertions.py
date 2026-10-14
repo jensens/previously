@@ -15,13 +15,23 @@ Inside that transaction, in this order:
 - it locks every source event, ascending, with the row lock an erasure takes
   ({ref}`erasure`), and refuses a source that is missing, erased or no
   observation, and a cited unit that is missing or erased;
-- it reads the tip, and below it every assertion: a handle that one of them
-  carries already makes the call a repeat, and the ids of those are the
-  answer, with nothing written;
+- it reads the tip, and below it every assertion: a handle that one of its
+  obligations, decisions or rejections carries already makes the call a
+  repeat, and the ids of those are the answer, with nothing written;
 - it checks what each statement names (`subject`, `approves`, `of`,
   `replaces`) against what stands below the tip, the statements before it in
-  the same batch included;
+  the same batch included; an `of` that names no obligation or decision may
+  name an open or transitive version of an entity or a relation, and for
+  that one the approval classes are read as well, after the tip;
 - it writes every statement on that tip.
+
+This module reads the approval classes after the tip, and only for such a
+rejection. A class event it reads there can only be one that stands below
+the tip, or one that joined the chain since and takes the position this
+write wanted: the insert then fails, and the next attempt reads again.
+`core/graph_write.py` writes entities and relations in the same order,
+reads the vocabulary after the tip as well, for the same reason, and
+checks their sources with `check_sources`.
 
 The lock is what keeps an erasure from falling between the check and the
 write. An erasure that comes first is committed when the lock is granted,
@@ -48,6 +58,7 @@ from previously.core.assertion import assertion_problem
 from previously.core.assertion import DecisionBody
 from previously.core.assertion import DIRECT
 from previously.core.assertion import fold
+from previously.core.assertion import KINDS
 from previously.core.assertion import ObligationBody
 from previously.core.assertion import OPEN
 from previously.core.assertion import parse_statement
@@ -58,11 +69,14 @@ from previously.core.assertion import Statement
 from previously.core.canonical import canonical
 from previously.core.chain import link
 from previously.core.chain import prepare
+from previously.core.classes import read_classes
 from previously.core.decide import Candidate
 from previously.core.decide import circles_of
 from previously.core.decide import decide
 from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
+from previously.core.graph import fold_graph
+from previously.core.graph import level_of
 from previously.core.hashing import iso_utc
 from typing import cast
 from typing import Final
@@ -79,6 +93,9 @@ if TYPE_CHECKING:
     from previously.core.assertion import Thread
     from previously.core.chain import Prepared
     from previously.core.decide import Decision
+    from previously.core.graph import Graph
+    from previously.core.graph import GraphThread
+    from previously.core.graph import GraphVersion
     from previously.core.policy import Client
     from previously.core.policy import Policy
     from previously.core.redaction import RedactionIndex
@@ -255,10 +272,69 @@ def _proposal(view: _View, version_id: int) -> Statement:
     return statement
 
 
-def _check_rejection(view: _View, statement: Statement) -> None:
+class _GraphVersions[Conn]:
+    """The versions of entities and relations below the tip, folded only
+    when a rejection names something that is no obligation or decision: a
+    batch of obligations and decisions does not pay for the graph."""
+
+    def __init__(
+        self,
+        log: LogStore[Conn],
+        conn: Conn,
+        below: Sequence[tuple[int, datetime, Mapping[str, object] | None]],
+    ) -> None:
+        self._log, self._conn, self._below = log, conn, below
+        self._found: tuple[Graph, dict[int, GraphThread]] | None = None
+
+    def find(self, version_id: int) -> tuple[Graph, GraphThread, GraphVersion] | None:
+        """The graph, and the thread and version that `version_id` names."""
+        if self._found is None:
+            # The classes are read under the tip, as the write path of
+            # entities and relations reads them: a class event that joins the
+            # chain after the tip takes the position, and the next attempt
+            # reads again.
+            graph = fold_graph(self._below, read_classes(self._log, self._conn).states)
+            threads = {v.id: t for t in graph.threads.values() for v in t.versions}
+            self._found = (graph, threads)
+        graph, threads = self._found
+        thread = threads.get(version_id)
+        if thread is None:
+            return None
+        version = next(v for v in thread.versions if v.id == version_id)
+        return graph, thread, version
+
+
+def _check_graph_rejection(
+    view: _View, statement: Statement, found: tuple[Graph, GraphThread, GraphVersion]
+) -> None:
+    """A rejection of an open or transitive version of an entity or a
+    relation, by `level_of` under the classes in force (decision 5 of the
+    2026-10-14 assignments plan): what an obligation's proposal has to be,
+    with a transitive version counted as one, since the operator stands for
+    it only through its class and may still turn it down."""
+    graph, thread, version = found
+    of = version.id
+    if level_of(version, graph.classes) == DIRECT:
+        raise AssertionRefused(f"the version {of} is no proposal: it is direct")
+    if of in thread.approved or of in view.approved:
+        raise AssertionRefused(f"the proposal {of} is already approved")
+    if of in thread.rejected or of in view.rejected:
+        raise AssertionRefused(f"the proposal {of} is already rejected")
+    # Never empty: only a model writes an open or transitive version, and
+    # always with sources, so the rejection goes with the version when one
+    # of them is erased, as it does with an obligation's proposal.
+    if statement.sources != version.claim.sources:
+        raise AssertionRefused("a rejection takes the sources of its proposal unchanged")
+
+
+def _check_rejection[Conn](view: _View, statement: Statement, graph: _GraphVersions[Conn]) -> None:
     of = cast("int", statement.of)
     if of not in view.versions:
-        raise AssertionRefused(f"of names {of}, which is no proposal that stands")
+        found = graph.find(of)
+        if found is None:
+            raise AssertionRefused(f"of names {of}, which is no proposal that stands")
+        _check_graph_rejection(view, statement, found)
+        return
     proposal = _proposal(view, of)
     # A rejection takes the sources of its proposal, so that it goes with
     # the proposal when one of them is erased.
@@ -326,28 +402,34 @@ def _check_version(view: _View, statement: Statement) -> None:
         )
 
 
-def _check_references(
-    threads: Mapping[int, Thread], statements: Sequence[Statement], first_id: int
+def _check_references[Conn](
+    threads: Mapping[int, Thread],
+    statements: Sequence[Statement],
+    first_id: int,
+    graph: _GraphVersions[Conn],
 ) -> None:
     """Each statement against what stands below the tip and what the ones
     before it in the batch add, as they will stand once written."""
     view = _View.of(threads)
     for offset, statement in enumerate(statements):
         if statement.kind == REJECTION:
-            _check_rejection(view, statement)
+            _check_rejection(view, statement, graph)
         else:
             _check_version(view, statement)
         view.add(first_id + offset, statement)
 
 
-def _check_sources[Conn](
+def check_sources[Conn](
     log: LogStore[Conn],
     conn: Conn,
     rows: Mapping[int, EventRow | None],
-    statements: Sequence[Statement],
+    sources: Sequence[Source],
 ) -> None:
     """Every source exists, is an observation and is not erased, and every
-    unit it cites exists and is not erased; `rows` are the locked rows."""
+    unit it cites exists and is not erased; `rows` are the source events, by
+    id, as the caller read them: locked by the write path, unlocked by a
+    preview. The write path of entities and relations checks its sources
+    here as well, so that both refuse a source with the same sentence."""
     for event_id, row in rows.items():
         if row is None:
             raise AssertionRefused(f"there is no event {event_id} to rest on")
@@ -357,20 +439,29 @@ def _check_sources[Conn](
             )
         if row.payload is None:
             raise AssertionRefused(f"event {event_id} is erased and cannot be a source")
-    cited = sorted(
-        {s.event for statement in statements for s in statement.sources if s.units is not None}
-    )
+    cited = sorted({s.event for s in sources if s.units is not None})
     units = log.units_by_event(conn, cited)
-    for statement in statements:
-        for source in statement.sources:
-            held = {unit.seq: unit for unit in units.get(source.event, [])}
-            for seq in source.units or ():
-                if seq not in held:
-                    raise AssertionRefused(f"event {source.event} has no unit {seq}")
-                if held[seq].content is None:
-                    raise AssertionRefused(
-                        f"unit {seq} of event {source.event} is erased and cannot be a source"
-                    )
+    for source in sources:
+        held = {unit.seq: unit for unit in units.get(source.event, [])}
+        for seq in source.units or ():
+            if seq not in held:
+                raise AssertionRefused(f"event {source.event} has no unit {seq}")
+            if held[seq].content is None:
+                raise AssertionRefused(
+                    f"unit {seq} of event {source.event} is erased and cannot be a source"
+                )
+
+
+def read_sources[Conn](
+    log: LogStore[Conn], conn: Conn, events: Iterable[int]
+) -> dict[int, EventRow | None]:
+    """The source events by id, read without a lock, for a preview; `None`
+    for an id no event has."""
+    rows: dict[int, EventRow | None] = {}
+    for event_id in events:
+        row = next(iter(log.read(conn, event_id, 1)), None)
+        rows[event_id] = row if row is not None and row.id == event_id else None
+    return rows
 
 
 def _check_batch(statements: Sequence[Statement]) -> list[Mapping[str, object]]:
@@ -413,13 +504,18 @@ def _prepare(payloads: Sequence[Mapping[str, object]], recorded_at: datetime) ->
 def _repeated(
     below: Sequence[tuple[int, datetime, Mapping[str, object] | None]], handle: str | None
 ) -> tuple[int, ...]:
-    """The ids of the assertions below the tip that carry `handle`."""
+    """The ids of the obligations, decisions and rejections below the tip
+    that carry `handle`. An entity or a relation with the same handle is
+    another write path's, and its ids are no answer to this batch (ruling
+    T4-e of the 2026-10-14 assignments plan)."""
     if handle is None:
         return ()
     return tuple(
         event_id
         for event_id, _at, payload in below
-        if payload is not None and payload.get("handle") == handle
+        if payload is not None
+        and payload.get("assertion") in KINDS
+        and payload.get("handle") == handle
     )
 
 
@@ -434,8 +530,8 @@ def _check_all[Conn](
     """The checks the write path runs under its locks and `check_statements`
     runs without: the sources, then the references against what stands below
     the tip and what the batch adds."""
-    _check_sources(log, conn, rows, statements)
-    _check_references(fold(below), statements, top + 1)
+    check_sources(log, conn, rows, [s for statement in statements for s in statement.sources])
+    _check_references(fold(below), statements, top + 1, _GraphVersions(log, conn, below))
 
 
 def check_statements[Conn](
@@ -452,10 +548,7 @@ def check_statements[Conn](
     """
     _check_batch(statements)
     events = sorted({source.event for statement in statements for source in statement.sources})
-    rows: dict[int, EventRow | None] = {}
-    for event_id in events:
-        row = next(iter(log.read(conn, event_id, 1)), None)
-        rows[event_id] = row if row is not None and row.id == event_id else None
+    rows = read_sources(log, conn, events)
     tip = log.tip(conn)
     top = 0 if tip is None else tip.id
     below = _rows(log, conn, up_to=top)
@@ -591,11 +684,20 @@ class SourceEvents:
         `ValueError`: an event left out would add no identity, and the policy
         would decide over fewer people than the sources name.
         """
-        events = _source_events([thread], beside)
-        if not self.read.issuperset(events):
+        return self.named(_source_events([thread], beside))
+
+    def named(
+        self, events: Iterable[int]
+    ) -> tuple[list[Mapping[str, object]], tuple[str | None, ...]]:
+        """`of` for the source events themselves, by id: the identities of
+        all of them, and their distinct sources, in ascending order of the
+        events. For an entity or a relation, whose versions are no
+        `Thread`; an event that was not read is refused the same way."""
+        ordered = sorted(set(events))
+        if not self.read.issuperset(ordered):
             raise ValueError("the source events of this thread were not read")
-        identities = [found for e in events for found in self.identities.get(e, ())]
-        return identities, tuple(dict.fromkeys(self.sources.get(e) for e in events))
+        identities = [found for e in ordered for found in self.identities.get(e, ())]
+        return identities, tuple(dict.fromkeys(self.sources.get(e) for e in ordered))
 
 
 def read_source_events[Conn](
@@ -604,11 +706,16 @@ def read_source_events[Conn](
     """The source events of every standing version of `threads`, and of the
     statements `beside` them, in two queries whatever their number: the rows
     and the source keys."""
-    events = _source_events(threads, beside)
-    rows = log.events_by_id(conn, events)
-    keys = log.source_keys(conn, events)
+    return read_events(log, conn, _source_events(threads, beside))
+
+
+def read_events[Conn](log: LogStore[Conn], conn: Conn, events: Iterable[int]) -> SourceEvents:
+    """`read_source_events` for the events themselves, by id."""
+    ordered = sorted(set(events))
+    rows = log.events_by_id(conn, ordered)
+    keys = log.source_keys(conn, ordered)
     return SourceEvents(
-        frozenset(events),
+        frozenset(ordered),
         {
             event_id: tuple(_identities(row.payload))
             for event_id, row in rows.items()

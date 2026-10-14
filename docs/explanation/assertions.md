@@ -53,6 +53,7 @@ The version that results was formulated by the model and is the operator's respo
 Merging the two fields would either credit the operator with words a model wrote, or keep a statement he approved among the proposals.
 
 Precedence follows the responsibility, and not the author or the time.
+Obligations and decisions have the two levels of this section; entities and relations have a third between them, `transitive`, which {ref}`graph-levels` explains.
 The latest direct version holds.
 Without one, the latest open version that's neither approved nor rejected holds, and every list shows it as a proposal.
 Within one level the newest wins, but a proposal never outranks a direct version, however much newer it is.

@@ -102,6 +102,13 @@ Guessing in favor of the provider would be the error toward "allowed" that nobod
 The rule holds for a local provider as well: `local` says where the hardware stands, not whether the provider trains, so a local provider that a circle with such a restriction should reach has to declare it.
 Further properties, such as a legal basis or a certification, can join the list when a customer asks for them; none does today.
 
+## A recollection is content with a source of its own
+
+An entity or a relation can rest on the operator's memory instead of an event, and then it has no source event to take a rule from.
+The policy treats such a statement as content of a source named `recollection`, with no identities and so with no circle.
+A rule `source:recollection` is the only rule that applies to it, and without that rule a client that isn't local gets a placeholder where the statement would be.
+Nothing opens a recollection by accident: the operator who wants Claude Code to see what they remember sets the rule, and {ref}`graph-recollection` gives the reasoning.
+
 ## Without a rule, only the machine
 
 A piece of content for which no rule applies gets the built-in rule `local_only`: only a provider declared `local` may see it.

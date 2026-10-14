@@ -32,6 +32,16 @@ from previously.core.assertions import write_statements
 from previously.core.chain import link
 from previously.core.chain import prepare
 from previously.core.errors import RedactionRefused
+from previously.core.graph import ACTIVE
+from previously.core.graph import Claim
+from previously.core.graph import ENTITY
+from previously.core.graph import EntityBody
+from previously.core.graph import RELATION
+from previously.core.graph import RelationBody
+from previously.core.graph import SOURCES
+from previously.core.graph import STANDING
+from previously.core.graph_write import read_graph
+from previously.core.graph_write import write_claims
 from previously.core.policy import Circle
 from previously.core.policy import OwnIdentity
 from previously.core.policy import read_policy
@@ -42,6 +52,9 @@ from previously.core.redact import redact_units
 from previously.core.redact import Redacted
 from previously.core.redaction import units_payload
 from previously.core.verify import verify
+from previously.core.vocabulary import apply_vocabulary
+from previously.core.vocabulary import base_vocabulary
+from previously.core.vocabulary import parse_file
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import text
 from typing import cast
@@ -897,3 +910,85 @@ def test_an_approval_stands_when_its_proposal_is_erased_on_its_own(
     assert winner is not None
     assert winner.id == approved
     assert winner.statement.responsibility == DIRECT
+
+
+# --- entities and relations --------------------------------------------------------
+
+
+def _claim(
+    kind: str, body: EntityBody | RelationBody, source: Source, *, subject: int | None = None
+) -> Claim:
+    """The operator's direct claim on one source."""
+    return Claim(
+        kind, OPERATOR, DIRECT, SOURCES, (source,), None, None, subject, None, None, None, None,
+        body,
+    )  # fmt: skip
+
+
+@pytest.mark.db
+def test_erasing_a_source_erases_the_entity_and_relation_on_it_and_the_winner_falls_back(
+    db: Engine,
+) -> None:
+    """Decision 1 of the 2026-10-14 assignments plan: an entity or a
+    relation is an assertion and cites its sources as one, so the cascade
+    takes it along with no code of its own. The entity falls back to the
+    version that does not rest on the erased event, the relation is gone,
+    and `verify` finds nothing."""
+    storage = _three_events(db)
+    apply_vocabulary(storage, parse_file(base_vocabulary()), recorded_at=NOW)
+
+    def written(*claims: Claim) -> tuple[int, ...]:
+        return write_claims(storage, storage, claims, recorded_at=NOW).ids
+
+    anna, chair = written(
+        _claim(ENTITY, EntityBody("person", None, {"name": "Anna"}, ACTIVE), Source(1, None)),
+        _claim(ENTITY, EntityBody("post", None, {"name": "Obmann"}, ACTIVE), Source(1, None)),
+    )
+    (renamed,) = written(
+        _claim(
+            ENTITY,
+            EntityBody("person", None, {"name": "Anna Huber"}, ACTIVE),
+            Source(2, (1,)),
+            subject=anna,
+        )
+    )
+    body = RelationBody("holds", anna, chair, None, None, {}, STANDING)
+    (holds,) = written(_claim(RELATION, body, Source(2, None)))
+
+    erased = redact_event(storage, storage, 2, reason="wrong", recorded_at=LATER)
+
+    assert erased.cascaded_assertions == (renamed, holds)
+    assert _erased(storage) == [renamed, holds]
+    with storage.begin() as conn:
+        graph = read_graph(storage, conn)
+    assert graph.entities()[anna].id == anna
+    assert graph.entities()[anna].claim.body.fields["name"] == "Anna"
+    assert holds not in graph.relations()
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_an_approval_of_an_entity_stands_when_its_proposal_is_erased_on_its_own(
+    db: Engine,
+) -> None:
+    """As with an obligation: the approval is the direct winner after its
+    proposal was erased, and `verify` takes the approval of an erased version
+    as it stands."""
+    storage = _setup(db)
+    apply_vocabulary(storage, parse_file(base_vocabulary()), recorded_at=NOW)
+    proposal = replace(
+        _claim(ENTITY, EntityBody("person", None, {"name": "Anna"}, ACTIVE), Source(1, None)),
+        author=model_author("claude-code"),
+        responsibility=OPEN,
+        confidence=40,
+    )
+    (proposed,) = write_claims(storage, storage, [proposal], recorded_at=NOW).ids
+    approval = replace(proposal, responsibility=DIRECT, subject=proposed, approves=proposed)
+    (approved,) = write_claims(storage, storage, [approval], recorded_at=NOW).ids
+
+    redact_event(storage, storage, proposed, reason="wrong", recorded_at=LATER)
+
+    with storage.begin() as conn:
+        graph = read_graph(storage, conn)
+    assert graph.entities()[proposed].id == approved
+    assert verify(storage) == []

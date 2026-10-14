@@ -23,6 +23,7 @@ nothing but a check can tell which. `.importlinter` had carried one since
 stage 1b with no gate in sight.
 """
 
+from previously.cli import COMMANDS
 from previously.core.errors import ArtifactChanged
 from typing import Any
 from typing import cast
@@ -1218,9 +1219,10 @@ def test_the_policy_reference_holds_the_words_the_gate_writes() -> None:
     from previously.gate.tasks.mail_overview import MailOverview
 
     page = POLICY_PAGE.read_text(encoding="utf-8")
-    names = ", ".join(f"`{name}`" for name in ("redaction", "policy", "model_call", "mcp_access"))
-    assert set(KNOWN_ACTIONS) == {"redaction", "policy", "model_call", "mcp_access"}
-    assert "`redaction`, `policy`, `model_call` and `mcp_access`" in page, names
+    names = ("redaction", "policy", "model_call", "mcp_access", "vocabulary", "approval_class")
+    assert set(KNOWN_ACTIONS) == set(names)
+    listed = "`redaction`, `policy`, `model_call`, `mcp_access`, `vocabulary` and `approval_class`"
+    assert f"exactly six names there: {listed}" in page
     assert _policy_cells("### The outcomes", "The outcome of a call is one of these:") == set(
         OUTCOMES
     )
@@ -1764,6 +1766,59 @@ def test_the_reference_quotes_the_findings_about_assertions() -> None:
     assert in_code == quoted, f"cli.md leaves out the findings {sorted(in_code - quoted)}"
 
 
+def test_the_reference_quotes_the_findings_about_entities_and_relations() -> None:
+    """The eight findings `verify` reports about an entity or a relation
+    alone, as `cli.md` quotes them under `verify` after the sixteen of every
+    assertion: each a reason one of the three methods `_claim_references`,
+    `_claim_level` and `_claim_rules` of `_Claims` in `core/verify.py`
+    returns, with the reason of the vocabulary, behind its prefix, held
+    against the sentences `core/graph.py` returns. Every such reason the
+    methods return is quoted, the ones already in the block of the sixteen
+    aside, so a new one fails here too.
+
+    The limits are those of the test above, with these three functions, and
+    the openings `objection ` and `relation ` beside `assertion `. The
+    three methods were one, `claim_reason`, until fix round 1 of Task 4 of
+    the 2026-10-14 assignments plan split it for ruff's `C901`.
+
+    Measured on 2026-10-14: `relation closes a cycle over a kind that is
+    acyclic` turned into `... an acyclic kind` on the page goes red, a block
+    with one line deleted goes red, and so does the vocabulary reason with
+    a sentence `core/graph.py` does not return; the unchanged page is the
+    control.
+    """
+    page = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
+    verify = ROOT / "src" / "previously" / "core" / "verify.py"
+    common = {line.partition(": ")[2] for line in _quoted_block(page, "Sixteen findings come from")}
+    starts = ("assertion ", "objection ", "relation ")
+    returned = (
+        _string_constants(verify, "_claim_references")
+        | _string_constants(verify, "_claim_level")
+        | _string_constants(verify, "_claim_rules")
+    )
+    in_code = {text for text in returned if text.startswith(starts)} - common
+    forms = _message_patterns(ROOT / "src" / "previously" / "core" / "graph.py")
+    vocabulary_prefix = "assertion does not fit the vocabulary of its time: "
+    quoted: set[str] = set()
+    lines = _quoted_block(page, "Eight more come from entities and relations alone")
+    assert len(lines) == 8, lines
+    for line in lines:
+        prefix, _, reason = line.partition(": ")
+        assert re.fullmatch(r"FINDING [0-9]+", prefix), line
+        if reason.startswith(vocabulary_prefix):
+            problem = reason.removeprefix(vocabulary_prefix)
+            assert any(_is_the_same_sentence(parts, problem) for parts in forms), (
+                f"cli.md quotes the reason {problem!r}, which core/graph.py never returns"
+            )
+            quoted.add(vocabulary_prefix)
+            continue
+        assert reason in in_code, (
+            f"cli.md quotes the finding {reason!r} and core/verify.py gives no such reason"
+        )
+        quoted.add(reason)
+    assert in_code == quoted, f"cli.md leaves out the findings {sorted(in_code - quoted)}"
+
+
 ASSERTIONS_PAGE = DOCS / "reference" / "assertions.md"
 
 
@@ -1858,3 +1913,62 @@ def test_the_assertions_reference_holds_the_limits_of_the_code() -> None:
         f"Over MCP, one call holds 1 to {MAX_STATEMENTS}.",
     ):
         assert sentence in page, f"assertions.md no longer says {sentence!r}"
+
+
+_UNITS = [
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+]
+_TENS = [
+    "_",
+    "_",
+    "twenty",
+    "thirty",
+    "forty",
+    "fifty",
+    "sixty",
+    "seventy",
+    "eighty",
+    "ninety",
+]
+
+
+def _spelled(number: int) -> str:
+    """A number below one hundred the way the page writes it."""
+    if number < len(_UNITS):
+        return _UNITS[number]
+    tens, units = divmod(number, 10)
+    return _TENS[tens] + (f"-{_UNITS[units]}" if units else "")
+
+
+def test_the_command_line_reference_names_every_subcommand_and_counts_them() -> None:
+    """The opening of `cli.md` says how many subcommands there are and lists
+    them. It said twenty-five while `COMMANDS` held thirty-four, and no gate
+    noticed. Both the number, spelled out, and the set of names come from
+    `COMMANDS`. Measured on 2026-10-14: dropping one name from the page, or
+    changing the number, turns this red; the page as it stands is green."""
+    text = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
+    found = re.search(r"It has ([a-z-]+) subcommands: ([^\n]+)", text)
+    assert found is not None
+    assert found[1] == _spelled(len(COMMANDS))
+    listed = re.findall(r"`([a-z]+)`", found[2])
+    assert sorted(listed) == sorted(command.name for command in COMMANDS)
+    assert len(listed) == len(set(listed))

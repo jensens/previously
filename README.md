@@ -86,7 +86,7 @@ merely described.
   [How to set a policy and try a call](docs/how-to/set-a-policy-and-try-a-call.md)
 - **MCP access** (`client`, `mcp`, `serve`, `access`): Claude Code,
   Mistral Vibe or a local harness reads the chronicle of a circle, single
-  mails, and the obligations and decisions through ten tools, each client named, declared as a processor and,
+  mails, and the obligations, decisions, entities and relations through fifteen tools, each client named, declared as a processor and,
   over HTTP, holding a token of its own, so that the policy decides for every event whether this client
   may see it, and shows a placeholder with the reason where it may not. Every
   call becomes an `mcp_access` event that holds no content, and `access` lists
@@ -102,10 +102,22 @@ merely described.
   a mail takes every assertion on it along; see
   [About assertions](docs/explanation/assertions.md) and
   [How to record what's owed and decided](docs/how-to/record-what-is-owed-and-decided.md)
-- the twenty-five commands `migrate`, `append`, `ingest`, `redact`, `log`,
+- **entities and relations** (`vocabulary`, `entity`, `relate`, `entities`,
+  `relations`, `classes`, `triage`, `answer`, `status`): the people, clubs,
+  posts and projects the mails talk about, and the relations between them,
+  such as who held which office in which years. The kinds are declared in
+  the log, not in the code; each statement rests on named events or on the
+  operator's memory and is direct, transitive under an approval class that
+  measures its hit rate, or open; a model's objection to a direct statement
+  is never lost; see
+  [About entities, relations and the vocabulary](docs/explanation/graph.md) and
+  [How to keep a club and its offices](docs/how-to/keep-a-club-and-its-offices.md)
+- the thirty-four commands `migrate`, `append`, `ingest`, `redact`, `log`,
   `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`,
-  `policy`, `gate`, `client`, `access`, `assert`, `approve`, `reject`,
-  `obligations`, `obligation`, `decisions`, `decision`, `mcp` and `serve`
+  `policy`, `vocabulary`, `gate`, `client`, `access`, `assert`, `approve`,
+  `reject`, `obligations`, `obligation`, `decisions`, `decision`, `entity`,
+  `relate`, `entities`, `relations`, `classes`, `triage`, `answer`, `status`,
+  `mcp` and `serve`
 - the schema as Alembic migrations inside the package, applied by
   `previously migrate`
 
@@ -115,8 +127,8 @@ assignment of events to projects, so the chronicle is
 the chronicle of the whole log and not of one project; no job queue — the
 projection worker is a command, run when somebody runs it; one connector,
 for an IMAP folder, and none for anything else yet, such as a shared folder
-or an issue tracker; no people or organizations as entities, so an actor is
-the own side, a circle, an address or a plain label; no action that writes into a foreign
+or an issue tracker; entities and relations don't reach the gate yet, so an actor in an
+obligation is still the own side, a circle, an address or a plain label; no action that writes into a foreign
 system, and one task only for the gate, an overview of a
 mail that is a probe and no result anything relies on; no search, no user
 administration, and no network interface but the MCP server.

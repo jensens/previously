@@ -101,6 +101,27 @@ Without it, the two were measured to leave erased text in the chronicle for good
 That lock and an erasure's never wait for each other: a catch-up reads the log without a lock, and the only lock it takes on an event row is the key-share lock of a foreign-key check, which `FOR NO KEY UPDATE` lets through.
 A catch-up that finds the state row at another version of the code stops with an error rather than rebuilding in turn, which {ref}`catch-up-lock` explains as well.
 
+(concurrency-graph)=
+
+## The write paths of assertions
+
+Obligations, decisions, entities and relations are written by two further paths, one in `core/assertions.py` and one in `core/graph_write.py`.
+Both follow the same order inside one transaction, and the order is the reason they need no lock of their own beyond the one an erasure takes.
+
+First they lock every source event of the batch with `SELECT … FOR NO KEY UPDATE`, the lock of an erasure, in ascending order of `id`.
+The lock keeps an erasure from falling between the check of a source and the write: an erasure that came first is committed when the lock is granted, and the source reads as erased, while one that comes second waits at the lock and finds the assertion once it holds it.
+The ascending order keeps two batches that share sources from each holding a row the other waits for.
+A write that names no source, such as an entity stated from the operator's memory, locks nothing.
+
+Then they read the tip, and below the tip everything the checks need: every assertion, and for entities and relations the vocabulary and the approval classes.
+A check, such as whether a relation would close a cycle, runs against what was read, with the earlier statements of the same batch folded in as they will stand.
+The statements go in on the next position after that tip, one position each.
+
+If another writer took the position in between, the insert violates a unique index and the whole batch is retried by the same loop as `append` with the same jitter, reading everything again, with the winner's statements now below the tip.
+That's why the check for cycles needs no lock.
+Two writes that each close half a cycle can't both win the position: the loser reads again with the other's edge in the fold, and the check refuses it.
+A vocabulary or class event that joins the chain after the tip takes the position as well, so the vocabulary and the classes that a write read after the tip were the ones in force at the position it took.
+
 ## The index clause that isn't optional
 
 The index on `prev_hash` carries `NULLS NOT DISTINCT`, and the phrase looks like a detail of index tuning.

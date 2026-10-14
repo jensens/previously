@@ -134,10 +134,12 @@ After a release of Previously that changes the tools, start Vibe with `--legacy-
 The first release with assertions is such a release: it adds `list_obligations`, `list_decisions` and the three writing tools, ten tools in all where there were five.
 Whether `/mcp refresh` in Vibe brings the new tools into the default harness hasn't been measured.
 A server added to Vibe's default harness for the first time showed all ten tools.
+The first release with entities and relations is one as well: it adds `list_entities`, `write_entity`, `write_relation`, `list_triage` and `write_triage_answer`, fifteen tools in all where there were ten.
+A Vibe that added the server earlier may show ten until its list is fetched again; whether it needs `--legacy-harness` for that, as it did for the earlier growth, hasn't been measured.
 
 Vibe 2.26.1 lists the tools as `mcp_previously.<tool>`, such as `mcp_previously.whoami` and `mcp_previously.write_approve`, and not as `previously_<tool>`.
 Vibe asks for permission before every MCP tool call, the reading tools included, with the choices `Allow once`, `for this session`, `Always allow` and `Deny`, and its prompt shows the whole arguments of the call, an assertion's text among them.
-Never choose `Always allow` for `write_approve` or `write_reject`: an approval is the operator's word, and {ref}`record-what-is-owed-and-decided` explains why a client has to ask before it answers.
+Never choose `Always allow` for `write_approve`, `write_reject` or `write_triage_answer`: an approval is the operator's word, and {ref}`record-what-is-owed-and-decided` explains why a client has to ask before it answers.
 
 ## Check the connection
 

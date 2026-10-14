@@ -20,5 +20,6 @@ trust-boundaries
 processing-policy
 mcp-interface
 assertions
+graph
 design-records
 ```

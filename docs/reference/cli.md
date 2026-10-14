@@ -3,7 +3,7 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has twenty-five subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, `gate`, `client`, `access`, `assert`, `approve`, `reject`, `obligations`, `obligation`, `decisions`, `decision`, `mcp`, and `serve`.
+It has thirty-four subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, `vocabulary`, `gate`, `client`, `access`, `assert`, `approve`, `reject`, `obligations`, `obligation`, `decisions`, `decision`, `entity`, `relate`, `entities`, `relations`, `classes`, `triage`, `answer`, `status`, `mcp`, and `serve`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
 `append --attach`, `ingest imap`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
 `ingest imap` alone reads the `PREVIOUSLY_IMAP_*` settings, and `gate try` alone reads `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `PREVIOUSLY_LOCAL_MODEL_URL` and `PREVIOUSLY_PRICES`.
@@ -73,8 +73,15 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `reject` | The rejection was written. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the proposal is none, is direct, or is already approved or rejected, the write path refused the rejection, or storage raised an error. |
 | `obligations`, `decisions` | The list was printed, even when no entry matches. | Not used. | The input was invalid, or storage raised an error. |
 | `obligation`, `decision` | The entry was printed. | No entry of that kind stands under the id, or the id names an assertion an erasure took. | Storage raised an error. |
-| `mcp` | Standard input closed, and the server ended. | Not used. | `PREVIOUSLY_MCP_CLIENT` is unset or names no client in force, or storage raised an error. |
-| `serve` | The server was stopped with an interrupt, such as Ctrl+C. | Not used. | `PREVIOUSLY_MCP_ADDRESS` isn't an address, `PREVIOUSLY_MCP_HOST` is set without it, or storage raised an error. |
+| `entity` | The entity was written, or the page of an entity was printed. | The confirmation was answered with anything but yes, or not answered, and nothing was written; no entity stands under the id, or the id names an assertion an erasure took. | The input was invalid, including a `--field` that the kind doesn't declare or its type can't read, `--recollection` with `--source`, a kind that isn't in the vocabulary, the write path refused the claim, or storage raised an error. |
+| `relate` | The relation was written. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, including a missing `--from`, `--to` or source without `--subject`, the write path refused the claim, or storage raised an error. |
+| `entities`, `relations` | The list was printed, even when no entity or relation matches. | Not used. | The input was invalid, `PREVIOUSLY_LANGUAGE` isn't a language tag, or storage raised an error. |
+| `classes` | The class was written, or `list` or `sample` printed. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, including a class the vocabulary can't carry, a `revoke` or `sample` that names no class, or a `--count` below 1, or storage raised an error. |
+| `triage`, `status` | What waits was printed, even when nothing does. | Not used. | `PREVIOUSLY_LANGUAGE` isn't a language tag (`triage`), or storage raised an error. |
+| `answer` | The answer was written. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The id is no question that waits, the choice is none of its candidates, the write path refused the answer, or storage raised an error. |
+| `mcp` | Standard input closed, and the server ended. | Not used. | `PREVIOUSLY_MCP_CLIENT` is unset or names no client in force, `PREVIOUSLY_LANGUAGE` isn't a language tag, or storage raised an error. |
+| `serve` | The server was stopped with an interrupt, such as Ctrl+C. | Not used. | `PREVIOUSLY_MCP_ADDRESS` isn't an address, `PREVIOUSLY_MCP_HOST` is set without it, `PREVIOUSLY_LANGUAGE` isn't a language tag, or storage raised an error. |
+| `vocabulary` | `show` printed the vocabulary, `apply` wrote what the file changes, or found nothing to change. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, including neither a file nor `--base`, or both, the file can't be read or has a fault, the write path refused a kind, or storage raised an error. |
 | `gate` | `explain` printed the decision, whether it allows a call or denies it; `try` made the call, got an answer that matches the schema, and recorded it. | Not used. | The event doesn't exist, the price file can't be read, storage raised an error, or `try` recorded a call that was denied, failed, refused by the model, or answered against the schema. |
 
 `gate try` returns 3 when the call was made and recorded with an answer that matches the schema, and the provider reported another inference region than the one requested; the code differs from 0 so that a script doesn't read past the alarm.
@@ -563,7 +570,7 @@ FINDING 9: unknown action "teleport"
 | `redaction names a target that does not exist` | The event a redaction names doesn't stand before the redaction in the chain, or doesn't have a unit it names; for a redaction of a blob, an event it names doesn't stand before it or doesn't name the blob in the blob register. | The redaction. |
 | `units are erased in part, which version 1 cannot attest` | An event in hash format 1 has some units without content, and others with it. | The event. |
 | `action has no valid form` | An event of kind `action` carries no `action` name in its payload, or a redaction's payload doesn't have exactly the form `redact` writes. | The action. |
-| `unknown action "<name>"` | An event of kind `action` carries an `action` name that isn't `redaction`, `policy`, `model_call` or `mcp_access`. | The action. |
+| `unknown action "<name>"` | An event of kind `action` carries an `action` name that isn't `redaction`, `policy`, `model_call`, `mcp_access`, `vocabulary` or `approval_class`. | The action. |
 
 Sixteen findings come from assertions, the events of the kind `assertion` ({ref}`assertions-reference`):
 
@@ -606,6 +613,34 @@ FINDING 57: assertion stands on an erased source
 | `assertion stands on an erased source` | A redaction erased a source event, a cited unit, or, for a source cited whole, a unit of it after the assertion; the erasure didn't take the assertion along. |
 
 Each stands under the assertion.
+
+An entity and a relation are assertions too ({ref}`vocabulary-reference`).
+The sixteen findings above hold for them as well: the fault of the form is the first one in the form of an entity or a relation, and an approval or a rejection may name a transitive version where an obligation's names an open one.
+Eight more come from entities and relations alone:
+
+```text
+FINDING 61: assertion has a subject that names no earlier entity or relation
+FINDING 61: objection contests no earlier direct version of its subject
+FINDING 61: assertion is open but written by the operator
+FINDING 61: assertion by a model follows a direct version and does not object to it
+FINDING 61: assertion does not fit the vocabulary of its time: the kind is retired and takes no new entity
+FINDING 61: assertion is transitive under no approval class in force for it
+FINDING 61: relation answers a question with none of its candidates
+FINDING 61: relation closes a cycle over a kind that is acyclic
+```
+
+| Finding | Condition |
+|---|---|
+| `assertion has a subject that names no earlier entity or relation` | `subject` names no earlier first version of an entity or a relation; an erased earlier assertion counts as one. |
+| `objection contests no earlier direct version of its subject` | `contests` names neither a direct version of the same entity or relation before it nor an erased assertion. |
+| `assertion is open but written by the operator` | The version is `open` and its author is `human:operator`; the operator's versions are direct. |
+| `assertion by a model follows a direct version and does not object to it` | A model's version that's no approval names an entity or relation whose winner was direct before the version, and isn't the objection the write path writes: `open`, with `contests` naming that winner. |
+| `assertion does not fit the vocabulary of its time: <reason>` | The entity or relation doesn't fit the vocabulary in force where it stands in the chain, read from the vocabulary events before it; a kind retired later doesn't count against it. The reason is the sentence the write path refuses with. |
+| `assertion is transitive under no approval class in force for it` | `under` names no class that was in force before it in the chain and covers its author, its kind, its type and its confidence at the time it was recorded; no class covers a kind the gate reads or an acyclic relation kind. |
+| `relation answers a question with none of its candidates` | A question waits on the relation, and the version doesn't point at one of its candidates while it's direct and stands, or while it's transitive; the write path refuses the first and writes the second as `open`. |
+| `relation closes a cycle over a kind that is acyclic` | The relation is direct or transitive, of a kind with the behavior `acyclic`, and points from an entity to itself, or at one from which its start is reached over the direct and transitive relations of its kind that stood before it. A model's proposal is held to no cycle rule; its approval is. |
+
+Each stands under the entity or relation.
 
 One finding comes from the blob register:
 
@@ -955,6 +990,47 @@ When no call fell back, standard output stays empty, and one notice goes to stan
 no call fell back to local only
 ```
 
+(cli-vocabulary)=
+
+## `vocabulary`
+
+Prints the vocabulary of entity kinds and relation kinds in force as a file, or writes what a file changes.
+Every kind is declared by an event of the kind `action` with `payload.action` set to `vocabulary`, written with no source key and no units ({ref}`vocabulary-reference`).
+
+```text
+previously vocabulary show [--at TIME]
+previously vocabulary apply FILE [--yes]
+previously vocabulary apply --base [--yes]
+```
+
+`show` prints the file to standard output.
+`--at` takes an ISO 8601 timestamp with a zone and prints the vocabulary of that moment.
+
+`apply` compares the file with the vocabulary in force and prints one line per kind it would write, before it asks.
+The line is `add`, `change` or `retire`, a tab, `entity` or `relation`, a tab, and the identifier of the kind.
+Under a `change` stands one line per attribute that differs, with the old and the new value.
+A kind the file leaves out is retired, and a built-in kind is never retired.
+`apply` writes one event per kind, in one transaction, and prints `vocabulary event ID` for each.
+A second `apply` of the same file finds nothing to change and prints `nothing to change`.
+A refusal comes before the question, so nobody confirms what can't be written.
+
+`apply --base` takes the vocabulary file that ships with the package, and it only adds: it writes the kinds that the log doesn't hold, retired kinds counting as held, and prints an `add` line for each.
+It never retires a kind and never changes one the log holds.
+For each kind the base holds in another form, it prints a `differs` line, a tab, `entity` or `relation`, a tab, and the identifier, and under it one line per attribute that differs, with the value in the log and the value in the base.
+After those lines comes this sentence:
+
+```text
+--base changes no kind the log holds; to take a difference, edit the output of `previously vocabulary show` and apply that file
+```
+
+With nothing to add, it prints `nothing to change` after the `differs` lines and asks nothing.
+
+| Option | Description |
+|---|---|
+| `FILE` | The vocabulary file to apply, as the whole vocabulary. |
+| `--base` | Add the kinds of the vocabulary file that ships with the package which the log doesn't hold, instead of applying `FILE`. Give one of the two. |
+| `--yes` | Write without asking. |
+
 (cli-gate)=
 
 ## `gate`
@@ -1223,6 +1299,9 @@ previously reject ID [--reason TEXT] [--yes]
 
 `approve` makes proposals the operator's own.
 Each becomes a direct version of the same obligation or decision, with the content, the sources and the author of the proposal, and `approves` naming it.
+The id may also name a version of an entity or a relation: a proposal, an objection or a transitive version.
+It then becomes a direct version of the same entity or relation in the same way, and `rejection` of such a version takes its sources.
+One call approves obligations and decisions, or entities and relations, and `Error: one call approves obligations and decisions, or entities and relations, not both` refuses a mix.
 The reason of the proposal stays unless `--reason` gives another.
 An id named twice is approved once.
 `reject` writes a rejection with the sources of the proposal.
@@ -1295,6 +1374,179 @@ When no obligation or decision of that kind stands under the id, or none of its 
 When no entry stands under the id and the id names an assertion an erasure took, the command prints `assertion ID is erased` to standard error instead, with or without `--history`, and returns 1.
 That's the answer for an entry whose versions are all erased, and for any other erased version too: the erasure took the payload that said which kind and which entry it was.
 
+(cli-graph)=
+
+## Entities and relations
+
+`entity`, `relate`, `entities`, `relations`, `classes`, `triage`, `answer` and `status` write and read the graph: entities, such as people and associations, and the relations between them, each with the events it rests on and who stands for it ({ref}`vocabulary-reference`).
+An entity or a relation is named after the event of its first version, as an obligation is, and `ID` below is that number.
+The command line is the operator's tool, so it writes `human:operator` as the author and `direct` as the responsibility, and it checks no policy.
+Every write is checked against the vocabulary in force before the question.
+
+Listings show the label that the vocabulary gives a kind, in the working language of the entity or, when it has none, in the language that `PREVIOUSLY_LANGUAGE` names ({ref}`configuration-reference`).
+A label that exists only in another language stands in the first language in alphabetical order, followed by its tag, such as `Kreis (de)`.
+A version that today's vocabulary wouldn't take carries `(does not fit the vocabulary)`, and a transitive version whose approval class was revoked carries `(class revoked)`.
+Both are marks and change nothing in the log.
+
+### `entity`
+
+```text
+previously entity TYPE [--name TEXT] [--field NAME=VALUE ...] [--language TAG] [--state STATE] [--subject ID] [--reason TEXT] (--source SOURCE [--source SOURCE ...] | --recollection) [--yes]
+previously entity ID [--history]
+```
+
+With a kind, `entity` states an entity.
+With the id of an entity, it prints the entity.
+
+| Option | Required | Default | Description |
+|---|---|---|---|
+| `TYPE` | Yes | — | The kind, as the vocabulary declares it. |
+| `--name TEXT` | No | none | The name, short for `--field name=TEXT`. |
+| `--field NAME=VALUE` | No | none | A field of the kind. May repeat. The type of the field decides how the value is read: text and choice as written, a date as `YYYY-MM-DD`, a period as `FROM..TO` with either end empty (`2015-01-01..`, `..2019-12-31`), and a reference as the id of an entity. |
+| `--language TAG` | No | none | The working language of the entity, such as `de`. |
+| `--state STATE` | No | `active` | One of `active`, `closed` or `retracted`. |
+| `--subject ID` | No | none | The entity to write a further version of. |
+| `--reason TEXT` | No | none | Why this version, for the history. |
+| `--source SOURCE` | Yes, without `--subject` or `--recollection` | — | An event it rests on, as for `assert`. May repeat. |
+| `--recollection` | No | off | The version rests on the operator's own memory and has no source. It excludes `--source`. |
+| `--history` | No | off | With an id: every version, in chain order. |
+| `--yes` | No | off | Write without asking. |
+
+With `--subject`, every option left out takes its value from the version that stands, a proposal included, and the new version is direct.
+The fields of the version that stands are kept when `TYPE` is the same, and the fields given replace them.
+`--reason` is never taken over.
+
+The command shows the claim as the payload, indented, with sorted keys.
+It then asks `write? [y/N]`, and after the write prints `assertion ID`.
+The input is checked before the question, and when it fails nothing is written:
+
+```text
+Error: --field names "colour", which the kind does not declare
+Error: --field is not NAME=VALUE: 'name'
+Error: --field names "name" twice
+Error: --field period is not a period written FROM..TO; an end may be empty
+Error: --recollection and --source exclude each other
+Error: an entity needs --source or --recollection unless --subject names the one to change
+Error: --state retracted needs --subject: only an entity that stands can be retracted
+Error: --subject 5 names no entity that stands
+```
+
+The page of an entity starts with `entity ID`, followed by `(proposal)` or `(transitive)` when the version that stands isn't direct, and by the marks.
+Its lines are a name, a tab and a value: `version`, `type` with the identifier and the label, `state`, `language`, one `field` line per field with the name and the value, `sources`, `evidence`, `reason`, `author`, `responsibility`, `versions` and `proposals`.
+One `relation` line follows for each relation that starts or ends at the entity: the id, the label of the kind, `out` or `in`, the entity at the other end, the period or `-`, and the state.
+Each pending version adds one `proposal` line per field it changes, with the id, the author, the field, the old value and the new one.
+
+`--history` prints instead `entity ID: N versions`, and then each version in chain order.
+A version is a line `version`, its id, the time, the responsibility, the author, `rejected` or `approved` where it applies, and the marks, then `sources` and `reason`.
+The first version adds a `set` line per field, each later one a `change` line per field that differs from the version before it.
+A history shows every version as it was written; a changed vocabulary adds a mark and rewrites nothing.
+
+When no entity stands under the id, the command prints `no entity stands under event ID` to standard error and returns 1.
+When the id names an assertion an erasure took, it prints `assertion ID is erased` instead.
+
+### `relate`
+
+```text
+previously relate TYPE --from ID --to ID [--from-date DAY] [--to-date DAY] [--field NAME=VALUE ...] [--subject ID] [--retract] [--reason TEXT] (--source SOURCE [--source SOURCE ...] | --recollection) [--yes]
+```
+
+`relate` states a relation between two entities.
+`--from` is the entity it starts at and `--to` the entity it points at.
+`--from-date` and `--to-date` give the first and the last day the relation holds, written `YYYY-MM-DD`; both days count.
+`--field`, `--subject`, `--reason`, `--source`, `--recollection` and `--yes` work as for `entity`.
+
+A relation is ended with a new version: `--subject ID --to-date DAY` keeps the ends, the first day and the fields, and sets the last day.
+A relation is taken back with `--subject ID --retract`, which writes a version in the state `retracted`.
+Without `--subject`, `--retract` is refused as `Error: --retract needs --subject: only a relation that stands can be retracted`.
+Without `--subject`, a missing option is refused as `Error: a relation needs --from, --to and --source or --recollection unless --subject names the one to change`, naming those that are absent.
+
+### `entities` and `relations`
+
+```text
+previously entities [--type TYPE] [--state STATE] [--proposals]
+previously relations [--type TYPE] [--from ID] [--to ID] [--at DAY] [--as-of MOMENT]
+```
+
+| Option | Description |
+|---|---|
+| `--type TYPE` | Only this kind. |
+| `--state STATE` | Only this state of the version that stands. A retracted entity appears only for `--state retracted`. |
+| `--proposals` | Only entities with a proposal pending, or that stand as a proposal because no direct or transitive version exists. |
+| `--from ID`, `--to ID` | Only relations that start at, or point at, this entity. |
+| `--at DAY` | Only relations that hold on this day, written `YYYY-MM-DD`. A relation without a period holds on every day. |
+| `--as-of MOMENT` | The graph as it stood at that moment, an ISO 8601 timestamp with a zone. Labels and marks still come from today's vocabulary. |
+
+Without `--proposals`, only entities and relations whose version that stands isn't a proposal appear, ordered by id.
+`relations` lists neither a retracted relation nor a question; `triage` shows questions.
+A line of `entities` holds six tab-separated fields, then the marks:
+
+1. The id.
+2. The state, with `proposed` or `transitive` in front when the version that stands isn't direct.
+3. The label of the kind.
+4. The name.
+5. `N versions`.
+6. `K proposals`, the versions that are pending.
+
+A line of `relations` holds seven fields, then the marks: the id, the state, the label of the kind, the start, the end, the period written `FROM..TO` or `-`, and `N versions`.
+An end is the id and the name of the entity.
+An end whose entity was erased reads `ID (erased)`, one whose entity is retracted `ID (retracted)`, and one whose entity has no version that stands, such as one with only a pending proposal, `ID (none stands)`; the relation stays in the list.
+The type column shows the label of the kind and not its identifier, which `--type` takes; the page of an entity, from `entity ID`, shows both.
+
+### `classes`
+
+```text
+previously classes add NAME --author model:CLIENT --assertion entity|relation --type TYPE [--type TYPE ...] --threshold PERCENT [--from MOMENT] [--until MOMENT] --statement TEXT [--yes]
+previously classes revoke NAME [--demote] --statement TEXT [--yes]
+previously classes list
+previously classes sample NAME [--count K]
+```
+
+An approval class lets a model stand for a class of statements: the statements of one author about entities or relations of the given kinds whose stated confidence reaches the threshold ({ref}`vocabulary-reference`).
+`add` and `revoke` show the class as the payload of the event, ask, and print `approval class event ID`.
+A class the vocabulary can't carry is refused before the question, such as one that names a kind that isn't there, one of the kinds the gate reads, or a relation kind with the behavior `acyclic`.
+No class covers such a kind even where an event that came another way names it, so a model's version of one stays a proposal.
+`--from` is included and `--until` excluded.
+
+`revoke` writes the current class again with `revoked` set and every other field kept.
+With `--demote`, what stands under the class counts as a proposal again; without it, the versions stay and carry `(class revoked)`.
+A name that no class carries is refused as `Error: no approval class is named NAME`.
+
+`list` prints one line per class, ordered by name, of nine tab-separated fields: the name, the author, `entity` or `relation`, the kinds separated by commas, the threshold, the valid window written `FROM..UNTIL` with an empty end for an open one or `-`, the state (`active`, `revoked` or `revoked and demoted`), the hit rate, and `(event ID)`.
+The hit rate reads `N total, N confirmed, N corrected, N standing`: the operator approved a version, the operator corrected or rejected it, or neither has happened.
+
+`sample` prints a random `--count` of the versions the class let through, 5 unless given, or all of them when there are fewer.
+A line holds the id of the version, the id of its entity or relation, `entity` or `relation`, the label of the kind, a short label, the confidence and the author.
+It refuses a count below 1 as `Error: --count must be at least 1, got 0`.
+
+### `triage` and `status`
+
+```text
+previously triage
+previously status
+```
+
+`triage` lists what waits for the operator, in the order the operator works through it: objections to what the operator stands for, then questions, then every other proposal.
+Each line holds five tab-separated fields: `objection`, `question` or `proposal`, the id of the version, the label of the kind, a short label and the author.
+A question reads `START -> ? (CANDIDATE, CANDIDATE)`.
+`status` prints three lines, `objections`, `questions` and `proposals`, each with a tab and the number, `0` included.
+
+### `answer`
+
+```text
+previously answer ID --choose ID [--reason TEXT] [--yes]
+```
+
+`answer` answers a question with one of its candidates.
+It writes an approval of the question: the same relation with the end set to the chosen candidate, direct, with the sources and the author of the question kept.
+To answer with something else, reject the question and state the relation.
+`approve` refuses a question as `Error: event 5 is a question: answer it with answer 5 --choose ID`.
+The command shows the claim, asks, and prints `assertion ID`.
+
+```text
+Error: event 5 is no question that waits
+Error: the answer names 9, which is none of the candidates
+```
+
 (cli-mcp)=
 
 ## `mcp`
@@ -1319,6 +1571,7 @@ A client revoked while the process runs gets an error from its next call on, and
 Standard output carries the protocol and nothing else, and the process ends when standard input closes.
 The tools, resources and prompts are the same as over HTTP; every call writes an `mcp_access`, which {ref}`cli-access` reads.
 The writing tools write only when `PREVIOUSLY_MCP_CONFIRM_KEY` holds at least 32 characters ({ref}`configuration-reference`); otherwise they answer with an error, and `mcp` starts all the same.
+`PREVIOUSLY_LANGUAGE` names the language the labels of kinds are shown in for an entity without a working language, as on the command line.
 
 (cli-serve)=
 
@@ -1326,7 +1579,7 @@ The writing tools write only when `PREVIOUSLY_MCP_CONFIRM_KEY` holds at least 32
 
 Serves MCP over HTTP under the path `/mcp`, with answers as JSON and without a session.
 A client of the protocol revision `2026-07-28` and one of an earlier revision are served at the same address.
-`serve` takes no options, and reads `PREVIOUSLY_MCP_ADDRESS`, `PREVIOUSLY_MCP_ALLOWED_HOSTS` and, for the writing tools as `mcp` does, `PREVIOUSLY_MCP_CONFIRM_KEY` ({ref}`configuration-reference`).
+`serve` takes no options, and reads `PREVIOUSLY_MCP_ADDRESS`, `PREVIOUSLY_MCP_ALLOWED_HOSTS` and, as `mcp` does, `PREVIOUSLY_MCP_CONFIRM_KEY` for the writing tools and `PREVIOUSLY_LANGUAGE` for the labels ({ref}`configuration-reference`).
 On start it prints one line to standard error, and then runs until it's stopped:
 
 ```text

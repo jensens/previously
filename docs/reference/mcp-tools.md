@@ -2,9 +2,9 @@
 
 # Server tools, resources and prompts
 
-The MCP server that `previously mcp` and `previously serve` start offers ten tools, two resource templates and two prompts.
-Seven of the tools, the templates and the prompts only read.
-`write_assertion`, `write_approve` and `write_reject` write: `write_assertion` in two calls, as {ref}`mcp-writing` describes, and the other two in one call each.
+The MCP server that `previously mcp` and `previously serve` start offers fifteen tools, two resource templates and two prompts.
+Nine of the tools, the templates and the prompts only read.
+Six tools write: `write_assertion`, `write_entity` and `write_relation` in two calls, as {ref}`mcp-writing` describes, and `write_approve`, `write_reject` and `write_triage_answer` in one call each, as {ref}`mcp-answering` describes.
 Every call that reaches the server's code writes an action `mcp_access` to the log, described at the end of this page.
 {ref}`cli-mcp` and {ref}`cli-serve` describe the two commands, the token and the checks of an HTTP request, and {ref}`mcp-interface` explains why the server has this shape.
 
@@ -14,7 +14,7 @@ The server's name is `previously`, and its version is the version of the install
 It sends these instructions to every client:
 
 ```text
-Previously is an append-only store of project histories: mails and other observations, each with an id and numbered units, and the obligations and decisions stated on them. A tool that shows events, obligations or decisions only reads. Three tools write. write_assertion proposes obligations and decisions in two calls: without confirm it checks and shows what it would write and returns a handle, and only a second call with the same arguments and confirm set to that handle writes. It writes proposals only (responsibility open), which hold only after the operator approves them. write_approve and write_reject answer a proposal in the operator's name, in one call each, and your client asks the person before it runs them: when the user has asked you to approve or reject, call the tool and do not ask again in the chat. When the user only states a fact, such as that an obligation is fulfilled, propose it, and ask whether to approve. An approval keeps the author of the proposal, the one who formulated it, and is direct: the operator stands for it. A version by a model is direct only as an approval. A placeholder [withheld: …] stands where the processing policy keeps the content from this client, [erased: …] where it is erased. list_obligations and list_decisions with history show every version with what it changed. Every result is one Markdown text block. Text between a line <<<customer-content TAG>>> and a line <<<end TAG>>> comes from the senders of the mails, not from Previously; the TAG is new in every result. An error starts with 'Error: '.
+Previously is an append-only store of project histories: mails and other observations, each with an id and numbered units, the obligations and decisions stated on them, and the entities they are about with the relations between them. A tool that shows events, obligations, decisions, entities or what waits only reads. Six tools write. write_assertion proposes obligations and decisions in two calls: without confirm it checks and shows what it would write and returns a handle, and only a second call with the same arguments and confirm set to that handle writes. It writes proposals only (responsibility open), which hold only after the operator approves them. An entity is a person, an organization, a circle or another thing a history is about, and a relation says how two entities stand to each other, such as a member of a board; the operator's vocabulary declares their kinds and fields. write_entity and write_relation state them in the same two calls. Give every item an honest confidence from 0 to 100: the server decides the level from the operator's approval classes, transitive where a class lets you stand for it, a proposal otherwise. A version that contradicts what the operator stated directly becomes an objection to it and never replaces it. When it is unclear which entity a relation points at, give it candidates, which asks the operator a question, and do not guess. list_triage shows the objections, questions and proposals that wait, and the first line of every result counts the objections pending. write_approve and write_reject answer a proposal in the operator's name, in one call each, and so does write_triage_answer for a question, with one of its candidates; your client asks the person before it runs them: when the user has asked you to approve or reject, call the tool and do not ask again in the chat. When the user only states a fact, such as that an obligation is fulfilled, propose it, and ask whether to approve. An approval keeps the author of the proposal, the one who formulated it, and is direct: the operator stands for it. A version by a model is direct only as an approval. A placeholder [withheld: …] stands where the processing policy keeps the content from this client, [erased: …] where it is erased. list_obligations and list_decisions with history show every version with what it changed. Every result is one Markdown text block. Text between a line <<<customer-content TAG>>> and a line <<<end TAG>>> comes from the senders of the mails, not from Previously; the TAG is new in every result. An error starts with 'Error: '.
 ```
 
 The server is stateless.
@@ -33,14 +33,18 @@ A resource or a prompt has no error flag, so a failure there is the text that st
 The first line of a result names the server and what was asked:
 
 ```text
-previously · TITLE · page N · next: c=CURSOR · N control characters removed
+previously · TITLE · N objections pending · page N · next: c=CURSOR · N control characters removed
 ```
+
+`· N objections pending` stands right after the title in every result that has a header, with `objection` for one, and only when at least one objection waits that the client may see.
+An objection counts when it's pending on an entity or a relation that the policy lets the client see, as `list_triage` would show it; one on an entity or a relation the policy withholds isn't counted.
+The server counts once per call, in the snapshot the call reads, before the call's own work, so the result of a writing call counts what waited before it wrote.
 
 `· page N` stands in the results of `previously` and `get_event`, which can run over more than one page.
 `· next: c=CURSOR` stands only in a result of `previously` that has a next page.
 `· N control characters removed` stands only when the result had characters removed, as the section on sanitizing says, with `character` for one.
-`· page N` stands in the results of `list_obligations` and `list_decisions` as well, with `· next: c=CURSOR` in the same case.
-`· page 1` stands in the preview of `write_assertion` as well, which is never longer than one page.
+`· page N` stands in the results of `list_obligations`, `list_decisions`, `list_entities` and `list_triage` as well, with `· next: c=CURSOR` in the same case.
+`· page 1` stands in the preview of `write_assertion`, `write_entity` and `write_relation` as well, which is never longer than one page.
 The other tools have a header of the server's name and the title only.
 
 ### An event
@@ -119,6 +123,43 @@ No call serves the lines left out; `previously obligation ID --history` prints t
 An entry the policy keeps from the client stands as the placeholder `[withheld: URI — REASON]` below, which holds no text, no actor and no source.
 An entry whose every version an erasure took is in no list.
 A `subject` that names an assertion an erasure took, while no entry stands under that id, answers with the placeholder `[erased: URI]` in either tool and with or without `history`, as `get_event` answers for an erased event to any client: the erasure took the payload that said which kind and which entry the assertion was.
+
+(mcp-entity-form)=
+
+### An entity or a relation
+
+An entry of `list_entities` that the policy lets through is a heading written by Previously, followed by its content inside the same fence as an event:
+
+```text
+### URI · entity · LABEL
+<<<customer-content TAG>>>
+type: TYPE
+language: TAG
+field NAME: VALUE
+state: STATE
+reason: TEXT
+sources: URI, URI#unit-N
+relation URI: KIND → entity ID NAME · YYYY-MM-DD to (open)
+<<<end TAG>>>
+```
+
+- `URI` is `previously://event/<id>`, where `<id>` is the id of the first version.
+- `LABEL` is what Previously says of the entity, joined by ` · `: the label of its kind, its state with `proposed` before it where it stands only as a proposal, or after it its level, `direct` or `transitive under URI` with the event of the approval class, and `class revoked` where that class was revoked without demoting, then the number of versions and of proposals pending, and `contested by URI` for every objection that waits.
+- The label of a kind is the one the vocabulary gives it in the entity's working language, else in the language the server was started with, `PREVIOUSLY_LANGUAGE` or `en`; a label in neither stands in the first language in alphabetical order with its tag in parentheses.
+  It holds nothing from a mail or a client.
+- `language` stands only where the entity has a working language.
+- Each field stands on a line `field NAME: VALUE`, sorted by name.
+  A date reads `YYYY-MM-DD`, a period `YYYY-MM-DD to YYYY-MM-DD` with `(open)` for an open end, and a reference `entity ID NAME`, or `entity ID (not shown)` where the client may not see that entity or it's gone.
+- `sources` reads `sources: none, the operator's recollection` for what the operator stated from memory.
+- Every relation the entity is an end of and that the client sees follows, one line each: its URI, the label of its kind, `→` where it starts at the entity and `←` where it points at it, the other end, the period where it has one, and its level where it isn't direct.
+- A relation of `list_triage` has `from: entity ID NAME` and `to: entity ID NAME` in place of the fields of an entity, or `to one of: entity ID NAME, entity ID NAME` for a question, and `period:` where it has one.
+- An end of a relation reads `entity ID (erased)`, `entity ID (none stands)` or `entity ID (retracted)` where no entity stands under it any more.
+- Every line is kept to one line, cut at 1,000 characters, and sanitized.
+
+An entity the policy keeps from the client stands as the placeholder `[withheld: URI — REASON]`.
+The policy decides over the people in the sources of every version that stands, as for an obligation, and over a recollection as a source `recollection` with nobody in it: without a rule for `source:recollection`, an entity that rests on a recollection is withheld from every client that isn't local.
+A relation is shown only where the client sees its sources and every entity any of its versions names, the candidates of a question among them; an end whose every version is erased withholds nothing.
+A relation the client may not see is left out of the lines of an entity, without a placeholder.
 
 ### Placeholders
 
@@ -366,12 +407,65 @@ An event of no circle stands under its source as `source:NAME`, as a line of the
 
 When nothing fell back, the line is `No call fell back to local only.`
 
+### `list_entities`
+
+The entities that stand, in the order of their ids, each with the relations it's an end of, as {ref}`mcp-entity-form` describes it.
+By default it lists those the operator stands for, direct or transitive; an entity that only a model proposed stays out unless `proposals` is set.
+A retracted entity stays out unless `state` asks for `retracted`, or `proposals` is set.
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `types` | list of strings | none | Only entities of these kinds, as the vocabulary names them. |
+| `state` | string | none | Only this state: `active`, `closed` or `retracted`. |
+| `proposals` | true or false | false | List what has a proposal pending, or stands as one, instead of what stands. |
+| `subject` | integer | none | The id of one entity. The page shows that entity whatever the other filters say. |
+| `history` | true or false | false | With `subject`, show every version in the order written, each with what it changed against the one before. |
+| `cursor` | string | none | The cursor from the footer of the previous page. |
+
+The title is `list_entities`, followed by each filter given as `· NAME VALUE`, the kinds of `types` separated by commas.
+The cursor, the placeholder of an entity the policy withholds and its passing every filter that looks at the content are those of `list_obligations`.
+A `subject` that names no entity answers with a line of its own on the page:
+
+```text
+Error: previously://event/9 — no entity stands under this id
+```
+
+The history shows each version with a first line of its id, its time, its level, `under URI` for a transitive one, its author, `contests URI` for an objection, and `rejected` or `approved`, and below it `set` lines for the first version and `change` lines for each later one.
+
+### `list_triage`
+
+What waits for the operator among the entities and relations the client may see, in three sections, each in the order of the ids:
+
+1. `objection`: a version by a model that contests the direct version that stands.
+2. `question`: a relation that names candidates in place of the entity it points at.
+3. `proposal`: every other version that waits, a new entity or relation that only a model proposed among them.
+
+What waits on an entity or a relation the policy keeps from the client is left out, without a placeholder, as the header leaves it out of its count.
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `cursor` | string | none | The cursor from the footer of the previous page. |
+
+The title is `list_triage`.
+Each item is a heading and a fence:
+
+```text
+### URI · SECTION · KIND · LABEL · LEVEL · by AUTHOR · version of URI
+```
+
+`URI` is the version that waits, the id to answer it with, and `SECTION` its section.
+`KIND` is `entity` or `relation`, and `LABEL` the label of its kind.
+`LEVEL` is `proposed` or `transitive under URI`.
+`contests URI` follows the author on an objection, and `new entity` or `new relation` stands at the end in place of `version of URI` where the version is the first of its thread.
+Inside the fence stands the content of the version, and where another version stands, a line `change NAME: OLD → NEW` for every field it would change.
+A cursor carries the section and the id of the last item the page consumed.
+
 (mcp-writing)=
 
 ### Writing in two calls
 
-`write_assertion` takes two calls.
-Called without `confirm`, it checks what it would write, shows it, and returns a handle, and it writes nothing.
+`write_assertion`, `write_entity` and `write_relation` take two calls.
+Called without `confirm`, a tool checks what it would write, shows it, and returns a handle, and it writes nothing.
 Called again with the same arguments and `confirm` set to that handle, it writes, and only then.
 
 The preview is a page titled `TOOL · preview`, with a heading and a fence for each statement, as an entry of `list_obligations` has them, and three lines after the last fence:
@@ -383,11 +477,15 @@ Nothing is written yet: to write, call write_assertion again with the same argum
 ```
 
 - The heading of a proposal reads `### statement N · KIND · proposed · STATE · by model:CLIENT · new entry`, with `new version of URI` at its end where the item names a `subject`.
+- The heading of an entity or a relation reads `### statement N · KIND · LABEL · LEVEL · by model:CLIENT · new KIND`, with `new version of URI` at its end where the item names a `subject`, and its content is that of {ref}`an entry of list_entities <mcp-entity-form>`.
+  `LEVEL` is the level the write path gives the claim now, `proposed` or `transitive under URI`, and `objection to URI` follows `proposed` where the claim contests the direct version `URI`.
 - A list cuts a line inside the fence at 1,000 characters, so a statement with a longer line is refused instead of previewed: a preview always shows the whole of what gets written.
 - A preview that doesn't fit on one page is refused rather than cut, because a statement nobody saw can't be confirmed.
 
 The handle is sealed with `PREVIOUSLY_MCP_CONFIRM_KEY` ({ref}`configuration-reference`) over the client, the statements and the time it expires, ten minutes after the first call.
 It holds no word of the statements, and it opens only for the client it was sealed for and for the same statements.
+A handle of `write_entity` and `write_relation` holds as well the level, the approval class and the contested version the preview showed for each item, and the confirmation is held to them.
+A handle of `write_assertion` doesn't confirm a call of the other two tools, and the other way around.
 
 The confirming call answers with the ids it wrote, one line each, under the title `TOOL · written`:
 
@@ -398,6 +496,7 @@ assertion 52
 assertion 53
 ```
 
+An entity or a relation written answers `assertion N · LEVEL`, with the level it was written at.
 Every statement written carries the handle's identifier.
 Confirming the same handle again writes nothing and answers with the same ids, so a call repeated after a lost answer writes once.
 
@@ -410,7 +509,10 @@ Error: the handle was sealed for other statements than these; call again without
 Error: the handle has expired: a handle holds for 10 minutes; call again without confirm for a new one
 ```
 
+A confirmation of `write_entity` or `write_relation` whose level moved since the preview is refused, and nothing is written: `the approval class changed since the preview; call again without confirm` where a class was set or revoked in between, and `a direct version was written since the preview; call again without confirm` where a direct version made the claim an objection, or one to another version.
+
 A source, an entry or a proposal that the client may not see is refused with the same sentence as an id that names nothing, so the answer doesn't tell whether it exists.
+So is an entity: a `subject` the client may not see is refused with `the subject N names no entity or relation that stands`, and an end of a relation or an entity a reference field names with the sentence the vocabulary check gives for one that doesn't stand, such as `an end of the relation is not an entity that stands`.
 The refusals of the server are these, each with nothing written:
 
 ```text
@@ -428,19 +530,28 @@ Error: item 1: an event id is a whole number from 1 to 2^53 - 1
 Error: ids takes 1 to 20 different proposals, this call gave 0
 Error: ids holds an id that is not a whole number from 1 to 2^53 - 1
 Error: proposal is not a whole number from 1 to 2^53 - 1
+Error: question is not a whole number from 1 to 2^53 - 1
+Error: choice is not a whole number from 1 to 2^53 - 1
+Error: item 1: a relation names to or candidates, one of the two
+Error: item 1: a period is not written with dates YYYY-MM-DD
+Error: event 26 is a question: answer it with write_triage_answer
+Error: one call approves obligations and decisions, or entities and relations, not both
+Error: event 30 is no question that waits
+Error: event 31 is of a kind the gate reads; a circle or a membership is approved on the command line
+Error: the answer names 12, which is none of the candidates
 Error: a line of these statements is longer than the 1,000 characters a preview shows of it; shorten it
 Error: the preview of these statements is longer than a page; write fewer in one call
 ```
 
 The first is the answer of every writing tool when the server has no `PREVIOUSLY_MCP_CONFIRM_KEY`, or one shorter than 32 characters; the reading tools work as before.
 
-Every other refusal is a sentence of the write path, the same that `previously assert`, `approve` and `reject` print ({ref}`cli-reference`), such as `Error: the proposal 26 is already approved` or `Error: event 41 is erased and cannot be a source`.
+Every other refusal is a sentence of the write path, the same that `previously assert`, `entity`, `relate`, `approve`, `reject` and `answer` print ({ref}`cli-reference`), such as `Error: the proposal 26 is already approved` or `Error: event 41 is erased and cannot be a source`.
 
 (mcp-answering)=
 
 ### Answering a proposal in one call
 
-`write_approve` and `write_reject` write in one call, with no preview, no `confirm` and no handle.
+`write_approve`, `write_reject` and `write_triage_answer` write in one call, with no preview, no `confirm` and no handle.
 The client's own prompt before the call is the person's confirmation: a preview would only ever reach the model, because the prompt shows the person the arguments and nothing else.
 The checks run in the order of the write path: the entry and every source of the proposal must be visible to the client, then the write path's checks, then the write.
 Nothing is written when one fails.
@@ -448,6 +559,7 @@ Nothing is written when one fails.
 An answer that stands already is a success and writes nothing, so a call repeated after a lost answer is harmless.
 For `write_approve`, that's an approval of the same proposal with the same content, sources, author and reason; the call answers with the id of that approval.
 For `write_reject`, that's a rejection of the same proposal with the same reason by the same client.
+For `write_triage_answer`, that's an answer to the same question with the same candidate and reason.
 A call that names both new and standing proposals writes the new ones and lists all the ids in the order asked.
 An approval or a rejection that differs, such as one with another reason, or a proposal that something else answered, is refused as the write path refuses it:
 
@@ -456,7 +568,7 @@ Error: the proposal 26 is already approved
 Error: the proposal 26 is already rejected
 ```
 
-The answer has the title `TOOL · written` and one line `assertion N` for each id, as for `write_assertion`.
+The answer has the title `TOOL · written` and one line `assertion N` for each id.
 Each concerns an event or an entry the client may see, or an event that `get_event` names to any client: an erased one, or one that's no observation.
 
 ### `write_assertion`
@@ -491,10 +603,92 @@ Every source has to be an observation the client may see, and a `subject` or a `
 A field of the other kind is refused, and so is a field the table doesn't name.
 An item with `subject` says everything that holds after it: nothing is taken over from the version it changes.
 
+### `write_entity`
+
+States entities in two calls, as {ref}`mcp-writing` describes.
+The author is `model:` and the name of the client, and the level is the write path's, never the client's: `transitive` under an approval class in force that covers the client, the kind of entity and the confidence of the item, and open otherwise.
+A version of an entity whose winner is direct is always an open objection to that version, whatever its confidence and any class: it never replaces what the operator stated.
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `items` | list of objects | — | 1 to 20 entities, written in one transaction. |
+| `confirm` | string | none | The handle of the preview. |
+
+The title is `write_entity`.
+Every source has to be an observation the client may see, and a `subject` and every entity a reference field names an entity the client may see.
+
+#### The fields of an entity
+
+| Field | Required | Description |
+|---|---|---|
+| `type` | yes | The kind of entity, as the vocabulary declares it. |
+| `fields` | yes | The fields the kind declares, by name, `name` among them: a text, a date `YYYY-MM-DD`, a period as an object with `from` and `to`, each a date or left out for an open end, or the id of an entity for a reference. |
+| `sources` | yes | The events it rests on, at least one, as for `write_assertion`. |
+| `confidence` | yes | How sure the client is, a whole number from 0 to 100. |
+| `language` | no | The working language of the entity, a tag such as `de` or `pt-BR`. |
+| `state` | no | `active`, `closed` or `retracted`; `active` when left out. |
+| `reason` | no | Why this version, for the history. |
+| `subject` | no | The id of the entity this is a new, complete version of. |
+
+A field the table doesn't name is refused, `responsibility` among them.
+An item with `subject` says everything that holds after it: nothing is taken over from the version it changes.
+
+### `write_relation`
+
+States relations in two calls, with the levels, the objections and the checks of `write_entity`.
+A relation that names candidates in place of the entity it points at is a question, and always open: no class answers it in advance.
+No class covers a relation kind with the behavior `acyclic`, such as `part_of`, so a version of one is always open, and a client's version is never refused for closing a cycle: that refusal would tell it about relations it may not see.
+The cycle rule holds the operator's versions, approvals and answers instead.
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `items` | list of objects | — | 1 to 20 relations, written in one transaction. |
+| `confirm` | string | none | The handle of the preview. |
+
+The title is `write_relation`.
+Every source has to be an observation the client may see, and the start, the end or every candidate and a `subject` an entity or a relation the client may see.
+
+#### The fields of a relation
+
+| Field | Required | Description |
+|---|---|---|
+| `type` | yes | The kind of relation, as the vocabulary declares it. |
+| `from` | yes | The id of the entity it starts at. |
+| `to` | one of two | The id of the entity it points at. |
+| `candidates` | one of two | 2 to 5 ids of entities it may point at, for a question. |
+| `sources` | yes | The events it rests on, at least one, as for `write_assertion`. |
+| `confidence` | yes | How sure the client is, a whole number from 0 to 100. |
+| `period` | no | When it held, an object with `from` and `to` as for a period field, for a kind with the behavior `period`. |
+| `fields` | no | The fields the kind declares, as for `write_entity`. |
+| `state` | no | `standing` or `retracted`; `standing` when left out. |
+| `reason` | no | Why this version, for the history. |
+| `subject` | no | The id of the relation this is a new, complete version of. |
+
+### `write_triage_answer`
+
+Answers a question in one call, as {ref}`mcp-answering` describes, as `previously answer` writes it.
+The answer is the approval of the question with `to` set to the candidate chosen: direct, with the sources, the confidence and the author of the question, which the operator now stands for.
+
+| Argument | Type | Default | Description |
+|---|---|---|---|
+| `question` | integer | — | The id of the question, as `list_triage` names it. |
+| `choice` | integer | — | The id of the candidate the relation points at. |
+| `reason` | string | none | Why this candidate, for the history; the reason of the question when left out. |
+
+The client has to be allowed to see the relation of the question and every source of it.
+A question it may not see, a version that's no question, and one answered or overtaken already are all refused with `event N is no question that waits`, and a choice that's none of the candidates with `the answer names N, which is none of the candidates`.
+To answer with an entity that isn't a candidate, reject the question and state the relation.
+A question of a kind the gate reads, `member_of` or `in_circle`, is refused with `event N is of a kind the gate reads; a circle or a membership is approved on the command line`, before anything is written; the operator answers it with `previously answer` ({ref}`graph-gate-kinds`).
+An answer of a relation over an acyclic kind that would close a cycle is refused with `the relation would close a cycle over a kind that is acyclic`, which counts relations the client may not see too.
+That sentence tells a call the person confirmed one bit about them, as it does for `write_approve`.
+The tool carries `_meta` with `"anthropic/requiresUserInteraction": true` in `tools/list`, the mark that makes Claude Code ask the person before every call, as `write_approve` and `write_reject` do.
+
 ### `write_approve`
 
 Approves proposals in one call.
 Each becomes a direct version of its entry with the content, the sources and the author of the proposal, and the reason of the proposal, as `previously approve` writes it.
+A proposal is a version of an obligation or a decision, or of an entity or a relation, an objection and a transitive version among them; one call approves one of the two families.
+A question isn't approved: `write_triage_answer` answers it.
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
@@ -503,14 +697,19 @@ Each becomes a direct version of its entry with the content, the sources and the
 The client has to be allowed to see the entry of each proposal and every source of it.
 Only a proposal that's pending, or that stands because the entry has no direct version, is approved: one that a direct version came after is refused, as `previously approve` refuses it, and `write_reject` still takes it.
 It writes in one call and is idempotent, as {ref}`mcp-answering` describes.
+A proposal of a kind the gate reads, a `circle`, a `member_of` or an `in_circle`, is refused with `event N is of a kind the gate reads; a circle or a membership is approved on the command line`, and nothing of the call is written; the operator approves it with `previously approve` ({ref}`graph-gate-kinds`).
+`write_reject` takes such a proposal like any other.
+An approval of a relation that would close a cycle over an acyclic kind is refused with `the relation would close a cycle over a kind that is acyclic`, which counts relations the client may not see too.
+That sentence tells a call the person confirmed one bit about them, and it's the one way an MCP client learns of a cycle.
 The approval counts as the operator's because the client asks the person before the call; a client that calls `write_approve` without asking writes approvals nobody looked at.
 The tool carries `_meta` with `"anthropic/requiresUserInteraction": true` in `tools/list`, the mark that makes Claude Code ask the person before every call.
-No other tool carries it.
+`write_reject` and `write_triage_answer` carry it too, and no other tool does.
 
 ### `write_reject`
 
 Rejects one proposal in one call, as {ref}`mcp-answering` describes.
 The rejection is direct, its author is `model:` and the name of the client, and it takes the sources of the proposal, so that it goes with the proposal when one of them is erased.
+The proposal may be a version of an entity or a relation as well, an objection, a question or a transitive version among them.
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
@@ -520,7 +719,7 @@ The rejection is direct, its author is `model:` and the name of the client, and 
 The client has to be allowed to see the entry of the proposal and every source of it, as for `write_approve`.
 A rejected proposal leaves the list of proposals and stays in the history.
 The tool carries `_meta` with `"anthropic/requiresUserInteraction": true` in `tools/list`, the mark that makes Claude Code ask the person before every call.
-No other tool carries it.
+`write_approve` and `write_triage_answer` carry it too, and no other tool does.
 
 ### Errors of a call
 
@@ -536,6 +735,8 @@ Error: ids takes 1 to 20 event ids, this call gave 0
 Error: from_unit is a unit number, 1 or more
 Error: state takes one of open, fulfilled, cancelled
 Error: subject is the id of an entry, a whole number from 1 to 2^53 - 1
+Error: state takes one of active, closed, retracted
+Error: subject is the id of an entity, a whole number from 1 to 2^53 - 1
 Error: the call failed inside the server; its log says why, this result cannot
 ```
 
@@ -635,6 +836,7 @@ An event that didn't fit on the page is in no entry of that call.
 An obligation or a decision stands in `delivered` and `withheld` under its id, with no units and with the circles of its sources.
 `rules` of `policy` holds the rules of every distinct source of every entry that reached the page.
 The arguments of `list_obligations` and `list_decisions` are a circle name, a state, flags and an id, and the entry holds no text of an obligation or a decision and no address.
+An entity stands in `delivered` and `withheld` under its id in the same way, with the circles of the sources of all its versions, and an item of `list_triage` in `delivered` under the id of the version shown; the arguments of `list_entities` are kinds of the vocabulary, a state, flags and an id.
 
 A call of a writing tool records none of its arguments as given, because the text a client writes can come from a mail and would outlive the erasure of that mail in the log.
 A call of a tool name the server doesn't have records only the names of its arguments, each with `null`, for the same reason: a misspelled writing tool carries the text it meant to write.
@@ -643,12 +845,13 @@ Its `arguments` hold only these keys, for a call the SDK refused as well:
 | Key | Value |
 |---|---|
 | `statements` | How many statements the call names. |
-| `sources` | `write_assertion`: the ids of the source events, ascending, each once. |
-| `proposals` | `write_approve` and `write_reject`: the ids of the proposals answered. |
-| `confirm` | `write_assertion`: `true` where the call gave a handle. |
+| `sources` | `write_assertion`, `write_entity` and `write_relation`: the ids of the source events, ascending, each once. |
+| `proposals` | `write_approve`, `write_reject` and `write_triage_answer`: the ids of the proposals or of the question answered. |
+| `ends` | `write_relation`: the ids of the entities its items name as `from`, `to` and candidates, ascending, each once; `write_triage_answer`: the candidate chosen. |
+| `confirm` | `write_assertion`, `write_entity` and `write_relation`: `true` where the call gave a handle. |
 | `written` | The ids written, or found written by an earlier confirmation of the same handle; empty for a preview, a refusal, and an answer that stood already. |
 
-A call of `write_approve` or `write_reject` answers a proposal it read, so it records the proposal's entry in `delivered`, with the circles of its sources, and its rules in `rules` of `policy`, as `list_obligations` records it; `previously access --circle` finds it.
+A call of `write_approve`, `write_reject` or `write_triage_answer` answers a proposal it read, so it records the proposal's entry in `delivered`, with the circles of its sources, and its rules in `rules` of `policy`, as `list_obligations` records it; `previously access --circle` finds it.
 
 An entry of `withheld` carries `reason_code` `no_rule` where a circle had no rule for a client that isn't local, `rule` where a rule said no, the circles of the event, and the sentence of the placeholder.
 `uncovered` lists the circles of the event that have no rule, and `source` is the source of the event's key, or `null` where it has none; `policy gaps` counts by these two.
