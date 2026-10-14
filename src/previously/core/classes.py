@@ -54,6 +54,7 @@ import re
 
 if TYPE_CHECKING:
     from previously.contract.store import LogStore
+    from previously.core.vocabulary import Vocabulary
 
     import random
 
@@ -398,6 +399,26 @@ def _refusal(item: ApprovalClass, statement: str, kinds: Mapping[str, bool]) -> 
     return None
 
 
+def _standing_kinds(vocabulary: Vocabulary, assertion: str) -> dict[str, bool]:
+    return {
+        name: not spec.retired
+        for (declares, name), spec in vocabulary.kinds.items()
+        if declares == assertion
+    }
+
+
+def class_refusal[Conn](
+    log: LogStore[Conn], conn: Conn, item: ApprovalClass, *, statement: str
+) -> str | None:
+    """The sentence `set_class` would refuse `item` with now, or `None`.
+
+    For a command that asks before it writes: nobody confirms what cannot
+    be written. It reads the vocabulary in force and no more, so a
+    vocabulary event that follows can still make the write refuse."""
+    kinds = _standing_kinds(read_vocabulary(log, conn), item.assertion)
+    return _refusal(item, statement, kinds)
+
+
 def set_class[Conn](
     log: LogStore[Conn], item: ApprovalClass, *, statement: str, recorded_at: datetime
 ) -> int:
@@ -412,12 +433,7 @@ def set_class[Conn](
 
     def once(conn: Conn) -> int:
         tip = log.tip(conn)
-        vocabulary = read_vocabulary(log, conn)
-        kinds = {
-            name: not spec.retired
-            for (declares, name), spec in vocabulary.kinds.items()
-            if declares == item.assertion
-        }
+        kinds = _standing_kinds(read_vocabulary(log, conn), item.assertion)
         if (sentence := _refusal(item, statement, kinds)) is not None:
             raise ClassRefused(sentence)
         payload = class_payload(item, statement=statement)

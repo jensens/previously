@@ -2,8 +2,8 @@
 
 # Configuration
 
-Previously reads its settings from twenty environment variables.
-Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store, fetch or delete a blob, as the table below says per variable, the four `PREVIOUSLY_IMAP_*` variables only by `ingest imap`, the four settings of the model providers only by `gate try`, and the four `PREVIOUSLY_MCP_*` variables only by `mcp` and `serve`.
+Previously reads its settings from twenty-one environment variables.
+Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store, fetch or delete a blob, as the table below says per variable, the four `PREVIOUSLY_IMAP_*` variables only by `ingest imap`, the four settings of the model providers only by `gate try`, the four `PREVIOUSLY_MCP_*` variables only by `mcp` and `serve`, and `PREVIOUSLY_LANGUAGE` only by the commands that list or show entities and relations.
 
 No setting has a name that Kubernetes gives a variable of a Service.
 For every Service in a namespace, Kubernetes sets variables such as `X_SERVICE_HOST`, `X_PORT` and `X_PORT_8765_TCP` in every pod of that namespace, with `X` the name of the Service upper-cased and `-` written as `_`; a Service named `previously-mcp` sets `PREVIOUSLY_MCP_PORT`.
@@ -183,6 +183,21 @@ us = 1.1
 Each `model_call` carries the SHA-256 of the file as it lies on disk, and the estimate as a decimal string under `cost_usd`, which is `null` for a model the file doesn't name, such as the local one.
 The file in the package was read on 2026-10-09 and names its sources in its header.
 A file that can't be read, isn't TOML or has no date `as_of` stops `gate try` before it calls anything, with exit code 2 and one sentence that names the file.
+
+## Language setting
+
+| Variable | Form | Used by |
+|---|---|---|
+| `PREVIOUSLY_LANGUAGE` | A language tag: two or three lower-case letters, then optional parts after hyphens, such as `en`, `de` or `pt-BR`. | `entity` with an id, `entities`, `relations`, `triage` and `classes sample`. |
+
+The variable names the language in which a kind is labeled for an entity that has no working language of its own.
+The default, when it's unset or empty, is `en`.
+A label that doesn't exist in that language, or in the working language of the entity, appears in the first language in alphabetical order with its tag behind it, such as `Kreis (de)`.
+A value that isn't a language tag is refused before anything is read:
+
+```text
+Error: PREVIOUSLY_LANGUAGE is not a language tag such as en or pt-BR
+```
 
 ## Server settings
 

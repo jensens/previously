@@ -2,6 +2,7 @@
 # Copyright (C) 2026 Jens W. Klein
 # SPDX-License-Identifier: AGPL-3.0-or-later
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import date
 from datetime import datetime
 from datetime import timedelta
@@ -35,6 +36,16 @@ from previously.core.assertion import Statement as AssertionStatement
 from previously.core.assertions import write_statements
 from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
+from previously.core.graph import ACTIVE
+from previously.core.graph import Claim
+from previously.core.graph import ENTITY
+from previously.core.graph import EntityBody
+from previously.core.graph import RELATION
+from previously.core.graph import RelationBody
+from previously.core.graph import SOURCES
+from previously.core.graph_write import check_claims
+from previously.core.graph_write import GraphRefused
+from previously.core.graph_write import write_claims
 from previously.core.identity import artifact_hash_of
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
@@ -6319,3 +6330,900 @@ def test_the_help_names_vocabulary_with_its_sentence(capsys: pytest.CaptureFixtu
         capsys.readouterr().out,
         re.M,
     )
+
+
+# --- entities and relations: entity, relate, the lists, classes, triage ------------
+
+_VELLENFELD = "Verein Vellenfeld"
+
+
+def _graph_log(
+    db: object, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> PostgresStorage:
+    """A log with two mails (events 1 and 2) and the base vocabulary, so the
+    first entity gets event id 12 (the vocabulary writes nine events)."""
+    storage = _assertion_log(db, monkeypatch)
+    assert main(["vocabulary", "apply", "--base", "--yes"]) == 0
+    capsys.readouterr()
+    return storage
+
+
+def _run(capsys: pytest.CaptureFixture[str], *argv: str, code: int = 0) -> str:
+    """The standard output of one command, which has to end with `code`;
+    the standard error is left for the caller to read with `capsys`."""
+    assert main(list(argv)) == code, capsys.readouterr().err
+    return capsys.readouterr().out
+
+
+def _written(capsys: pytest.CaptureFixture[str], *argv: str) -> int:
+    """The id a writing command printed: its last line is `assertion <id>`,
+    or `approval class event <id>`."""
+    out = _run(capsys, *argv, "--yes")
+    last = re.fullmatch(r"(?:assertion|approval class event) (\d+)", out.splitlines()[-1])
+    assert last is not None, out
+    return int(last[1])
+
+
+def _refused(capsys: pytest.CaptureFixture[str], *argv: str) -> str:
+    """The sentence after `Error: ` of a command that exits 2."""
+    assert main(list(argv)) == 2
+    captured = capsys.readouterr()
+    assert captured.err.startswith("Error: "), captured.err
+    return captured.err.removeprefix("Error: ").rstrip("\n")
+
+
+def _lines(out: str) -> list[list[str]]:
+    return [line.split("\t") for line in out.splitlines()]
+
+
+@pytest.mark.db
+def test_entity_shows_the_claim_asks_and_writes_a_direct_version(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    _answer(monkeypatch, "y\n")
+    assert main(["entity", "organization", "--name", _VELLENFELD, "--source", "1:1,2"]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.endswith("write? [y/N] assertion 12\n")
+    assert captured.err == ""
+    preview = json.loads(captured.out.removesuffix("write? [y/N] assertion 12\n"))
+    assert preview["assertion"] == "entity"
+    assert preview["author"] == "human:operator"
+    assert preview["responsibility"] == "direct"
+    assert preview["evidence"] == "sources"
+    assert preview["sources"] == [{"event": 1, "units": [1, 2]}]
+    assert preview["fields"] == {"name": _VELLENFELD}
+    assert preview["state"] == "active"
+    ((event_id, payload),) = _standing(db)
+    assert event_id == 12
+    assert payload == preview
+
+
+@pytest.mark.db
+def test_entity_writes_nothing_after_a_no_and_says_so(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    _answer(monkeypatch, "n\n")
+    assert main(["entity", "organization", "--name", "x", "--source", "1"]) == 1
+    captured = capsys.readouterr()
+    assert captured.err == "nothing written\n"
+    assert '"assertion": "entity"' in captured.out
+    assert _standing(db) == []
+
+
+@pytest.mark.db
+def test_a_recollection_has_no_source_and_the_two_together_are_refused(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    out = _run(capsys, "entity", "person", "--name", "Anna", "--recollection", "--yes")
+    assert out.endswith("assertion 12\n")
+    ((_id, payload),) = _standing(db)
+    assert payload["evidence"] == "recollection"
+    assert payload["sources"] == []
+    assert payload["responsibility"] == "direct"
+    assert _refused(
+        capsys, "entity", "person", "--name", "B", "--recollection", "--source", "1", "--yes"
+    ) == ("--recollection and --source exclude each other")
+    assert _refused(capsys, "entity", "person", "--name", "B", "--yes") == (
+        "an entity needs --source or --recollection unless --subject names the one to change"
+    )
+    assert len(_standing(db)) == 1
+
+
+@pytest.mark.db
+def test_the_fields_are_read_by_the_type_the_kind_declares(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    from previously.core.vocabulary import base_vocabulary
+
+    path = tmp_path / "vocabulary.toml"
+    path.write_text(
+        base_vocabulary()
+        + """
+[entity.case]
+labels = { en = "Case" }
+behaviors = ["period"]
+fields = [
+  { name = "name", type = "text", required = true },
+  { name = "opened", type = "date", required = false },
+  { name = "period", type = "period", required = false },
+  { name = "state_of", type = "choice", values = ["open", "shut"], required = false },
+  { name = "owner", type = "ref", ref = "person", required = false },
+]
+""",
+        encoding="utf-8",
+    )
+    _run(capsys, "vocabulary", "apply", str(path), "--yes")
+    person = _written(capsys, "entity", "person", "--name", "Anna", "--recollection")
+    case = _written(
+        capsys,
+        *("entity", "case", "--name", "C 1", "--source", "1"),
+        *("--field", "opened=2019-03-01", "--field", "period=2015-01-01.."),
+        *("--field", "state_of=shut", "--field", f"owner={person}"),
+    )
+    page = {
+        line[1]: line[2] for line in _lines(_run(capsys, "entity", str(case))) if line[0] == "field"
+    }
+    assert page == {
+        "name": "C 1",
+        "opened": "2019-03-01",
+        "owner": str(person),
+        "period": "2015-01-01..",
+        "state_of": "shut",
+    }
+    payload = cast("dict[str, object]", dict(_standing(db))[case]["fields"])
+    assert payload["period"] == {"from": "2015-01-01", "to": None}
+    assert payload["owner"] == person
+    assert _written(
+        capsys, "entity", "case", "--name", "C 2", "--source", "1", "--field", "period=..2019-12-31"
+    )
+    second = cast("dict[str, object]", dict(_standing(db))[case + 1]["fields"])
+    assert second["period"] == {"from": None, "to": "2019-12-31"}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("option", "sentence"),
+    [
+        ("colour=red", '--field names "colour", which the kind does not declare'),
+        ("name", "--field is not NAME=VALUE: 'name'"),
+        ("name=A", '--field names "name" twice'),
+    ],
+)
+def test_a_field_that_cannot_be_read_is_refused_with_one_sentence(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    option: str,
+    sentence: str,
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    argv = ["entity", "person", "--name", "A", "--source", "1", "--field", option, "--yes"]
+    assert _refused(capsys, *argv) == sentence
+    assert _standing(db) == []
+
+
+@pytest.mark.db
+def test_a_value_the_type_does_not_read_is_refused(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    base = ["entity", "project", "--name", "P", "--source", "1", "--yes"]
+    assert _refused(capsys, *base, "--field", "period=2019") == (
+        "--field period is not a period written FROM..TO; an end may be empty"
+    )
+    assert _refused(capsys, *base, "--field", "period=2019-13-01..") == (
+        "--field period is not a date written YYYY-MM-DD"
+    )
+    assert _standing(db) == []
+
+
+def _vellenfeld(capsys: pytest.CaptureFixture[str]) -> dict[str, int]:
+    """The association of the specification, written on the command line:
+    the association, its board as a circle, three people, and their terms on
+    the board. The terms of the first two overlap on 2019-03-01."""
+    ids: dict[str, int] = {}
+    ids["verein"] = _written(
+        capsys, "entity", "organization", "--name", _VELLENFELD, "--source", "1"
+    )
+    ids["board"] = _written(capsys, "entity", "circle", "--name", "Vorstand", "--source", "1")
+    for key, name in (("anna", "Anna Huber"), ("berta", "Berta Maier"), ("carl", "Carl Steiner")):
+        ids[key] = _written(capsys, "entity", "person", "--name", name, "--source", "1")
+    ids["obmann"] = _written(capsys, "entity", "post", "--name", "Obmann", "--source", "1")
+    ids["post_in"] = _written(
+        capsys,
+        *("relate", "post_in", "--from", str(ids["obmann"]), "--to", str(ids["verein"])),
+        *("--source", "1"),
+    )
+    ids["holds"] = _written(
+        capsys,
+        *("relate", "holds", "--from", str(ids["anna"]), "--to", str(ids["obmann"])),
+        *("--from-date", "2015-01-01", "--to-date", "2019-12-31", "--source", "1"),
+    )
+    board = str(ids["board"])
+    ids["anna_term"] = _written(
+        capsys,
+        *("relate", "member_of", "--from", str(ids["anna"]), "--to", board),
+        *("--from-date", "2015-01-01", "--to-date", "2019-12-31", "--source", "1"),
+    )
+    ids["berta_term"] = _written(
+        capsys,
+        *("relate", "member_of", "--from", str(ids["berta"]), "--to", board),
+        *("--from-date", "2017-06-01", "--source", "1"),
+    )
+    ids["carl_term"] = _written(
+        capsys,
+        *("relate", "member_of", "--from", str(ids["carl"]), "--to", board),
+        *("--from-date", "2020-01-01", "--source", "1"),
+    )
+    return ids
+
+
+@pytest.mark.db
+def test_who_sat_on_the_board_on_the_first_of_march_2019(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    ids = _vellenfeld(capsys)
+    board = str(ids["board"])
+    out = _run(capsys, "relations", "--type", "member_of", "--to", board, "--at", "2019-03-01")
+    lines = _lines(out)
+    assert [line[0] for line in lines] == [str(ids["anna_term"]), str(ids["berta_term"])]
+    assert lines[0] == [
+        str(ids["anna_term"]),
+        "active" if False else "standing",
+        "Member of",
+        f"{ids['anna']} Anna Huber",
+        f"{ids['board']} Vorstand",
+        "2015-01-01..2019-12-31",
+        "1 version",
+    ]
+    assert lines[1][3:6] == [
+        f"{ids['berta']} Berta Maier",
+        f"{ids['board']} Vorstand",
+        "2017-06-01..",
+    ]
+    # The control: without the day, all three terms are listed; so `--at` is
+    # what keeps Carl out.
+    everyone = _lines(_run(capsys, "relations", "--type", "member_of", "--to", board))
+    assert [line[0] for line in everyone] == [
+        str(ids["anna_term"]),
+        str(ids["berta_term"]),
+        str(ids["carl_term"]),
+    ]
+    later = _lines(
+        _run(capsys, "relations", "--type", "member_of", "--to", board, "--at", "2020-06-01")
+    )
+    assert [line[0] for line in later] == [str(ids["berta_term"]), str(ids["carl_term"])]
+
+
+@pytest.mark.db
+def test_the_page_of_an_entity_shows_its_relations_in_both_directions(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    ids = _vellenfeld(capsys)
+    page = _lines(_run(capsys, "entity", str(ids["obmann"])))
+    assert page[0] == [f"entity {ids['obmann']}"]
+    assert ["type", "post", "Post"] in page
+    assert ["field", "name", "Obmann"] in page
+    relations = [line for line in page if line[0] == "relation"]
+    assert relations == [
+        [
+            "relation",
+            str(ids["post_in"]),
+            "Post in",
+            "out",
+            f"{ids['verein']} {_VELLENFELD}",
+            "-",
+            "standing",
+        ],
+        [
+            "relation",
+            str(ids["holds"]),
+            "Holds",
+            "in",
+            f"{ids['anna']} Anna Huber",
+            "2015-01-01..2019-12-31",
+            "standing",
+        ],
+    ]
+
+
+@pytest.mark.db
+def test_entities_lists_what_stands_and_filters_by_kind_and_state(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    ids = _vellenfeld(capsys)
+    project = _written(capsys, "entity", "project", "--name", "Roof", "--source", "1")
+    _written(capsys, "entity", "project", "--subject", str(project), "--state", "closed")
+    everything = _lines(_run(capsys, "entities"))
+    wanted = [ids[key] for key in ("verein", "board", "anna", "berta", "carl", "obmann")]
+    assert [line[0] for line in everything] == [str(item) for item in [*wanted, project]]
+    assert everything[0] == [
+        str(ids["verein"]),
+        "active",
+        "Organization",
+        _VELLENFELD,
+        "1 version",
+        "0 proposals",
+    ]
+    people = _lines(_run(capsys, "entities", "--type", "person"))
+    assert [line[3] for line in people] == ["Anna Huber", "Berta Maier", "Carl Steiner"]
+    closed = _lines(_run(capsys, "entities", "--state", "closed"))
+    assert closed == [[str(project), "closed", "Project", "Roof", "2 versions", "0 proposals"]]
+
+
+@pytest.mark.db
+def test_a_new_version_fills_what_it_leaves_out_and_a_retraction_takes_the_entity_out(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    anna = _written(
+        capsys, "entity", "person", "--name", "Anna", "--language", "de", "--source", "1:2"
+    )
+    _written(capsys, "entity", "person", "--subject", str(anna), "--name", "Anna Huber")
+    ((_, first), (_, second)) = _standing(db)
+    assert second["subject"] == anna
+    assert second["sources"] == first["sources"] == [{"event": 1, "units": [2]}]
+    assert second["language"] == "de"
+    assert second["fields"] == {"name": "Anna Huber"}
+    _written(capsys, "entity", "person", "--subject", str(anna), "--state", "retracted")
+    assert _run(capsys, "entities") == ""
+    retracted = _lines(_run(capsys, "entities", "--state", "retracted"))
+    assert [(line[0], line[1]) for line in retracted] == [(str(anna), "retracted")]
+    assert _refused(capsys, "entity", "person", "--subject", "999", "--yes") == (
+        "--subject 999 names no entity that stands"
+    )
+
+
+@pytest.mark.db
+def test_a_relation_is_ended_with_a_new_version_and_taken_back_with_a_retraction(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    ids = _vellenfeld(capsys)
+    carl = str(ids["carl_term"])
+    ended = _written(capsys, "relate", "member_of", "--subject", carl, "--to-date", "2022-12-31")
+    assert ended == ids["carl_term"] + 1
+    payload = dict(_standing(db))[ended]
+    assert payload["subject"] == ids["carl_term"]
+    assert payload["period"] == {"from": "2020-01-01", "to": "2022-12-31"}
+    assert payload["from"] == {"entity": ids["carl"]}
+    assert payload["to"] == {"entity": ids["board"]}
+    gone = _lines(_run(capsys, "relations", "--to", str(ids["board"]), "--at", "2023-06-01"))
+    assert [line[0] for line in gone] == [str(ids["berta_term"])]
+    _written(capsys, "relate", "member_of", "--subject", carl, "--retract")
+    still = _lines(_run(capsys, "relations", "--to", str(ids["board"])))
+    assert [line[0] for line in still] == [str(ids["anna_term"]), str(ids["berta_term"])]
+    assert _refused(capsys, "relate", "member_of", "--from", "1", "--yes") == (
+        "a relation needs --to and --source or --recollection "
+        "unless --subject names the one to change"
+    )
+
+
+@pytest.mark.db
+def test_as_of_shows_the_graph_as_it_stood(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    ids = _vellenfeld(capsys)
+    roof = _written(capsys, "entity", "project", "--name", "Roof", "--source", "1")
+    before = datetime.now(UTC).isoformat()
+    time.sleep(0.02)
+    late = _written(
+        capsys,
+        *("relate", "involved_in", "--from", str(ids["carl"]), "--to", str(roof)),
+        *("--source", "1"),
+    )
+    assert _run(capsys, "relations", "--type", "involved_in", "--as-of", before) == ""
+    earlier = _lines(_run(capsys, "relations", "--as-of", before))
+    assert str(late) not in [line[0] for line in earlier]
+    assert len(earlier) == 5
+    now = _lines(_run(capsys, "relations", "--type", "involved_in"))
+    assert [line[0] for line in now] == [str(late)]
+    assert main(["relations", "--as-of", "2026-10-14T10:00:00"]) == 2
+    assert "has no time zone" in capsys.readouterr().err
+
+
+@pytest.mark.db
+def test_a_relation_to_an_erased_or_retracted_entity_stays_and_says_so(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _graph_log(db, monkeypatch, capsys)
+    board = _written(capsys, "entity", "circle", "--name", "Vorstand", "--source", "1")
+    anna = _written(capsys, "entity", "person", "--name", "Anna", "--source", "2")
+    berta = _written(capsys, "entity", "person", "--name", "Berta", "--source", "1")
+    for person in (anna, berta):
+        _written(
+            capsys,
+            *("relate", "member_of", "--from", str(person), "--to", str(board)),
+            *("--source", "1"),
+        )
+    _written(capsys, "entity", "person", "--subject", str(berta), "--state", "retracted")
+    redact_event(storage, storage, 2, reason="r", recorded_at=datetime.now(UTC))
+    lines = _lines(_run(capsys, "relations", "--type", "member_of"))
+    assert [(line[3], line[4]) for line in lines] == [
+        (f"{anna} (erased)", f"{board} Vorstand"),
+        (f"{berta} (retracted)", f"{board} Vorstand"),
+    ]
+    # An erased entity has no page; the reader is told so, not that none stood.
+    assert main(["entity", str(anna)]) == 1
+    assert capsys.readouterr().err == f"assertion {anna} is erased\n"
+    assert main(["entity", "999"]) == 1
+    assert capsys.readouterr().err == "no entity stands under event 999\n"
+
+
+@pytest.mark.db
+def test_the_history_shows_an_old_version_unchanged_and_marks_what_no_longer_fits(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    from previously.core.vocabulary import base_vocabulary
+
+    _graph_log(db, monkeypatch, capsys)
+    path = tmp_path / "vocabulary.toml"
+    path.write_text(
+        base_vocabulary()
+        + """
+[entity.badge]
+labels = { en = "Badge" }
+behaviors = []
+fields = [
+  { name = "name", type = "text", required = true },
+  { name = "colour", type = "choice", values = ["red", "blue"], required = false },
+]
+""",
+        encoding="utf-8",
+    )
+    _run(capsys, "vocabulary", "apply", str(path), "--yes")
+    badge = _written(
+        capsys, "entity", "badge", "--name", "B", "--field", "colour=red", "--source", "1"
+    )
+    other = _written(
+        capsys, "entity", "badge", "--name", "C", "--field", "colour=blue", "--source", "1"
+    )
+    before = _run(capsys, "entity", str(badge), "--history")
+    # The same file with red taken out of the choice: today's vocabulary
+    # would not take the first badge any more.
+    path.write_text(path.read_text(encoding="utf-8").replace('["red", "blue"]', '["blue"]'))
+    _run(capsys, "vocabulary", "apply", str(path), "--yes")
+    after = _run(capsys, "entity", str(badge), "--history")
+    # Only the mark is added to the head of the version; nothing else of it
+    # was rewritten.
+    assert after.splitlines()[0] == before.splitlines()[0]
+    assert after.splitlines()[1] == before.splitlines()[1] + "\t(does not fit the vocabulary)"
+    assert after.splitlines()[2:] == before.splitlines()[2:]
+    marked = _lines(after)
+    assert marked[1][:2] == ["version", str(badge)]
+    assert marked[1][-1] == "(does not fit the vocabulary)"
+    assert ["set", "fields.colour", "red"] in marked
+    assert "(does not fit the vocabulary)" not in before
+    assert _lines(_run(capsys, "entities", "--type", "badge")) == [
+        [
+            str(badge),
+            "active",
+            "Badge",
+            "B",
+            "1 version",
+            "0 proposals",
+            "(does not fit the vocabulary)",
+        ],
+        [str(other), "active", "Badge", "C", "1 version", "0 proposals"],
+    ]
+    assert _run(capsys, "entity", str(badge)).splitlines()[0] == (
+        f"entity {badge} (does not fit the vocabulary)"
+    )
+    # A new version has to fit, and the sentence says so; the old one stays.
+    assert _refused(
+        capsys, "entity", "badge", "--subject", str(badge), "--name", "B2", "--yes"
+    ) == ('the field "colour" holds none of the values its kind allows')
+    assert [
+        line[1]
+        for line in _lines(_run(capsys, "entity", str(badge), "--history"))
+        if line[0] == "set"
+    ] == [
+        "type",
+        "language",
+        "fields.colour",
+        "fields.name",
+        "state",
+    ]
+
+
+@pytest.mark.db
+def test_a_label_is_shown_in_the_working_language_of_the_entity_else_in_the_setting(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    plain = _written(capsys, "entity", "circle", "--name", "A", "--source", "1")
+    german = _written(
+        capsys, "entity", "circle", "--name", "B", "--language", "de", "--source", "1"
+    )
+    japanese = _written(
+        capsys, "entity", "circle", "--name", "C", "--language", "ja", "--source", "1"
+    )
+    shown = {line[0]: line[2] for line in _lines(_run(capsys, "entities"))}
+    # No working language: the setting, which is `en` unless set. A working
+    # language the kind has no label in: the first label there is, marked.
+    assert shown == {str(plain): "Circle", str(german): "Kreis", str(japanese): "Kreis (de)"}
+    monkeypatch.setenv("PREVIOUSLY_LANGUAGE", "de")
+    shown = {line[0]: line[2] for line in _lines(_run(capsys, "entities"))}
+    assert shown == {str(plain): "Kreis", str(german): "Kreis", str(japanese): "Kreis (de)"}
+    monkeypatch.setenv("PREVIOUSLY_LANGUAGE", "fr")
+    shown = {line[0]: line[2] for line in _lines(_run(capsys, "entities"))}
+    assert shown[str(plain)] == "Kreis (de)"
+    assert _lines(_run(capsys, "entity", str(plain)))[2][2] == "Kreis (de)"
+
+
+@pytest.mark.db
+def test_the_language_setting_is_a_language_tag_or_it_is_refused(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    monkeypatch.setenv("PREVIOUSLY_LANGUAGE", "pt-BR")
+    assert main(["entities"]) == 0
+    for bad in ("German", "de_AT", "d"):
+        monkeypatch.setenv("PREVIOUSLY_LANGUAGE", bad)
+        assert _refused(capsys, "entities") == (
+            "PREVIOUSLY_LANGUAGE is not a language tag such as en or pt-BR"
+        )
+    monkeypatch.setenv("PREVIOUSLY_LANGUAGE", "")
+    assert main(["entities"]) == 0
+
+
+def _model_claim(
+    kind: str,
+    body: EntityBody | RelationBody,
+    *,
+    subject: int | None = None,
+    confidence: int | None = None,
+) -> Claim:
+    return Claim(
+        kind,
+        model_author("claude-code"),
+        OPEN,
+        SOURCES,
+        (Source(1, None),),
+        None,
+        None,
+        subject,
+        None,
+        None,
+        confidence,
+        None,
+        body,
+    )
+
+
+def _model_writes(storage: PostgresStorage, *claims: Claim) -> tuple[int, ...]:
+    return write_claims(storage, storage, claims, recorded_at=_ASSERT_AT).ids
+
+
+def _model_person(
+    storage: PostgresStorage,
+    name: str,
+    *,
+    subject: int | None = None,
+    confidence: int | None = None,
+) -> int:
+    body = EntityBody("person", None, {"name": name}, ACTIVE)
+    return _model_writes(
+        storage, _model_claim(ENTITY, body, subject=subject, confidence=confidence)
+    )[0]
+
+
+@pytest.mark.db
+def test_classes_add_shows_the_class_asks_and_writes_an_event(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    argv = ["classes", "add", "maier", "--author", "model:claude-code", "--assertion", "entity"]
+    argv += ["--type", "person", "--threshold", "80", "--statement", "names from mails"]
+    _answer(monkeypatch, "y\n")
+    assert main(argv) == 0
+    out = capsys.readouterr().out
+    assert out.endswith("write? [y/N] approval class event 12\n")
+    payload = json.loads(out.removesuffix("write? [y/N] approval class event 12\n"))
+    assert payload["threshold"] == 80
+    assert payload["types"] == ["person"]
+    assert payload["revoked"] is False
+    _answer(monkeypatch, "n\n")
+    assert main([*argv[:2], "other", *argv[3:]]) == 1
+    assert capsys.readouterr().err == "nothing written\n"
+
+
+@pytest.mark.db
+def test_a_class_that_cannot_be_written_is_refused_before_the_question(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    argv = ["classes", "add", "maier", "--author", "model:claude-code", "--assertion", "entity"]
+    argv += ["--threshold", "80", "--statement", "s"]
+    # Nobody is asked: with no input at all, a question would end in "no
+    # answer", and the refusal would never be said.
+    _answer(monkeypatch, "")
+    sentence = _refused(capsys, *argv, "--type", "nothing")
+    assert sentence == (
+        'the approval class names "nothing", which is no entity kind that stands in the vocabulary'
+    )
+    # The control: a class that can be written reaches the question.
+    assert main([*argv, "--type", "person"]) == 1
+    assert "no answer: the input ended" in capsys.readouterr().err
+    assert _action_count(db) == 9
+
+
+@pytest.mark.db
+def test_classes_revoke_keeps_the_other_fields_and_demote_is_a_state_of_its_own(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    argv = ["classes", "add", "maier", "--author", "model:claude-code", "--assertion", "entity"]
+    argv += ["--type", "person", "--type", "post", "--threshold", "80"]
+    argv += ["--from", "2026-01-01T00:00:00Z", "--until", "2027-01-01T00:00:00Z"]
+    _written(capsys, *argv, "--statement", "s")
+    before = _lines(_run(capsys, "classes", "list"))[0]
+    assert before[:7] == [
+        "maier",
+        "model:claude-code",
+        "entity",
+        "person,post",
+        "80",
+        "2026-01-01T00:00:00.000000Z..2027-01-01T00:00:00.000000Z",
+        "active",
+    ]
+    _run(capsys, "classes", "revoke", "maier", "--statement", "no longer", "--yes")
+    revoked = _lines(_run(capsys, "classes", "list"))[0]
+    assert revoked[:6] == before[:6]
+    assert revoked[6] == "revoked"
+    _run(capsys, "classes", "revoke", "maier", "--demote", "--statement", "worse", "--yes")
+    demoted = _lines(_run(capsys, "classes", "list"))[0]
+    assert demoted[:6] == before[:6]
+    assert demoted[6] == "revoked and demoted"
+    assert _refused(capsys, "classes", "revoke", "nobody", "--statement", "s", "--yes") == (
+        "no approval class is named nobody"
+    )
+
+
+@pytest.mark.db
+def test_the_hit_rate_counts_what_was_confirmed_corrected_and_left_standing(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _graph_log(db, monkeypatch, capsys)
+    argv = ["classes", "add", "maier", "--author", "model:claude-code", "--assertion", "entity"]
+    _written(capsys, *argv, "--type", "person", "--threshold", "80", "--statement", "s")
+    assert _lines(_run(capsys, "classes", "list"))[0][7:] == [
+        "0 total, 0 confirmed, 0 corrected, 0 standing",
+        "(event 12)",
+    ]
+    confirmed, corrected, standing = (
+        _model_person(storage, name, confidence=90) for name in ("Anna", "Berta", "Carl")
+    )
+    _written(capsys, "approve", str(confirmed))
+    _written(capsys, "entity", "person", "--subject", str(corrected), "--name", "Berta Maier")
+    row = _lines(_run(capsys, "classes", "list"))[0]
+    assert row[7] == "3 total, 1 confirmed, 1 corrected, 1 standing"
+    assert str(standing) in _run(capsys, "classes", "sample", "maier")
+
+
+@pytest.mark.db
+def test_sample_gives_the_asked_number_from_the_versions_the_class_let_through(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _graph_log(db, monkeypatch, capsys)
+    argv = ["classes", "add", "maier", "--author", "model:claude-code", "--assertion", "entity"]
+    _written(capsys, *argv, "--type", "person", "--threshold", "80", "--statement", "s")
+    inside = [_model_person(storage, f"P{n}", confidence=90) for n in range(4)]
+    outside = _model_person(storage, "Low", confidence=10)
+    everything = _lines(_run(capsys, "classes", "sample", "maier"))
+    assert [line[0] for line in everything] == [str(item) for item in inside]
+    assert everything[0] == [
+        str(inside[0]),
+        str(inside[0]),
+        "entity",
+        "Person",
+        "P0",
+        "90",
+        "model:claude-code",
+    ]
+    one = _lines(_run(capsys, "classes", "sample", "maier", "--count", "1"))
+    assert len(one) == 1
+    assert one[0][0] in {str(item) for item in inside}
+    assert str(outside) not in {line[0] for line in everything}
+    assert _refused(capsys, "classes", "sample", "maier", "--count", "0") == (
+        "--count must be at least 1, got 0"
+    )
+    assert _refused(capsys, "classes", "sample", "nobody") == "no approval class is named nobody"
+
+
+def _waiting_graph(
+    db: object, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> dict[str, int]:
+    """A proposal, then a question, then an objection: the order of their
+    ids is the reverse of the order triage lists them in."""
+    storage = _graph_log(db, monkeypatch, capsys)
+    ids: dict[str, int] = {}
+    ids["anna"] = _written(capsys, "entity", "person", "--name", "Anna", "--source", "1")
+    ids["circle_a"] = _written(capsys, "entity", "circle", "--name", "Kasse", "--source", "1")
+    ids["circle_b"] = _written(capsys, "entity", "circle", "--name", "Kasse II", "--source", "1")
+    ids["proposal"] = _model_person(storage, "Berta")
+    asking = RelationBody(
+        "member_of", ids["anna"], None, (ids["circle_a"], ids["circle_b"]), None, {}, "standing"
+    )
+    (ids["question"],) = _model_writes(storage, _model_claim(RELATION, asking))
+    ids["objection"] = _model_person(storage, "Anna Maier", subject=ids["anna"])
+    return ids
+
+
+@pytest.mark.db
+def test_triage_lists_objections_then_questions_then_proposals(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = _waiting_graph(db, monkeypatch, capsys)
+    assert ids["proposal"] < ids["question"] < ids["objection"]
+    author = "model:claude-code"
+    anna, a, b = ids["anna"], ids["circle_a"], ids["circle_b"]
+    assert _lines(_run(capsys, "triage")) == [
+        ["objection", str(ids["objection"]), "Person", "Anna Maier", author],
+        [
+            *("question", str(ids["question"]), "Member of"),
+            f"{anna} Anna -> ? ({a} Kasse, {b} Kasse II)",
+            author,
+        ],
+        ["proposal", str(ids["proposal"]), "Person", "Berta", author],
+    ]
+    assert _run(capsys, "status") == "objections\t1\nquestions\t1\nproposals\t1\n"
+
+
+@pytest.mark.db
+def test_status_counts_nothing_as_three_lines_of_zero(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    assert _run(capsys, "triage") == ""
+    assert _run(capsys, "status") == "objections\t0\nquestions\t0\nproposals\t0\n"
+
+
+@pytest.mark.db
+def test_answer_approves_the_question_with_the_chosen_candidate(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = _waiting_graph(db, monkeypatch, capsys)
+    question = str(ids["question"])
+    _answer(monkeypatch, "n\n")
+    assert main(["answer", question, "--choose", str(ids["circle_b"])]) == 1
+    assert capsys.readouterr().err == "nothing written\n"
+    answer = _written(capsys, "answer", question, "--choose", str(ids["circle_b"]))
+    payload = dict(_standing(db))[answer]
+    assert payload["responsibility"] == "direct"
+    assert payload["approves"] == ids["question"]
+    assert payload["subject"] == ids["question"]
+    assert payload["to"] == {"entity": ids["circle_b"]}
+    # The model's author and sources are kept: an approval takes them unchanged.
+    assert payload["author"] == "model:claude-code"
+    assert payload["sources"] == [{"event": 1, "units": None}]
+    assert _run(capsys, "status") == "objections\t1\nquestions\t0\nproposals\t1\n"
+    stands = _lines(_run(capsys, "relations", "--type", "member_of"))
+    assert [(line[0], line[3], line[4]) for line in stands] == [
+        (question, f"{ids['anna']} Anna", f"{ids['circle_b']} Kasse II")
+    ]
+
+
+@pytest.mark.db
+def test_answer_refuses_what_is_no_question_and_a_choice_that_is_no_candidate(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = _waiting_graph(db, monkeypatch, capsys)
+    stranger = _written(capsys, "entity", "circle", "--name", "Other", "--source", "1")
+    before = len(_standing(db))
+    assert _refused(capsys, "answer", str(ids["proposal"]), "--choose", "1", "--yes") == (
+        f"event {ids['proposal']} is no question that waits"
+    )
+    assert _refused(capsys, "answer", "9999", "--choose", "1", "--yes") == (
+        "event 9999 is no question that waits"
+    )
+    sentence = _refused(capsys, "answer", str(ids["question"]), "--choose", str(stranger), "--yes")
+    assert sentence == f"the answer names {stranger}, which is none of the candidates"
+    # It is the sentence the write path gives for a direct answer.
+    direct = RelationBody("member_of", ids["anna"], stranger, None, None, {}, "standing")
+    claim = replace(
+        _model_claim(RELATION, direct, subject=ids["question"]),
+        author="human:operator",
+        responsibility="direct",
+    )
+    storage = PostgresStorage(cast("Engine", db))
+    with pytest.raises(GraphRefused) as raised, storage.snapshot() as conn:
+        check_claims(storage, conn, [claim], recorded_at=_ASSERT_AT)
+    assert str(raised.value) == sentence
+    assert len(_standing(db)) == before
+
+
+@pytest.mark.db
+def test_approve_takes_a_proposal_or_an_objection_of_the_graph_as_the_operators_own(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = _waiting_graph(db, monkeypatch, capsys)
+    out = _run(capsys, "approve", str(ids["proposal"]), str(ids["objection"]), "--yes")
+    previews = out.split("assertion ")[0]
+    assert previews.count('"approves"') == 2
+    written = [int(line.removeprefix("assertion ")) for line in out.splitlines()[-2:]]
+    payloads = dict(_standing(db))
+    first, second = payloads[written[0]], payloads[written[1]]
+    assert (first["approves"], first["subject"]) == (ids["proposal"], ids["proposal"])
+    assert (second["approves"], second["subject"]) == (ids["objection"], ids["anna"])
+    assert first["responsibility"] == second["responsibility"] == "direct"
+    assert second["contests"] is None
+    assert second["fields"] == {"name": "Anna Maier"}
+    assert _run(capsys, "status") == "objections\t0\nquestions\t1\nproposals\t0\n"
+    names = {line[0]: line[3] for line in _lines(_run(capsys, "entities", "--type", "person"))}
+    assert names == {str(ids["anna"]): "Anna Maier", str(ids["proposal"]): "Berta"}
+
+
+@pytest.mark.db
+def test_reject_turns_a_proposal_of_the_graph_down_with_its_sources(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = _waiting_graph(db, monkeypatch, capsys)
+    rejection = _written(capsys, "reject", str(ids["proposal"]), "--reason", "not a member")
+    payload = dict(_standing(db))[rejection]
+    assert payload["assertion"] == "rejection"
+    assert payload["of"] == ids["proposal"]
+    assert payload["sources"] == [{"event": 1, "units": None}]
+    assert payload["reason"] == "not a member"
+    assert _run(capsys, "status") == "objections\t1\nquestions\t1\nproposals\t0\n"
+    waiting = [line[0] for line in _lines(_run(capsys, "entities", "--proposals"))]
+    assert waiting == [str(ids["anna"])]  # the objection is still there; Berta is not
+    # Once is enough: the same proposal is not rejected twice.
+    assert _refused(capsys, "reject", str(ids["proposal"]), "--yes") == (
+        f"the proposal {ids['proposal']} is already rejected"
+    )
+    assert _refused(capsys, "reject", "9999", "--yes") == "event 9999 is no proposal that stands"
+
+
+@pytest.mark.db
+def test_one_approval_does_not_mix_obligations_with_entities(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = _waiting_graph(db, monkeypatch, capsys)
+    storage = PostgresStorage(cast("Engine", db))
+    (debt,) = _propose(storage, _debt())
+    before = len(_standing(db))
+    sentence = _refused(capsys, "approve", str(debt), str(ids["proposal"]), "--yes")
+    assert sentence == (
+        "one call approves obligations and decisions, or entities and relations, not both"
+    )
+    assert len(_standing(db)) == before
+    # The control: each family alone goes through.
+    assert main(["approve", str(debt), "--yes"]) == 0
+    assert main(["approve", str(ids["proposal"]), "--yes"]) == 0
+    assert _refused(capsys, "approve", "9999", "--yes") == "event 9999 is no proposal that stands"
+    assert _refused(capsys, "approve", str(ids["proposal"]), "--yes") == (
+        f"the proposal {ids['proposal']} is already approved"
+    )
+
+
+@pytest.mark.db
+def test_the_graph_commands_carry_the_contractual_help(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    sentences = {
+        "entity": "state an entity, or show one",
+        "relate": "state a relation between two entities",
+        "entities": "list the entities",
+        "relations": "list the relations",
+        "classes": "allow a model to stand for a class of statements",
+        "triage": "list what waits for an answer",
+        "answer": "answer a question with one of its candidates",
+        "status": "show what waits",
+    }
+    found = {c.name: c.help for c in COMMANDS if c.name in sentences}
+    assert found == sentences

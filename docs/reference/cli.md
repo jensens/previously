@@ -73,6 +73,12 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `reject` | The rejection was written. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the proposal is none, is direct, or is already approved or rejected, the write path refused the rejection, or storage raised an error. |
 | `obligations`, `decisions` | The list was printed, even when no entry matches. | Not used. | The input was invalid, or storage raised an error. |
 | `obligation`, `decision` | The entry was printed. | No entry of that kind stands under the id, or the id names an assertion an erasure took. | Storage raised an error. |
+| `entity` | The entity was written, or the page of an entity was printed. | The confirmation was answered with anything but yes, or not answered, and nothing was written; no entity stands under the id, or the id names an assertion an erasure took. | The input was invalid, including a `--field` that the kind doesn't declare or its type can't read, `--recollection` with `--source`, a kind that isn't in the vocabulary, the write path refused the claim, or storage raised an error. |
+| `relate` | The relation was written. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, including a missing `--from`, `--to` or source without `--subject`, the write path refused the claim, or storage raised an error. |
+| `entities`, `relations` | The list was printed, even when no entity or relation matches. | Not used. | The input was invalid, `PREVIOUSLY_LANGUAGE` isn't a language tag, or storage raised an error. |
+| `classes` | The class was written, or `list` or `sample` printed. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, including a class the vocabulary can't carry, a `revoke` or `sample` that names no class, or a `--count` below 1, or storage raised an error. |
+| `triage`, `status` | What waits was printed, even when nothing does. | Not used. | `PREVIOUSLY_LANGUAGE` isn't a language tag (`triage`), or storage raised an error. |
+| `answer` | The answer was written. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The id is no question that waits, the choice is none of its candidates, the write path refused the answer, or storage raised an error. |
 | `mcp` | Standard input closed, and the server ended. | Not used. | `PREVIOUSLY_MCP_CLIENT` is unset or names no client in force, or storage raised an error. |
 | `serve` | The server was stopped with an interrupt, such as Ctrl+C. | Not used. | `PREVIOUSLY_MCP_ADDRESS` isn't an address, `PREVIOUSLY_MCP_HOST` is set without it, or storage raised an error. |
 | `vocabulary` | `show` printed the vocabulary, `apply` wrote what the file changes, or found nothing to change. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, including neither a file nor `--base`, or both, the file can't be read or has a fault, the write path refused a kind, or storage raised an error. |
@@ -1282,6 +1288,9 @@ previously reject ID [--reason TEXT] [--yes]
 
 `approve` makes proposals the operator's own.
 Each becomes a direct version of the same obligation or decision, with the content, the sources and the author of the proposal, and `approves` naming it.
+The id may also name a version of an entity or a relation: a proposal, an objection or a transitive version.
+It then becomes a direct version of the same entity or relation in the same way, and `rejection` of such a version takes its sources.
+One call approves obligations and decisions, or entities and relations, and `Error: one call approves obligations and decisions, or entities and relations, not both` refuses a mix.
 The reason of the proposal stays unless `--reason` gives another.
 An id named twice is approved once.
 `reject` writes a rejection with the sources of the proposal.
@@ -1353,6 +1362,174 @@ A rejection is a line `rejection`, its id, the time, its author and `rejects ID`
 When no obligation or decision of that kind stands under the id, or none of its versions wins and `--history` is absent, the command prints `no obligation stands under event ID` to standard error, with `decision` for a decision, and returns 1.
 When no entry stands under the id and the id names an assertion an erasure took, the command prints `assertion ID is erased` to standard error instead, with or without `--history`, and returns 1.
 That's the answer for an entry whose versions are all erased, and for any other erased version too: the erasure took the payload that said which kind and which entry it was.
+
+(cli-graph)=
+
+## Entities and relations
+
+`entity`, `relate`, `entities`, `relations`, `classes`, `triage`, `answer` and `status` write and read the graph: entities, such as people and associations, and the relations between them, each with the events it rests on and who stands for it ({ref}`vocabulary-reference`).
+An entity or a relation is named after the event of its first version, as an obligation is, and `ID` below is that number.
+The command line is the operator's tool, so it writes `human:operator` as the author and `direct` as the responsibility, and it checks no policy.
+Every write is checked against the vocabulary in force before the question.
+
+Listings show the label that the vocabulary gives a kind, in the working language of the entity or, when it has none, in the language that `PREVIOUSLY_LANGUAGE` names ({ref}`configuration-reference`).
+A label that exists only in another language stands in the first language in alphabetical order, followed by its tag, such as `Kreis (de)`.
+A version that today's vocabulary wouldn't take carries `(does not fit the vocabulary)`, and a transitive version whose approval class was revoked carries `(class revoked)`.
+Both are marks and change nothing in the log.
+
+### `entity`
+
+```text
+previously entity TYPE [--name TEXT] [--field NAME=VALUE ...] [--language TAG] [--state STATE] [--subject ID] [--reason TEXT] (--source SOURCE [--source SOURCE ...] | --recollection) [--yes]
+previously entity ID [--history]
+```
+
+With a kind, `entity` states an entity.
+With the id of an entity, it prints the entity.
+
+| Option | Required | Default | Description |
+|---|---|---|---|
+| `TYPE` | Yes | — | The kind, as the vocabulary declares it. |
+| `--name TEXT` | No | none | The name, short for `--field name=TEXT`. |
+| `--field NAME=VALUE` | No | none | A field of the kind. May repeat. The type of the field decides how the value is read: text and choice as written, a date as `YYYY-MM-DD`, a period as `FROM..TO` with either end empty (`2015-01-01..`, `..2019-12-31`), and a reference as the id of an entity. |
+| `--language TAG` | No | none | The working language of the entity, such as `de`. |
+| `--state STATE` | No | `active` | One of `active`, `closed` or `retracted`. |
+| `--subject ID` | No | none | The entity to write a further version of. |
+| `--reason TEXT` | No | none | Why this version, for the history. |
+| `--source SOURCE` | Yes, without `--subject` or `--recollection` | — | An event it rests on, as for `assert`. May repeat. |
+| `--recollection` | No | off | The version rests on the operator's own memory and has no source. It excludes `--source`. |
+| `--history` | No | off | With an id: every version, in chain order. |
+| `--yes` | No | off | Write without asking. |
+
+With `--subject`, every option left out takes its value from the version that stands, a proposal included, and the new version is direct.
+The fields of the version that stands are kept when `TYPE` is the same, and the fields given replace them.
+`--reason` is never taken over.
+
+The command shows the claim as the payload, indented, with sorted keys.
+It then asks `write? [y/N]`, and after the write prints `assertion ID`.
+The input is checked before the question, and when it fails nothing is written:
+
+```text
+Error: --field names "colour", which the kind does not declare
+Error: --field is not NAME=VALUE: 'name'
+Error: --field names "name" twice
+Error: --field period is not a period written FROM..TO; an end may be empty
+Error: --recollection and --source exclude each other
+Error: an entity needs --source or --recollection unless --subject names the one to change
+Error: --subject 5 names no entity that stands
+```
+
+The page of an entity starts with `entity ID`, followed by `(proposal)` or `(transitive)` when the version that stands isn't direct, and by the marks.
+Its lines are a name, a tab and a value: `version`, `type` with the identifier and the label, `state`, `language`, one `field` line per field with the name and the value, `sources`, `evidence`, `reason`, `author`, `responsibility`, `versions` and `proposals`.
+One `relation` line follows for each relation that starts or ends at the entity: the id, the label of the kind, `out` or `in`, the entity at the other end, the period or `-`, and the state.
+Each pending version adds one `proposal` line per field it changes, with the id, the author, the field, the old value and the new one.
+
+`--history` prints instead `entity ID: N versions`, and then each version in chain order.
+A version is a line `version`, its id, the time, the responsibility, the author, `rejected` or `approved` where it applies, and the marks, then `sources` and `reason`.
+The first version adds a `set` line per field, each later one a `change` line per field that differs from the version before it.
+A history shows every version as it was written; a changed vocabulary adds a mark and rewrites nothing.
+
+When no entity stands under the id, the command prints `no entity stands under event ID` to standard error and returns 1.
+When the id names an assertion an erasure took, it prints `assertion ID is erased` instead.
+
+### `relate`
+
+```text
+previously relate TYPE --from ID --to ID [--from-date DAY] [--to-date DAY] [--field NAME=VALUE ...] [--subject ID] [--retract] [--reason TEXT] (--source SOURCE [--source SOURCE ...] | --recollection) [--yes]
+```
+
+`relate` states a relation between two entities.
+`--from` is the entity it starts at and `--to` the entity it points at.
+`--from-date` and `--to-date` give the first and the last day the relation holds, written `YYYY-MM-DD`; both days count.
+`--field`, `--subject`, `--reason`, `--source`, `--recollection` and `--yes` work as for `entity`.
+
+A relation is ended with a new version: `--subject ID --to-date DAY` keeps the ends, the first day and the fields, and sets the last day.
+A relation is taken back with `--subject ID --retract`, which writes a version in the state `retracted`.
+Without `--subject`, a missing option is refused as `Error: a relation needs --from, --to and --source or --recollection unless --subject names the one to change`, naming those that are absent.
+
+### `entities` and `relations`
+
+```text
+previously entities [--type TYPE] [--state STATE] [--proposals]
+previously relations [--type TYPE] [--from ID] [--to ID] [--at DAY] [--as-of MOMENT]
+```
+
+| Option | Description |
+|---|---|
+| `--type TYPE` | Only this kind. |
+| `--state STATE` | Only this state of the version that stands. A retracted entity appears only for `--state retracted`. |
+| `--proposals` | Only entities with a proposal pending, or that stand as a proposal because no direct or transitive version exists. |
+| `--from ID`, `--to ID` | Only relations that start at, or point at, this entity. |
+| `--at DAY` | Only relations that hold on this day, written `YYYY-MM-DD`. A relation without a period holds on every day. |
+| `--as-of MOMENT` | The graph as it stood at that moment, an ISO 8601 timestamp with a zone. Labels and marks still come from today's vocabulary. |
+
+Without `--proposals`, only entities and relations whose version that stands isn't a proposal appear, ordered by id.
+`relations` lists neither a retracted relation nor a question; `triage` shows questions.
+A line of `entities` holds six tab-separated fields, then the marks:
+
+1. The id.
+2. The state, with `proposed` or `transitive` in front when the version that stands isn't direct.
+3. The label of the kind.
+4. The name.
+5. `N versions`.
+6. `K proposals`, the versions that are pending.
+
+A line of `relations` holds seven fields, then the marks: the id, the state, the label of the kind, the start, the end, the period written `FROM..TO` or `-`, and `N versions`.
+An end is the id and the name of the entity.
+An end whose entity was erased reads `ID (erased)`, and one whose entity is retracted `ID (retracted)`; the relation stays in the list.
+
+### `classes`
+
+```text
+previously classes add NAME --author model:CLIENT --assertion entity|relation --type TYPE [--type TYPE ...] --threshold PERCENT [--from MOMENT] [--until MOMENT] --statement TEXT [--yes]
+previously classes revoke NAME [--demote] --statement TEXT [--yes]
+previously classes list
+previously classes sample NAME [--count K]
+```
+
+An approval class lets a model stand for a class of statements: the statements of one author about entities or relations of the given kinds whose stated confidence reaches the threshold ({ref}`vocabulary-reference`).
+`add` and `revoke` show the class as the payload of the event, ask, and print `approval class event ID`.
+A class the vocabulary can't carry is refused before the question, such as one that names a kind that isn't there or one of the kinds the gate reads.
+`--from` is included and `--until` excluded.
+
+`revoke` writes the current class again with `revoked` set and every other field kept.
+With `--demote`, what stands under the class counts as a proposal again; without it, the versions stay and carry `(class revoked)`.
+A name that no class carries is refused as `Error: no approval class is named NAME`.
+
+`list` prints one line per class, ordered by name, of nine tab-separated fields: the name, the author, `entity` or `relation`, the kinds separated by commas, the threshold, the valid window written `FROM..UNTIL` with an empty end for an open one or `-`, the state (`active`, `revoked` or `revoked and demoted`), the hit rate, and `(event ID)`.
+The hit rate reads `N total, N confirmed, N corrected, N standing`: the operator approved a version, the operator corrected or rejected it, or neither has happened.
+
+`sample` prints a random `--count` of the versions the class let through, 5 unless given, or all of them when there are fewer.
+A line holds the id of the version, the id of its entity or relation, `entity` or `relation`, the label of the kind, a short label, the confidence and the author.
+It refuses a count below 1 as `Error: --count must be at least 1, got 0`.
+
+### `triage` and `status`
+
+```text
+previously triage
+previously status
+```
+
+`triage` lists what waits for the operator, in the order he works through it: objections to what he stands for, then questions, then every other proposal.
+Each line holds five tab-separated fields: `objection`, `question` or `proposal`, the id of the version, the label of the kind, a short label and the author.
+A question reads `START -> ? (CANDIDATE, CANDIDATE)`.
+`status` prints three lines, `objections`, `questions` and `proposals`, each with a tab and the number, `0` included.
+
+### `answer`
+
+```text
+previously answer ID --choose ID [--reason TEXT] [--yes]
+```
+
+`answer` answers a question with one of its candidates.
+It writes an approval of the question: the same relation with the end set to the chosen candidate, direct, with the sources and the author of the question kept.
+To answer with something else, reject the question and state the relation.
+The command shows the claim, asks, and prints `assertion ID`.
+
+```text
+Error: event 5 is no question that waits
+Error: the answer names 9, which is none of the candidates
+```
 
 (cli-mcp)=
 

@@ -149,6 +149,27 @@ class Vocabulary:
         return spec.labels[fallback], fallback
 
 
+def is_language_tag(text: str) -> bool:
+    """Whether `text` is a language tag as a label and a working language
+    spell it: two or three lower-case letters and optional subtags."""
+    return _LANGUAGE.fullmatch(text) is not None
+
+
+def display_label(
+    vocabulary: Vocabulary, declares: str, name: str, *, language: str | None, default: str
+) -> str:
+    """The label of a kind for a person to read: in `language`, the working
+    language of the entity, or in `default` where it has none. A label that
+    exists in neither stands in the first language in alphabetical order,
+    followed by its tag in parentheses, so that nobody takes it for the one
+    asked for. A kind nobody declared shows as its identifier.
+
+    Here and not in a command line, because the MCP tools show the same
+    labels the same way."""
+    text, fallback = vocabulary.label(declares, name, default if language is None else language)
+    return text if fallback is None else f"{text} ({fallback})"
+
+
 class VocabularyRefused(PreviouslyError):
     """The vocabulary event or the file cannot be accepted. The message is
     one sentence that says why; nothing was written."""
