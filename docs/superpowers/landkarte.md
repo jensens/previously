@@ -446,18 +446,94 @@ das mit der Endprüfung ins Repository kommt):
   Person bestätigten Aufruf ein Bit über Kanten sagt, die der Client nicht
   sehen darf (`mcp-tools.md`, `explanation/graph.md`). Der Preis ist gewollt;
   zu entscheiden bleibt, ob eine spätere Phase ihn ganz abträgt (Z §9.4).
-- **`verify` ist quadratisch über azyklischen Ketten.** Jede Kante einer
+- **`verify` wächst überlinear über azyklischen Ketten.** Jede Kante einer
   azyklischen Art wird gegen die Kanten davor geprüft: 1 000 Kanten
-  `part_of` 0,57 s, 2 000 Kanten 1,77 s, gemessen am 2026-10-14; hochgerechnet
-  sind 10 000 Kanten rund eine Minute, nicht gemessen. Die Endprüfung misst
-  bei 10 000 (P-Z1, Ruling T4-c). Trägt es nicht, wird die Prüfung auf Zyklen
-  in `verify` inkrementell, spätestens mit Phase 2.
-- **Der Kopf kostet bei jedem Aufruf eine Faltung des Graphen.** `whoami` bei
-  1 000 Entitäten 53 ms, bei 5 000 153 ms (2026-10-14); wächst mit dem Graphen,
-  nicht nur bei einer Liste. Die Endprüfung misst bei 10 000 und 100 000
-  Beziehungen (P-Z1, Ruling T6-c). Was sie ergibt, entscheidet mit der
-  Messung von `entities` und `relations --at`, ob Phase 2 eine
-  Projektionstabelle bekommt (Planentscheidung 14, Z §3.4).
+  `part_of` in einer Kette 0,57 s, 2 000 Kanten 1,77 s, gemessen am
+  2026-10-14 in Aufgabe 4 — gut dreimal so lang für doppelt so viele Kanten,
+  nicht viermal; hochgerechnet sind 10 000 Kanten in einer Kette rund eine
+  Minute, nicht gemessen. Die Endprüfung hat am 2026-10-14 ein ganzes Log mit
+  10 000 Beziehungen gemessen (1 000 davon `part_of` als Baum, Median aus
+  drei Läufen): 2,77 s, bei 2 000 Beziehungen 0,62 s (P-Z1, Ruling T4-c).
+  Die Zahlen bei 100 000 Beziehungen stehen noch aus. Trägt es nicht, wird
+  die Prüfung auf Zyklen in `verify` inkrementell, spätestens mit Phase 2.
+- **Jeder MCP-Aufruf faltet den ganzen Graphen für die Zahl im Kopf.** Um die
+  anhängigen Einwände zu zählen, faltet `Service.answer` vor jedem Werkzeug
+  den Graphen und fragt die Policy nach den Quellen jedes Einwands, auch bei
+  `whoami` und den Werkzeugen der Einheit 5, die den Graphen sonst nie lesen.
+  Gemessen von der Endprüfung am 2026-10-14, Median aus drei Läufen, bei
+  10 000 Beziehungen und 5 000 Entitäten: `whoami` 0,52 s, `list_entities`
+  1,72 s, `read_graph` 0,47 s, `previously entities` 0,53 s, ein Schreiben
+  0,47 s, `verify` 2,77 s; bei 2 000 Beziehungen `whoami` 0,10 s,
+  `list_entities` 0,28 s, `verify` 0,62 s. Das Wachstum ist linear; die
+  Zahlen bei 100 000 Beziehungen stehen noch aus. Phase 1 nimmt die Kosten
+  hin (Ruling F-c): ein Zwischenspeicher, der am Tip hängt, verfällt mit dem
+  Zugriffseintrag jedes Aufrufs, und beim Piloten mit einigen hundert
+  Aussagen sind es Millisekunden. **Phase 2 braucht eine Projektion oder eine
+  inkrementelle Faltung, bevor die Daten wachsen** (Planentscheidung 14,
+  Z §3.4); `explanation/graph.md` trägt die Zahlen. Die Messungen der
+  Aufgabe 6 (`whoami` bei 1 000 Entitäten ohne Beziehungen 53 ms, bei 5 000
+  153 ms) stehen dort daneben.
+- **`verify` hält vom Vokabular und von den Freigabeklassen nur die Form
+  fest.** Der Schreibweg weist beim Vokabular eine Art ab, die eine Art nennt,
+  die nicht steht (auch einen `ref` auf eine Beziehungsart), das Stilllegen
+  einer Art, die eine andere braucht, und eine umgeformte eingebaute Art
+  (`core/vocabulary.py`, `refusal`); bei einer Klasse eine Art, die nicht
+  steht, und eine azyklische Art (`core/classes.py`, `_refusal`). `verify`
+  prüft davon nur die Form. Schaden richtet das nicht an, der Lesepfad
+  neutralisiert beides (nur Beschriftungen einer eingebauten Art,
+  `conformance_problem` weist Enden von Arten ab, die nicht stehen,
+  `_covering` prüft azyklisch); der Docstring von `_Claims` sagt es seit der
+  Endprüfung. `verify` faltet das Vokabular schon in Kettenfolge
+  (`VocabularyFold`) und könnte je Event `refusal(before, [spec])` fragen
+  (P-Z1, Endprüfung M3).
+- **Offene Enden und offene Kanten zählen als stehend.** `EntityTypes`
+  (`graph_write.py`) und `Graph.entities()` geben auch Entitäten zurück, die
+  nur ein Modell vorgeschlagen hat, und `relations()` offene Gewinner. Eine
+  direkte Beziehung des Betreibers oder eine Freigabe kann also auf eine nur
+  vorgeschlagene Entität zeigen, auch ein direktes `member_of` auf einen
+  vorgeschlagenen `circle`. In Phase 1 harmlos. Phase 2 (`chronicle --in`)
+  und Phase 3 (das Gate) müssen beide Enden und die Kante nach Stufe filtern;
+  das Gate liest nur direkte Enden (P-Z1, Endprüfung M4).
+- **Die eingebauten Arten stehen im Code, `verify` misst alte Aussagen an der
+  heutigen Form.** `VocabularyFold.add` ersetzt die Form einer eingebauten
+  Art an jeder Stelle durch die des Codes. Gibt Phase 3 `member_of` weitere
+  `from`-Arten (Adresse, Domain) und `in_circle` ein Ereignis als Beginn, wird
+  jedes frühere `member_of` am neuen Code gemessen; nimmt sie `person` oder
+  `organization` aus `from`, werden Mitgliedschaften der Phase 1 zu Befunden.
+  Unter Phase 3: die Verbindungen einer eingebauten Art dürfen nur wachsen,
+  oder ihre Form bekommt eine Version (P-Z1, Endprüfung M5).
+- **Triage, Freigabe und Antwort stehen zweimal, je Oberfläche einmal.**
+  `cli.py` `_waiting` entspricht `mcp_server/read.py` `waiting_versions`,
+  `_approval_of` dem `replace(…)` in `graph_approval_write`, die Antwort in
+  `cli.py` der in `triage_answer_write`. Z §7.5 will, dass `status` und der
+  MCP-Kopf dasselbe zeigen, und zwei Sortierungen laufen auseinander.
+  Mechanisch: `waiting_versions`, `approval_of(thread, version, reason)` und
+  `answer_of(question, choice, reason)` nach `core/graph_write.py`, von beiden
+  benutzt; die vorhandenen Tests halten es (P-Z1, Endprüfung M8).
+- **Der Platzhalter einer verborgenen Entität verschwindet, wenn ihr letzter
+  Vorschlag abgelehnt wird.** `list_entities` zeigt für jede verborgene
+  Entität mit Gewinner einen Platzhalter; ein Faden ohne Gewinner fällt
+  heraus (`read.py`, `entities`). Das ist ein Bit über Aktivität auf einem
+  verborgenen Faden, die Art Signal, die Ruling T6-b aus der Triage genommen
+  hat; Verpflichtungen verhalten sich ebenso. Zu entscheiden, ob ein
+  Platzhalter bleibt, solange der Faden besteht (P-Z1, Endprüfung).
+- **Ein Ereignis als Beginn einer Beziehung, was Phase 2 ändern muss.** Die
+  Form (`RelationBody.start: int | Source`) nimmt es schon an,
+  `conformance_problem` weist es in Phase 1 mit einem Satz ab, und `reaches`,
+  `closes_cycle`, `relation_ends` und `relation_visible` überspringen es.
+  Phase 2 ändert: die Abweisung und den `int`-Cast in `_ends_conformance`,
+  `EntityTypes` und die Enden, und `relation_visible`, das für jeden
+  Source-Beginn `False` gibt (P-Z1, Endprüfung).
+- **Das Vokabular kann sich zwischen Vorschau und Schreiben von `vocabulary
+  apply FILE` ändern.** `_cmd_vocabulary_apply` zeigt die Unterschiede aus
+  einer Transaktion, `apply_vocabulary` rechnet sie unter dem Tip neu und
+  schreibt, was dann abweicht; ein Vokabular-Event dazwischen wird
+  überschrieben, ohne gezeigt worden zu sein. Dasselbe Muster wie bei
+  `policy`, mit einem Betreiber harmlos. `--base` rechnet die fehlenden Arten
+  seit der Endprüfung in der Schreib-Transaktion (P-Z1, Ruling F-a).
+- **`cli.py` teilen.** 4 274 Zeilen zur Endprüfung; die Befehle des Graphen
+  stehen in einem Block (etwa Zeilen 2 995–3 950) und könnten ohne
+  Verhaltensänderung `previously/cli_graph.py` werden (P-Z1, Endprüfung).
 - **Zurückgestellte Kleinigkeiten, die Erinnerung verdienen:**
   - Aufgabe 1: Eine Art, die eine eingebaute nennt, lässt sich stilllegen,
     ohne dass die Prüfung der Verweise greift — `person` stilllegen, während
@@ -470,13 +546,12 @@ das mit der Endprüfung ins Repository kommt):
     gesetzte Klasse ihr Dienstalter gegen eine gleichrangige verliert.
   - Aufgabe 5: Die Spalte der Art zeigt die Beschriftung und nicht den
     Bezeichner, so dass eine Liste nicht unmittelbar `--type` füttert (die
-    Seite einer Entität zeigt beides), und `entity … --retract` ohne
-    `--subject` kann eine erste Fassung schreiben, die schon widerrufen ist
-    (vom Nachprüfer gesehen, nicht nachgeprüft). `relate --retract` ohne
-    `--subject` ist abgewiesen.
-  - Aufgabe 4: Eine direkte, stehende Beziehung, die Kandidaten trägt, wird
-    auf einem Faden mit anhängiger Rückfrage abgewiesen (vorher schon so,
-    außerhalb der Korrektur).
+    Seite einer Entität zeigt beides).
+  - Aufgabe 1: `_text` in `core/vocabulary.py` nimmt `isprintable()` und weist
+    damit ein geschütztes Leerzeichen in einer Beschriftung ab. Strenger ist
+    sicher; mit einer gemeinsamen Textregel zusammenzulegen, wenn sie kommt.
+  - Aufgabe 1: `tests/test_wheel.py` baut das Wheel zweimal. Kostet nur
+    Testzeit.
 - **Phasen 2 bis 4 selbst**, im Spec ausgearbeitet und nicht gebaut: die
   Zuordnung von Events und Einheiten an Klammern mit `chronicle --in` und
   `in` über MCP (Z §8, Phase 2), Kreise im Graphen, die das Gate liest, mit
@@ -1419,6 +1494,16 @@ auf `assertions.md` unter *What the pilot leaves open*.
   Nachtrag).
 
 ## Erledigt, seit es auf einer Liste stand
+
+- ~~`entity … --retract` ohne `--subject` kann eine erste Fassung schreiben,
+  die schon widerrufen ist~~ (P-Z1, Aufgabe 5) — Commit `1b5fbf4`:
+  `entity … --state retracted` ohne `--subject` wird vor dem Schreiben
+  abgewiesen, wie `relate --retract`; ein Test, gemessen rot ohne die
+  Prüfung (Endprüfung M12).
+- ~~Eine direkte, stehende Beziehung, die Kandidaten trägt, wird auf einem
+  Faden mit anhängiger Rückfrage abgewiesen~~ (P-Z1, Aufgabe 4) — kann nicht
+  eintreten: `_to_problem` in `core/graph.py` weist Kandidaten an jeder nicht
+  offenen Fassung schon als Formfehler ab (Endprüfung, Ruling F-d).
 
 - ~~Die Abnahme der Einheit 5 nach F §14 durch den Betreuer; je ein echter
   Aufruf von `write_assertion` mit Claude Code und mit Vibe, das verschachtelte
