@@ -49,6 +49,7 @@ from previously.core.graph_write import read_graph
 from previously.core.graph_write import write_claims
 from previously.core.identity import artifact_hash_of
 from previously.core.members import bracket_edges
+from previously.core.members import bracket_kinds
 from previously.core.members import members
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
@@ -58,6 +59,7 @@ from previously.core.sealing import recipient_of
 from previously.core.sealing import seal
 from previously.core.units import split_plaintext
 from previously.core.verify import verify
+from previously.core.vocabulary import read_vocabulary
 from previously.storage.postgres import PostgresStorage
 from typing import cast
 from typing import TYPE_CHECKING
@@ -7509,14 +7511,20 @@ def test_relate_concerns_assigns_a_mail_and_a_unit_with_the_start_as_their_sourc
         ],
     ]
     with storage.begin() as conn:
-        edges = bracket_edges(read_graph(storage, conn))
-    assert [members(edges, ids["xz"]).holds(1, seq) for seq in (1, 2, 3)] == [True, True, False]
-    assert [members(edges, ids["party"]).holds(1, seq) for seq in (1, 2, 3)] == [
+        vocabulary = read_vocabulary(storage, conn)
+        edges = bracket_edges(read_graph(storage, conn), vocabulary)
+    kinds = bracket_kinds(vocabulary)
+    assert [members(edges, ids["xz"], kinds).holds(1, seq) for seq in (1, 2, 3)] == [
+        True,
+        True,
+        False,
+    ]
+    assert [members(edges, ids["party"], kinds).holds(1, seq) for seq in (1, 2, 3)] == [
         False,
         False,
         True,
     ]
-    assert [members(edges, ids["club"]).holds(1, seq) for seq in (1, 2, 3)] == [
+    assert [members(edges, ids["club"], kinds).holds(1, seq) for seq in (1, 2, 3)] == [
         False,
         False,
         True,
@@ -7570,6 +7578,11 @@ def test_relate_concerns_refuses_a_start_it_cannot_read_and_one_given_twice(
         "--from-event is not EVENT or EVENT:SEQ,SEQ: '1:'"
     )
     assert _refused(capsys, "relate", "concerns", "--from-event", "1:9", "--to", xz, "--yes") == (
+        "event 1 has no unit 9"
+    )
+    # A source of the whole mail covers the start, and its unit is checked all the same.
+    whole = ("--source", "1", "--yes")
+    assert _refused(capsys, "relate", "concerns", "--from-event", "1:9", "--to", xz, *whole) == (
         "event 1 has no unit 9"
     )
     assert _refused(capsys, "relate", "concerns", "--to", xz, "--yes") == (

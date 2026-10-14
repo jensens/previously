@@ -84,6 +84,7 @@ from previously.core.graph import level_of
 from previously.core.graph import parse_claim
 from previously.core.graph import RECOLLECTION
 from previously.core.graph import RelationBody
+from previously.core.graph import rests_on
 from previously.core.graph import RETRACTED
 from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
@@ -480,7 +481,7 @@ def _checked[Conn](
     """The checks the write path runs under its locks and `check_claims`
     runs without, and the claims at their levels with their payloads."""
     try:
-        check_sources(log, conn, rows, [s for claim in claims for s in claim.sources])
+        check_sources(log, conn, rows, [s for claim in claims for s in rests_on(claim)])
     except AssertionRefused as error:
         # The sentence of obligations, under the one class a caller of this
         # write path catches.
@@ -549,7 +550,7 @@ def check_claims[Conn](
     """
     iso_utc(recorded_at)  # fail early if naive
     _check_batch(claims)
-    events = sorted({source.event for claim in claims for source in claim.sources})
+    events = sorted({source.event for claim in claims for source in rests_on(claim)})
     rows = read_sources(log, conn, events)
     tip = log.tip(conn)
     top = 0 if tip is None else tip.id
@@ -619,7 +620,7 @@ def write_claims[Conn](
     if expect is not None and len(expect) != len(claims):
         raise ValueError("expect gives one decision per claim")
     handle = claims[0].handle
-    events = sorted({source.event for claim in claims for source in claim.sources})
+    events = sorted({source.event for claim in claims for source in rests_on(claim)})
 
     def once(conn: Conn) -> Written:
         # The locks first and the tip after them, as in core/assertions.py.

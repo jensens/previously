@@ -78,6 +78,7 @@ from previously.core.policy import Inference
 from previously.core.policy import Policy
 from previously.core.policy import Provider
 from previously.core.policy import Rule
+from previously.core.redact import redact_units
 from previously.core.verify import verify
 from previously.core.vocabulary import apply_vocabulary
 from previously.core.vocabulary import base_vocabulary
@@ -1406,6 +1407,30 @@ def test_the_start_of_an_assignment_is_checked_as_a_source(db: Engine) -> None:
     assert _refused(storage, assignment(Source(project, None), project)) == (
         f"event {project} is not an observation, and only one can be a source"
     )
+
+
+@pytest.mark.db
+def test_the_units_of_a_start_are_checked_when_a_source_cites_the_whole_event(db: Engine) -> None:
+    """Ruling T2-f of the 2026-10-15 assignments plan, phase 2: a source of
+    the whole mail covers any start of it, and the start's own units are
+    checked against the log all the same, by the write and by the preview.
+    Measured red with only the sources checked: both were written."""
+    storage = _setup(db)
+    (project,) = _ids(storage, entity("project", "XZ", sources=(Source(2, None),)))
+    whole = (Source(1, None),)
+    missing = assignment(Source(1, (7,)), project, sources=whole)
+    assert _refused(storage, missing) == "event 1 has no unit 7"
+    with pytest.raises(GraphRefused, match=r"^event 1 has no unit 7$"):
+        _checked(storage, missing)
+    redact_units(storage, storage, 1, [2], reason="wrong", recorded_at=T1)
+    erased = assignment(Source(1, (2,)), project, sources=whole)
+    sentence = "unit 2 of event 1 is erased and cannot be a source"
+    assert _refused(storage, erased) == sentence
+    with pytest.raises(GraphRefused, match=f"^{sentence}$"):
+        _checked(storage, erased)
+    # The control: a unit that is there, under the same source, is written.
+    assert _ids(storage, assignment(Source(1, (1,)), project, sources=whole))
+    assert verify(storage) == []
 
 
 @pytest.mark.db

@@ -3509,7 +3509,9 @@ def _claim_fields(claim: Claim) -> list[tuple[str, str]]:
         fields.append(("language", _NO_VALUE if body.language is None else body.language))
     else:
         start = body.start
-        fields.append(("from", str(start) if isinstance(start, int) else _event_start_text(start)))
+        # An event start as `claim_changes` spells it, so that the first
+        # version and the change lines after it name the start alike.
+        fields.append(("from", str(start) if isinstance(start, int) else _sources_text((start,))))
         if body.candidates is not None:
             fields.append(("to", "candidates " + ", ".join(str(item) for item in body.candidates)))
         else:

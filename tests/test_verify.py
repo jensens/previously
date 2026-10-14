@@ -1953,6 +1953,43 @@ def test_an_assignment_whose_start_is_no_source_is_a_finding(db: Engine) -> None
 
 
 @pytest.mark.db
+def test_the_units_of_a_start_are_held_against_the_log_under_a_whole_event_source(
+    db: Engine,
+) -> None:
+    """Ruling T2-f of the 2026-10-15 assignments plan, phase 2: a forged
+    assignment of a unit the mail does not have, and one of a unit erased
+    before it, are findings, though their source cites the whole mail. The
+    control, one of a unit that is there, is none. Measured red with only
+    the sources held against the log."""
+    storage = _with_vocabulary(db)
+    (project,) = _claimed(storage, _thing("project", "XZ"))
+
+    def assigned(start: Source) -> Claim:
+        body = RelationBody("concerns", start, project, None, None, {}, STANDING)
+        return replace(_part(1, project), body=body, sources=(Source(1, None),))
+
+    _forged(storage, claim_payload(assigned(Source(1, (1,)))))
+    missing = _forged(storage, claim_payload(assigned(Source(1, (9,)))))
+
+    assert verify(storage) == [Finding(missing, "assertion names a unit its source does not have")]
+
+
+@pytest.mark.db
+def test_an_assignment_of_a_unit_erased_before_it_is_a_finding(db: Engine) -> None:
+    storage = _with_vocabulary(db)
+    (mail,) = append(storage, [_message("n")], recorded_at=NOW)
+    (project,) = _claimed(storage, _thing("project", "XZ"))
+    redact_units(storage, storage, mail, [2], reason="wrong", recorded_at=NOW)
+    start = Source(mail, (2,))
+    body = RelationBody("concerns", start, project, None, None, {}, STANDING)
+    forged = _forged(
+        storage, claim_payload(replace(_part(1, project), body=body, sources=(Source(mail, None),)))
+    )
+
+    assert verify(storage) == [Finding(forged, "assertion stands on an erased source")]
+
+
+@pytest.mark.db
 def test_an_entity_is_held_against_the_vocabulary_of_its_time(db: Engine) -> None:
     """The kind `team` is declared only after the entity, and retired after
     the second one: the first is a finding and the second is not."""

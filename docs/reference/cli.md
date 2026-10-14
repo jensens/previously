@@ -1480,6 +1480,7 @@ Without `--subject`, a missing option is refused as `Error: a relation needs --f
 The event a relation starts at is always among its sources.
 Where no `--source` names that event, `relate` adds the start as a source of its own, so `--from-event` needs no `--source`.
 A `--source` that names the event with all of it, or with every unit the start names, is the start's source, and nothing is added.
+The units the start names are checked as a source's units are, even under a `--source` of the whole event: a unit the event doesn't have is refused as `Error: event 1 has no unit 9`, and an erased one as `Error: unit 2 of event 1 is erased and cannot be a source`.
 A `--source` that names the event with fewer units, and `--recollection`, are refused as `Error: a statement has no valid form: the event a relation starts at must be among its sources`.
 
 ### `entities` and `relations`

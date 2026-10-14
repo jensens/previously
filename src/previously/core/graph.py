@@ -95,10 +95,10 @@ ENTITY_STATES: Final = (ACTIVE, CLOSED, RETRACTED)
 RELATION_STATES: Final = (STANDING, RETRACTED)
 
 MAX_CONFIDENCE: Final = 100
-
-START_NOT_A_SOURCE: Final = "the event a relation starts at must be among its sources"
 MIN_CANDIDATES: Final = 2
 MAX_CANDIDATES: Final = 5
+
+START_NOT_A_SOURCE: Final = "the event a relation starts at must be among its sources"
 
 _DATE_FORM = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
 
@@ -488,6 +488,21 @@ def sources_with_start(start: int | Source, sources: tuple[Source, ...]) -> tupl
     if not isinstance(start, Source) or any(source.event == start.event for source in sources):
         return sources
     return (*sources, start)
+
+
+def rests_on(claim: Claim) -> tuple[Source, ...]:
+    """What a claim is checked against the log for: its sources, and the
+    event a relation starts at, with exactly the units the start names.
+
+    A source that cites the whole event covers any start of it, so the
+    start's own units are checked as well: that they exist and are not
+    erased, as a cited unit is (ruling T2-f of the 2026-10-15 assignments
+    plan, phase 2). An assignment of a unit that is not there, or no longer
+    there, would otherwise stand and be found."""
+    body = claim.body
+    if isinstance(body, RelationBody) and isinstance(body.start, Source):
+        return (*claim.sources, body.start)
+    return claim.sources
 
 
 def _start_problem(payload: Mapping[str, object]) -> str | None:

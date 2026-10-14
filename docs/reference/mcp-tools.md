@@ -653,6 +653,7 @@ A kind whose `from` names `event` in the vocabulary, such as `concerns`, starts 
 That event is one of the sources of the relation.
 Where no source names it, the server adds the start as a source of its own, so `sources` may be empty for such an item.
 A start the client may not see is refused as a source is, with `event N is not one this client can use as a source`.
+The units the start names are checked as a source's units are, even where a source cites the whole event.
 A source that names the event with fewer units than the start is refused as `a statement has no valid form: the event a relation starts at must be among its sources`, and the server doesn't merge the two.
 The preview shows such a start as `from:` and the URI of the event, or one URI per unit, as `sources:` shows a source.
 
