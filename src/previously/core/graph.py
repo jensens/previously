@@ -46,10 +46,12 @@ from previously.core.assertion import parse_statement
 from previously.core.assertion import REJECTION
 from previously.core.assertion import Source
 from previously.core.canonical import MAX_SAFE_INT
+from previously.core.vocabulary import ANY_ENTITY
 from previously.core.vocabulary import CHOICE
 from previously.core.vocabulary import CLOSABLE
 from previously.core.vocabulary import DATE
 from previously.core.vocabulary import ENTITY_KIND
+from previously.core.vocabulary import EVENT_START
 from previously.core.vocabulary import GATE_TYPES
 from previously.core.vocabulary import is_identifier
 from previously.core.vocabulary import is_language_tag
@@ -624,18 +626,24 @@ def _fields_conformance(
 
 
 def _ends_conformance(
-    spec: KindSpec, body: RelationBody, start: int, entity_types: Mapping[int, str]
+    spec: KindSpec, body: RelationBody, start: int | Source, entity_types: Mapping[int, str]
 ) -> str | None:
-    """`start` is `body.start`, which the caller has found to be an entity."""
+    """`start` is `body.start`. An event is no entity, so it has no kind to
+    look up: the caller has found that the relation kind starts at an event."""
     # One sentence for an entity that does not stand and one the caller may
     # not see: a caller passes only the entities it may show, and the
     # sentence must not tell the two apart.
-    ends = [start, *([body.to] if body.to is not None else body.candidates or ())]
+    targets = [body.to] if body.to is not None else body.candidates or ()
+    ends = targets if isinstance(start, Source) else [start, *targets]
     if any(end not in entity_types for end in ends):
         return "an end of the relation is not an entity that stands"
-    if entity_types[start] not in (spec.from_ or ()):
+    if not isinstance(start, Source) and entity_types[start] not in (spec.from_ or ()):
         return "the start of the relation is of a kind its relation kind does not start from"
-    if any(entity_types[end] not in (spec.to or ()) for end in ends[1:]):
+    # `*` takes every kind, but only of an entity that stands, which the
+    # lookup above has already checked.
+    if spec.to != (ANY_ENTITY,) and any(
+        entity_types[end] not in (spec.to or ()) for end in targets
+    ):
         return "the end of the relation is of a kind its relation kind does not point at"
     return None
 
@@ -653,13 +661,15 @@ def conformance_problem(
     nothing about what it names, so its ends and refs are not looked up.
     """
     body = claim.body
-    if isinstance(body, RelationBody) and isinstance(body.start, Source):
-        # The form admits it for phase 2; until assignments come, a relation
-        # starts at an entity.
-        return "an event as the start of a relation comes with assignments"
     spec = vocabulary.kind(claim.kind, body.type)
     if spec is None:
         return f"the type is not declared as a kind of {claim.kind} in the vocabulary"
+    if (
+        isinstance(body, RelationBody)
+        and isinstance(body.start, Source)
+        and EVENT_START not in (spec.from_ or ())
+    ):
+        return "an event as the start of a relation needs a relation kind that starts at an event"
     if spec.retired and new_thread:
         return f"the kind is retired and takes no new {claim.kind}"
     # The gate reads circles and memberships, and a class must never decide
@@ -679,7 +689,7 @@ def conformance_problem(
         return "a period needs a relation kind with the behavior period"
     if retracted:
         return None
-    return _ends_conformance(spec, body, cast("int", body.start), entity_types)
+    return _ends_conformance(spec, body, body.start, entity_types)
 
 
 # --- Folding versions -------------------------------------------------------------

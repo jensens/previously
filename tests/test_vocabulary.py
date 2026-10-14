@@ -15,18 +15,21 @@ from previously.core.action import KNOWN_ACTIONS
 from previously.core.redact import redact_event
 from previously.core.verify import Finding
 from previously.core.verify import verify
+from previously.core.vocabulary import ANY_ENTITY
 from previously.core.vocabulary import apply_vocabulary
 from previously.core.vocabulary import base_vocabulary
 from previously.core.vocabulary import BUILT_IN
 from previously.core.vocabulary import BUILT_IN_COMMENT
 from previously.core.vocabulary import differences
 from previously.core.vocabulary import differing_kinds
+from previously.core.vocabulary import EVENT_START
 from previously.core.vocabulary import FieldSpec
 from previously.core.vocabulary import GATE_TYPES
 from previously.core.vocabulary import KindSpec
 from previously.core.vocabulary import missing_kinds
 from previously.core.vocabulary import parse_file
 from previously.core.vocabulary import read_vocabulary
+from previously.core.vocabulary import refusal
 from previously.core.vocabulary import render_file
 from previously.core.vocabulary import to_payload
 from previously.core.vocabulary import Vocabulary
@@ -302,7 +305,7 @@ def test_the_rendered_file_reads_back_to_the_same_specs() -> None:
 def test_the_base_vocabulary_has_the_form_of_every_event() -> None:
     specs = parse_file(base_vocabulary())
     assert {(s.declares, s.name) for s in specs} >= BUILT_IN
-    assert len(specs) == 9 + len(BUILT_IN)
+    assert len(specs) == 10 + len(BUILT_IN)
     for spec in specs:
         assert vocabulary_problem(to_payload(spec, statement="s")) is None
         assert set(spec.labels) == {"de", "en"}
@@ -312,6 +315,86 @@ def test_the_base_vocabulary_is_its_own_canonical_rendering() -> None:
     """What `show` prints after `apply --base` is the shipped file, so it has
     to be written the way `render_file` writes it."""
     assert render_file(_vocabulary_of(*parse_file(base_vocabulary()))) == base_vocabulary()
+
+
+CONCERNS = KindSpec(
+    "relation",
+    "concerns",
+    {"de": "betrifft", "en": "concerns"},
+    (),
+    frozenset(),
+    (EVENT_START,),
+    (ANY_ENTITY,),
+    False,
+)
+
+
+def test_concerns_is_a_kind_of_the_base_file_and_not_a_built_in_one() -> None:
+    specs = {(s.declares, s.name): s for s in parse_file(base_vocabulary())}
+    assert specs[("relation", "concerns")] == CONCERNS
+    assert ("relation", "concerns") not in BUILT_IN
+    assert "concerns" not in GATE_TYPES
+
+
+def test_an_event_start_and_a_wildcard_end_go_round_through_form_and_file() -> None:
+    assert vocabulary_problem(_payload(CONCERNS)) is None
+    assert parse_file(render_file(_vocabulary_of(CONCERNS))) == (CONCERNS,)
+    mixed = replace(CONCERNS, name="mixed", from_=(EVENT_START, "team"), to=("team",))
+    assert vocabulary_problem(_payload(mixed)) is None
+    assert parse_file(render_file(_vocabulary_of(mixed))) == (mixed,)
+
+
+def _ends(from_: object, to: object) -> Callable[[dict[str, object]], None]:
+    def change(payload: dict[str, object]) -> None:
+        payload["from"], payload["to"] = from_, to
+
+    return change
+
+
+END_ERRORS = [
+    (
+        "event beside a kind in to",
+        [EVENT_START],
+        ["team", EVENT_START],
+        "where only an entity kind",
+    ),
+    ("event alone in to", [EVENT_START], [EVENT_START], "where only an entity kind can stand"),
+    ("wildcard in from", [ANY_ENTITY], [ANY_ENTITY], "where only an entity kind or"),
+    ("wildcard beside a kind", [EVENT_START], [ANY_ENTITY, "team"], "together with other kinds"),
+    ("wildcard twice", [EVENT_START], [ANY_ENTITY, ANY_ENTITY], "together with other kinds"),
+]
+
+
+@pytest.mark.parametrize(
+    ("from_", "to", "problem"),
+    [case[1:] for case in END_ERRORS],
+    ids=[case[0] for case in END_ERRORS],
+)
+def test_a_misplaced_event_or_wildcard_is_refused_with_a_sentence(
+    from_: list[str], to: list[str], problem: str
+) -> None:
+    payload = _payload(CONCERNS)
+    _ends(from_, to)(payload)
+    assert problem in str(vocabulary_problem(payload))
+    table = f"from = {from_!r}\nto = {to!r}".replace("'", '"')
+    text = f'[relation.concerns]\nlabels = {{ en = "c" }}\n{table}\n'
+    with pytest.raises(VocabularyRefused, match=r'relation kind "concerns" has') as raised:
+        parse_file(text)
+    assert problem in str(raised.value)
+
+
+def test_an_entity_kind_cannot_take_the_name_of_the_event_start() -> None:
+    payload = _payload(replace(TEAM, name=EVENT_START))
+    assert "which a relation kind uses for an event" in str(vocabulary_problem(payload))
+    assert vocabulary_problem(_payload(TEAM)) is None
+
+
+def test_the_wildcard_and_the_event_name_need_no_entity_kind_that_stands() -> None:
+    """The control to the next test: `team` is named and does not stand."""
+    assert refusal(_vocabulary_of(), [CONCERNS]) is None
+    assert 'names "team" in to' in str(
+        refusal(_vocabulary_of(), [replace(CONCERNS, from_=(EVENT_START,), to=("team",))])
+    )
 
 
 def _marked_tables(text: str) -> set[str]:
@@ -326,11 +409,6 @@ def test_the_rendered_file_marks_the_three_built_in_kinds_and_no_other() -> None
     assert len(_marked_tables(rendered)) == 3
     assert rendered.count(BUILT_IN_COMMENT) == 3
     assert parse_file(rendered) == parse_file(render_file(_vocabulary_of(*parse_file(rendered))))
-
-
-def test_the_base_vocabulary_leaves_concerns_for_the_phase_that_starts_at_an_event() -> None:
-    declared = {(s.declares, s.name) for s in parse_file(base_vocabulary())}
-    assert ("relation", "concerns") not in declared
 
 
 # --- The label --------------------------------------------------------------------
@@ -381,7 +459,7 @@ def test_a_built_in_kind_the_file_leaves_out_stays() -> None:
 def test_the_base_vocabulary_is_applied_and_shown_as_the_same_file(db: Engine) -> None:
     storage = PostgresStorage(db)
     ids = apply_vocabulary(storage, parse_file(base_vocabulary()), recorded_at=T0)
-    assert len(ids) == 9
+    assert len(ids) == 10
     assert render_file(_vocabulary(storage)) == base_vocabulary()
     shown = render_file(_vocabulary(storage))
     assert apply_vocabulary(storage, parse_file(shown), recorded_at=T0) == ()
@@ -426,6 +504,24 @@ def _adapted_log(storage: PostgresStorage) -> tuple[KindSpec, ...]:
     ]
     apply_vocabulary(storage, (*adapted, TEAM), recorded_at=T0)
     return base
+
+
+@pytest.mark.db
+def test_adding_the_base_to_a_log_of_phase_1_writes_exactly_concerns(db: Engine) -> None:
+    """A log that holds the base as the previous release shipped it gets
+    `concerns` and nothing else: nothing is reshaped, retired or reported as
+    different. Measured red with `concerns` left out of the base file."""
+    storage = PostgresStorage(db)
+    base = parse_file(base_vocabulary())
+    apply_vocabulary(storage, [s for s in base if s.name != "concerns"], recorded_at=T0)
+    before = _vocabulary(storage)
+    assert [s.name for s in missing_kinds(before, base)] == ["concerns"]
+    assert differing_kinds(before, base) == ()
+    (event,) = apply_vocabulary(storage, base, recorded_at=T1, add_only=True)
+    after = _vocabulary(storage)
+    assert after.kind("relation", "concerns") == CONCERNS
+    assert after.ids[("relation", "concerns")] == event
+    assert apply_vocabulary(storage, base, recorded_at=T2, add_only=True) == ()
 
 
 @pytest.mark.db

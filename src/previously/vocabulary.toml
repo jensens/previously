@@ -46,6 +46,13 @@ fields = [
   { name = "period", type = "period", required = false },
 ]
 
+[relation.concerns]
+labels = { de = "betrifft", en = "concerns" }
+behaviors = []
+from = ["event"]
+to = ["*"]
+fields = []
+
 [relation.holds]
 labels = { de = "Hat inne", en = "Holds" }
 behaviors = ["period"]

@@ -6243,13 +6243,13 @@ def test_vocabulary_apply_base_writes_one_event_per_kind_and_show_prints_the_fil
     assert main(["vocabulary", "apply", "--base", "--yes"]) == 0
     lines = capsys.readouterr().out.splitlines()
     assert "add\tentity\tproject" in lines
-    assert lines[-9:] == [f"vocabulary event {n}" for n in range(1, 10)]
-    assert _action_count(db) == 9
+    assert lines[-10:] == [f"vocabulary event {n}" for n in range(1, 11)]
+    assert _action_count(db) == 10
     assert main(["vocabulary", "show"]) == 0
     assert capsys.readouterr().out == base_vocabulary()
     assert main(["vocabulary", "apply", "--base", "--yes"]) == 0
     assert capsys.readouterr().out == "nothing to change\n"
-    assert _action_count(db) == 9
+    assert _action_count(db) == 10
 
 
 @pytest.mark.db
@@ -6275,11 +6275,11 @@ def test_vocabulary_apply_shows_each_difference_before_it_asks(
     assert "change\tentity\tproject" in captured.out
     assert "  labels\t" in captured.out
     assert "nothing written" in captured.err
-    assert _action_count(db) == 9
+    assert _action_count(db) == 10
     _answer(monkeypatch, "y\n")
     assert main(["vocabulary", "apply", str(path)]) == 0
-    assert _action_count(db) == 11
-    assert "vocabulary event 10" in capsys.readouterr().out
+    assert _action_count(db) == 12
+    assert "vocabulary event 11" in capsys.readouterr().out
 
 
 @pytest.mark.db
@@ -6437,9 +6437,9 @@ def test_entity_shows_the_claim_asks_and_writes_a_direct_version(
     _answer(monkeypatch, "y\n")
     assert main(["entity", "organization", "--name", _VELLENFELD, "--source", "1:1,2"]) == 0
     captured = capsys.readouterr()
-    assert captured.out.endswith("write? [y/N] assertion 12\n")
+    assert captured.out.endswith("write? [y/N] assertion 13\n")
     assert captured.err == ""
-    preview = json.loads(captured.out.removesuffix("write? [y/N] assertion 12\n"))
+    preview = json.loads(captured.out.removesuffix("write? [y/N] assertion 13\n"))
     assert preview["assertion"] == "entity"
     assert preview["author"] == "human:operator"
     assert preview["responsibility"] == "direct"
@@ -6448,7 +6448,7 @@ def test_entity_shows_the_claim_asks_and_writes_a_direct_version(
     assert preview["fields"] == {"name": _VELLENFELD}
     assert preview["state"] == "active"
     ((event_id, payload),) = _standing(db)
-    assert event_id == 12
+    assert event_id == 13
     assert payload == preview
 
 
@@ -6471,7 +6471,7 @@ def test_a_recollection_has_no_source_and_the_two_together_are_refused(
 ) -> None:
     _graph_log(db, monkeypatch, capsys)
     out = _run(capsys, "entity", "person", "--name", "Anna", "--recollection", "--yes")
-    assert out.endswith("assertion 12\n")
+    assert out.endswith("assertion 13\n")
     ((_id, payload),) = _standing(db)
     assert payload["evidence"] == "recollection"
     assert payload["sources"] == []
@@ -6985,8 +6985,8 @@ def test_classes_add_shows_the_class_asks_and_writes_an_event(
     _answer(monkeypatch, "y\n")
     assert main(argv) == 0
     out = capsys.readouterr().out
-    assert out.endswith("write? [y/N] approval class event 12\n")
-    payload = json.loads(out.removesuffix("write? [y/N] approval class event 12\n"))
+    assert out.endswith("write? [y/N] approval class event 13\n")
+    payload = json.loads(out.removesuffix("write? [y/N] approval class event 13\n"))
     assert payload["threshold"] == 80
     assert payload["types"] == ["person"]
     assert payload["revoked"] is False
@@ -7012,7 +7012,7 @@ def test_a_class_that_cannot_be_written_is_refused_before_the_question(
     # The control: a class that can be written reaches the question.
     assert main([*argv, "--type", "person"]) == 1
     assert "no answer: the input ended" in capsys.readouterr().err
-    assert _action_count(db) == 9
+    assert _action_count(db) == 10
 
 
 @pytest.mark.db
@@ -7056,7 +7056,7 @@ def test_the_hit_rate_counts_what_was_confirmed_corrected_and_left_standing(
     _written(capsys, *argv, "--type", "person", "--threshold", "80", "--statement", "s")
     assert _lines(_run(capsys, "classes", "list"))[0][7:] == [
         "0 total, 0 confirmed, 0 corrected, 0 standing",
-        "(event 12)",
+        "(event 13)",
     ]
     confirmed, corrected, standing = (
         _model_person(storage, name, confidence=90) for name in ("Anna", "Berta", "Carl")

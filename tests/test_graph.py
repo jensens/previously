@@ -728,6 +728,7 @@ KINDS = [
         ("project",),
         ("project", "organization"),
     ),
+    kind(RELATION_KIND, "concerns", (), frozenset(), ("event",), ("*",)),
     kind(RELATION_KIND, "knew", (), frozenset(), ("person",), ("person",), retired=True),
 ]
 VOCABULARY = Vocabulary({(spec.declares, spec.name): spec for spec in KINDS}, {})
@@ -1396,12 +1397,60 @@ def test_a_rejection_of_a_direct_version_is_ignored() -> None:
 
 
 @pytest.mark.parametrize("state", [STANDING, RETRACTED])
-def test_an_event_as_the_start_is_sound_form_and_refused_by_the_vocabulary(state: str) -> None:
+def test_an_event_as_the_start_is_sound_form_and_fits_only_a_kind_that_starts_at_one(
+    state: str,
+) -> None:
     claim = relation(start=Source(5, (1, 2)), state=state)
 
     assert claim_problem(claim_payload(claim)) is None
-    assert conformance(claim) == "an event as the start of a relation comes with assignments"
+    assert conformance(claim) == (
+        "an event as the start of a relation needs a relation kind that starts at an event"
+    )
     assert conformance(replace(claim, body=replace(claim.body, start=10))) is None
+
+
+def test_a_kind_that_starts_at_an_event_takes_one_and_refuses_an_entity_start() -> None:
+    """The control of the test above: `concerns` declares `event` in `from`,
+    so an event starts it, and `holds` still refuses the same start."""
+    assigned = relation(kind="concerns", start=Source(5, (1, 2)), to=11)
+
+    assert conformance(assigned) is None
+    assert (
+        conformance(replace(assigned, body=replace(assigned.body, start=Source(5, None)))) is None
+    )
+    assert conformance(relation(kind="holds", start=Source(5, (1,)), to=12)) is not None
+    entity_start = relation(kind="concerns", start=10, to=11)
+    assert conformance(entity_start) == (
+        "the start of the relation is of a kind its relation kind does not start from"
+    )
+
+
+@pytest.mark.parametrize("kind_of_end", sorted(set(TYPES.values())))
+def test_an_end_of_any_kind_fits_when_the_relation_kind_points_at_every_kind(
+    kind_of_end: str,
+) -> None:
+    """Measured red with the wildcard reduced to the kinds listed in `to`
+    (which for `*` is none); the control is `holds`, whose `to` is one kind."""
+    end = next(entity for entity, found in TYPES.items() if found == kind_of_end)
+
+    assert conformance(relation(kind="concerns", start=Source(5, (1,)), to=end)) is None
+
+
+def test_the_wildcard_does_not_take_what_does_not_stand() -> None:
+    assert conformance(relation(kind="concerns", start=Source(5, (1,)), to=99)) == (
+        "an end of the relation is not an entity that stands"
+    )
+    assert conformance(relation(kind="holds", start=10, to=99)) == (
+        "an end of the relation is not an entity that stands"
+    )
+    retracted = relation(kind="concerns", start=Source(5, (1,)), to=99, state=RETRACTED)
+    assert conformance(retracted) is None
+
+
+def test_a_wildcard_end_does_not_lift_the_check_of_the_start_kind() -> None:
+    assert conformance(relation(kind="holds", start=11, to=12)) == (
+        "the start of the relation is of a kind its relation kind does not start from"
+    )
 
 
 # --- Changes ----------------------------------------------------------------------
