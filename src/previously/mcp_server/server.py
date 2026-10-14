@@ -368,8 +368,8 @@ _LIST_ENTITIES: Final = (
     "the number of versions and proposals and the objections that contest it, and "
     "inside a fence of foreign content its fields, its reason, its sources and the "
     "relations it is an end of. The filters combine: type (a kind of the "
-    "vocabulary), state, and proposals for what is only proposed. A retracted entity, "
-    "and the placeholder of one, is left out unless the state asked for is retracted. "
+    "vocabulary), state, and proposals for what is only proposed. A retracted entity "
+    "you can see is left out unless the state asked for is retracted. "
     "With subject, the one entity, and with history all its versions with what each "
     "changed. An "
     "entity the processing policy keeps from this client, because of the circles "
@@ -447,7 +447,7 @@ _REJECTION_REASON = Field(description="why the proposal is not taken")
 _ENTITY_TYPES = Field(description="only entities of these kinds, as the vocabulary names them")
 _ENTITY_STATE = Field(
     description="only this state: active, closed or retracted; a retracted entity "
-    "is left out unless retracted is asked for"
+    "is left out unless retracted is asked for; a placeholder stands whatever is asked"
 )
 _ENTITY_SUBJECT = Field(
     description="the id of one entity, as the heading gives it; the other filters rest"

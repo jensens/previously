@@ -548,8 +548,9 @@ das mit der Endprüfung ins Repository kommt):
   verborgenen Faden, die Art Signal, die Ruling T6-b aus der Triage genommen
   hat; Verpflichtungen verhalten sich ebenso. Zu entscheiden, ob ein
   Platzhalter bleibt, solange der Faden besteht (P-Z1, Endprüfung). Seit dem
-  Zweig `worktree-rueckmeldung-a7` fällt auch eine widerrufene Entität ohne
-  Platzhalter heraus, mit Absicht.
+  Zweig `worktree-rueckmeldung-a7` bleibt der Platzhalter einer verborgenen,
+  widerrufenen Entität unter jedem Filter stehen, mit Absicht (Option A des
+  Betreuers).
 - **Ein Ereignis als Beginn einer Beziehung, was Phase 2 ändern muss.** Die
   Form (`RelationBody.start: int | Source`) nimmt es schon an,
   `conformance_problem` weist es in Phase 1 mit einem Satz ab, und `reaches`,
@@ -1536,14 +1537,15 @@ auf `assertions.md` unter *What the pilot leaves open*.
      `relate … --retract`; mit einem anderen `--state` ein Satz Abweisung,
      ohne `--subject` der Satz von `--state retracted`; die Anleitung zeigt
      die Form. Ein Test, gemessen rot unter vier Mutationen.
-  2. `list_entities` zeigte eine widerrufene Entität und ihren Platzhalter;
-     jetzt gilt der Vorgabewert des Kommandos, aktive Entitäten, und der
-     Zustand entscheidet vor der Policy, so dass auch kein Platzhalter ein
-     Bit verrät. Die Filter nach Art und Vorschlägen stehen weiter nach der
-     Policy (ein Platzhalter besteht jeden davon, `mcp-tools.md`). Ein Test,
-     gemessen rot unter zwei Mutationen (alle Zustände; Policy zuerst);
-     `TOOLS_SHA256` neu genommen. `list_triage` und die übrigen Listen zeigen
-     keinen Platzhalter für einen Faden, den sie auslassen.
+  2. `list_entities` zeigte eine widerrufene Entität; jetzt gilt für Entitäten,
+     die der Client sieht, der Vorgabewert des Kommandos, aktive Entitäten.
+     Ein Platzhalter bleibt unter jedem Filter gleich (Entscheidung des
+     Betreuers, Option A, wie bei Verpflichtungen): `state`, `types` und
+     `proposals` gelten nur für sichtbare Entitäten, der Client erfährt von
+     einer verborgenen nur, dass sie besteht, weder Zustand noch Art. Ein
+     Test, gemessen rot, wenn der Zustandsfilter wieder auf Platzhalter
+     wirkt; `TOOLS_SHA256` neu genommen. `list_triage` und die übrigen Listen
+     zeigen keinen Platzhalter für einen Faden, den sie auslassen.
   3. Der Platzhalter bleibt allgemein; stattdessen nennt `policy gaps` die
      Regel `source:recollection` mit der Zahl der Entitäten und Beziehungen,
      die auf einer Erinnerung stehen, solange keine Regel sie deckt
