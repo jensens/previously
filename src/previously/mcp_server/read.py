@@ -1207,6 +1207,16 @@ class EntityListing:
     history: bool = False
 
 
+def _state_listed(state: str, listing: EntityListing) -> bool:
+    """Whether a visible entity in `state` is listed under the state filter
+    of `listing`, as `previously entities` lists it: with a state asked for,
+    only that state; without, a retracted entity not, unless what is asked
+    for is the proposals."""
+    if listing.state is not None:
+        return state == listing.state
+    return state != RETRACTED or listing.proposals
+
+
 def _entity_entry(
     view: GraphView,
     vocabulary: Vocabulary,
@@ -1233,11 +1243,10 @@ def _entity_entry(
         proposed = level_of(winner, classes) == OPEN
         pending = bool(thread.pending(classes))
         listed = (proposed or pending) if listing.proposals else not proposed
-        gone = body.state == RETRACTED and listing.state != RETRACTED and not listing.proposals
-        kept = (listing.types is None or body.type in listing.types) and (
-            listing.state is None or body.state == listing.state
+        kept = (listing.types is None or body.type in listing.types) and _state_listed(
+            body.state, listing
         )
-        if not listed or gone or not kept:
+        if not listed or not kept:
             return None
     shown = winner if winner is not None else thread.versions[-1]
     label = _graph_label(view, thread, kind_label(vocabulary, shown.claim, language))

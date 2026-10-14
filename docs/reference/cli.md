@@ -984,6 +984,17 @@ source:email	1	2026-10-09T12:00:00.000000Z
 mcp:circle:h_da	2	2026-10-11T09:30:00.000000Z
 ```
 
+It also counts the entities and relations that stand on the operator's own memory (`--recollection`) while no rule `source:recollection` exists.
+A recollection has no source event and no circle, so no call and no withholding reports it, and every client that isn't local sees a placeholder for it.
+One line names the rule that would open them, with their count and the time of the latest recollection among them:
+
+```text
+graph:source:recollection	3	2026-10-14T08:15:00.000000Z
+```
+
+It comes after the MCP lines and disappears once a rule `source:recollection` is set.
+A retracted entity or relation isn't counted, and `--since TIME` counts only those with a recollection recorded from that moment on.
+
 When no call fell back, standard output stays empty, and one notice goes to standard error:
 
 ```text
@@ -1391,7 +1402,7 @@ Both are marks and change nothing in the log.
 ### `entity`
 
 ```text
-previously entity TYPE [--name TEXT] [--field NAME=VALUE ...] [--language TAG] [--state STATE] [--subject ID] [--reason TEXT] (--source SOURCE [--source SOURCE ...] | --recollection) [--yes]
+previously entity TYPE [--name TEXT] [--field NAME=VALUE ...] [--language TAG] [--state STATE] [--subject ID] [--retract] [--reason TEXT] (--source SOURCE [--source SOURCE ...] | --recollection) [--yes]
 previously entity ID [--history]
 ```
 
@@ -1406,6 +1417,7 @@ With the id of an entity, it prints the entity.
 | `--language TAG` | No | none | The working language of the entity, such as `de`. |
 | `--state STATE` | No | `active` | One of `active`, `closed` or `retracted`. |
 | `--subject ID` | No | none | The entity to write a further version of. |
+| `--retract` | No | off | With `--subject`: take the entity back. The same as `--state retracted`, as `relate` takes a relation back with `--retract`. It excludes any other `--state`. |
 | `--reason TEXT` | No | none | Why this version, for the history. |
 | `--source SOURCE` | Yes, without `--subject` or `--recollection` | — | An event it rests on, as for `assert`. May repeat. |
 | `--recollection` | No | off | The version rests on the operator's own memory and has no source. It excludes `--source`. |
@@ -1428,6 +1440,7 @@ Error: --field period is not a period written FROM..TO; an end may be empty
 Error: --recollection and --source exclude each other
 Error: an entity needs --source or --recollection unless --subject names the one to change
 Error: --state retracted needs --subject: only an entity that stands can be retracted
+Error: --retract and --state closed exclude each other
 Error: --subject 5 names no entity that stands
 ```
 

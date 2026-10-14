@@ -69,6 +69,9 @@ Their connections and behaviors stand in the code, and an event for one of them 
 | `member_of` | `organization` and `person` to `circle`. | `period`. |
 | `in_circle` | Nothing yet, to `circle`. | None. |
 
+`show` marks each of the three with the comment line `# built in: the gate reads it; only its labels can change` directly above its table.
+`apply` reads it as the comment it is.
+
 `in_circle` starts at an event, which isn't an entity kind, so its `from` is empty until a later phase gives a relation that start.
 
 ## The file
@@ -84,6 +87,8 @@ A retired kind has `retired = true`.
 The package ships `vocabulary.toml`, and `previously vocabulary apply --base` adds each of its kinds that the log doesn't hold.
 It never retires a kind or changes one the log holds.
 Nothing applies it on its own.
+The built-in kinds always exist, so `apply --base` never writes them.
+It writes the nine kinds in the table below, while `show` lists those nine and the three built-in kinds, twelve in all.
 
 | Kind | Declares | Behaviors | Connects |
 |---|---|---|---|

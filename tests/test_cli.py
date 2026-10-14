@@ -7332,6 +7332,86 @@ def test_a_first_version_of_an_entity_cannot_be_a_retraction(
 
 
 @pytest.mark.db
+def test_entity_retract_is_state_retracted_and_needs_a_subject(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--retract` is `--state retracted`, as `relate --retract` takes a
+    relation back. Mutations measured red: `--retract` ignored (the entity
+    stays active), the guard for a first version taken out (a retracted
+    first version is written), and the exclusion of another state taken out
+    (the contradiction is written). The control, `--retract` with `--state
+    retracted`, stays green."""
+    _graph_log(db, monkeypatch, capsys)
+    first = _written(capsys, "entity", "person", "--name", "Anna", "--source", "1")
+    before = len(_standing(db))
+    assert _refused(
+        capsys, "entity", "person", "--name", "Bert", "--source", "1", "--retract", "--yes"
+    ) == ("--state retracted needs --subject: only an entity that stands can be retracted")
+    assert _refused(
+        capsys,
+        "entity",
+        "person",
+        "--subject",
+        str(first),
+        "--retract",
+        "--state",
+        "closed",
+        "--yes",
+    ) == ("--retract and --state closed exclude each other")
+    assert _refused(capsys, "entity", str(first), "--retract") == (
+        "an id shows an entity; to change one, give its kind and --subject"
+    )
+    assert len(_standing(db)) == before
+    taken = _written(
+        capsys, "entity", "person", "--subject", str(first), "--retract", "--state", "retracted"
+    )
+    assert dict(_standing(db))[taken]["state"] == "retracted"
+    assert _run(capsys, "entities") == ""
+    second = _written(capsys, "entity", "person", "--name", "Eva", "--source", "1")
+    again = _written(capsys, "entity", "person", "--subject", str(second), "--retract")
+    assert dict(_standing(db))[again]["state"] == "retracted"
+
+
+@pytest.mark.db
+def test_policy_gaps_names_the_rule_that_would_open_what_was_stated_from_memory(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A recollection has no source event, so no call and no withholding
+    reports it; `policy gaps` counts the entities and relations that stand
+    on one while no rule `source:recollection` exists. Mutations measured
+    red: the count including the retracted entity, the rule not looked at,
+    and `--since` not applied. The controls: an entity on a source is not
+    counted, and neither is anything once the rule exists."""
+    _graph_log(db, monkeypatch, capsys)
+    assert _run(capsys, "policy", "gaps") == ""
+    anna = _written(capsys, "entity", "person", "--name", "Anna", "--source", "1")
+    assert _run(capsys, "policy", "gaps") == ""
+    _written(capsys, "entity", "person", "--name", "Eva", "--recollection")
+    bert = _written(capsys, "entity", "person", "--name", "Bert", "--recollection")
+    _written(capsys, "entity", "person", "--name", "Zoe", "--recollection")
+    post = _written(capsys, "entity", "post", "--name", "Treasurer", "--source", "1")
+    _written(capsys, "relate", "holds", "--from", str(anna), "--to", str(post), "--recollection")
+    gone = _written(capsys, "entity", "person", "--subject", str(bert), "--retract")
+    assert gone > bert
+    lines = _lines(_run(capsys, "policy", "gaps"))
+    assert [(line[0], line[1]) for line in lines] == [("graph:source:recollection", "3")]
+    # A later `--since` leaves out what was stated before it.
+    assert _run(capsys, "policy", "gaps", "--since", "2999-01-01T00:00:00Z") == ""
+    _run(
+        capsys,
+        "policy",
+        "rule",
+        "source:recollection",
+        "--regions",
+        "any",
+        "--statement",
+        "recollections may go anywhere",
+        "--yes",
+    )
+    assert _run(capsys, "policy", "gaps") == ""
+
+
+@pytest.mark.db
 def test_a_first_version_of_a_relation_cannot_be_a_retraction(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:

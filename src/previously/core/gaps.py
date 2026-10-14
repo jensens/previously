@@ -18,6 +18,14 @@ The MCP server withholds an event of a circle that has no rule for the client
 and writes that into its `mcp_access` (`reason_code` `no_rule`); those are
 counted too, under the origin `mcp`, by the circles the entry names as having
 no rule, and by its source where the event belongs to no circle, as here.
+
+An entity or a relation the operator stated from memory (`evidence:
+recollection`) has no source event and no circle; the policy decides it as a
+source `recollection`, and without a rule for it every client but a local one
+sees a placeholder. No call and no withholding need have happened yet, so
+this reads the graph: while no rule `source:recollection` exists, the list
+counts those entities and relations under `graph:source:recollection`, the
+rule that would open them.
 """
 
 from collections.abc import Mapping
@@ -27,6 +35,11 @@ from previously.core.access import NO_RULE
 from previously.core.access import parse_access
 from previously.core.action import MCP_ACCESS
 from previously.core.action import MODEL_CALL
+from previously.core.decide import decide
+from previously.core.graph import RECOLLECTION
+from previously.core.graph import RETRACTED
+from previously.core.graph_write import read_graph
+from previously.core.policy import read_policy
 from typing import cast
 from typing import TYPE_CHECKING
 
@@ -40,7 +53,8 @@ class Gap:
     """A scope without a rule, as `circle:<name>` or `source:<source>`, or
     `event:<id>` for a call over an event with no source; how many calls
     fell back for it, and the `recorded_at` of the last. `origin` is `gate`
-    for a model call and `mcp` for a withholding of the MCP server."""
+    for a model call, `mcp` for a withholding of the MCP server and `graph`
+    for what stands on a recollection that no rule covers."""
 
     what: str
     count: int
@@ -102,7 +116,11 @@ def gaps[Conn](log: LogStore[Conn], conn: Conn, *, since: datetime | None) -> li
                 if known is None
                 else Gap(scope, known.count + 1, max(known.last, recorded_at))
             )
-    return [found[scope] for scope in sorted(found)] + _mcp_gaps(log, conn, since=since)
+    return (
+        [found[scope] for scope in sorted(found)]
+        + _mcp_gaps(log, conn, since=since)
+        + _recollection_gaps(log, conn, since=since)
+    )
 
 
 def _mcp_gaps[Conn](log: LogStore[Conn], conn: Conn, *, since: datetime | None) -> list[Gap]:
@@ -140,3 +158,38 @@ def _mcp_gaps[Conn](log: LogStore[Conn], conn: Conn, *, since: datetime | None) 
                     else Gap(scope, known.count + 1, max(known.last, row.recorded_at), "mcp")
                 )
     return [found[scope] for scope in sorted(found)]
+
+
+def _recollection_gaps[Conn](
+    log: LogStore[Conn], conn: Conn, *, since: datetime | None
+) -> list[Gap]:
+    """The entities and relations that stand on the operator's recollection
+    while no rule covers a source `recollection`: one line,
+    `graph:source:recollection`, with how many and the `recorded_at` of the
+    latest of their recollections. A retracted one stands no more and is not
+    counted. With `since`, only those with a recollection recorded at or
+    after it. The policy is asked, not the rules read, so that this keeps
+    the meaning of a rule that the write path and the MCP server give it."""
+    decision = decide(read_policy(log, conn), identities=(), source=RECOLLECTION, candidates=())
+    if decision.fallback is None:
+        return []
+    graph = read_graph(log, conn)
+    count = 0
+    last: datetime | None = None
+    for thread in graph.threads.values():
+        winner = thread.winner(graph.classes)
+        if winner is None or winner.claim.body.state == RETRACTED:
+            continue
+        times = [
+            version.recorded_at
+            for version in thread.versions
+            if version.claim.evidence == RECOLLECTION
+            and (since is None or version.recorded_at >= since)
+        ]
+        if not times:
+            continue
+        count += 1
+        last = max(times) if last is None else max(last, max(times))
+    if last is None:
+        return []
+    return [Gap(f"source:{RECOLLECTION}", count, last, "graph")]

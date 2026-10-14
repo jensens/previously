@@ -412,11 +412,12 @@ When nothing fell back, the line is `No call fell back to local only.`
 The entities that stand, in the order of their ids, each with the relations it's an end of, as {ref}`mcp-entity-form` describes it.
 By default it lists those the operator stands for, direct or transitive; an entity that only a model proposed stays out unless `proposals` is set.
 A retracted entity stays out unless `state` asks for `retracted`, or `proposals` is set.
+A placeholder for an entity the policy withholds stands under every filter alike, `state` included, so a client learns that the entity exists and never its state or its kind.
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
 | `types` | list of strings | none | Only entities of these kinds, as the vocabulary names them. |
-| `state` | string | none | Only this state: `active`, `closed` or `retracted`. |
+| `state` | string | none | Only this state: `active`, `closed` or `retracted`. A retracted entity you can see is left out unless this is `retracted`; a placeholder stands whatever is asked. |
 | `proposals` | true or false | false | List what has a proposal pending, or stands as one, instead of what stands. |
 | `subject` | integer | none | The id of one entity. The page shows that entity whatever the other filters say. |
 | `history` | true or false | false | With `subject`, show every version in the order written, each with what it changed against the one before. |

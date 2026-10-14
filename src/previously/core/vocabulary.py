@@ -667,16 +667,22 @@ def _kind_lines(spec: KindSpec) -> list[str]:
     return [*lines, "fields = [", *(_field_line(field) for field in spec.fields), "]"]
 
 
+BUILT_IN_COMMENT: Final = "# built in: the gate reads it; only its labels can change"
+
+
 def render_file(vocabulary: Vocabulary) -> str:
     """The vocabulary as a file, in one canonical form: entity kinds before
     relation kinds, each sorted by identifier, labels sorted by language.
-    `parse_file(render_file(v))` gives back the kinds of `v`."""
+    `parse_file(render_file(v))` gives back the kinds of `v`. A built-in kind
+    has `BUILT_IN_COMMENT` on the line above its table, which `parse_file`
+    reads as the comment it is."""
     lines = [
         "# The vocabulary of entities and relations, as the log holds it.",
         "# `previously vocabulary apply FILE` writes what differs from the log.",
     ]
     for spec in sorted(vocabulary.kinds.values(), key=_order):
-        lines += ["", *_kind_lines(spec)]
+        marker = [BUILT_IN_COMMENT] if (spec.declares, spec.name) in BUILT_IN else []
+        lines += ["", *marker, *_kind_lines(spec)]
     return "\n".join(lines) + "\n"
 
 

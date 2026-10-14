@@ -9,6 +9,7 @@ from dataclasses import replace
 from datetime import datetime
 from datetime import timedelta
 from datetime import UTC
+from itertools import pairwise
 from previously.core.action import append_action
 from previously.core.action import KNOWN_ACTIONS
 from previously.core.redact import redact_event
@@ -17,6 +18,7 @@ from previously.core.verify import verify
 from previously.core.vocabulary import apply_vocabulary
 from previously.core.vocabulary import base_vocabulary
 from previously.core.vocabulary import BUILT_IN
+from previously.core.vocabulary import BUILT_IN_COMMENT
 from previously.core.vocabulary import differences
 from previously.core.vocabulary import differing_kinds
 from previously.core.vocabulary import FieldSpec
@@ -312,6 +314,20 @@ def test_the_base_vocabulary_is_its_own_canonical_rendering() -> None:
     assert render_file(_vocabulary_of(*parse_file(base_vocabulary()))) == base_vocabulary()
 
 
+def _marked_tables(text: str) -> set[str]:
+    """The table headers that have the built-in comment on the line above."""
+    lines = text.splitlines()
+    return {line for above, line in pairwise(lines) if above == BUILT_IN_COMMENT}
+
+
+def test_the_rendered_file_marks_the_three_built_in_kinds_and_no_other() -> None:
+    rendered = render_file(_vocabulary_of(*parse_file(base_vocabulary()), TEAM, WORKS_FOR))
+    assert _marked_tables(rendered) == {f"[{d}.{n}]" for d, n in BUILT_IN}
+    assert len(_marked_tables(rendered)) == 3
+    assert rendered.count(BUILT_IN_COMMENT) == 3
+    assert parse_file(rendered) == parse_file(render_file(_vocabulary_of(*parse_file(rendered))))
+
+
 def test_the_base_vocabulary_leaves_concerns_for_the_phase_that_starts_at_an_event() -> None:
     declared = {(s.declares, s.name) for s in parse_file(base_vocabulary())}
     assert ("relation", "concerns") not in declared
@@ -367,6 +383,8 @@ def test_the_base_vocabulary_is_applied_and_shown_as_the_same_file(db: Engine) -
     ids = apply_vocabulary(storage, parse_file(base_vocabulary()), recorded_at=T0)
     assert len(ids) == 9
     assert render_file(_vocabulary(storage)) == base_vocabulary()
+    shown = render_file(_vocabulary(storage))
+    assert apply_vocabulary(storage, parse_file(shown), recorded_at=T0) == ()
 
 
 @pytest.mark.db
