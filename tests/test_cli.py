@@ -6283,6 +6283,59 @@ def test_vocabulary_apply_shows_each_difference_before_it_asks(
 
 
 @pytest.mark.db
+def test_vocabulary_apply_base_after_an_update_adds_and_names_what_differs(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: pathlib.Path,
+) -> None:
+    """The operator's own kind and their label stay, the kind the update
+    brings is added, and the kind that differs is named with the way to take
+    it. Measured red with `--base` writing `differences` again (it retired
+    `team` and changed `project`); the test above, on an empty log, stays
+    green then."""
+    from previously.core.vocabulary import base_vocabulary
+
+    _setup(db, monkeypatch)
+    own = (
+        base_vocabulary()
+        .replace('en = "Project"', 'en = "Undertaking"')
+        .replace(
+            "[relation.post_in]",
+            '[entity.team]\nlabels = { en = "Team" }\n'
+            'fields = [{ name = "name", type = "text", required = true }]\n\n'
+            "[relation.post_in]",
+        )
+    )
+    lacking = own.split("[relation.post_in]")[0]
+    path = tmp_path / "vocabulary.toml"
+    path.write_text(lacking)
+    assert main(["vocabulary", "apply", str(path), "--yes"]) == 0
+    capsys.readouterr()
+    written = _action_count(db)
+    _answer(monkeypatch, "y\n")
+    assert main(["vocabulary", "apply", "--base"]) == 0
+    lines = capsys.readouterr().out.splitlines()
+    assert lines[0] == "add\trelation\tpost_in"
+    assert "differs\tentity\tproject" in lines
+    assert any(line.startswith("  labels\t") and "Undertaking" in line for line in lines)
+    assert "--base changes no kind the log holds" in "\n".join(lines)
+    assert not [line for line in lines if line.startswith(("retire", "change"))]
+    assert _action_count(db) == written + 1
+    assert main(["vocabulary", "show"]) == 0
+    shown = capsys.readouterr().out
+    assert "[entity.team]" in shown
+    assert "retired = true" not in shown
+    assert 'en = "Undertaking"' in shown
+    # Nothing is missing any more: the difference is named again, nothing written.
+    assert main(["vocabulary", "apply", "--base", "--yes"]) == 0
+    out = capsys.readouterr().out
+    assert "differs\tentity\tproject" in out
+    assert out.endswith("nothing to change\n")
+    assert _action_count(db) == written + 1
+
+
+@pytest.mark.db
 def test_vocabulary_apply_needs_a_file_or_base_and_refuses_before_asking(
     db: object,
     capsys: pytest.CaptureFixture[str],

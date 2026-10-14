@@ -18,9 +18,11 @@ from previously.core.vocabulary import apply_vocabulary
 from previously.core.vocabulary import base_vocabulary
 from previously.core.vocabulary import BUILT_IN
 from previously.core.vocabulary import differences
+from previously.core.vocabulary import differing_kinds
 from previously.core.vocabulary import FieldSpec
 from previously.core.vocabulary import GATE_TYPES
 from previously.core.vocabulary import KindSpec
+from previously.core.vocabulary import missing_kinds
 from previously.core.vocabulary import parse_file
 from previously.core.vocabulary import read_vocabulary
 from previously.core.vocabulary import render_file
@@ -390,6 +392,73 @@ def test_only_the_kind_that_changed_is_written(db: Engine) -> None:
     (event,) = apply_vocabulary(storage, wanted, recorded_at=T1)
     assert _vocabulary(storage).ids[("entity", "project")] == event
     assert _vocabulary(storage).label("entity", "project", "fr") == ("Projet", None)
+
+
+def _adapted_log(storage: PostgresStorage) -> tuple[KindSpec, ...]:
+    """A log as an operator leaves it: the base vocabulary without `post`
+    and the two relations that need it (as if they came with an update),
+    `project` with a label of the operator's own, and a kind of their own,
+    `team`. Returns the base."""
+    base = parse_file(base_vocabulary())
+    needs_post = {"post", "holds", "post_in"}
+    adapted = [
+        replace(s, labels={**s.labels, "en": "Undertaking"}) if s.name == "project" else s
+        for s in base
+        if s.name not in needs_post
+    ]
+    apply_vocabulary(storage, (*adapted, TEAM), recorded_at=T0)
+    return base
+
+
+@pytest.mark.db
+def test_adding_the_base_writes_only_the_kinds_the_log_does_not_hold(db: Engine) -> None:
+    """The base after an update retires nothing and changes nothing the
+    operator made: `team` stays, `project` keeps its label, and only the
+    three kinds the log lacks are written. Measured red with `add_only`
+    falling back to `differences`; the control below stays green then."""
+    storage = PostgresStorage(db)
+    base = _adapted_log(storage)
+    before = _vocabulary(storage)
+    assert [s.name for s in missing_kinds(before, base)] == ["post", "holds", "post_in"]
+    assert [s.name for s in differing_kinds(before, base)] == ["project"]
+    ids = apply_vocabulary(storage, base, recorded_at=T1, add_only=True)
+    after = _vocabulary(storage)
+    assert len(ids) == 3
+    assert after.kind("entity", "team") == TEAM
+    assert after.label("entity", "project", "en") == ("Undertaking", None)
+    assert {key for key, event in after.ids.items() if event in ids} == {
+        ("entity", "post"),
+        ("relation", "holds"),
+        ("relation", "post_in"),
+    }
+    assert apply_vocabulary(storage, base, recorded_at=T2, add_only=True) == ()
+
+
+@pytest.mark.db
+def test_adding_the_base_keeps_a_kind_the_operator_retired(db: Engine) -> None:
+    """A retired kind is one the log holds: the base does not lift it."""
+    storage = PostgresStorage(db)
+    base = parse_file(base_vocabulary())
+    apply_vocabulary(storage, base, recorded_at=T0)
+    apply_vocabulary(storage, [s for s in base if s.name != "post_in"], recorded_at=T1)
+    assert apply_vocabulary(storage, base, recorded_at=T2, add_only=True) == ()
+    kept = _vocabulary(storage).kind("relation", "post_in")
+    assert kept is not None
+    assert kept.retired
+
+
+@pytest.mark.db
+def test_applying_the_base_as_a_whole_file_still_retires_and_changes(db: Engine) -> None:
+    """The control: without `add_only` the same base is the whole
+    vocabulary, so `team` is retired and `project` takes the base label."""
+    storage = PostgresStorage(db)
+    base = _adapted_log(storage)
+    apply_vocabulary(storage, base, recorded_at=T1)
+    after = _vocabulary(storage)
+    team = after.kind("entity", "team")
+    assert team is not None
+    assert team.retired
+    assert after.label("entity", "project", "en") == ("Project", None)
 
 
 @pytest.mark.db

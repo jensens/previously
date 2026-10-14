@@ -143,10 +143,12 @@ from previously.core.vocabulary import base_vocabulary
 from previously.core.vocabulary import changed_attributes
 from previously.core.vocabulary import DATE
 from previously.core.vocabulary import differences
+from previously.core.vocabulary import differing_kinds
 from previously.core.vocabulary import display_label
 from previously.core.vocabulary import ENTITY_KIND
 from previously.core.vocabulary import FieldSpec
 from previously.core.vocabulary import is_language_tag
+from previously.core.vocabulary import missing_kinds
 from previously.core.vocabulary import NAME_FIELD
 from previously.core.vocabulary import parse_file
 from previously.core.vocabulary import PERIOD
@@ -1859,7 +1861,11 @@ def _vocabulary_arguments(parser: argparse.ArgumentParser) -> None:
     sentence = "write what a vocabulary file changes"
     applying = what.add_parser("apply", help=sentence, description=sentence)
     applying.add_argument("file", nargs="?", metavar="FILE", help="a vocabulary file")
-    applying.add_argument("--base", action="store_true", help="the vocabulary that ships")
+    applying.add_argument(
+        "--base",
+        action="store_true",
+        help="add the kinds of the vocabulary that ships which the log does not hold",
+    )
     applying.add_argument("--yes", action="store_true", help="write without asking")
 
 
@@ -1905,25 +1911,54 @@ def _plain(value: object) -> object:
     return value
 
 
+def _differing_lines(current: Vocabulary, kept: Sequence[KindSpec]) -> list[str]:
+    """For `apply --base`: one line per kind the base holds in another form
+    than the log, `differs`, and under it one line per attribute with the
+    value in the log and the value in the base; then the sentence that says
+    how to take such a change."""
+    lines: list[str] = []
+    for spec in kept:
+        before = current.kind(spec.declares, spec.name)
+        if before is None:
+            continue
+        lines.append(f"differs\t{spec.declares}\t{escape_field(spec.name)}")
+        for attribute in changed_attributes(before, spec):
+            old, new = getattr(before, attribute), getattr(spec, attribute)
+            lines.append(f"  {attribute}\t{_shown(_plain(old))}\t{_shown(_plain(new))}")
+    if lines:
+        lines.append(
+            "--base changes no kind the log holds; to take a difference, edit the output "
+            "of `previously vocabulary show` and apply that file"
+        )
+    return lines
+
+
 def _cmd_vocabulary_apply(args: argparse.Namespace) -> int:
     """Shows each difference, asks, and writes one event per kind that
-    differs. A refusal comes before the question."""
+    differs. A refusal comes before the question.
+
+    With `--base`, only the kinds the log does not hold are written; a kind
+    the log holds in another form is named and left as it stands, so running
+    it after an update never retires or reshapes the operator's own kinds."""
     specs = parse_file(_vocabulary_source(args))
     with _storage() as storage:
         with storage.begin() as conn:
             current = read_vocabulary(storage, conn)
-        changed = differences(current, specs)
+        if args.base:
+            changed, kept = missing_kinds(current, specs), differing_kinds(current, specs)
+        else:
+            changed, kept = differences(current, specs), ()
+        if changed and (sentence := vocabulary_refusal(current, changed)) is not None:
+            raise VocabularyRefused(sentence)
+        for line in [*_difference_lines(current, changed), *_differing_lines(current, kept)]:
+            print(line)
         if not changed:
             print("nothing to change")
             return 0
-        if (sentence := vocabulary_refusal(current, changed)) is not None:
-            raise VocabularyRefused(sentence)
-        for line in _difference_lines(current, changed):
-            print(line)
         if not _confirmed(args):
             print("nothing written", file=sys.stderr)
             return 1
-        ids = apply_vocabulary(storage, specs, recorded_at=datetime.now(UTC))
+        ids = apply_vocabulary(storage, specs, recorded_at=datetime.now(UTC), add_only=args.base)
     for event_id in ids:
         print(f"vocabulary event {event_id}")
     return 0

@@ -16,7 +16,10 @@ readable.
 
 The file is a detour and the log is the truth. `parse_file` reads the TOML
 form, `differences` compares it with the vocabulary in force, and
-`apply_vocabulary` writes one event per kind that differs. `render_file` gives
+`apply_vocabulary` writes one event per kind that differs. The base
+vocabulary that ships is applied differently: it only adds the kinds the log
+does not hold (`missing_kinds`), because an update must not take away what
+the operator made of the vocabulary. `render_file` gives
 the vocabulary back as a file, in one canonical form, so that what `apply`
 wrote is what `show` prints.
 
@@ -482,6 +485,36 @@ def differences(current: Vocabulary, wanted: Sequence[KindSpec]) -> tuple[KindSp
     return tuple(sorted(changed, key=_order))
 
 
+def missing_kinds(current: Vocabulary, wanted: Sequence[KindSpec]) -> tuple[KindSpec, ...]:
+    """The kinds of `wanted` that the vocabulary in force does not hold at
+    all, entities first: what `apply --base` writes. A kind the log holds,
+    retired or not and in whatever form, is not missing, so the base never
+    retires, reshapes or lifts a kind the operator has made their own."""
+    return tuple(
+        sorted(
+            (spec for spec in wanted if (spec.declares, spec.name) not in current.kinds),
+            key=_order,
+        )
+    )
+
+
+def differing_kinds(current: Vocabulary, wanted: Sequence[KindSpec]) -> tuple[KindSpec, ...]:
+    """The kinds of `wanted` that the vocabulary in force holds in another
+    form, entities first: what `apply --base` names and leaves as it
+    stands."""
+    return tuple(
+        sorted(
+            (
+                spec
+                for spec in wanted
+                if (held := current.kinds.get((spec.declares, spec.name))) is not None
+                and held != spec
+            ),
+            key=_order,
+        )
+    )
+
+
 def changed_attributes(before: KindSpec, after: KindSpec) -> tuple[str, ...]:
     """The attributes of a kind that differ between two specs, in the order
     the file lists them."""
@@ -542,12 +575,24 @@ def _statement(before: KindSpec | None, after: KindSpec) -> str:
 
 
 def apply_vocabulary[Conn](
-    log: LogStore[Conn], specs: Sequence[KindSpec], *, recorded_at: datetime
+    log: LogStore[Conn],
+    specs: Sequence[KindSpec],
+    *,
+    recorded_at: datetime,
+    add_only: bool = False,
 ) -> tuple[int, ...]:
     """Writes one event per kind that differs from the vocabulary in force,
     all in one transaction, and returns their ids; refuses with
     `VocabularyRefused` and writes nothing. A second call with the same specs
     writes nothing.
+
+    With `add_only`, the specs are not the whole vocabulary but an offer: only
+    the kinds the log does not hold yet are written (`missing_kinds`), and
+    nothing is retired or changed. That is `apply --base`, which an operator
+    runs after an update and which must not take their own kinds and fields
+    away. What is missing is worked out here, under the tip, and not by the
+    caller, so a vocabulary event that lands between the caller's preview and
+    this write is never written over.
 
     The tip is read before the vocabulary, and the first event is written
     right after that tip, so a vocabulary event that joined the chain in
@@ -558,7 +603,7 @@ def apply_vocabulary[Conn](
     def once(conn: Conn) -> tuple[int, ...]:
         tip = log.tip(conn)
         current = read_vocabulary(log, conn)
-        changed = differences(current, specs)
+        changed = missing_kinds(current, specs) if add_only else differences(current, specs)
         if (sentence := refusal(current, changed)) is not None:
             raise VocabularyRefused(sentence)
         ids: list[int] = []
