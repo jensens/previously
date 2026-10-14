@@ -26,7 +26,7 @@ Gebaut und abgenommen, auf `main`:
 | Einheit 3 | Gate und Policy: Kreise, Mitgliedschaften, eigene Identitäten, Regeln und die Zusagen der Anbieter als Handlungen im Log (`policy`); die Entscheidung als reine Funktion in `core/decide.py`, die strengste Regel gewinnt, ohne Regel nur lokal, und der Rückfall wird sichtbar (`policy gaps`); `gate` mit den Adaptern für Anthropic, Mistral und ein lokales Modell, der Aufgabe `mail_overview`, einer Preisdatei und dem Audit als `model_call` mit der Kaskade der Tilgung und den Prüfungen in `verify`; die Chronik zeigt nur Wahrnehmungen; die Seiten `trust-boundaries.md`, `processing-policy.md`, `policy-and-model-calls.md` und die Anleitung; der Handoff `handoffs/2026-10-09-kup6s-gate.md` | `specs/2026-10-09-pilot-gate-und-policy.md` | PR #9, `d75c4b3`; Bedingung 10, der Lauf des Betreuers gegen die echten APIs, bestanden am 2026-10-09 |
 | Einheit 4 | MCP-Lesezugang: Clients als Prinzipale mit Token und Verarbeitungskette (`client`); die Zusage um Betreiber, Training, Unterverarbeiter und Herkunft des Modells erweitert, die Regel um die vier passenden Einschränkungen; `previously mcp` (stdio) und `previously serve` (HTTP, beide Generationen, Bereitschaft über `GET /healthz` ohne Token); fünf Werkzeuge, zwei Ressourcen-Vorlagen, zwei Prompts, jeder Inhalt nur nach `decide` mit der Kette des Clients; das Zugriffsprotokoll als `mcp_access` und `previously access`; `policy gaps` zählt, was MCP zurückhielt; die Seiten `mcp-interface.md`, `mcp-tools.md` und die Anleitung `connect-claude-code-and-vibe.md`; der Handoff `handoffs/2026-10-11-kup6s-mcp.md` | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, beide eingefroren am 2026-10-11 | PR #12, `ffa28fb`; veröffentlicht als `v0.1.0a3` am 2026-10-11; Bedingung 9 erledigt am 2026-10-11, nach Entscheidung des Betreuers auf den Lauf von kup6s (RG), ohne Vibe und ohne die drei Kreise |
 | Einheit 5 | Feststellungen: Verpflichtung und Entscheidung mit Quellen (`core/assertion.py`, `core/assertions.py`), Vorschläge, Freigabe und Ablehnung, Lesen durch Falten des Logs, die Kommandos dazu, fünf MCP-Werkzeuge; die Antworten in einem Aufruf (PR #20) | `specs/2026-10-12-pilot-feststellungen.md`, eingefroren am 2026-10-12 | PR #17, `4735e3f`; veröffentlicht als `v0.1.0a5`; die Abnahme nach F §14 lief am 2026-10-13; `v0.1.0a6` mit PR #20 |
-| Zuordnungen, Phase 1 | Das Vokabular als Handlung `vocabulary` mit Grundvokabular (`core/vocabulary.py`), Entitäten und Beziehungen als Feststellungen (`core/graph.py`, `core/graph_write.py`), die Freigabeklassen (`core/classes.py`), die Kommandos dazu, fünf MCP-Werkzeuge | `specs/2026-10-14-zuordnungen.md` (lebendig) | PR #24, `cce8b4b`; veröffentlicht als `v0.1.0a7`; der Lauf mit Vellenfeld nach Z §17 Punkt 1 steht noch aus |
+| Zuordnungen, Phase 1 | Das Vokabular als Handlung `vocabulary` mit Grundvokabular (`core/vocabulary.py`), Entitäten und Beziehungen als Feststellungen (`core/graph.py`, `core/graph_write.py`), die Freigabeklassen (`core/classes.py`), die Kommandos dazu, fünf MCP-Werkzeuge | `specs/2026-10-14-zuordnungen.md` (lebendig) | PR #24, `cce8b4b`; veröffentlicht als `v0.1.0a7`; der Lauf mit Vellenfeld nach Z §17 Punkt 1 lief am 2026-10-14 in kup6s (die vier Befunde sind geschlossen, `14de3d3`) |
 
 Mit Stufe 1c ist Teilprojekt 1 gebaut und abgeschlossen, wie die Architektur
 es in §12.1 zuschneidet: Log, Projektionen, Blobs. Die Auslieferung und die
@@ -117,6 +117,12 @@ unverändert; sein Satz, der `member_of` zum Grundvokabular zählt, führte in
 die Irre: `member_of` ist eingebaut (wie `circle` und `in_circle`) und steht
 nicht unter den neun.
 
+Die Abnahme von Phase 1 nach Z §17 Punkt 1 lief am 2026-10-14 in kup6s, Schritt
+für Schritt durch `how-to/keep-a-club-and-its-offices.md`, alles mit
+`--recollection`, die Ids 107 bis 128, die Probe danach widerrufen. Jede Antwort
+war, wie die Anleitung sie nennt; vier Befunde, alle im Zweig
+`worktree-rueckmeldung-a7` geschlossen (unter *Erledigt*, `14de3d3`).
+
 Nicht gebaut: die Suche, die Zuordnung von Events (Phase 2), Kreise im Graphen
 und am Gate (Phase 3), Verpflichtungen im Schema (Phase 4), KI-Schicht, jeder
 Konnektor außer dem für IMAP.
@@ -183,9 +189,11 @@ mit der Messung von `entities`, `relations --at` und des Kopfes bei 10 000 und
 100 000 Beziehungen (Planentscheidung 14; die Zahlen stehen unten unter
 *Zuordnungen* und auf `explanation/graph.md`) ist gelaufen, der Merge war PR #24
 (`cce8b4b`), das Release `v0.1.0a7`, der Handoff ist übergeben und beantwortet
-(R7). Was als Nächstes kommt, ist der Lauf mit Vellenfeld nach Z §17 Punkt 1,
-durch den Betreuer in kup6s; er ist keine Bedingung des Merges. Erst danach der
-Plan der Phase 2 (unten unter *Zuordnungen (Phasen 1–4)*).
+(R7). Der Lauf mit Vellenfeld nach Z §17 Punkt 1 ist am 2026-10-14 gelaufen
+(oben), seine vier Befunde sind geschlossen. Was als Nächstes kommt, ist der
+Plan der Phase 2, der Zuordnung von Events, mit der Projektion oder der
+inkrementellen Faltung, die die Messungen verlangen (unten unter *Zuordnungen
+(Phasen 1–4)*, der Punkt zum Falten des Graphen bei jedem Aufruf).
 Was die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an
 den Einheiten, zu denen es gehört.
 
@@ -539,7 +547,9 @@ das mit der Endprüfung ins Repository kommt):
   heraus (`read.py`, `entities`). Das ist ein Bit über Aktivität auf einem
   verborgenen Faden, die Art Signal, die Ruling T6-b aus der Triage genommen
   hat; Verpflichtungen verhalten sich ebenso. Zu entscheiden, ob ein
-  Platzhalter bleibt, solange der Faden besteht (P-Z1, Endprüfung).
+  Platzhalter bleibt, solange der Faden besteht (P-Z1, Endprüfung). Seit dem
+  Zweig `worktree-rueckmeldung-a7` fällt auch eine widerrufene Entität ohne
+  Platzhalter heraus, mit Absicht.
 - **Ein Ereignis als Beginn einer Beziehung, was Phase 2 ändern muss.** Die
   Form (`RelationBody.start: int | Source`) nimmt es schon an,
   `conformance_problem` weist es in Phase 1 mit einem Satz ab, und `reaches`,
@@ -1517,6 +1527,31 @@ auf `assertions.md` unter *What the pilot leaves open*.
   Nachtrag).
 
 ## Erledigt, seit es auf einer Liste stand
+
+- ~~Die vier Befunde aus dem Lauf der Anleitung `keep-a-club-and-its-offices.md`
+  in kup6s~~ (R7, Abnahme von Phase 1 nach Z §17 Punkt 1, 2026-10-14;
+  `handoffs/2026-10-14-kup6s-feedback-graph-phase-1.md`) — gefunden und
+  geschlossen im Zweig `worktree-rueckmeldung-a7`, Commit `14de3d3`:
+  1. `entity … --retract` gab es nicht; es ist jetzt `--state retracted`, wie
+     `relate … --retract`; mit einem anderen `--state` ein Satz Abweisung,
+     ohne `--subject` der Satz von `--state retracted`; die Anleitung zeigt
+     die Form. Ein Test, gemessen rot unter vier Mutationen.
+  2. `list_entities` zeigte eine widerrufene Entität und ihren Platzhalter;
+     jetzt gilt der Vorgabewert des Kommandos, aktive Entitäten, und der
+     Zustand entscheidet vor der Policy, so dass auch kein Platzhalter ein
+     Bit verrät. Die Filter nach Art und Vorschlägen stehen weiter nach der
+     Policy (ein Platzhalter besteht jeden davon, `mcp-tools.md`). Ein Test,
+     gemessen rot unter zwei Mutationen (alle Zustände; Policy zuerst);
+     `TOOLS_SHA256` neu genommen. `list_triage` und die übrigen Listen zeigen
+     keinen Platzhalter für einen Faden, den sie auslassen.
+  3. Der Platzhalter bleibt allgemein; stattdessen nennt `policy gaps` die
+     Regel `source:recollection` mit der Zahl der Entitäten und Beziehungen,
+     die auf einer Erinnerung stehen, solange keine Regel sie deckt
+     (`graph:source:recollection`); `cli.md` und die Anleitung sagen es. Ein
+     Test, gemessen rot unter vier Mutationen.
+  4. Das Beispiel des Zyklus in der Anleitung scheiterte früher, an den Arten.
+     Es ist ersetzt durch zwei Projekte und `part_of` in beide Richtungen,
+     getippt aus einem Lauf gegen ein PostgreSQL 18 mit testcontainers.
 
 - ~~Die eingebauten Arten sind in `vocabulary show` nicht zu erkennen~~ (R7) —
   gefunden am 2026-10-14 in der Antwort von kup6s auf den Handoff der Phase 1
