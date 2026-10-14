@@ -2537,6 +2537,11 @@ def _approve_claims(
         found = _graph_version_of(graph, event_id)
         if found is None:
             raise PreviouslyError(f"event {event_id} is no proposal that stands")
+        asked = found[1].claim.body
+        if isinstance(asked, RelationBody) and asked.candidates is not None:
+            raise PreviouslyError(
+                f"event {event_id} is a question: answer it with answer {event_id} --choose ID"
+            )
         claims.append(_approval_of(found[0], found[1], args.reason))
     return list(check_claims(storage, conn, claims, recorded_at=datetime.now(UTC)))
 
@@ -3116,6 +3121,10 @@ def _entity_claim(args: argparse.Namespace, vocabulary: Vocabulary, graph: Graph
 
 
 def _relation_claim(args: argparse.Namespace, vocabulary: Vocabulary, graph: Graph) -> Claim:
+    if args.retract and args.subject is None:
+        raise PreviouslyError(
+            "--retract needs --subject: only a relation that stands can be retracted"
+        )
     base = _base_claim(graph, args.subject, RELATION)
     old = base.body if base is not None and isinstance(base.body, RelationBody) else None
     spec = vocabulary.kind(RELATION_KIND, args.what)

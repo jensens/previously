@@ -23,6 +23,7 @@ nothing but a check can tell which. `.importlinter` had carried one since
 stage 1b with no gate in sight.
 """
 
+from previously.cli import COMMANDS
 from previously.core.errors import ArtifactChanged
 from typing import Any
 from typing import cast
@@ -1912,3 +1913,62 @@ def test_the_assertions_reference_holds_the_limits_of_the_code() -> None:
         f"Over MCP, one call holds 1 to {MAX_STATEMENTS}.",
     ):
         assert sentence in page, f"assertions.md no longer says {sentence!r}"
+
+
+_UNITS = [
+    "zero",
+    "one",
+    "two",
+    "three",
+    "four",
+    "five",
+    "six",
+    "seven",
+    "eight",
+    "nine",
+    "ten",
+    "eleven",
+    "twelve",
+    "thirteen",
+    "fourteen",
+    "fifteen",
+    "sixteen",
+    "seventeen",
+    "eighteen",
+    "nineteen",
+]
+_TENS = [
+    "_",
+    "_",
+    "twenty",
+    "thirty",
+    "forty",
+    "fifty",
+    "sixty",
+    "seventy",
+    "eighty",
+    "ninety",
+]
+
+
+def _spelled(number: int) -> str:
+    """A number below one hundred the way the page writes it."""
+    if number < len(_UNITS):
+        return _UNITS[number]
+    tens, units = divmod(number, 10)
+    return _TENS[tens] + (f"-{_UNITS[units]}" if units else "")
+
+
+def test_the_command_line_reference_names_every_subcommand_and_counts_them() -> None:
+    """The opening of `cli.md` says how many subcommands there are and lists
+    them. It said twenty-five while `COMMANDS` held thirty-four, and no gate
+    noticed. Both the number, spelled out, and the set of names come from
+    `COMMANDS`. Measured on 2026-10-14: dropping one name from the page, or
+    changing the number, turns this red; the page as it stands is green."""
+    text = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
+    found = re.search(r"It has ([a-z-]+) subcommands: ([^\n]+)", text)
+    assert found is not None
+    assert found[1] == _spelled(len(COMMANDS))
+    listed = re.findall(r"`([a-z]+)`", found[2])
+    assert sorted(listed) == sorted(command.name for command in COMMANDS)
+    assert len(listed) == len(set(listed))

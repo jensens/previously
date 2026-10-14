@@ -3,7 +3,7 @@
 # Command line
 
 `previously` is the command-line entry point.
-It has twenty-five subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, `gate`, `client`, `access`, `assert`, `approve`, `reject`, `obligations`, `obligation`, `decisions`, `decision`, `mcp`, and `serve`.
+It has thirty-four subcommands: `migrate`, `append`, `ingest`, `redact`, `log`, `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`, `policy`, `vocabulary`, `gate`, `client`, `access`, `assert`, `approve`, `reject`, `obligations`, `obligation`, `decisions`, `decision`, `entity`, `relate`, `entities`, `relations`, `classes`, `triage`, `answer`, `status`, `mcp`, and `serve`.
 Every subcommand reads the database connection string from `PREVIOUSLY_DSN`; see {ref}`configuration-reference`.
 `append --attach`, `ingest imap`, `blob get` and `verify --blobs` also read the blob settings, and `redact` reads them when it has a blob to delete; no other subcommand reads any of them.
 `ingest imap` alone reads the `PREVIOUSLY_IMAP_*` settings, and `gate try` alone reads `ANTHROPIC_API_KEY`, `MISTRAL_API_KEY`, `PREVIOUSLY_LOCAL_MODEL_URL` and `PREVIOUSLY_PRICES`.
@@ -1445,6 +1445,7 @@ previously relate TYPE --from ID --to ID [--from-date DAY] [--to-date DAY] [--fi
 
 A relation is ended with a new version: `--subject ID --to-date DAY` keeps the ends, the first day and the fields, and sets the last day.
 A relation is taken back with `--subject ID --retract`, which writes a version in the state `retracted`.
+Without `--subject`, `--retract` is refused as `Error: --retract needs --subject: only a relation that stands can be retracted`.
 Without `--subject`, a missing option is refused as `Error: a relation needs --from, --to and --source or --recollection unless --subject names the one to change`, naming those that are absent.
 
 ### `entities` and `relations`
@@ -1476,7 +1477,8 @@ A line of `entities` holds six tab-separated fields, then the marks:
 
 A line of `relations` holds seven fields, then the marks: the id, the state, the label of the kind, the start, the end, the period written `FROM..TO` or `-`, and `N versions`.
 An end is the id and the name of the entity.
-An end whose entity was erased reads `ID (erased)`, and one whose entity is retracted `ID (retracted)`; the relation stays in the list.
+An end whose entity was erased reads `ID (erased)`, one whose entity is retracted `ID (retracted)`, and one whose entity has no version that stands, such as one with only a pending proposal, `ID (none stands)`; the relation stays in the list.
+The type column shows the label of the kind and not its identifier, which `--type` takes; the page of an entity, from `entity ID`, shows both.
 
 ### `classes`
 
@@ -1510,7 +1512,7 @@ previously triage
 previously status
 ```
 
-`triage` lists what waits for the operator, in the order he works through it: objections to what he stands for, then questions, then every other proposal.
+`triage` lists what waits for the operator, in the order the operator works through it: objections to what the operator stands for, then questions, then every other proposal.
 Each line holds five tab-separated fields: `objection`, `question` or `proposal`, the id of the version, the label of the kind, a short label and the author.
 A question reads `START -> ? (CANDIDATE, CANDIDATE)`.
 `status` prints three lines, `objections`, `questions` and `proposals`, each with a tab and the number, `0` included.
@@ -1524,6 +1526,7 @@ previously answer ID --choose ID [--reason TEXT] [--yes]
 `answer` answers a question with one of its candidates.
 It writes an approval of the question: the same relation with the end set to the chosen candidate, direct, with the sources and the author of the question kept.
 To answer with something else, reject the question and state the relation.
+`approve` refuses a question as `Error: event 5 is a question: answer it with answer 5 --choose ID`.
 The command shows the claim, asks, and prints `assertion ID`.
 
 ```text

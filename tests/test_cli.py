@@ -7227,3 +7227,48 @@ def test_the_graph_commands_carry_the_contractual_help(
     }
     found = {c.name: c.help for c in COMMANDS if c.name in sentences}
     assert found == sentences
+
+
+@pytest.mark.db
+def test_a_first_version_of_a_relation_cannot_be_a_retraction(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = _vellenfeld_small(db, monkeypatch, capsys)
+    before = len(_standing(db))
+    sentence = _refused(
+        capsys,
+        *("relate", "member_of", "--from", str(ids[0]), "--to", str(ids[1])),
+        *("--source", "1", "--retract", "--yes"),
+    )
+    assert sentence == "--retract needs --subject: only a relation that stands can be retracted"
+    assert len(_standing(db)) == before
+    # The control: with --subject the same flag retracts.
+    term = _written(
+        capsys, "relate", "member_of", "--from", str(ids[0]), "--to", str(ids[1]), "--source", "1"
+    )
+    assert _written(capsys, "relate", "member_of", "--subject", str(term), "--retract")
+
+
+def _vellenfeld_small(
+    db: object, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> tuple[int, int]:
+    _graph_log(db, monkeypatch, capsys)
+    person = _written(capsys, "entity", "person", "--name", "Anna", "--source", "1")
+    board = _written(capsys, "entity", "circle", "--name", "Vorstand", "--source", "1")
+    return person, board
+
+
+@pytest.mark.db
+def test_approve_sends_a_question_to_answer_and_writes_nothing(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ids = _waiting_graph(db, monkeypatch, capsys)
+    before = len(_standing(db))
+    question = ids["question"]
+    sentence = _refused(capsys, "approve", str(question), "--yes")
+    assert (
+        sentence == f"event {question} is a question: answer it with answer {question} --choose ID"
+    )
+    assert len(_standing(db)) == before
+    # The control: answering it, which the sentence names, works.
+    assert _written(capsys, "answer", str(question), "--choose", str(ids["circle_a"]))
