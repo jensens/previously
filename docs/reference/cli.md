@@ -636,9 +636,9 @@ FINDING 61: relation closes a cycle over a kind that is acyclic
 | `assertion is open but written by the operator` | The version is `open` and its author is `human:operator`; the operator's versions are direct. |
 | `assertion by a model follows a direct version and does not object to it` | A model's version that's no approval names an entity or relation whose winner was direct before the version, and isn't the objection the write path writes: `open`, with `contests` naming that winner. |
 | `assertion does not fit the vocabulary of its time: <reason>` | The entity or relation doesn't fit the vocabulary in force where it stands in the chain, read from the vocabulary events before it; a kind retired later doesn't count against it. The reason is the sentence the write path refuses with. |
-| `assertion is transitive under no approval class in force for it` | `under` names no class that was in force before it in the chain and covers its author, its kind, its type and its confidence at the time it was recorded. |
+| `assertion is transitive under no approval class in force for it` | `under` names no class that was in force before it in the chain and covers its author, its kind, its type and its confidence at the time it was recorded; no class covers a kind the gate reads or an acyclic relation kind. |
 | `relation answers a question with none of its candidates` | A question waits on the relation, and the version doesn't point at one of its candidates while it's direct and stands, or while it's transitive; the write path refuses the first and writes the second as `open`. |
-| `relation closes a cycle over a kind that is acyclic` | The relation is of a kind with the behavior `acyclic`, and points from an entity to itself, or at one from which its start is reached over relations of its kind that stood before it. |
+| `relation closes a cycle over a kind that is acyclic` | The relation is direct or transitive, of a kind with the behavior `acyclic`, and points from an entity to itself, or at one from which its start is reached over the direct and transitive relations of its kind that stood before it. A model's proposal is held to no cycle rule; its approval is. |
 
 Each stands under the entity or relation.
 
@@ -1491,7 +1491,8 @@ previously classes sample NAME [--count K]
 
 An approval class lets a model stand for a class of statements: the statements of one author about entities or relations of the given kinds whose stated confidence reaches the threshold ({ref}`vocabulary-reference`).
 `add` and `revoke` show the class as the payload of the event, ask, and print `approval class event ID`.
-A class the vocabulary can't carry is refused before the question, such as one that names a kind that isn't there or one of the kinds the gate reads.
+A class the vocabulary can't carry is refused before the question, such as one that names a kind that isn't there, one of the kinds the gate reads, or a relation kind with the behavior `acyclic`.
+No class covers such a kind even where an event that came another way names it, so a model's version of one stays a proposal.
 `--from` is included and `--until` excluded.
 
 `revoke` writes the current class again with `revoked` set and every other field kept.

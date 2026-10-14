@@ -159,6 +159,7 @@ relation URI: KIND → entity ID NAME · YYYY-MM-DD to (open)
 An entity the policy keeps from the client stands as the placeholder `[withheld: URI — REASON]`.
 The policy decides over the people in the sources of every version that stands, as for an obligation, and over a recollection as a source `recollection` with nobody in it: without a rule for `source:recollection`, an entity that rests on a recollection is withheld from every client that isn't local.
 A relation is shown only where the client sees its sources and every entity any of its versions names, the candidates of a question among them; an end whose every version is erased withholds nothing.
+A relation the client may not see is left out of the lines of an entity, without a placeholder.
 
 ### Placeholders
 
@@ -433,12 +434,13 @@ The history shows each version with a first line of its id, its time, its level,
 
 ### `list_triage`
 
-What waits for the operator among entities and relations, in four sections, each in the order of the ids:
+What waits for the operator among the entities and relations the client may see, in three sections, each in the order of the ids:
 
 1. `objection`: a version by a model that contests the direct version that stands.
 2. `question`: a relation that names candidates in place of the entity it points at.
 3. `proposal`: every other version that waits, a new entity or relation that only a model proposed among them.
-4. a placeholder `[withheld: URI — REASON]` under the id of each entity or relation with something waiting that the policy keeps from the client, once, whatever and however much waits.
+
+What waits on an entity or a relation the policy keeps from the client is left out, without a placeholder, as the header leaves it out of its count.
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
@@ -451,7 +453,7 @@ Each item is a heading and a fence:
 ### URI · SECTION · KIND · LABEL · LEVEL · by AUTHOR · version of URI
 ```
 
-`URI` is the version that waits, the id to answer it with, and `SECTION` one of the first three sections.
+`URI` is the version that waits, the id to answer it with, and `SECTION` its section.
 `KIND` is `entity` or `relation`, and `LABEL` the label of its kind.
 `LEVEL` is `proposed` or `transitive under URI`.
 `contests URI` follows the author on an objection, and `new entity` or `new relation` stands at the end in place of `version of URI` where the version is the first of its thread.
@@ -634,6 +636,8 @@ An item with `subject` says everything that holds after it: nothing is taken ove
 
 States relations in two calls, with the levels, the objections and the checks of `write_entity`.
 A relation that names candidates in place of the entity it points at is a question, and always open: no class answers it in advance.
+No class covers a relation kind with the behavior `acyclic`, such as `part_of`, so a version of one is always open, and a client's version is never refused for closing a cycle: that refusal would tell it about relations it may not see.
+The cycle rule holds the operator's versions, approvals and answers instead.
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
@@ -689,6 +693,8 @@ A question isn't approved: `write_triage_answer` answers it.
 The client has to be allowed to see the entry of each proposal and every source of it.
 Only a proposal that's pending, or that stands because the entry has no direct version, is approved: one that a direct version came after is refused, as `previously approve` refuses it, and `write_reject` still takes it.
 It writes in one call and is idempotent, as {ref}`mcp-answering` describes.
+An approval of a relation that would close a cycle over an acyclic kind is refused with `the relation would close a cycle over a kind that is acyclic`, which counts relations the client may not see too.
+That sentence tells a call the person confirmed one bit about them, and it's the one way an MCP client learns of a cycle.
 The approval counts as the operator's because the client asks the person before the call; a client that calls `write_approve` without asking writes approvals nobody looked at.
 The tool carries `_meta` with `"anthropic/requiresUserInteraction": true` in `tools/list`, the mark that makes Claude Code ask the person before every call.
 `write_reject` and `write_triage_answer` carry it too, and no other tool does.
@@ -824,7 +830,7 @@ An event that didn't fit on the page is in no entry of that call.
 An obligation or a decision stands in `delivered` and `withheld` under its id, with no units and with the circles of its sources.
 `rules` of `policy` holds the rules of every distinct source of every entry that reached the page.
 The arguments of `list_obligations` and `list_decisions` are a circle name, a state, flags and an id, and the entry holds no text of an obligation or a decision and no address.
-An entity stands in `delivered` and `withheld` under its id in the same way, and an item of `list_triage` under the id of the version shown, or under the id of its entity or relation for a placeholder; the arguments of `list_entities` are kinds of the vocabulary, a state, flags and an id.
+An entity stands in `delivered` and `withheld` under its id in the same way, with the circles of the sources of all its versions, and an item of `list_triage` in `delivered` under the id of the version shown; the arguments of `list_entities` are kinds of the vocabulary, a state, flags and an id.
 
 A call of a writing tool records none of its arguments as given, because the text a client writes can come from a mail and would outlive the erasure of that mail in the log.
 A call of a tool name the server doesn't have records only the names of its arguments, each with `null`, for the same reason: a misspelled writing tool carries the text it meant to write.

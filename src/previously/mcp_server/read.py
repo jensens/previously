@@ -34,7 +34,6 @@ from previously.core.assertion import overdue
 from previously.core.assertion import parse_statement
 from previously.core.assertion import REJECTION
 from previously.core.assertion import REJECTION_NOTE
-from previously.core.assertion import Source
 from previously.core.assertions import ASSERTION
 from previously.core.assertions import assertion_decisions
 from previously.core.assertions import erased_assertion
@@ -62,7 +61,8 @@ from previously.core.graph import TRANSITIVE
 from previously.core.graph_write import claim_decisions
 from previously.core.graph_write import claim_sources
 from previously.core.graph_write import read_claim_events
-from previously.core.graph_write import read_graph
+from previously.core.graph_write import relation_ends
+from previously.core.graph_write import relation_visible
 from previously.core.hashing import iso_utc
 from previously.core.policy import LOCAL_ONLY
 from previously.core.policy import RULE
@@ -830,14 +830,11 @@ def assertions[Conn](
 # The sections of `list_triage`, in the order a person works through them:
 # objections to what the operator stands for first, so that one does not go
 # under, as the 2026-10-14 assignments specification asks of them, then
-# questions, then every other proposal, and last a placeholder
-# for each entity or relation with something waiting that the policy keeps
-# from the client.
+# questions, then every other proposal.
 OBJECTION: Final = "objection"
 QUESTION: Final = "question"
 PROPOSAL: Final = "proposal"
-WITHHELD: Final = "withheld"
-TRIAGE_SECTIONS: Final = (OBJECTION, QUESTION, PROPOSAL, WITHHELD)
+TRIAGE_SECTIONS: Final = (OBJECTION, QUESTION, PROPOSAL)
 
 
 @dataclass(frozen=True)
@@ -847,35 +844,16 @@ class ThreadVerdict:
     `decisions` are those over the thread's own sources, each with the
     source it was taken for; `ends` those of the entities a relation names,
     which decide along; `blocked` is the first that chooses nothing, with
-    its source, or `None`. `shown` is whether the client sees the thread: a
-    relation that starts at an event is no relation between entities, and
-    phase 1 shows none, as `relation_visible` says.
+    its source, or `None`. `shown` is whether the client sees the thread,
+    for a relation as `relation_visible` decides it: a relation that starts
+    at an event is not shown and has no `blocked` either, since phase 1
+    shows none at all.
     """
 
     decisions: tuple[tuple[str | None, Decision], ...]
     ends: tuple[Decision, ...]
     blocked: tuple[str | None, Decision] | None
     shown: bool
-
-
-def _event_start(thread: GraphThread) -> bool:
-    return any(
-        isinstance(v.claim.body, RelationBody) and isinstance(v.claim.body.start, Source)
-        for v in thread.versions
-    )
-
-
-def relation_ends(thread: GraphThread) -> tuple[int, ...]:
-    """Every entity a version of the relation names, the candidates of a
-    question among them, each once, in the order first named."""
-    named: dict[int, None] = {}
-    for version in thread.versions:
-        body = version.claim.body
-        if not isinstance(body, RelationBody):
-            continue
-        ends = [body.start, *([body.to] if body.to is not None else body.candidates or ())]
-        named.update((end, None) for end in ends if isinstance(end, int))
-    return tuple(named)
 
 
 class GraphView:
@@ -887,10 +865,13 @@ class GraphView:
     rule `source:recollection` exists (decision 12 of the 2026-10-14
     assignments plan; `claim_verdict`). A relation is decided the same way,
     and is seen only where every entity that any of its versions names is
-    seen as well: a relation shows the names of its ends. An end whose every
-    version is erased withholds nothing, since nothing of it is left to
-    show; the relation names it as erased, as `get_event` names an erased
-    event to any client.
+    seen as well: a relation shows the names of its ends. That rule is
+    `relation_visible`'s, and the view only adds which decision withholds:
+    the relation's own, else that of an end. An end whose every version is
+    erased withholds nothing, since nothing of it is left to show; the
+    relation names it as erased, as `get_event` names an erased event to
+    any client. An end that names something other than an entity, which
+    only a forged payload does, is not seen, and gets no placeholder.
 
     The verdicts are taken once per thread and kept for the call.
     """
@@ -914,18 +895,24 @@ class GraphView:
         )
         blocked = next(((s, d) for s, d in own if d.chosen is None), None)
         ends: list[Decision] = []
+        shown = blocked is None
         if thread.kind == RELATION:
+            seen: dict[int, bool | None] = {}
             for end in relation_ends(thread):
                 named = self.graph.threads.get(end)
-                if named is None or named.kind != ENTITY:
+                if named is None:
+                    seen[end] = None
+                    continue
+                if named.kind != ENTITY:
+                    seen[end] = False
                     continue
                 verdict = self.verdict(end)
+                seen[end] = verdict.shown
                 ends.extend(decision for _source, decision in verdict.decisions)
                 if blocked is None and verdict.blocked is not None:
                     blocked = verdict.blocked
-        found = ThreadVerdict(
-            own, tuple(ends), blocked, blocked is None and not _event_start(thread)
-        )
+            shown = relation_visible(self.policy, self.client, thread, seen, identities, sources)
+        found = ThreadVerdict(own, tuple(ends), blocked, shown)
         self._verdicts[subject] = found
         return found
 
@@ -940,8 +927,11 @@ class GraphView:
 
     def delivered(self, event: int, verdict: ThreadVerdict) -> Delivered:
         """The access entry of a thread the client sees, under `event`, with
-        the circles of its own sources, as an obligation has them."""
-        return Delivered(event, (), verdict.decisions[-1][1].circles)
+        the circles of its own sources, as an obligation has them: of every
+        decision, since the one of a recollection, which names nobody, has
+        none, and comes last."""
+        circles = dict.fromkeys(c for _source, d in verdict.decisions for c in d.circles)
+        return Delivered(event, (), tuple(circles))
 
     def withheld(self, event: int, verdict: ThreadVerdict) -> tuple[WithheldMark, Withheld]:
         """The placeholder of a thread the policy keeps from the client, and
@@ -988,12 +978,14 @@ def graph_view[Conn](
     return GraphView(policy, client, graph, read_claim_events(log, conn, threads))
 
 
-def objections_seen[Conn](log: LogStore[Conn], conn: Conn, policy: Policy, client: Client) -> int:
+def objections_seen[Conn](
+    log: LogStore[Conn], conn: Conn, policy: Policy, client: Client, graph: Graph
+) -> int:
     """How many objections wait that the client may see: those on an entity
     or a relation it sees, for the header of every result
     ({ref}`mcp-tools`). One the client may not see is not counted, so that
-    the header tells nothing of what the policy keeps from it."""
-    graph = read_graph(log, conn)
+    the header tells nothing of what the policy keeps from it. `graph` is
+    the one the call folded, which the body reads as well."""
     waiting = {s: t for s, t in graph.threads.items() if t.objections(graph.classes)}
     if not waiting:
         return 0
@@ -1282,6 +1274,7 @@ def entities[Conn](
     *,
     after: int | None,
     language: str,
+    graph: Graph,
 ) -> Seen:
     """The entities, by their ids after `after`, as many as fill a page and
     one more if it exists; each shown with the relations of it the client
@@ -1290,9 +1283,9 @@ def entities[Conn](
     With `listing.subject` the one entity, whatever the other filters say;
     the placeholder of an erased event when the id names an assertion an
     erasure took and no entity stands under it; or the error that none
-    stands under the id, as `list_obligations` answers.
+    stands under the id, as `list_obligations` answers. `graph` is the one
+    the call folded.
     """
-    graph = read_graph(log, conn)
     vocabulary = read_vocabulary(log, conn)
     view = graph_view(log, conn, policy, client, graph)
     if listing.subject is not None:
@@ -1406,23 +1399,21 @@ def triage[Conn](
     *,
     after: tuple[str, int] | None,
     language: str,
+    graph: Graph,
 ) -> Triaged:
     """What waits for the operator, after `after` (a section and an id), as
     many as fill a page and one more if it exists: the objections, the
     questions and the proposals of entities and relations the client sees,
-    and then a placeholder for each one with something waiting that the
-    policy keeps from it. A placeholder stands once for its entity or
-    relation, under its id, in no section of what waits: which section it
-    would be in, and how much waits, is content of it."""
-    graph = read_graph(log, conn)
+    and nothing of the others, not even a placeholder (ruling T6-b of the
+    2026-10-14 assignments plan): one that appeared when somebody wrote on
+    an entity the client may not see, and went when it was answered, would
+    tell what the header leaves out. `graph` is the one the call folded."""
     vocabulary = read_vocabulary(log, conn)
     view = graph_view(log, conn, policy, client, graph)
     found: list[tuple[str, int, Callable[[], Read]]] = []
-    hidden: set[int] = set()
     for section, pairs in waiting_versions(graph).items():
         for thread, version in pairs:
-            verdict = view.verdict(thread.subject)
-            if verdict.shown:
+            if view.verdict(thread.subject).shown:
                 found.append(
                     (
                         section,
@@ -1430,12 +1421,6 @@ def triage[Conn](
                         partial(_triage_read, view, vocabulary, section, thread, version, language),
                     )
                 )
-            elif verdict.blocked is not None:
-                hidden.add(thread.subject)
-    for subject in sorted(hidden):
-        verdict = view.verdict(subject)
-        mark, entry = view.withheld(subject, verdict)
-        found.append((WITHHELD, subject, partial(Read, mark, entry, view.rules(verdict), subject)))
     start = 0
     if after is not None:
         section, last = after

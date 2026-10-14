@@ -103,6 +103,7 @@ from previously.core.graph import conformance_problem
 from previously.core.graph import ENTITY
 from previously.core.graph import ENTITY_STATES
 from previously.core.graph import EntityBody
+from previously.core.graph import Graph
 from previously.core.graph import GraphThread
 from previously.core.graph import GraphVersion
 from previously.core.graph import Period
@@ -373,13 +374,14 @@ _LIST_ENTITIES: Final = (
     f"under {PAGE_CHARS:,} characters, and its footer names the cursor of the next page."
 )
 _LIST_TRIAGE: Final = (
-    "What waits for the operator among entities and relations, by id within each "
-    "section: first the objections, versions by a model that contradict what the "
-    "operator stated directly, then the questions, relations that name candidates "
-    "in place of an end, then every other proposal, each with what it says and what "
-    "it would change. Then a placeholder for each entity or relation with something "
-    "waiting that the processing policy keeps from this client. A page stays under "
-    f"{PAGE_CHARS:,} characters, and its footer names the cursor of the next page."
+    "What waits for the operator among entities and relations this client can see, "
+    "by id within each section: first the objections, versions by a model that "
+    "contradict what the operator stated directly, then the questions, relations "
+    "that name candidates in place of an end, then every other proposal, each with "
+    "what it says and what it would change. What waits on an entity or a relation "
+    "the processing policy keeps from this client is left out, without a "
+    f"placeholder. A page stays under {PAGE_CHARS:,} characters, and its footer names "
+    "the cursor of the next page."
 )
 _WRITE_ENTITY: Final = (
     f"States 1 to {MAX_STATEMENTS} entities, each of a kind the vocabulary declares and "
@@ -726,19 +728,30 @@ class _Mark:
 
 _CALL: ContextVar[_Mark | None] = ContextVar("previously_mcp_call", default=None)
 
-# The objections pending that the client of the running call may see, which
-# the header of its result names. `Service.answer` counts them once, in the
-# call's snapshot, before the call's own work, and every result the call
-# renders reads the count from here, a written one after the snapshot too
-# ({ref}`mcp-tools`).
-# A context variable rather than an argument through every body: the count
+
+@dataclass(frozen=True)
+class _Folded:
+    """The graph the running call folded, once, in its snapshot, and the
+    objections pending in it that the call's client may see."""
+
+    graph: Graph
+    objections: int
+
+
+# What `Service.answer` folds for the running call, before the call's own
+# work: the header of every result the call renders names the objections
+# from here, a written one after the snapshot too ({ref}`mcp-tools`), and a
+# tool that reads the graph takes this one rather than folding the log a
+# second time (ruling T6-c of the 2026-10-14 assignments plan).
+# A context variable rather than an argument through every body: the fold
 # belongs to the call and not to any one tool, and a call runs in one context
-# from its count to its last line.
-_PENDING: ContextVar[int] = ContextVar("previously_mcp_objections", default=0)
+# from its fold to its last line.
+_FOLDED: ContextVar[_Folded | None] = ContextVar("previously_mcp_graph", default=None)
 
 
 def _pending() -> int:
-    return _PENDING.get()
+    folded = _FOLDED.get()
+    return 0 if folded is None else folded.objections
 
 
 def moment(text: str | None, what: str) -> datetime | None:
@@ -910,7 +923,10 @@ class Service[Conn]:
                     "processor": policy.ids.get((PROVIDER, client.processor)),
                     "rules": [],
                 }
-                pending = _PENDING.set(objections_seen(self.log, conn, policy, client))
+                graph = read_graph(self.log, conn)
+                pending = _FOLDED.set(
+                    _Folded(graph, objections_seen(self.log, conn, policy, client, graph))
+                )
                 outcome = body(conn, policy, client)
             answer = outcome if isinstance(outcome, Answer) else outcome()
             policy_ids["rules"] = list(answer.rules)
@@ -920,7 +936,7 @@ class Service[Conn]:
             logger.exception("an MCP call failed")
         finally:
             if pending is not None:
-                _PENDING.reset(pending)
+                _FOLDED.reset(pending)
             if name is not None:
                 self.record(name, policy_ids, call, answer, era)
         return answer
@@ -1515,7 +1531,14 @@ class Service[Conn]:
                 raise Refused(_CURSOR_AGAIN) from error
             after, page = position.after, position.page
         seen = entities(
-            self.log, conn, policy, client, listing, after=after, language=self.language
+            self.log,
+            conn,
+            policy,
+            client,
+            listing,
+            after=after,
+            language=self.language,
+            graph=self.graph_now(conn),
         )
 
         def cursor_for(index: int) -> str:
@@ -1552,7 +1575,15 @@ class Service[Conn]:
                 break
             else:
                 raise Refused(_CURSOR_AGAIN)
-        seen = triage(self.log, conn, policy, client, after=after, language=self.language)
+        seen = triage(
+            self.log,
+            conn,
+            policy,
+            client,
+            after=after,
+            language=self.language,
+            graph=self.graph_now(conn),
+        )
 
         def cursor_for(index: int) -> str:
             filters = _triage_filters(seen.sections[index])
@@ -1568,10 +1599,16 @@ class Service[Conn]:
         )
         return _paged(seen, rendered)
 
+    def graph_now(self, conn: Conn) -> Graph:
+        """The graph the running call folded in `answer`, or, outside a
+        call, the one folded now."""
+        folded = _FOLDED.get()
+        return read_graph(self.log, conn) if folded is None else folded.graph
+
     def graph_of(self, conn: Conn, policy: Policy, client: Client) -> tuple[GraphView, Vocabulary]:
         """The graph as the client may see it, and the vocabulary, in the
         call's snapshot."""
-        graph = read_graph(self.log, conn)
+        graph = self.graph_now(conn)
         return graph_view(self.log, conn, policy, client, graph), read_vocabulary(self.log, conn)
 
     def entity_write(

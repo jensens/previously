@@ -24,6 +24,14 @@ The built-in types `circle`, `member_of` and `in_circle` are what the gate
 reads, so no class reaches them: `set_class` refuses a class that names one,
 and `Classes.level` answers `open` for them even when an event that came
 another way names them.
+
+No class reaches a relation kind with the behavior `acyclic` either, in the
+same two ways, by the vocabulary in force when the class is set and when a
+statement is levelled (ruling T6-a of the 2026-10-14 assignments plan). A
+model's version is never refused for closing a cycle, since that refusal
+would tell its client about edges it may not see; so a model's version of
+such a kind has to stay open, and only the operator's answer, which is
+checked for cycles, makes it stand.
 """
 
 from collections.abc import Mapping
@@ -43,6 +51,7 @@ from previously.core.graph import GraphVersion
 from previously.core.graph import RELATION
 from previously.core.graph import TRANSITIVE
 from previously.core.hashing import iso_utc
+from previously.core.vocabulary import ACYCLIC
 from previously.core.vocabulary import GATE_TYPES
 from previously.core.vocabulary import read_vocabulary
 from typing import cast
@@ -255,10 +264,16 @@ class Classes:
         type_name: str,
         confidence: int | None,
         recorded_at: datetime,
+        vocabulary: Vocabulary,
     ) -> list[tuple[int, int]]:
         """`(threshold, event id)` of every class in force that covers the
-        statement, the event being the newest of its name."""
+        statement, the event being the newest of its name. A kind the gate
+        reads, and one that `vocabulary` declares acyclic, are covered by
+        none."""
         if confidence is None or type_name in GATE_TYPES:
+            return []
+        spec = vocabulary.kind(kind, type_name)
+        if spec is not None and ACYCLIC in spec.behaviors:
             return []
         return [
             (item.threshold, event_id)
@@ -281,6 +296,7 @@ class Classes:
         type_name: str,
         confidence: int | None,
         recorded_at: datetime,
+        vocabulary: Vocabulary,
     ) -> bool:
         """Whether the class whose newest event is `class_id` is in force
         and covers the statement, as `level` decides it. `verify` asks this
@@ -292,6 +308,7 @@ class Classes:
             type_name=type_name,
             confidence=confidence,
             recorded_at=recorded_at,
+            vocabulary=vocabulary,
         )
         return any(event_id == class_id for _threshold, event_id in covering)
 
@@ -303,6 +320,7 @@ class Classes:
         type_name: str,
         confidence: int | None,
         recorded_at: datetime,
+        vocabulary: Vocabulary,
     ) -> tuple[str, int | None]:
         """The level a model statement gets: `(TRANSITIVE, id of the class's
         newest event)` when a class in force covers it, else `(OPEN, None)`.
@@ -311,7 +329,9 @@ class Classes:
         its kind of statement, of one of its types, and whose confidence
         reaches the threshold. Of several classes that cover it, the one with
         the highest threshold wins, then the oldest event. A statement
-        without a confidence is covered by none, and a built-in type by none.
+        without a confidence is covered by none, and neither is a built-in
+        type or a relation kind that `vocabulary`, the one in force where
+        the statement is written, declares acyclic.
         """
         covering = self._covering(
             author=author,
@@ -319,6 +339,7 @@ class Classes:
             type_name=type_name,
             confidence=confidence,
             recorded_at=recorded_at,
+            vocabulary=vocabulary,
         )
         if not covering:
             return OPEN, None
@@ -379,11 +400,14 @@ class ClassFold:
 # --- The write path ---------------------------------------------------------------
 
 
-def _refusal(item: ApprovalClass, statement: str, kinds: Mapping[str, bool]) -> str | None:
+def _refusal(
+    item: ApprovalClass, statement: str, kinds: Mapping[str, bool], acyclic: frozenset[str]
+) -> str | None:
     """The sentence that says why a class cannot be written, or `None`.
     `kinds` maps every type of the vocabulary under the tip to whether it
-    stands. A revocation is not held against the vocabulary: a class has to
-    stay revocable after a kind it names was retired."""
+    stands, and `acyclic` names the relation kinds it declares acyclic. A
+    revocation is not held against the vocabulary: a class has to stay
+    revocable after a kind it names was retired, or was declared acyclic."""
     try:
         _parse(class_payload(item, statement=statement))
     except _FormError as error:
@@ -396,7 +420,20 @@ def _refusal(item: ApprovalClass, statement: str, kinds: Mapping[str, bool]) -> 
                 f'the approval class names "{name}", which is no {item.assertion} '
                 "kind that stands in the vocabulary"
             )
+        if name in acyclic:
+            return (
+                f'the approval class names "{name}", a relation kind that is acyclic, '
+                "which no class reaches"
+            )
     return None
+
+
+def _acyclic_kinds(vocabulary: Vocabulary, assertion: str) -> frozenset[str]:
+    return frozenset(
+        name
+        for (declares, name), spec in vocabulary.kinds.items()
+        if declares == assertion and ACYCLIC in spec.behaviors
+    )
 
 
 def _standing_kinds(vocabulary: Vocabulary, assertion: str) -> dict[str, bool]:
@@ -415,8 +452,9 @@ def class_refusal[Conn](
     For a command that asks before it writes: nobody confirms what cannot
     be written. It reads the vocabulary in force and no more, so a
     vocabulary event that follows can still make the write refuse."""
-    kinds = _standing_kinds(read_vocabulary(log, conn), item.assertion)
-    return _refusal(item, statement, kinds)
+    vocabulary = read_vocabulary(log, conn)
+    kinds = _standing_kinds(vocabulary, item.assertion)
+    return _refusal(item, statement, kinds, _acyclic_kinds(vocabulary, item.assertion))
 
 
 def set_class[Conn](
@@ -433,8 +471,10 @@ def set_class[Conn](
 
     def once(conn: Conn) -> int:
         tip = log.tip(conn)
-        kinds = _standing_kinds(read_vocabulary(log, conn), item.assertion)
-        if (sentence := _refusal(item, statement, kinds)) is not None:
+        vocabulary = read_vocabulary(log, conn)
+        kinds = _standing_kinds(vocabulary, item.assertion)
+        acyclic = _acyclic_kinds(vocabulary, item.assertion)
+        if (sentence := _refusal(item, statement, kinds, acyclic)) is not None:
             raise ClassRefused(sentence)
         payload = class_payload(item, statement=statement)
         return write_action_at(log, conn, tip, payload, (), recorded_at=recorded_at)

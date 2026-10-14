@@ -1869,10 +1869,18 @@ def _thing(
     )
 
 
-def _part(start: int, to: int, *, subject: int | None = None) -> Claim:
+def _part(
+    start: int,
+    to: int,
+    *,
+    subject: int | None = None,
+    author: str = OPERATOR,
+    responsibility: str = DIRECT,
+    confidence: int | None = None,
+) -> Claim:
     return Claim(
-        RELATION, OPERATOR, DIRECT, SOURCES, (Source(1, None),), None, None, subject, None, None,
-        None, None, RelationBody("part_of", start, to, None, None, {}, STANDING),
+        RELATION, author, responsibility, SOURCES, (Source(1, None),), None, None, subject, None,
+        None, confidence, None, RelationBody("part_of", start, to, None, None, {}, STANDING),
     )  # fmt: skip
 
 
@@ -1975,6 +1983,23 @@ def test_an_edge_that_closes_a_cycle_by_hand_is_a_finding(db: Engine) -> None:
 
     reason = "relation closes a cycle over a kind that is acyclic"
     assert verify(storage) == [Finding(back, reason), Finding(self_edge, reason)]
+
+
+@pytest.mark.db
+def test_a_models_proposal_that_closes_a_cycle_is_no_finding(db: Engine) -> None:
+    """Ruling T6-a of the 2026-10-14 assignments plan: the write path holds
+    a model's open version to no cycle, and `verify` follows it."""
+    storage = _with_vocabulary(db)
+    one, two = _claimed(storage, _thing("project", "one"), _thing("project", "two"))
+    _claimed(storage, _part(one, two))
+    back = _part(two, one, author=GUESSER, responsibility=OPEN, confidence=40)
+    _claimed(storage, back, replace(back, body=replace(back.body, to=two, start=two)))
+    assert verify(storage) == []
+    # The control: the operator's version of the same edge, written by hand.
+    forged = _forged(storage, claim_payload(_part(two, one)))
+    assert verify(storage) == [
+        Finding(forged, "relation closes a cycle over a kind that is acyclic")
+    ]
 
 
 @pytest.mark.db

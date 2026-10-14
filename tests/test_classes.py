@@ -49,6 +49,7 @@ from previously.core.vocabulary import FieldSpec
 from previously.core.vocabulary import GATE_TYPES
 from previously.core.vocabulary import KindSpec
 from previously.core.vocabulary import parse_file
+from previously.core.vocabulary import Vocabulary
 from previously.storage.postgres import PostgresStorage
 from typing import cast
 from typing import TYPE_CHECKING
@@ -77,6 +78,12 @@ CLASS = ApprovalClass(
     None,
     revoked=False,
     demote=False,
+)
+
+
+# The base vocabulary, as `level` reads it for a kind's behaviors.
+VOCABULARY = Vocabulary(
+    {(spec.declares, spec.name): spec for spec in parse_file(base_vocabulary())}, {}
 )
 
 
@@ -110,6 +117,7 @@ def _level(
         type_name=type_name,
         confidence=confidence,
         recorded_at=recorded_at,
+        vocabulary=VOCABULARY,
     )
 
 
@@ -257,6 +265,25 @@ def test_a_built_in_type_is_open_even_if_an_event_names_it(gate: str) -> None:
     classes = _classes((named, 7))
     assert _level(classes, kind="relation", type_name=gate) == (OPEN, None)
     assert _level(classes, kind="relation", type_name="project") == (TRANSITIVE, 7)
+
+
+def test_an_acyclic_kind_is_open_even_if_an_event_names_it() -> None:
+    """Ruling T6-a of the 2026-10-14 assignments plan: `part_of` is acyclic
+    in the base vocabulary, and no class covers it; `involved_in` is not,
+    and the same class covers it, the control."""
+    named = replace(CLASS, types=frozenset({"part_of", "involved_in"}), assertion="relation")
+    classes = _classes((named, 7))
+    assert _level(classes, kind="relation", type_name="part_of") == (OPEN, None)
+    assert _level(classes, kind="relation", type_name="involved_in") == (TRANSITIVE, 7)
+    assert not classes.covers(
+        7,
+        author=MODEL,
+        kind="relation",
+        type_name="part_of",
+        confidence=90,
+        recorded_at=T1,
+        vocabulary=VOCABULARY,
+    )
 
 
 # --- The fold from the log --------------------------------------------------------
@@ -608,6 +635,7 @@ def test_covers_asks_whether_a_class_in_force_covers_a_statement() -> None:
             type_name=type_name,
             confidence=confidence,
             recorded_at=T1,
+            vocabulary=VOCABULARY,
         )
 
     assert covers()

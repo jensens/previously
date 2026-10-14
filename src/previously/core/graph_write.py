@@ -37,7 +37,11 @@ instead of writing it otherwise than shown.
 assignments plan): the graph is folded under the tip, and every claim goes
 right after it, so two writes that each close half a cycle cannot both win
 the position; the one that loses tries again, with the other's edge folded
-in, and is refused.
+in, and is refused. Only what will stand for the operator is held to the
+cycle rule, a direct version, an approval or an answer; a model's open
+version is not, since its refusal would tell the model about edges it may
+not see (ruling T6-a of the 2026-10-14 assignments plan), and no approval
+class reaches an acyclic kind, so a model's version of one stays open.
 
 **A refusal** is `GraphRefused` with one sentence, for a source too, whose
 sentences the two write paths share. The sentence names ids and never a
@@ -76,9 +80,7 @@ from previously.core.graph import ENTITY
 from previously.core.graph import fold_graph
 from previously.core.graph import GRAPH_KINDS
 from previously.core.graph import GraphFold
-from previously.core.graph import GraphVersion
 from previously.core.graph import level_of
-from previously.core.graph import LEVELS
 from previously.core.graph import parse_claim
 from previously.core.graph import RECOLLECTION
 from previously.core.graph import RelationBody
@@ -255,12 +257,15 @@ def closes_cycle(graph: Graph, claim: Claim, vocabulary: Vocabulary, *, level: s
     `graph` is what stands before the claim. The claim's own thread is left
     out, since the claim replaces its edge, so a new version that turns an
     edge around is held against the other edges and not against its own
-    old one. An open write is held against the edges of every level, and a
-    direct or transitive one against direct and transitive edges only: a
-    proposal nobody stands for does not veto what the operator stands for
-    (ruling T2-b of the 2026-10-14 assignments plan). The write path and
-    `verify` ask this one question, so that `verify` reports exactly what
-    the write path would have refused.
+    old one. A direct or transitive write is held against direct and
+    transitive edges only: a proposal nobody stands for does not veto what
+    the operator stands for (ruling T2-b of the 2026-10-14 assignments
+    plan). An open write, a model's proposal, closes no cycle at all: a
+    refusal of it would answer a client's question about edges it may not
+    see, and a proposal stands for nobody until the operator answers it,
+    which is checked (ruling T6-a, which replaced that part of T2-b). The
+    write path and `verify` ask this one question, so that `verify` reports
+    exactly what the write path would have refused.
     """
     body = claim.body
     if not isinstance(body, RelationBody) or body.state != STANDING or body.to is None:
@@ -270,9 +275,11 @@ def closes_cycle(graph: Graph, claim: Claim, vocabulary: Vocabulary, *, level: s
     spec = vocabulary.kind(RELATION_KIND, body.type)
     if spec is None or ACYCLIC not in spec.behaviors:
         return False
+    if level == OPEN:
+        return False
     if body.start == body.to:
         return True
-    levels = frozenset(LEVELS) if level == OPEN else frozenset({DIRECT, TRANSITIVE})
+    levels = frozenset({DIRECT, TRANSITIVE})
     without = frozenset[int]() if claim.subject is None else frozenset({claim.subject})
     return graph.reaches(
         body.to, body.start, frozenset({body.type}), without=without, levels=levels
@@ -327,7 +334,9 @@ def _check_batch(claims: Sequence[Claim]) -> None:
         raise GraphRefused("the statements of one batch carry different handles")
 
 
-def _levelled(claim: Claim, graph: Graph, classes: Classes, recorded_at: datetime) -> Claim:
+def _levelled(
+    claim: Claim, graph: Graph, classes: Classes, vocabulary: Vocabulary, recorded_at: datetime
+) -> Claim:
     """The claim at the level the write path gives it: the operator's as
     given and direct, an approval as given, and a model's other claims an
     objection against a direct winner, else at the level of its class."""
@@ -360,6 +369,7 @@ def _levelled(claim: Claim, graph: Graph, classes: Classes, recorded_at: datetim
         type_name=body.type,
         confidence=claim.confidence,
         recorded_at=recorded_at,
+        vocabulary=vocabulary,
     )
     return replace(claim, responsibility=level, under=under, contests=None)
 
@@ -481,7 +491,7 @@ def _checked[Conn](
     checked: list[tuple[Claim, Mapping[str, object]]] = []
     for offset, given in enumerate(claims):
         graph = folded.current(classes.states)
-        claim = _levelled(given, graph, classes, recorded_at)
+        claim = _levelled(given, graph, classes, vocabulary, recorded_at)
         if expect is not None:
             _check_expected(expect[offset], decided(claim))
         payload = _payload(claim)
@@ -724,28 +734,51 @@ def claim_verdict(
     return next((d for d in decisions if d.chosen is None), decisions[-1])
 
 
+def relation_ends(thread: GraphThread) -> tuple[int, ...]:
+    """Every entity a version of the relation names, the candidates of a
+    question among them, each once, in the order first named."""
+    named: dict[int, None] = {}
+    for version in thread.versions:
+        body = version.claim.body
+        if not isinstance(body, RelationBody):
+            continue
+        ends = [body.start, *([body.to] if body.to is not None else body.candidates or ())]
+        named.update((end, None) for end in ends if isinstance(end, int))
+    return tuple(named)
+
+
 def relation_visible(
     policy: Policy,
     client: Client,
-    relation: GraphVersion,
-    ends: Mapping[int, bool],
+    thread: GraphThread,
+    ends: Mapping[int, bool | None],
     identities: Sequence[Mapping[str, object]],
     sources: Sequence[str | None],
 ) -> bool:
-    """Whether a client sees a relation: its own sources let it through, by
-    `claim_verdict`, and every entity it names is one the client sees, by
-    `ends` (id of an entity to whether it is visible; an id it lacks is not).
-    A question names its candidates as ends. A relation that starts at an
-    event is no relation between entities, and phase 1 shows none."""
-    body = relation.claim.body
-    if not isinstance(body, RelationBody) or isinstance(body.start, Source):
+    """Whether a client sees a relation (decision 12 of the 2026-10-14
+    assignments plan): the sources of every standing version let it
+    through, by `claim_verdict`, as a recollection where one version is
+    one, and every entity any version names is one the client sees.
+
+    `ends` maps each id `relation_ends` gives to whether the client sees
+    that entity, or to `None` for one whose every version is erased: of
+    that one nothing is left to show, and it withholds nothing, as
+    `get_event` names an erased event to any client. An id `ends` lacks is
+    not seen. A question names its candidates as ends. A relation one of
+    whose versions starts at an event is no relation between entities, and
+    phase 1 shows none."""
+    if any(
+        not isinstance(v.claim.body, RelationBody) or isinstance(v.claim.body.start, Source)
+        for v in thread.versions
+    ):
         return False
     verdict = claim_verdict(
         policy,
         client,
         identities,
         sources,
-        recollection=relation.claim.evidence == RECOLLECTION,
+        recollection=any(v.claim.evidence == RECOLLECTION for v in thread.versions),
     )
-    named = [body.start, *([body.to] if body.to is not None else body.candidates or ())]
-    return verdict.chosen is not None and all(ends.get(end, False) for end in named)
+    return verdict.chosen is not None and all(
+        ends.get(end, False) is not False for end in relation_ends(thread)
+    )

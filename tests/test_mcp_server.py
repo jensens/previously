@@ -60,6 +60,7 @@ from previously.core.clients import add_client
 from previously.core.clients import revoke_client
 from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
+from previously.core.graph import claim_payload
 from previously.core.graph import ENTITY
 from previously.core.graph import EntityBody
 from previously.core.graph import Period
@@ -67,6 +68,7 @@ from previously.core.graph import RELATION
 from previously.core.graph import RelationBody
 from previously.core.graph import SOURCES
 from previously.core.graph import STANDING
+from previously.core.graph_write import GraphRefused
 from previously.core.graph_write import write_claims
 from previously.core.mail import map_mail
 from previously.core.policy import Circle
@@ -81,6 +83,8 @@ from previously.core.redact import redact_event
 from previously.core.verify import verify
 from previously.core.vocabulary import apply_vocabulary
 from previously.core.vocabulary import base_vocabulary
+from previously.core.vocabulary import FieldSpec
+from previously.core.vocabulary import KindSpec
 from previously.core.vocabulary import parse_file
 from previously.mcp_server.confirm import HANDLE_SECONDS
 from previously.mcp_server.confirm import seal
@@ -116,6 +120,8 @@ import re
 if TYPE_CHECKING:
     from collections.abc import Awaitable
     from collections.abc import Callable
+    from collections.abc import Iterator
+    from previously.contract.rows import EventRow
     from previously.contract.rows import Tip
 
 T0 = datetime(2026, 10, 11, 12, 0, 0, tzinfo=UTC)
@@ -871,7 +877,7 @@ def test_the_prompts_ask_for_work_and_hold_no_content(world: World, mode: str) -
 # The SHA-256 of the tool list as clients see it: name, description, input
 # schema and `_meta` of every tool, sorted by name, as canonical JSON. A change to any of
 # them is a change of the interface, made deliberately and released.
-TOOLS_SHA256 = "c25cff3f163115691e85553c462235edef9f359464169a955a2617b10a18dca0"
+TOOLS_SHA256 = "58faeb7eb9362dc0946a6162c4fed1825bfd583427476f4986aa3042fa33b902"
 
 
 def tool_list_digest(tools: list[dict[str, object]]) -> str:
@@ -3441,7 +3447,7 @@ def test_a_class_that_changes_between_preview_and_confirmation_refuses_the_write
 def test_a_direct_version_written_between_preview_and_confirmation_refuses_the_write(
     world: World, mode: str
 ) -> None:
-    ids = _graphed(world)
+    _graphed(world)
     scanned = world.ids["attachments_only"]
     proposal = {"items": [_entity_item("Bert", scanned)]}
     _confirmed(world, mode, "write_entity", proposal)
@@ -3451,11 +3457,12 @@ def test_a_direct_version_written_between_preview_and_confirmation_refuses_the_w
     assert "· proposed · by model:claude-code · new version of" in _text(preview)
     direct = replace(_person("Berti", scanned), subject=bert)
     write_claims(world.storage, world.storage, [direct], recorded_at=T0)
+    count = len(_assertions(world))
     refused = _write(world, mode, "write_entity", {**change, "confirm": _handle(_text(preview))})
     assert _text(refused) == (
         "Error: a direct version was written since the preview; call again without confirm"
     )
-    assert ids.anna  # the world is the same throughout
+    assert len(_assertions(world)) == count
 
 
 @pytest.mark.db
@@ -3751,7 +3758,7 @@ def test_write_reject_rejects_an_objection_and_the_header_lets_go_of_it(
 
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
-def test_list_triage_puts_objections_first_then_questions_then_proposals_then_placeholders(
+def test_list_triage_puts_objections_first_then_questions_then_proposals_and_hides_the_rest(
     world: World, mode: str
 ) -> None:
     ids = _graphed(world)
@@ -3769,13 +3776,16 @@ def test_list_triage_puts_objections_first_then_questions_then_proposals_then_pl
 
     page = _text(_tool(world, mode, "list_triage"))
 
+    # Ruling T6-b of the 2026-10-14 assignments plan: what waits on Lea, whom
+    # claude-code may not see, is left out without a placeholder.
     assert page.splitlines()[0] == "previously · list_triage · 1 objection pending · page 1"
     assert re.findall(r"^### previously://event/(\d+) · (\w+) · ", page, re.MULTILINE) == [
         (str(objection), "objection"),
         (str(question), "question"),
         (str(proposal), "proposal"),
     ]
-    assert page.splitlines()[-1].startswith(f"[withheld: previously://event/{ids.lea} — ")
+    assert "[withheld: " not in page
+    assert f"previously://event/{ids.lea}" not in page
     assert "change fields.name: Anna → Anna M" in page
     assert "Lea M" not in page and PRIVATE_NAME not in page
     # The control: the client that sees Lea is shown her objection, and two in the header.
@@ -3916,3 +3926,189 @@ def test_a_handle_of_write_assertion_does_not_confirm_write_entity_or_the_other_
         _text(_write(world, mode, "write_assertion", {**assertion, "confirm": graph_handle})),
     ]
     assert crossed == [sentence, sentence]
+
+
+# --- fix round 1 of task 6 ---------------------------------------------------------
+
+
+def _project(name: str, source: int) -> Claim:
+    return replace(_person(name, source), body=EntityBody("project", None, {"name": name}, ACTIVE))
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_cycle_through_a_hidden_entity_is_not_refused_for_the_model(
+    world: World, mode: str
+) -> None:
+    """Ruling T6-a of the 2026-10-14 assignments plan: the client sees the
+    projects A and B, not X, and the operator stated A part_of X part_of B.
+    B part_of A would close the cycle; a refusal would tell the client that
+    A reaches B through something it may not see, so the preview and the
+    confirmation both pass, and the claim is a proposal."""
+    _graphed(world)
+    scanned, plain = world.ids["attachments_only"], world.ids["plain"]
+    a, b, x = write_claims(
+        world.storage,
+        world.storage,
+        [_project("A", scanned), _project("B", scanned), _project(PRIVATE_NAME, plain)],
+        recorded_at=T0,
+    ).ids
+    _relate(world, a, x, kind="part_of")
+    _relate(world, x, b, kind="part_of")
+    item = {
+        "type": "part_of",
+        "from": b,
+        "to": a,
+        "sources": [{"event": scanned}],
+        "confidence": 100,
+    }
+    preview, written = _confirmed(world, mode, "write_relation", {"items": [item]})
+    assert "· relation · Part of · proposed · by model:claude-code · new relation" in _text(preview)
+    (_closing, payload) = _graph_payloads(world)[-1]
+    assert _text(written).endswith(" · open")
+    assert payload["responsibility"] == OPEN
+    assert verify(world.storage) == []
+    # The control: the operator closing the same cycle is refused.
+    operator = replace(
+        _project("B", scanned),
+        kind=RELATION,
+        body=RelationBody("part_of", b, a, None, None, {}, STANDING),
+    )
+    with pytest.raises(GraphRefused, match="would close a cycle"):
+        write_claims(world.storage, world.storage, [operator], recorded_at=T0)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_vocabulary_changed_between_preview_and_confirmation_refuses_the_write(
+    world: World, mode: str
+) -> None:
+    """Review Focus 1 of the 2026-10-14 assignments plan: the confirmation
+    is checked under the tip again, and a kind retired since the preview
+    takes no new entity; nothing is written."""
+    _graphed(world)
+    scanned = world.ids["attachments_only"]
+    team = KindSpec(
+        ENTITY,
+        "team",
+        {"en": "Team"},
+        (FieldSpec("name", "text", None, None, True),),
+        frozenset(),
+        None,
+        None,
+        False,
+    )
+    apply_vocabulary(world.storage, [*parse_file(base_vocabulary()), team], recorded_at=T0)
+    arguments = {"items": [{**_entity_item("Bert", scanned), "type": "team"}]}
+    preview = _write(world, mode, "write_entity", arguments)
+    assert not preview.is_error, _text(preview)
+    # The base vocabulary without the kind retires it.
+    apply_vocabulary(world.storage, parse_file(base_vocabulary()), recorded_at=T0)
+    count = len(_assertions(world))
+    refused = _write(world, mode, "write_entity", {**arguments, "confirm": _handle(_text(preview))})
+    assert _text(refused) == "Error: the kind is retired and takes no new entity"
+    assert len(_assertions(world)) == count
+    # The control: a kind that still stands is written the same way.
+    post = {"items": [{**_entity_item("Clerk", scanned), "type": "post"}]}
+    _preview, written = _confirmed(world, mode, "write_entity", post)
+    assert not written.is_error, _text(written)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_entity_of_a_recollection_and_a_mail_is_delivered_with_the_circles_of_the_mail(
+    world: World, mode: str
+) -> None:
+    """Ruling T6-c of the 2026-10-14 assignments plan: the decision of a
+    recollection names nobody and comes last; the access entry still
+    records the circle of the mail a later version rests on."""
+    _graphed(world)
+    scanned = world.ids["attachments_only"]
+    remembered = replace(_person("Remembered", 1), evidence="recollection", sources=())
+    (subject,) = write_claims(world.storage, world.storage, [remembered], recorded_at=T0).ids
+    against = {"items": [_entity_item("Remembered M", scanned, subject=subject)]}
+    _confirmed(world, mode, "write_entity", against, client="local-harness")
+    page = _text(_tool(world, mode, "list_entities", {"subject": subject}, client="local-harness"))
+    assert "field name: Remembered" in page
+    (delivered,) = _last_access(world).access.delivered
+    assert (delivered.event, delivered.circles) == (subject, ("office",))
+    # The control: the recollection alone is delivered with no circle.
+    alone = replace(_person("Alone", 1), evidence="recollection", sources=())
+    (lonely,) = write_claims(world.storage, world.storage, [alone], recorded_at=T0).ids
+    _tool(world, mode, "list_entities", {"subject": lonely}, client="local-harness")
+    (only,) = _last_access(world).access.delivered
+    assert (only.event, only.circles) == (lonely, ())
+
+
+class _CountingFolds(PostgresStorage):
+    """The real store, counting the reads of every assertion, which is what
+    folding the graph costs."""
+
+    def __init__(self, engine: Engine) -> None:
+        super().__init__(engine)
+        self.folds = 0
+
+    @override
+    def read_by_kind(self, conn: Connection, kind: str) -> Iterator[EventRow]:
+        if kind == "assertion":
+            self.folds += 1
+        return super().read_by_kind(conn, kind)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_call_folds_the_graph_once_for_its_header_and_its_body(
+    world: World, mode: str, db: Engine
+) -> None:
+    """Ruling T6-c of the 2026-10-14 assignments plan: the header's count
+    and the list share one fold."""
+    ids = _graphed(world)
+    counting = _CountingFolds(db)
+    server = build_server(counting, stdio_client="claude-code")
+    for name, arguments in (
+        ("list_entities", {}),
+        ("list_entities", {"subject": ids.anna}),
+        ("list_triage", {}),
+        ("whoami", {}),
+    ):
+        counting.folds = 0
+        result = _session(server, mode, lambda s, n=name, a=arguments: s.call_tool(n, a))
+        assert not result.is_error, _text(result)
+        assert counting.folds == 1, name
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_relation_is_shown_by_the_one_rule_of_core(world: World, mode: str) -> None:
+    """Ruling T6-c of the 2026-10-14 assignments plan: MCP asks
+    `relation_visible`. A forged relation whose end names a relation, not an
+    entity, rests on a mail the client sees and is withheld by no decision,
+    and the rule still does not show it."""
+    ids = _graphed(world)
+    forged = Claim(
+        RELATION,
+        OPERATOR,
+        DIRECT,
+        SOURCES,
+        (_on(world, "attachments_only"),),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        RelationBody("holds", ids.anna, ids.holds, None, None, {}, STANDING),
+    )
+    ready = prepare(
+        kind="assertion", occurred_at=T0, payload=claim_payload(forged), units=(), key=None
+    )
+    with world.storage.begin() as conn:
+        tip = world.storage.tip(conn)
+        assert tip is not None
+        row, units = link(ready, event_id=tip.id + 1, prev_hash=tip.hash, recorded_at=T0)
+        world.storage.insert_event(conn, row, units, None)
+    page = _text(_tool(world, mode, "list_entities", {"subject": ids.anna}))
+    assert f"relation previously://event/{row.id}:" not in page
+    # The control: Anna's relation to an entity is shown.
+    assert f"relation previously://event/{ids.holds}:" in page

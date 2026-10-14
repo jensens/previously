@@ -729,6 +729,7 @@ class _Claims:
             type_name=claim.body.type,
             confidence=claim.confidence,
             recorded_at=row.recorded_at,
+            vocabulary=self._vocabulary.vocabulary(),
         ):
             return "assertion is transitive under no approval class in force for it"
         return None

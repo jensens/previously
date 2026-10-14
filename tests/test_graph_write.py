@@ -36,6 +36,9 @@ from previously.core.assertion import Statement
 from previously.core.assertions import check_statements
 from previously.core.assertions import write_statements
 from previously.core.classes import ApprovalClass
+from previously.core.classes import class_payload
+from previously.core.classes import class_refusal
+from previously.core.classes import ClassRefused
 from previously.core.classes import set_class
 from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
@@ -43,6 +46,7 @@ from previously.core.graph import ENTITY
 from previously.core.graph import EntityBody
 from previously.core.graph import FieldValue
 from previously.core.graph import Graph
+from previously.core.graph import GraphThread
 from previously.core.graph import GraphVersion
 from previously.core.graph import Period
 from previously.core.graph import RECOLLECTION
@@ -541,11 +545,16 @@ def test_a_class_in_force_makes_a_confident_claim_transitive(db: Engine) -> None
 @pytest.mark.db
 def test_a_class_does_not_make_a_question_transitive(db: Engine) -> None:
     storage = _setup(db)
-    set_class(storage, EDGES, statement="parts", recorded_at=T0)
-    one, two, three = _projects(storage, 3)
+    set_class(storage, POSTS, statement="posts", recorded_at=T0)
+    chair, one, two = _ids(
+        storage,
+        entity("post", "Obmann"),
+        entity("organization", "Verein"),
+        entity("organization", "Club"),
+    )
     question = relation(
-        "part_of", one, None, author=MODEL, responsibility=OPEN, confidence=99,
-        candidates=(two, three),
+        "post_in", chair, None, author=MODEL, responsibility=OPEN, confidence=99,
+        candidates=(one, two),
     )  # fmt: skip
     assert _write(storage, question).levels == (OPEN,)
 
@@ -1027,24 +1036,50 @@ def test_a_cycle_within_one_batch_is_refused_and_nothing_written(db: Engine) -> 
 
 
 @pytest.mark.db
-def test_an_open_edge_does_not_veto_the_operator_but_closes_a_cycle_for_a_model(
+def test_an_open_edge_neither_vetoes_the_operator_nor_is_refused_for_a_cycle(
     db: Engine,
 ) -> None:
     """Ruling T2-b of the 2026-10-14 assignments plan: a direct write is held
-    against direct and transitive edges, an open one against every edge."""
+    against direct and transitive edges, so a proposal does not veto it. And
+    ruling T6-a, which replaced the rest of T2-b: a model's open version is
+    held to no cycle at all, since its refusal would tell a client about
+    edges it may not see."""
     storage = _setup(db)
     one, two, three = _projects(storage, 3)
-    _ids(storage, model_edge(one, two))
-    assert _refused(storage, model_edge(two, one)) == (
+    _ids(storage, edge(one, two), edge(two, three))
+    assert _write(storage, model_edge(three, one)).levels == (OPEN,)
+    assert _write(storage, model_edge(one, one)).levels == (OPEN,)
+    (proposed,) = _ids(storage, model_edge(two, one))
+    # The control: the operator closing the same cycle is refused, and an
+    # open edge does not veto an edge of the operator's that closes nothing.
+    assert _refused(storage, edge(three, one)) == (
         "the relation would close a cycle over a kind that is acyclic"
     )
-    _ids(storage, edge(two, one))
-    # A transitive edge counts for the operator as well.
-    set_class(storage, EDGES, statement="parts", recorded_at=T1)
-    assert _write(storage, model_edge(two, three), at=T2).levels == (TRANSITIVE,)
-    assert _refused(storage, edge(three, two), at=T2) == (
-        "the relation would close a cycle over a kind that is acyclic"
+    _ids(storage, edge(one, three))
+    assert proposed in _graph(storage).relations()
+
+
+@pytest.mark.db
+def test_no_class_reaches_an_acyclic_kind(db: Engine) -> None:
+    """Ruling T6-a: a class over `part_of` is refused, and one that came
+    another way covers nothing, so a model's edge stays open, as it does for
+    a kind the gate reads."""
+    storage = _setup(db)
+    with pytest.raises(ClassRefused) as refused:
+        set_class(storage, EDGES, statement="parts", recorded_at=T0)
+    assert str(refused.value) == (
+        'the approval class names "part_of", a relation kind that is acyclic, '
+        "which no class reaches"
     )
+    with storage.begin() as conn:
+        assert class_refusal(storage, conn, EDGES, statement="parts") == str(refused.value)
+    append_action(storage, class_payload(EDGES, statement="by hand"), (), recorded_at=T0)
+    one, two = _projects(storage, 2)
+    assert _write(storage, model_edge(one, two, confidence=99)).levels == (OPEN,)
+    # The control: a revocation is not refused, and a class over a kind
+    # without the behavior is taken.
+    set_class(storage, replace(EDGES, revoked=True), statement="gone", recorded_at=T0)
+    set_class(storage, POSTS, statement="posts", recorded_at=T0)
 
 
 @pytest.mark.db
@@ -1214,24 +1249,49 @@ def test_a_thread_with_sources_and_a_recollection_needs_both_rules() -> None:
     assert claim_verdict(only_mail, CLIENT, [], ("email",), recollection=True).chosen is None
 
 
+def _thread(*claims: Claim) -> GraphThread:
+    versions = tuple(GraphVersion(50 + n, T1, claim) for n, claim in enumerate(claims))
+    return GraphThread(50, RELATION, versions)
+
+
 def test_a_relation_is_visible_when_its_sources_and_both_ends_are() -> None:
     policy = _policy("source:email")
-    version = GraphVersion(50, T1, relation("holds", 10, 12))
-    assert relation_visible(policy, CLIENT, version, {10: True, 12: True}, [], ("email",))
-    assert not relation_visible(policy, CLIENT, version, {10: True, 12: False}, [], ("email",))
-    assert not relation_visible(policy, CLIENT, version, {10: True}, [], ("email",))
-    assert not relation_visible(_policy(), CLIENT, version, {10: True, 12: True}, [], ("email",))
+    holds = _thread(relation("holds", 10, 12))
+    assert relation_visible(policy, CLIENT, holds, {10: True, 12: True}, [], ("email",))
+    assert not relation_visible(policy, CLIENT, holds, {10: True, 12: False}, [], ("email",))
+    assert not relation_visible(policy, CLIENT, holds, {10: True}, [], ("email",))
+    assert not relation_visible(_policy(), CLIENT, holds, {10: True, 12: True}, [], ("email",))
     from_event = replace(
-        version.claim, body=RelationBody("holds", Source(1, None), 12, None, None, {}, STANDING)
+        relation("holds", 10, 12),
+        body=RelationBody("holds", Source(1, None), 12, None, None, {}, STANDING),
     )
-    assert not relation_visible(
-        policy, CLIENT, GraphVersion(52, T1, from_event), {12: True}, [], ("email",)
-    )
-    question = GraphVersion(51, T1, relation("holds", 10, None, candidates=(12, 13)))
+    assert not relation_visible(policy, CLIENT, _thread(from_event), {12: True}, [], ("email",))
+    question = _thread(relation("holds", 10, None, candidates=(12, 13)))
     assert not relation_visible(policy, CLIENT, question, {10: True, 12: True}, [], ("email",))
     assert relation_visible(
         policy, CLIENT, question, {10: True, 12: True, 13: True}, [], ("email",)
     )
+
+
+def test_an_erased_end_withholds_nothing_and_every_version_names_its_ends() -> None:
+    """Ruling T6-c of the 2026-10-14 assignments plan: the one rule MCP
+    uses. An end whose every version is erased (`None`) is nothing to keep
+    from the client, while an end an older version named counts as one the
+    newest names does."""
+    policy = _policy("source:email")
+    holds = _thread(relation("holds", 10, 12))
+    assert relation_visible(policy, CLIENT, holds, {10: True, 12: None}, [], ("email",))
+    turned = _thread(relation("holds", 10, 13), relation("holds", 10, 12, subject=50))
+    assert not relation_visible(
+        policy, CLIENT, turned, {10: True, 12: True, 13: False}, [], ("email",)
+    )
+    # The control: with the old end seen too, it is seen.
+    assert relation_visible(policy, CLIENT, turned, {10: True, 12: True, 13: True}, [], ("email",))
+    remembered = _thread(
+        relation("holds", 10, 12),
+        replace(relation("holds", 10, 12), evidence=RECOLLECTION, sources=()),
+    )
+    assert not relation_visible(policy, CLIENT, remembered, {10: True, 12: True}, [], ("email",))
 
 
 @pytest.mark.db
