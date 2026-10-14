@@ -123,6 +123,7 @@ from previously.core.policy import CLIENT
 from previously.core.policy import PROVIDER
 from previously.core.policy import read_policy
 from previously.core.vocabulary import DATE
+from previously.core.vocabulary import GATE_TYPES
 from previously.core.vocabulary import is_language_tag
 from previously.core.vocabulary import read_vocabulary
 from previously.mcp_server.auth import CLIENT_STATE
@@ -179,6 +180,7 @@ from typing import Annotated
 from typing import Any
 from typing import cast
 from typing import Final
+from typing import Protocol
 from typing import TYPE_CHECKING
 
 import asyncio
@@ -1818,6 +1820,7 @@ class Service[Conn]:
             if item is None:
                 raise Refused(f"event {proposal} is not a proposal this client can answer")
             asked = item.version.claim.body
+            _refuse_gate_kind(proposal, asked)
             if isinstance(asked, RelationBody) and asked.candidates is not None:
                 raise Refused(f"event {proposal} is a question: answer it with write_triage_answer")
             answered.append(item)
@@ -1832,7 +1835,7 @@ class Service[Conn]:
             )
             slots.append(_standing(item.thread, proposal, approval))
         lines = [claim_lines(view, vocabulary, slot) for slot in slots if isinstance(slot, Claim)]
-        return self.claims_answering(conn, "write_approve", slots, lines, _graph_shown(answered))
+        return self.claims_answering(conn, "write_approve", slots, lines, _shown_of(answered))
 
     def graph_rejection_write(
         self,
@@ -1872,7 +1875,7 @@ class Service[Conn]:
         )
         slot: Statement | int = statement if standing is None else standing
         lines = [claim_lines(view, vocabulary, replace(version.claim, reason=reason))]
-        return self.answering(conn, "write_reject", [slot], lines, _graph_shown([found]))
+        return self.answering(conn, "write_reject", [slot], lines, _shown_of([found]))
 
     def triage_answer_write(
         self,
@@ -1902,6 +1905,7 @@ class Service[Conn]:
         asked = None if found is None else found.version.claim.body
         if found is None or not isinstance(asked, RelationBody) or asked.candidates is None:
             raise Refused(no_question)
+        _refuse_gate_kind(question, asked)
         version, thread = found.version, found.thread
         answer = replace(
             version.claim,
@@ -1926,9 +1930,7 @@ class Service[Conn]:
                 # which says nothing of the cause.
                 raise Refused(f"the answer names {choice}, which is none of the candidates")
         lines = [claim_lines(view, vocabulary, answer)]
-        return self.claims_answering(
-            conn, "write_triage_answer", [slot], lines, _graph_shown([found])
-        )
+        return self.claims_answering(conn, "write_triage_answer", [slot], lines, _shown_of([found]))
 
     def claims_answering(
         self,
@@ -1969,7 +1971,35 @@ class Service[Conn]:
         return write
 
 
-def _shown_of(answered: Sequence[Answered]) -> tuple[tuple[Delivered, ...], tuple[int, ...]]:
+def _refuse_gate_kind(proposal: int, body: EntityBody | RelationBody) -> None:
+    """Refuses to make a circle or a membership direct over MCP.
+
+    The gate reads these kinds, and its membership must not stand on a
+    model's word: the ask mark of `write_approve` and `write_triage_answer`
+    is a hint the client may stop asking for ("don't ask again"), and the log
+    could not tell such an approval from the operator's. So only the operator
+    approves one, on the command line ({ref}`graph-gate-kinds`). The client
+    can see the version already, so the sentence tells it nothing new; it
+    comes after the check that the version is one it may see."""
+    if body.type in GATE_TYPES:
+        raise Refused(
+            f"event {proposal} is of a kind the gate reads; "
+            "a circle or a membership is approved on the command line"
+        )
+
+
+class _Shown(Protocol):
+    """What a writing call found and showed: `Answered` for an obligation
+    or a decision, `GraphAnswered` for an entity or a relation."""
+
+    @property
+    def delivered(self) -> Delivered: ...
+
+    @property
+    def rules(self) -> tuple[int, ...]: ...
+
+
+def _shown_of(answered: Sequence[_Shown]) -> tuple[tuple[Delivered, ...], tuple[int, ...]]:
     """The delivered entries of the threads of `answered`, each once, and
     the ids of their rules, ascending."""
     delivered = {found.delivered.event: found.delivered for found in answered}
@@ -1987,15 +2017,6 @@ class GraphAnswered:
     version: GraphVersion
     delivered: Delivered
     rules: tuple[int, ...]
-
-
-def _graph_shown(
-    answered: Sequence[GraphAnswered],
-) -> tuple[tuple[Delivered, ...], tuple[int, ...]]:
-    """`_shown_of` for versions of entities and relations."""
-    delivered = {found.delivered.event: found.delivered for found in answered}
-    rules = sorted({rule for found in answered for rule in found.rules})
-    return tuple(delivered.values()), tuple(rules)
 
 
 def _standing(thread: GraphThread, proposal: int, approval: Claim) -> Claim | int:

@@ -738,10 +738,18 @@ def level_of(version: GraphVersion, classes: Mapping[int, ClassState]) -> str:
     """The level a version counts at under `classes`: its own, except that a
     transitive version whose class was revoked with `demote`, or whose class
     `classes` does not know, counts as open. Revoked without `demote`, it
-    stays transitive, and a caller marks it."""
+    stays transitive, and a caller marks it.
+
+    A transitive version of a kind the gate reads counts as open too. The
+    write path never writes one (`conformance_problem`), so such a row came
+    around it, and `verify` reports it; until somebody acts on the finding,
+    the fold must not let it stand on a class, for the same reason an
+    unknown class does not."""
     claim = version.claim
     if claim.responsibility != TRANSITIVE:
         return claim.responsibility
+    if claim.body.type in GATE_TYPES:
+        return OPEN
     state = classes.get(cast("int", claim.under))
     if state is None or (state.revoked and state.demote):
         return OPEN

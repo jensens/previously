@@ -950,6 +950,51 @@ def test_a_class_revoked_with_demote_or_unknown_counts_as_open(
     assert level_of(graph.threads[1].versions[1], classes) == level
 
 
+@pytest.mark.parametrize(
+    ("claim", "level"),
+    [
+        (
+            relation(
+                responsibility=TRANSITIVE, author=MODEL, under=CLASS, confidence=90, kind="holds"
+            ),
+            TRANSITIVE,
+        ),
+        (
+            relation(
+                responsibility=TRANSITIVE,
+                author=MODEL,
+                under=CLASS,
+                confidence=90,
+                kind="member_of",
+            ),
+            OPEN,
+        ),
+        (
+            entity(
+                responsibility=TRANSITIVE,
+                author=MODEL,
+                under=CLASS,
+                confidence=90,
+                kind="circle",
+                fields={"name": "Board"},
+            ),
+            OPEN,
+        ),
+    ],
+    ids=["holds-control", "member_of", "circle"],
+)
+def test_a_forged_transitive_version_of_a_gate_kind_counts_as_open(
+    claim: Claim, level: str
+) -> None:
+    """The write path never writes a transitive circle or membership, so
+    such a row came around it; under a class in force it still must not
+    stand on the class. Measured red with the gate-kind line taken out of
+    `level_of` (both gate cases); the `holds` control stays green then."""
+    graph = fold_graph([row(1, claim)], ACTIVE_CLASS)
+
+    assert level_of(graph.threads[1].versions[0], ACTIVE_CLASS) == level
+
+
 def test_a_demoted_version_can_be_rejected_and_approved_like_an_open_one() -> None:
     demoted = {CLASS: ClassState(CLASS, revoked=True, demote=True)}
     rows = [row(1, proposal()), row(2, transitive())]

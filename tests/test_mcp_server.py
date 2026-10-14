@@ -3694,6 +3694,69 @@ def test_a_proposal_of_the_client_is_approved_with_write_approve(world: World, m
     assert verify(world.storage) == []
 
 
+def _circle(world: World, name: str) -> int:
+    (circle,) = write_claims(
+        world.storage,
+        world.storage,
+        [
+            replace(
+                _person(name, world.ids["attachments_only"]),
+                body=EntityBody("circle", None, {"name": name}, ACTIVE),
+            )
+        ],
+        recorded_at=T0,
+    ).ids
+    return circle
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_membership_a_model_proposed_is_not_made_direct_over_mcp(world: World, mode: str) -> None:
+    """Ruling F-b of the 2026-10-14 assignments plan: the gate reads circles
+    and memberships, so a model's proposal of one becomes direct only on the
+    command line. `write_approve` and `write_triage_answer` refuse it before
+    anything is written. Measured red with the guard taken out of
+    `server.py` (both calls wrote a direct `member_of`); the control, a
+    `holds` proposal approved in the same call shape, stays green then."""
+    ids = _graphed(world)
+    scanned = world.ids["attachments_only"]
+    board, cash = _circle(world, "Board"), _circle(world, "Cash")
+    member = {
+        "type": "member_of",
+        "from": ids.anna,
+        "to": board,
+        "sources": [{"event": scanned}],
+        "confidence": 90,
+    }
+    _confirmed(world, mode, "write_relation", {"items": [member]})
+    (proposed, payload) = _graph_payloads(world)[-1]
+    assert (payload["type"], payload["responsibility"]) == ("member_of", "open")
+    asking = {**_question_item(ids.anna, [board, cash], scanned), "type": "member_of"}
+    _confirmed(world, mode, "write_relation", {"items": [asking]})
+    (question, _payload) = _graph_payloads(world)[-1]
+    count = len(_assertions(world))
+
+    approved = _write(world, mode, "write_approve", {"ids": [proposed]})
+    answered = _write(world, mode, "write_triage_answer", {"question": question, "choice": board})
+
+    assert _text(approved) == (
+        f"Error: event {proposed} is of a kind the gate reads; "
+        "a circle or a membership is approved on the command line"
+    )
+    assert _text(answered) == (
+        f"Error: event {question} is of a kind the gate reads; "
+        "a circle or a membership is approved on the command line"
+    )
+    assert len(_assertions(world)) == count
+    # The control: a proposal of another kind, approved the same way.
+    holds = {**member, "type": "holds", "to": ids.secretary}
+    _confirmed(world, mode, "write_relation", {"items": [holds]})
+    (other, _payload) = _graph_payloads(world)[-1]
+    approved = _write(world, mode, "write_approve", {"ids": [other]})
+    assert not approved.is_error, _text(approved)
+    assert _graph_payloads(world)[-1][1]["approves"] == other
+
+
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_write_approve_refuses_a_question_and_a_mixed_call_and_a_hidden_version(

@@ -7201,6 +7201,25 @@ def test_answer_refuses_what_is_no_question_and_a_choice_that_is_no_candidate(
 
 
 @pytest.mark.db
+def test_approve_makes_a_membership_a_model_proposed_direct_on_the_command_line(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling F-b of the 2026-10-14 assignments plan refuses this over MCP;
+    the command line is where the operator does it, and it stays allowed."""
+    ids = _waiting_graph(db, monkeypatch, capsys)
+    storage = PostgresStorage(cast("Engine", db))
+    member = RelationBody("member_of", ids["anna"], ids["circle_a"], None, None, {}, "standing")
+    (proposed,) = _model_writes(storage, _model_claim(RELATION, member))
+    approval = _written(capsys, "approve", str(proposed))
+    payload = dict(_standing(db))[approval]
+    assert (payload["type"], payload["responsibility"], payload["approves"]) == (
+        "member_of",
+        "direct",
+        proposed,
+    )
+
+
+@pytest.mark.db
 def test_approve_takes_a_proposal_or_an_objection_of_the_graph_as_the_operators_own(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
