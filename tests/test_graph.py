@@ -157,7 +157,7 @@ def relation(
     confidence: int | None = None,
     contests: int | None = None,
     kind: str = "holds",
-    start: int = 10,
+    start: int | Source = 10,
     to: int | None = 12,
     candidates: tuple[int, ...] | None = None,
     period: Period | None = None,
@@ -239,6 +239,8 @@ def good_relation() -> dict[str, object]:
         relation(period=Period(None, None), state=RETRACTED, subject=4),
         relation(responsibility=OPEN, author=MODEL, to=None, candidates=(11, 14)),
         relation(responsibility=OPEN, author=MODEL, subject=4, contests=4, confidence=70),
+        relation(start=Source(5, (1, 2))),
+        relation(start=Source(5, None), responsibility=OPEN, author=MODEL),
     ],
     ids=lambda claim: f"{claim.kind}-{claim.responsibility}",
 )
@@ -469,16 +471,20 @@ QUESTION = claim_payload(relation(responsibility=OPEN, author=MODEL, to=None, ca
         (changed(good_relation(), period={"from": "20260203", "to": None}), BAD_PERIOD),
         (changed(good_relation(), period={"from": None}), BAD_PERIOD),
         (
-            changed(good_relation(), **{"from": {"event": 5, "units": None}}),
-            "an event as the start of a relation comes with assignments",
+            changed(good_relation(), **{"from": {"event": 0, "units": None}}),
+            "from names an event that is not a whole number of at least 1",
+        ),
+        (
+            changed(good_relation(), **{"from": {"event": 5, "units": NO_UNITS}}),
+            "the units of a source are an empty list: use null for the whole event",
         ),
         (
             changed(good_relation(), **{"from": 10}),
-            "from is not an object with the id of an entity",
+            "from is neither an entity nor an event with its units",
         ),
         (
             changed(good_relation(), **{"from": {"entity": "10"}}),
-            "from is not an object with the id of an entity",
+            "from is neither an entity nor an event with its units",
         ),
         (changed(good_relation(), to={"entity": -3}), "to names no entity id"),
         (
@@ -546,12 +552,10 @@ def test_claim_problem_never_raises(key: str) -> None:
             assert problem is None or problem.strip()
 
 
-@pytest.mark.parametrize(
-    "author",
-    [OPERATOR, "model:claude", "model:", "model:a b", "model:x‮", "human:anna", "", "m" * 5],
-)
-def test_the_author_rule_is_that_of_obligations(author: str) -> None:
-    obligation = Statement(
+def obligation_with(*, author: str = OPERATOR, sources: object = None) -> dict[str, object]:
+    """An open obligation payload, changed at `author` and, if given, at
+    `sources`: everything else is sound."""
+    statement = Statement(
         OBLIGATION,
         author,
         OPEN,
@@ -563,9 +567,81 @@ def test_the_author_rule_is_that_of_obligations(author: str) -> None:
         None,
         ObligationBody("own", "circle:acme", "send the offer", None, "open"),
     )
+    payload = payload_of(statement)
+    return payload if sources is None else changed(payload, sources=sources)
+
+
+AUTHORS = [
+    OPERATOR,
+    "model:claude",
+    "model:" + "c" * 200,
+    "model:" + "c" * 201,
+    "model:",
+    "model:a b",
+    "model:x‮",
+    "model:x ",
+    "model:x ",
+    "human:anna",
+    "",
+    "claude",
+]
+
+
+@pytest.mark.parametrize("author", AUTHORS)
+def test_the_author_rule_is_that_of_obligations(author: str) -> None:
     claim = changed(claim_payload(entity(responsibility=OPEN)), author=author)
 
-    assert (claim_problem(claim) is None) == (assertion_problem(payload_of(obligation)) is None)
+    assert claim_problem(claim) == assertion_problem(obligation_with(author=author))
+
+
+def test_the_author_cases_fall_on_both_sides() -> None:
+    # The control for the comparison above: its cases are neither all
+    # accepted nor all refused, and the length bound runs between two of them.
+    verdicts = {author: assertion_problem(obligation_with(author=author)) for author in AUTHORS}
+
+    assert verdicts["model:" + "c" * 200] is None
+    assert verdicts["model:" + "c" * 201] is not None
+    assert verdicts["model:x "] is not None
+    assert verdicts["model:x "] is not None
+    assert verdicts[OPERATOR] is None
+
+
+SOURCE_CASES: list[object] = [
+    [{"event": 5, "units": None}],
+    [{"event": 5, "units": [0, 3]}, {"event": 9, "units": None}],
+    [{"event": 2**53 - 1, "units": [2**53 - 1]}],
+    [{"event": 2**53, "units": None}],
+    [{"event": 0, "units": None}],
+    [{"event": True, "units": None}],
+    [{"event": 5, "units": [-1]}],
+    [{"event": 5, "units": [2, 2]}],
+    [{"event": 5, "units": [3, 1]}],
+    [{"event": 5, "units": [1.0]}],
+    [{"event": 5, "units": [False]}],
+    [{"event": 5, "units": NO_UNITS}],
+    [{"event": 5, "units": "1"}],
+    [{"event": 5}],
+    [{"event": 5, "units": None, "extra": 1}],
+    ["event 5"],
+    [{"event": 5, "units": None}, "event 6"],
+    "event 5",
+]
+
+
+@pytest.mark.parametrize("sources", SOURCE_CASES)
+def test_the_source_rule_is_that_of_obligations(sources: object) -> None:
+    # Only non-empty sources: there the two rules have to agree. An empty
+    # list differs by design, since a recollection has none.
+    claim = changed(good_entity(), sources=sources)
+
+    assert claim_problem(claim) == assertion_problem(obligation_with(sources=sources))
+
+
+def test_the_source_cases_fall_on_both_sides() -> None:
+    verdicts = [assertion_problem(obligation_with(sources=case)) for case in SOURCE_CASES]
+
+    assert verdicts[:3] == [None, None, None]
+    assert all(verdict is not None for verdict in verdicts[3:])
 
 
 @pytest.mark.parametrize(
@@ -1178,6 +1254,112 @@ def test_reaches_walks_only_what_stands_and_ignores_periods() -> None:
     assert not graph.reaches(10, 13, PART_OF)
 
 
+# --- Fix round 1: levels in reaches, a later transitive version, dates in a
+# choice, rejections of direct versions, an event as the start ---------------
+
+STANDS_FOR = frozenset({DIRECT, TRANSITIVE})
+
+
+def test_an_open_edge_does_not_block_what_the_operator_stands_for() -> None:
+    proposed = replace(edge(10, 11), responsibility=OPEN, author=MODEL, confidence=10)
+    graph = fold_graph([row(1, proposed)], ACTIVE_CLASS)
+
+    assert not graph.reaches(10, 11, PART_OF, levels=STANDS_FOR)
+    assert graph.reaches(10, 11, PART_OF)  # every level by default
+
+
+def test_direct_and_transitive_edges_count_for_what_the_operator_stands_for() -> None:
+    standing = replace(
+        edge(11, 12), responsibility=TRANSITIVE, author=MODEL, under=CLASS, confidence=90
+    )
+    graph = fold_graph([row(1, edge(10, 11)), row(2, standing)], ACTIVE_CLASS)
+    demoted = {CLASS: ClassState(CLASS, revoked=True, demote=True)}
+
+    assert graph.reaches(10, 12, PART_OF, levels=STANDS_FOR)
+    assert not replace(graph, classes=demoted).reaches(10, 12, PART_OF, levels=STANDS_FOR)
+    assert replace(graph, classes=demoted).reaches(10, 12, PART_OF)
+
+
+def test_a_relation_that_starts_at_an_event_is_no_edge() -> None:
+    graph = fold_graph([row(1, edge(10, 11)), row(2, relation(start=Source(5, None)))], {})
+
+    assert list(graph.relations()) == [1, 2]
+    assert graph.reaches(10, 11, frozenset({"part_of", "holds"}))
+    assert not graph.reaches(5, 12, frozenset({"part_of", "holds"}))
+
+
+def test_a_later_transitive_version_answers_a_question_and_overtakes_proposals() -> None:
+    # Ruling T2-c of the 2026-10-14 assignments plan: the operator stands for
+    # a transitive version through its class, so it ends the wait as a
+    # direct one would.
+    later = relation(responsibility=TRANSITIVE, author=MODEL, subject=1, under=CLASS, confidence=90)
+    rows = [
+        row(1, QUESTION_CLAIM),
+        row(2, relation(responsibility=OPEN, author=MODEL, subject=1, to=14)),
+        row(3, later),
+    ]
+    thread = fold_graph(rows, ACTIVE_CLASS).threads[1]
+
+    assert cast_version(thread.winner(ACTIVE_CLASS)).id == 3
+    assert thread.question(ACTIVE_CLASS) is None
+    assert thread.pending(ACTIVE_CLASS) == ()
+    demoted = {CLASS: ClassState(CLASS, revoked=True, demote=True)}
+    assert cast_version(thread.question(demoted)).id == 1
+    assert ids(thread.pending(demoted)) == [1, 2]
+
+
+MILESTONES = Vocabulary(
+    {
+        (ENTITY_KIND, "milestone"): kind(
+            ENTITY_KIND,
+            "milestone",
+            (NAME, FieldSpec("phase", "choice", ("2026-01-01", "later"), None, False)),
+        )
+    },
+    {},
+)
+
+
+@pytest.mark.parametrize(
+    ("phase", "sentence"),
+    [
+        ("2026-01-01", None),
+        ("2026-01-02", 'the field "phase" holds none of the values its kind allows'),
+        ("later", None),
+    ],
+)
+def test_a_choice_spelled_like_a_date_gets_one_verdict_built_and_read_back(
+    phase: str, sentence: str | None
+) -> None:
+    built = entity(kind="milestone", fields={"name": "Kick-off", "phase": phase})
+    read_back = cast_claim(parse_claim(claim_payload(built)))
+
+    def verdict(claim: Claim) -> str | None:
+        return conformance_problem(claim, MILESTONES, new_thread=True, entity_types={})
+
+    assert verdict(built) == sentence
+    assert verdict(read_back) == sentence
+
+
+def test_a_rejection_of_a_direct_version_is_ignored() -> None:
+    rows = [row(1, entity()), row(2, rejection(1))]
+    thread = fold_graph(rows, ACTIVE_CLASS).threads[1]
+
+    assert thread.rejected == frozenset()
+    assert cast_version(thread.winner(ACTIVE_CLASS)).id == 1
+    proposed = [row(1, entity()), row(2, proposal(subject=1)), row(3, rejection(2))]
+    assert fold_graph(proposed, ACTIVE_CLASS).threads[1].rejected == {2}
+
+
+@pytest.mark.parametrize("state", [STANDING, RETRACTED])
+def test_an_event_as_the_start_is_sound_form_and_refused_by_the_vocabulary(state: str) -> None:
+    claim = relation(start=Source(5, (1, 2)), state=state)
+
+    assert claim_problem(claim_payload(claim)) is None
+    assert conformance(claim) == "an event as the start of a relation comes with assignments"
+    assert conformance(replace(claim, body=replace(claim.body, start=10))) is None
+
+
 # --- Changes ----------------------------------------------------------------------
 
 
@@ -1241,6 +1423,7 @@ def build_rows(
     def version(number: int, action: str, pick: int) -> Claim | Statement:
         subject = None if number == 1 else 1
         target = answerable[pick % len(answerable)] if answerable else None
+        rejectable = answerable + direct  # a rejection of a direct version is ignored
         if action == "direct":
             direct.append(number)
             return entity(subject=subject, fields={"name": f"v{number}"})
@@ -1248,8 +1431,8 @@ def build_rows(
             answerable.append(number)
             under = UNDER[pick % len(UNDER)]
             return transitive(subject=subject, under=under, fields={"name": f"v{number}"})
-        if action == "reject" and target is not None:
-            return rejection(target)
+        if action == "reject" and rejectable:
+            return rejection(rejectable[pick % len(rejectable)])
         if action == "approve" and target is not None:
             direct.append(number)
             return approval(1, target, written[target])
@@ -1287,7 +1470,7 @@ def expected_versions(
             continue
         if payload["assertion"] == REJECTION:
             of = cast_int(cast_statement(parse_statement(payload)).of)
-            if of in versions:
+            if of in versions and versions[of].responsibility != DIRECT:
                 rejected.add(of)
                 answered.add(of)
             continue

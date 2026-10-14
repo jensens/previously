@@ -24,8 +24,11 @@ statement nobody authorized stands for nothing.
 The form is hashed into the log for good, so it is checked as strictly as an
 obligation: exactly the keys of the subtype, no float, no date but
 `YYYY-MM-DD`. `claim_problem` checks the form alone; `conformance_problem`
-checks a claim against a vocabulary. Both return one sentence that never
-contains text found in the payload.
+checks a claim against a vocabulary. Both return one sentence. It may name a
+field as the vocabulary declares it, and never holds a field value or any
+other text from the payload: a refusal can end up in a log or on a terminal,
+and a statement's text may come from a mail whose erasure the log has to
+survive.
 """
 
 from collections.abc import Iterable
@@ -36,6 +39,7 @@ from datetime import date
 from datetime import datetime
 from itertools import pairwise
 from previously.core.assertion import DIRECT
+from previously.core.assertion import MAX_NAME_LENGTH
 from previously.core.assertion import MODEL_PREFIX
 from previously.core.assertion import OPEN
 from previously.core.assertion import OPERATOR
@@ -97,7 +101,6 @@ MAX_CANDIDATES: Final = 5
 _IDENTIFIER = re.compile(r"[a-z][a-z0-9_]{0,39}")
 _LANGUAGE = re.compile(r"[a-z]{2,3}(-[A-Za-z0-9]{1,8})*")
 _DATE_FORM = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
-_MAX_CLIENT = 200
 
 _COMMON_KEYS: Final = frozenset(
     {"assertion", "author", "responsibility", "evidence", "sources", "reason", "handle"}
@@ -136,11 +139,13 @@ class EntityBody:
 
 @dataclass(frozen=True)
 class RelationBody:
-    """`start` is the entity in `from`; `to` is the entity it points at, or
-    `None` for a question, which names `candidates` instead."""
+    """`start` is what `from` names: the id of an entity, or a `Source`, an
+    event with the units it cites, which the form admits for phase 2 and
+    `conformance_problem` refuses until then. `to` is the entity it points
+    at, or `None` for a question, which names `candidates` instead."""
 
     type: str
-    start: int
+    start: int | Source
     to: int | None
     candidates: tuple[int, ...] | None
     period: Period | None
@@ -210,7 +215,8 @@ def claim_payload(claim: Claim) -> dict[str, object]:
     if isinstance(body, EntityBody):
         payload["language"] = body.language
     else:
-        payload["from"] = {"entity": body.start}
+        start = body.start
+        payload["from"] = _source_payload(start) if isinstance(start, Source) else {"entity": start}
         if body.candidates is not None:
             payload["to"] = {"candidates": list(body.candidates)}
         else:
@@ -238,7 +244,11 @@ def _date(value: object) -> date | None:
 
 
 def _has_forbidden_character(text: str) -> bool:
-    return any(unicodedata.category(char) in ("Cc", "Cf") or char in "  " for char in text)
+    # Controls, format characters such as the bidi overrides, and the line
+    # and paragraph separators, as in core/assertion.py.
+    return any(
+        unicodedata.category(char) in ("Cc", "Cf") or char in "\u2028\u2029" for char in text
+    )
 
 
 def _author_problem(author: object) -> str | None:
@@ -249,7 +259,7 @@ def _author_problem(author: object) -> str | None:
     if isinstance(author, str) and author.startswith(MODEL_PREFIX):
         client = author[len(MODEL_PREFIX) :]
         if (
-            0 < len(client) <= _MAX_CLIENT
+            0 < len(client) <= MAX_NAME_LENGTH
             and not any(char.isspace() for char in client)
             and not _has_forbidden_character(client)
         ):
@@ -257,6 +267,9 @@ def _author_problem(author: object) -> str | None:
     return "the author is neither human:operator nor model:<client>"
 
 
+# `_units_problem` and `_source_problem` are the rules of core/assertion.py,
+# where they are private; tests/test_graph.py holds them against
+# `assertion_problem` on the same non-empty sources.
 def _units_problem(units: object) -> str | None:
     if units is None:
         return None
@@ -438,15 +451,20 @@ def _entity_problem(payload: Mapping[str, object]) -> str | None:
 
 def _end_problem(value: object) -> str | None:
     if isinstance(value, dict) and set(cast("dict[str, object]", value)) == {"event", "units"}:
-        # The form keeps room for an event as the start, which phase 2 brings;
-        # until then it is refused with the sentence the write path says.
-        return "an event as the start of a relation comes with assignments"
+        # An event as the start, with the units it cites, is sound form: the
+        # payload keeps room for what phase 2 brings, and
+        # `conformance_problem` refuses it until then, so that `verify` will
+        # not call a phase 2 event malformed.
+        entry = cast("dict[str, object]", value)
+        if not _is_id(entry["event"]):
+            return "from names an event that is not a whole number of at least 1"
+        return _units_problem(entry["units"])
     if (
         not isinstance(value, dict)
         or set(cast("dict[str, object]", value)) != {"entity"}
         or not _is_id(cast("dict[str, object]", value)["entity"])
     ):
-        return "from is not an object with the id of an entity"
+        return "from is neither an entity nor an event with its units"
     return None
 
 
@@ -546,7 +564,8 @@ def _body_of(payload: Mapping[str, object]) -> EntityBody | RelationBody:
     state = cast("str", payload["state"])
     if payload["assertion"] == ENTITY:
         return EntityBody(kind, cast("str | None", payload["language"]), fields, state)
-    start = cast("int", cast("dict[str, object]", payload["from"])["entity"])
+    origin = cast("dict[str, object]", payload["from"])
+    start = _source_of(origin) if "event" in origin else cast("int", origin["entity"])
     to = cast("dict[str, object]", payload["to"])
     candidates = to.get("candidates")
     period = payload["period"]
@@ -589,9 +608,13 @@ def _field_problem(
     spec: FieldSpec, value: FieldValue, entity_types: Mapping[int, str] | None
 ) -> str | None:
     name, kind = spec.name, spec.type
+    if kind in (TEXT, CHOICE) and isinstance(value, date):
+        # A text spelled like a date reads back as one (see `_value_of`); it
+        # is checked as the string it is written as, so that a claim and
+        # the same claim read back from its payload get the same verdict.
+        value = value.isoformat()
     if kind == TEXT:
-        # A date here is a text spelled like one (see `_value_of`).
-        fits = isinstance(value, (str, date))
+        fits = isinstance(value, str)
     elif kind == DATE:
         fits = isinstance(value, date)
     elif kind == PERIOD:
@@ -631,15 +654,16 @@ def _fields_conformance(
 
 
 def _ends_conformance(
-    spec: KindSpec, body: RelationBody, entity_types: Mapping[int, str]
+    spec: KindSpec, body: RelationBody, start: int, entity_types: Mapping[int, str]
 ) -> str | None:
+    """`start` is `body.start`, which the caller has found to be an entity."""
     # One sentence for an entity that does not stand and one the caller may
     # not see: a caller passes only the entities it may show, and the
     # sentence must not tell the two apart.
-    ends = [body.start, *([body.to] if body.to is not None else body.candidates or ())]
+    ends = [start, *([body.to] if body.to is not None else body.candidates or ())]
     if any(end not in entity_types for end in ends):
         return "an end of the relation is not an entity that stands"
-    if entity_types[body.start] not in (spec.from_ or ()):
+    if entity_types[start] not in (spec.from_ or ()):
         return "the start of the relation is of a kind its relation kind does not start from"
     if any(entity_types[end] not in (spec.to or ()) for end in ends[1:]):
         return "the end of the relation is of a kind its relation kind does not point at"
@@ -659,6 +683,10 @@ def conformance_problem(
     nothing about what it names, so its ends and refs are not looked up.
     """
     body = claim.body
+    if isinstance(body, RelationBody) and isinstance(body.start, Source):
+        # The form admits it for phase 2; until assignments come, a relation
+        # starts at an entity.
+        return "an event as the start of a relation comes with assignments"
     spec = vocabulary.kind(claim.kind, body.type)
     if spec is None:
         return f"the type is not declared as a kind of {claim.kind} in the vocabulary"
@@ -679,7 +707,9 @@ def conformance_problem(
         return None
     if body.period is not None and PERIOD_BEHAVIOR not in spec.behaviors:
         return "a period needs a relation kind with the behavior period"
-    return None if retracted else _ends_conformance(spec, body, entity_types)
+    if retracted:
+        return None
+    return _ends_conformance(spec, body, cast("int", body.start), entity_types)
 
 
 # --- Folding versions -------------------------------------------------------------
@@ -775,7 +805,12 @@ class GraphThread:
         """Versions that are neither rejected nor approved and wait for the
         operator: those newer than the version he stands for, or, with none,
         every open one except the latest, which stands as the proposal. The
-        winner is never in the list."""
+        winner is never in the list.
+
+        The version he stands for may be transitive: a later transitive
+        version overtakes the older open ones as a direct one does, since he
+        stands for it through its class (ruling T2-c of the 2026-10-14
+        assignments plan)."""
         winner = self.winner(classes)
         return tuple(v for v in self._waiting(classes) if v != winner)
 
@@ -791,7 +826,9 @@ class GraphThread:
     def question(self, classes: Mapping[int, ClassState]) -> GraphVersion | None:
         """The newest unanswered open relation version that names candidates
         and is not overtaken, whether it stands as the proposal or waits
-        behind one. A later direct version answers it."""
+        behind one. A later direct version answers it, and so does a later
+        transitive one: the operator stands for that through its class, as
+        `pending` says."""
         asking = [
             v
             for v in self._waiting(classes)
@@ -824,7 +861,12 @@ class Graph:
     def relations(self, *, at: date | None = None) -> Mapping[int, GraphVersion]:
         """The winner of each relation, by id, if it stands, points at an
         entity, and, with `at`, its period holds on that day. A question is
-        no relation yet, and a relation without a period holds on every day."""
+        no relation yet, and a relation without a period holds on every day.
+
+        Winners of every level are here, open proposals included. The cycle
+        check of a direct or transitive write does not see open edges (see
+        `reaches`), so these relations may hold a cycle that runs through an
+        open one: a walk over them needs a visited set."""
         found: dict[int, GraphVersion] = {}
         for subject, version in self._winners(RELATION).items():
             body = cast("RelationBody", version.claim.body)
@@ -843,6 +885,7 @@ class Graph:
         *,
         extra: Iterable[tuple[int, int]] = (),
         without: frozenset[int] = frozenset(),
+        levels: frozenset[str] = frozenset(LEVELS),
     ) -> bool:
         """Whether a path of at least one edge leads from entity `start` to
         entity `end` over relations of `types`, whatever their periods.
@@ -850,11 +893,22 @@ class Graph:
         `extra` adds edges a batch is about to write, and `without` leaves out
         the relations, by id, whose current edge the batch replaces. A path
         from an entity back to itself is a cycle, an edge to itself included.
+
+        `levels` keeps the edges whose winner counts at one of them, by
+        `level_of`. A proposal must not close a cycle with anything, so an
+        open write is checked against every level. A direct or transitive
+        write, an approval among them, is checked against direct and
+        transitive edges only: a proposal nobody stands for must not veto
+        what the operator stands for (ruling T2-b of the 2026-10-14
+        assignments plan). A relation that starts at an event is no edge
+        between entities.
         """
         edges: dict[int, set[int]] = {}
         for subject, version in self.relations().items():
             body = cast("RelationBody", version.claim.body)
-            if subject in without or body.type not in types:
+            if subject in without or body.type not in types or isinstance(body.start, Source):
+                continue
+            if level_of(version, self.classes) not in levels:
                 continue
             edges.setdefault(body.start, set()).add(cast("int", body.to))
         for origin, target in extra:
@@ -904,13 +958,23 @@ def _contestable(draft: _Draft, contests: int, erased: set[int]) -> bool:
 
 
 def _reject(
-    payload: Mapping[str, object], drafts: dict[int, _Draft], thread_of: dict[int, int]
+    payload: Mapping[str, object],
+    drafts: dict[int, _Draft],
+    thread_of: dict[int, int],
+    classes: Mapping[int, ClassState],
 ) -> None:
+    """Counts a rejection whose `of` names an open or transitive version, by
+    `level_of` now. One that names a direct version is ignored: the operator
+    stands for that one, and rejecting it would only show it as rejected
+    where it still wins."""
     statement = parse_statement(payload)
     if statement is None or statement.of is None:
         return
     target = thread_of.get(statement.of)
-    if target is not None:
+    if target is None:
+        return
+    version = drafts[target].version(statement.of)
+    if version is not None and level_of(version, classes) != DIRECT:
         drafts[target].rejected.add(statement.of)
 
 
@@ -926,8 +990,8 @@ def fold_graph(
     unanswered open or transitive version, or whose `contests` names no
     direct version of its thread. A rejection, parsed with
     `core.assertion.parse_statement`, counts when its `of` names a standing
-    version of the graph; it is ignored otherwise, since it may reject an
-    obligation or a decision. Approvals and objections that name an erased
+    open or transitive version of the graph; it is ignored otherwise, since
+    it may reject an obligation or a decision. Approvals and objections that name an erased
     version stand, as with an obligation.
     """
     drafts: dict[int, _Draft] = {}
@@ -938,7 +1002,7 @@ def fold_graph(
             erased.add(row_id)
             continue
         if payload.get("assertion") == REJECTION:
-            _reject(payload, drafts, thread_of)
+            _reject(payload, drafts, thread_of, classes)
             continue
         claim = parse_claim(payload) if payload.get("assertion") in GRAPH_KINDS else None
         if claim is None:
@@ -1008,7 +1072,8 @@ def _texts_of(claim: Claim) -> dict[str, str]:
     if isinstance(body, EntityBody):
         texts["language"] = _NONE if body.language is None else body.language
     else:
-        texts["from"] = f"entity {body.start}"
+        start = body.start
+        texts["from"] = _sources_text((start,)) if isinstance(start, Source) else f"entity {start}"
         if body.candidates is not None:
             texts["to"] = "candidates " + ", ".join(str(item) for item in body.candidates)
         else:
