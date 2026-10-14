@@ -79,8 +79,8 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `classes` | The class was written, or `list` or `sample` printed. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, including a class the vocabulary can't carry, a `revoke` or `sample` that names no class, or a `--count` below 1, or storage raised an error. |
 | `triage`, `status` | What waits was printed, even when nothing does. | Not used. | `PREVIOUSLY_LANGUAGE` isn't a language tag (`triage`), or storage raised an error. |
 | `answer` | The answer was written. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The id is no question that waits, the choice is none of its candidates, the write path refused the answer, or storage raised an error. |
-| `mcp` | Standard input closed, and the server ended. | Not used. | `PREVIOUSLY_MCP_CLIENT` is unset or names no client in force, or storage raised an error. |
-| `serve` | The server was stopped with an interrupt, such as Ctrl+C. | Not used. | `PREVIOUSLY_MCP_ADDRESS` isn't an address, `PREVIOUSLY_MCP_HOST` is set without it, or storage raised an error. |
+| `mcp` | Standard input closed, and the server ended. | Not used. | `PREVIOUSLY_MCP_CLIENT` is unset or names no client in force, `PREVIOUSLY_LANGUAGE` isn't a language tag, or storage raised an error. |
+| `serve` | The server was stopped with an interrupt, such as Ctrl+C. | Not used. | `PREVIOUSLY_MCP_ADDRESS` isn't an address, `PREVIOUSLY_MCP_HOST` is set without it, `PREVIOUSLY_LANGUAGE` isn't a language tag, or storage raised an error. |
 | `vocabulary` | `show` printed the vocabulary, `apply` wrote what the file changes, or found nothing to change. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, including neither a file nor `--base`, or both, the file can't be read or has a fault, the write path refused a kind, or storage raised an error. |
 | `gate` | `explain` printed the decision, whether it allows a call or denies it; `try` made the call, got an answer that matches the schema, and recorded it. | Not used. | The event doesn't exist, the price file can't be read, storage raised an error, or `try` recorded a call that was denied, failed, refused by the model, or answered against the schema. |
 
@@ -1558,6 +1558,7 @@ A client revoked while the process runs gets an error from its next call on, and
 Standard output carries the protocol and nothing else, and the process ends when standard input closes.
 The tools, resources and prompts are the same as over HTTP; every call writes an `mcp_access`, which {ref}`cli-access` reads.
 The writing tools write only when `PREVIOUSLY_MCP_CONFIRM_KEY` holds at least 32 characters ({ref}`configuration-reference`); otherwise they answer with an error, and `mcp` starts all the same.
+`PREVIOUSLY_LANGUAGE` names the language the labels of kinds are shown in for an entity without a working language, as on the command line.
 
 (cli-serve)=
 
@@ -1565,7 +1566,7 @@ The writing tools write only when `PREVIOUSLY_MCP_CONFIRM_KEY` holds at least 32
 
 Serves MCP over HTTP under the path `/mcp`, with answers as JSON and without a session.
 A client of the protocol revision `2026-07-28` and one of an earlier revision are served at the same address.
-`serve` takes no options, and reads `PREVIOUSLY_MCP_ADDRESS`, `PREVIOUSLY_MCP_ALLOWED_HOSTS` and, for the writing tools as `mcp` does, `PREVIOUSLY_MCP_CONFIRM_KEY` ({ref}`configuration-reference`).
+`serve` takes no options, and reads `PREVIOUSLY_MCP_ADDRESS`, `PREVIOUSLY_MCP_ALLOWED_HOSTS` and, as `mcp` does, `PREVIOUSLY_MCP_CONFIRM_KEY` for the writing tools and `PREVIOUSLY_LANGUAGE` for the labels ({ref}`configuration-reference`).
 On start it prints one line to standard error, and then runs until it's stopped:
 
 ```text

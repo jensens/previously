@@ -425,21 +425,35 @@ def _removed_note(removed: int) -> str:
     return f" · {removed} control {noun} removed"
 
 
+def objections_note(count: int) -> str:
+    """What the header says of the objections that wait: ` · N objections
+    pending`, ` · 1 objection pending`, and nothing for none, so that a
+    result with nothing to say of them reads as it did before there were
+    any ({ref}`mcp-tools`)."""
+    if count <= 0:
+        return ""
+    noun = "objection" if count == 1 else "objections"
+    return f" · {count} {noun} pending"
+
+
 def _again(cursor: str) -> str:
     return f"call again with cursor={cursor}"
 
 
 @dataclass(frozen=True)
 class _Frame:
-    """What stands around the blocks: the title, the page number, and how
-    the footer says where to go on (`next_hint`, given the next cursor)."""
+    """What stands around the blocks: the title, the objections that wait,
+    the page number, and how the footer says where to go on (`next_hint`,
+    given the next cursor)."""
 
     title: str
     page: int
     next_hint: Callable[[str], str] | None
+    objections: int = 0
 
     def header(self, cursor: str | None, removed: int) -> str:
-        text = f"previously · {self.title} · page {self.page}"
+        pending = objections_note(self.objections)
+        text = f"previously · {self.title}{pending} · page {self.page}"
         if cursor is not None and self.next_hint is None:
             text += f" · next: c={cursor}"
         return text + _removed_note(removed)
@@ -466,6 +480,7 @@ def render_page(
     candidates: Iterator[str] | None = None,
     more: bool = False,
     next_hint: Callable[[str], str] | None = None,
+    objections: int = 0,
 ) -> Page:
     """Lay out as many `items` as fit in `PAGE_CHARS`.
 
@@ -480,6 +495,8 @@ def render_page(
     `page` is the number of this page, which the caller knows from the cursor
     chain; the total is unknown here, so the indicator reads `page N` and not
     `page N of M`.
+    `objections` is the number of objections the caller counted for the
+    client, which the header names after the title (`objections_note`).
 
     An item that is cut because it alone exceeds the page counts as delivered,
     and the next cursor points behind it, so a later page never starts in the
@@ -491,7 +508,7 @@ def render_page(
     For a cut unit the removed-character count covers the whole unit.
     """
     counter = _Counter()
-    frame = _Frame(counter.line(title), page, next_hint)
+    frame = _Frame(counter.line(title), page, next_hint, objections)
     blocks: list[str] = []
     shown: list[tuple[int, ...]] = []
     cursor: str | None = None
@@ -547,13 +564,17 @@ def render_page(
     )
 
 
-def render_text(title: str, lines: Sequence[str]) -> str:
+def render_text(title: str, lines: Sequence[str], *, objections: int = 0) -> str:
     """Return a result that holds no customer content, such as the circles of
-    the policy: a header, then each line sanitized and kept on one line."""
+    the policy: a header, then each line sanitized and kept on one line.
+    `objections` is named in the header as in `render_page`."""
     counter = _Counter()
     clean_title = counter.line(title)
     body = [counter.line(line, _ERROR_CHARS) for line in lines] or ["No results."]
-    return f"previously · {clean_title}{_removed_note(counter.removed)}\n\n" + "\n".join(body)
+    pending = objections_note(objections)
+    return f"previously · {clean_title}{pending}{_removed_note(counter.removed)}\n\n" + "\n".join(
+        body
+    )
 
 
 def render_error(message: str) -> str:

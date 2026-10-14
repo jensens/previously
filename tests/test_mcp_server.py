@@ -54,8 +54,20 @@ from previously.core.assertion import Statement
 from previously.core.assertions import write_statements
 from previously.core.chain import link
 from previously.core.chain import prepare
+from previously.core.classes import ApprovalClass
+from previously.core.classes import set_class
 from previously.core.clients import add_client
 from previously.core.clients import revoke_client
+from previously.core.graph import ACTIVE
+from previously.core.graph import Claim
+from previously.core.graph import ENTITY
+from previously.core.graph import EntityBody
+from previously.core.graph import Period
+from previously.core.graph import RELATION
+from previously.core.graph import RelationBody
+from previously.core.graph import SOURCES
+from previously.core.graph import STANDING
+from previously.core.graph_write import write_claims
 from previously.core.mail import map_mail
 from previously.core.policy import Circle
 from previously.core.policy import Inference
@@ -67,6 +79,9 @@ from previously.core.policy import Rule
 from previously.core.policy import set_policy
 from previously.core.redact import redact_event
 from previously.core.verify import verify
+from previously.core.vocabulary import apply_vocabulary
+from previously.core.vocabulary import base_vocabulary
+from previously.core.vocabulary import parse_file
 from previously.mcp_server.confirm import HANDLE_SECONDS
 from previously.mcp_server.confirm import seal
 from previously.mcp_server.read import event_hidden
@@ -856,7 +871,7 @@ def test_the_prompts_ask_for_work_and_hold_no_content(world: World, mode: str) -
 # The SHA-256 of the tool list as clients see it: name, description, input
 # schema and `_meta` of every tool, sorted by name, as canonical JSON. A change to any of
 # them is a change of the interface, made deliberately and released.
-TOOLS_SHA256 = "cc2e34cefa47cf15666248f578408b5a2e8561929aad0f8d2385a70121bdbf6d"
+TOOLS_SHA256 = "c25cff3f163115691e85553c462235edef9f359464169a955a2617b10a18dca0"
 
 
 def tool_list_digest(tools: list[dict[str, object]]) -> str:
@@ -888,13 +903,18 @@ def test_the_tool_list_matches_its_checksum(world: World, mode: str) -> None:
         "get_event",
         "list_circles",
         "list_decisions",
+        "list_entities",
         "list_obligations",
+        "list_triage",
         "policy_gaps",
         "previously",
         "whoami",
         "write_approve",
         "write_assertion",
+        "write_entity",
         "write_reject",
+        "write_relation",
+        "write_triage_answer",
     ]
     assert tool_list_digest(tools) == TOOLS_SHA256
 
@@ -917,17 +937,25 @@ def test_the_instructions_tell_a_client_how_to_read_an_approval_and_to_ask() -> 
         "[withheld: …]",
         "[erased: …]",
         "with history show every version with what it changed",
+        "the operator's vocabulary declares their kinds and fields",
+        "Give every item an honest confidence from 0 to 100: the server decides the level "
+        "from the operator's approval classes",
+        "becomes an objection to it and never replaces it",
+        "give it candidates, which asks the operator a question, and do not guess",
+        "and so does write_triage_answer for a question, with one of its candidates; your "
+        "client asks the person before it runs them",
+        "the first line of every result counts the objections pending",
     ):
         assert sentence in INSTRUCTIONS
 
 
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
-def test_exactly_the_two_answering_tools_carry_the_ask_mark(world: World, mode: str) -> None:
+def test_exactly_the_three_answering_tools_carry_the_ask_mark(world: World, mode: str) -> None:
     server = build_server(world.storage, stdio_client="claude-code")
     listed = _session(server, mode, lambda session: session.list_tools())
     marked = {tool.name for tool in listed.tools if (tool.meta or {}).get(ASK_MARK) is True}
-    assert marked == {"write_approve", "write_reject"}
+    assert marked == {"write_approve", "write_reject", "write_triage_answer"}
     # The control: a tool that proposes only is not marked, and no tool carries the key
     # with another value.
     assert all(tool.name in marked or ASK_MARK not in (tool.meta or {}) for tool in listed.tools)
@@ -3032,3 +3060,859 @@ def test_a_proposal_whose_entry_rests_on_a_hidden_source_elsewhere_is_refused_to
     # The control: the client that may see the plain mail answers it.
     local = _write(world, mode, "write_approve", {"ids": [proposal]}, client="local-harness")
     assert not local.is_error, _text(local)
+
+
+# --- entities and relations: list_entities, list_triage, write_entity,
+# write_relation, write_triage_answer, and the header -------------------------------
+#
+# The review focus items are those of the 2026-10-14 assignments plan. The
+# operator's entities rest on the scanned mail, which `claude-code` sees, and
+# one on the plain mail, which it does not; `local-harness` sees both.
+
+PRIVATE_NAME = "PRIVATE-NAME-OF-AN-ENTITY"
+PERSON_CLASS = ApprovalClass(
+    "claude_people",
+    model_author("claude-code"),
+    ENTITY,
+    frozenset({"person"}),
+    80,
+    None,
+    None,
+    revoked=False,
+    demote=False,
+)
+
+
+@dataclass(frozen=True)
+class Graphed:
+    """The ids of the operator's entities and relation in a world."""
+
+    anna: int  # a person on the scanned mail
+    treasurer: int  # a post on the scanned mail
+    lea: int  # a person on the plain mail, which claude-code may not see
+    holds: int  # Anna holds the post of treasurer, from 2019
+    secretary: int  # another post on the scanned mail, held by nobody
+
+
+def _person(name: str, source: int, *, language: str | None = None) -> Claim:
+    return Claim(
+        ENTITY,
+        OPERATOR,
+        DIRECT,
+        SOURCES,
+        (Source(source, None),),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        EntityBody("person", language, {"name": name}, ACTIVE),
+    )
+
+
+def _office(name: str, source: int) -> Claim:
+    return replace(_person(name, source), body=EntityBody("post", None, {"name": name}, ACTIVE))
+
+
+def _graphed(world: World) -> Graphed:
+    storage = world.storage
+    apply_vocabulary(storage, parse_file(base_vocabulary()), recorded_at=T0)
+    scanned, plain = world.ids["attachments_only"], world.ids["plain"]
+    anna, treasurer, lea = write_claims(
+        storage,
+        storage,
+        [_person("Anna", scanned), _office("Treasurer", scanned), _person(PRIVATE_NAME, plain)],
+        recorded_at=T0,
+    ).ids
+    holds = _relate(world, anna, treasurer, period=Period(date(2019, 1, 1), None))
+    (secretary,) = write_claims(
+        storage, storage, [_office("Secretary", scanned)], recorded_at=T0
+    ).ids
+    return Graphed(anna, treasurer, lea, holds, secretary)
+
+
+def _relate(
+    world: World,
+    start: int,
+    to: int,
+    *,
+    source: str = "attachments_only",
+    period: Period | None = None,
+    kind: str = "holds",
+) -> int:
+    claim = Claim(
+        RELATION,
+        OPERATOR,
+        DIRECT,
+        SOURCES,
+        (_on(world, source),),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        RelationBody(kind, start, to, None, period, {}, STANDING),
+    )
+    (relation,) = write_claims(world.storage, world.storage, [claim], recorded_at=T0).ids
+    return relation
+
+
+def _entity_item(name: str, event: int, **fields: Any) -> dict[str, Any]:
+    """A person as `write_entity` takes it."""
+    return {
+        "type": "person",
+        "fields": {"name": name},
+        "sources": [{"event": event}],
+        "confidence": 70,
+        **fields,
+    }
+
+
+def _question_item(start: int, candidates: list[int], event: int) -> dict[str, Any]:
+    return {
+        "type": "holds",
+        "from": start,
+        "candidates": candidates,
+        "sources": [{"event": event}],
+        "confidence": 40,
+    }
+
+
+def _graph_payloads(world: World) -> list[tuple[int, dict[str, object]]]:
+    return [
+        (event_id, payload)
+        for event_id, payload in _assertions(world)
+        if payload is not None and payload["assertion"] in (ENTITY, RELATION)
+    ]
+
+
+def _header(result: CallToolResult) -> str:
+    return _text(result).splitlines()[0]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_list_entities_shows_an_entity_with_its_relations_and_a_withheld_one_as_placeholder(
+    world: World, mode: str
+) -> None:
+    ids = _graphed(world)
+    page = _untagged(_text(_tool(world, mode, "list_entities")))
+
+    assert page.splitlines()[0] == "previously · list_entities · page 1"
+    assert (
+        f"### previously://event/{ids.anna} · entity · Person · active · direct · "
+        "1 version · 0 proposals\n<<<customer-content TAG>>>\n"
+        "type: person\n"
+        "field name: Anna\n"
+        "state: active\n"
+        "reason: none\n"
+        f"sources: previously://event/{world.ids['attachments_only']}\n"
+        f"relation previously://event/{ids.holds}: Holds → entity {ids.treasurer} Treasurer"
+        " · 2019-01-01 to (open)\n"
+        "<<<end TAG>>>"
+    ) in page
+    assert f"[withheld: previously://event/{ids.lea} — circle team has no rule" in page
+    assert PRIVATE_NAME not in page
+    shown = (ids.anna, ids.treasurer, ids.lea, ids.secretary)
+    assert _ITEM.findall(page) == [str(i) for i in shown]
+    access = _last_access(world).access
+    assert [d.event for d in access.delivered] == [ids.anna, ids.treasurer, ids.secretary]
+    assert [w.event for w in access.withheld] == [ids.lea]
+    # The control: the client that may see the plain mail is shown Lea.
+    local = _text(_tool(world, mode, "list_entities", client="local-harness"))
+    assert f"field name: {PRIVATE_NAME}" in local
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_relation_with_an_end_the_client_may_not_see_is_not_shown(
+    world: World, mode: str
+) -> None:
+    """Decision 12 of the 2026-10-14 assignments plan: a relation is seen
+    only where its sources and both its ends are, so Anna's relation to Lea,
+    which rests on the scanned mail, is not under Anna for `claude-code`."""
+    ids = _graphed(world)
+    relation = _relate(world, ids.anna, ids.treasurer)
+    hidden = _relate(world, ids.lea, ids.treasurer)
+    page = _text(_tool(world, mode, "list_entities", {"subject": ids.treasurer}))
+    assert f"relation previously://event/{relation}:" in page
+    assert f"relation previously://event/{hidden}:" not in page
+    assert PRIVATE_NAME not in page
+    # The control: the client that sees Lea sees the relation and her name.
+    local = _text(
+        _tool(world, mode, "list_entities", {"subject": ids.treasurer}, client="local-harness")
+    )
+    assert f"relation previously://event/{hidden}: Holds ← entity {ids.lea} {PRIVATE_NAME}" in local
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_recollection_is_withheld_until_a_rule_for_the_source_recollection(
+    world: World, mode: str
+) -> None:
+    """Decision 12 of the 2026-10-14 assignments plan: a recollection has no
+    source event, and the policy decides it as a source `recollection`
+    without identities, fail-safe."""
+    _graphed(world)
+    remembered = replace(_person("Remembered", 1), evidence="recollection", sources=())
+    (subject,) = write_claims(world.storage, world.storage, [remembered], recorded_at=T0).ids
+
+    held = _text(_tool(world, mode, "list_entities", {"subject": subject}))
+    assert held.splitlines()[-1] == (
+        f"[withheld: previously://event/{subject} — no rule covers this content, so only local "
+        "processing is allowed; this client (claude-code) processes with claude-max, which is "
+        "not local]"
+    )
+    assert _last_access(world).access.withheld[0].source == "recollection"
+    set_policy(
+        world.storage,
+        Rule("source:recollection", frozenset({"any"}), None, frozenset()),
+        statement="recollections may go anywhere",
+        recorded_at=T0,
+    )
+    shown = _text(_tool(world, mode, "list_entities", {"subject": subject}))
+    assert "field name: Remembered" in shown
+    assert "sources: none, the operator's recollection" in shown
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_list_entities_filters_by_kind_state_and_proposals_and_shows_a_history(
+    world: World, mode: str
+) -> None:
+    ids = _graphed(world)
+    persons = _text(_tool(world, mode, "list_entities", {"types": ["post"]}))
+    # A placeholder passes the filter, whatever its kind.
+    assert _ITEM.findall(persons) == [str(i) for i in (ids.treasurer, ids.lea, ids.secretary)]
+    assert _header(_tool(world, mode, "list_entities", {"state": "closed"})) == (
+        "previously · list_entities · state closed · page 1"
+    )
+    refused = _tool(world, mode, "list_entities", {"state": "standing"})
+    assert _text(refused) == "Error: state takes one of active, closed, retracted"
+    scanned = world.ids["attachments_only"]
+    _confirmed(world, mode, "write_entity", {"items": [_entity_item("Bert", scanned)]})
+    proposals = _text(_tool(world, mode, "list_entities", {"proposals": True}))
+    (bert,) = [i for i, _ in _graph_payloads(world)][-1:]
+    assert f"### previously://event/{bert} · entity · Person · proposed · active · " in proposals
+    assert f"previously://event/{ids.anna} " not in proposals
+    history = _text(_tool(world, mode, "list_entities", {"subject": ids.anna, "history": True}))
+    assert f"version {ids.anna} · 2026-10-11T12:00:00.000000Z · direct · human:operator" in history
+    assert "set field name: Anna" in history
+    missing = _text(_tool(world, mode, "list_entities", {"subject": ids.holds}))
+    assert missing.splitlines()[-1] == (
+        f"Error: previously://event/{ids.holds} — no entity stands under this id"
+    )
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_label_of_a_kind_is_in_the_working_language_else_in_the_servers(
+    world: World, mode: str
+) -> None:
+    """Ruling P-1 of the 2026-10-14 assignments plan: the label of a kind is
+    shown in the entity's working language first, and else in the language
+    the server was started with."""
+    ids = _graphed(world)
+    english = _person("Grace", world.ids["attachments_only"], language="en")
+    (grace,) = write_claims(world.storage, world.storage, [english], recorded_at=T0).ids
+
+    def heading(language: str, subject: int) -> str:
+        server = build_server(world.storage, stdio_client="claude-code", language=language)
+        result = _session(
+            server, mode, lambda s: s.call_tool("list_entities", {"subject": subject})
+        )
+        return _text(result).splitlines()[2]
+
+    assert " · entity · Amt · " in heading("de", ids.treasurer)
+    assert " · entity · Post · " in heading("en", ids.treasurer)
+    assert " · entity · Person · " in heading("de", grace)  # its own language is en
+    with pytest.raises(ValueError, match="not a language tag"):
+        build_server(world.storage, stdio_client="claude-code", language="German")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_entity_previews_the_level_and_writes_a_proposal_by_the_model(
+    world: World, mode: str
+) -> None:
+    _graphed(world)
+    scanned = world.ids["attachments_only"]
+    arguments = {"items": [_entity_item("Bert", scanned, reason="named in the mail")]}
+    before = len(_assertions(world))
+
+    preview, written = _confirmed(world, mode, "write_entity", arguments)
+
+    page = _untagged(_text(preview))
+    assert page.splitlines()[0] == "previously · write_entity · preview · page 1"
+    assert (
+        "### statement 1 · entity · Person · proposed · by model:claude-code · new entity\n"
+        "<<<customer-content TAG>>>\n"
+        "type: person\nfield name: Bert\nstate: active\nreason: named in the mail\n"
+        f"sources: previously://event/{scanned}\n<<<end TAG>>>\n\nhandle: "
+    ) in page
+    (event_id, payload) = _graph_payloads(world)[-1]
+    assert len(_assertions(world)) == before + 1
+    assert _text(written) == f"previously · write_entity · written\n\nassertion {event_id} · open"
+    assert (payload["author"], payload["responsibility"], payload["confidence"]) == (
+        "model:claude-code",
+        OPEN,
+        70,
+    )
+    assert payload["handle"] is not None
+    assert verify(world.storage) == []
+    again = _write(world, mode, "write_entity", {**arguments, "confirm": _handle(_text(preview))})
+    assert _text(again) == _text(written)
+    assert len(_assertions(world)) == before + 1
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_level_is_the_write_paths_and_never_the_clients(world: World, mode: str) -> None:
+    """The client gives a confidence and nothing else: under a class in
+    force that covers it the write is transitive, below the threshold a
+    proposal, and an item that names a level is refused by its schema
+    before anything is written."""
+    _graphed(world)
+    scanned = world.ids["attachments_only"]
+    under = set_class(world.storage, PERSON_CLASS, statement="people", recorded_at=T0)
+    sure = {"items": [_entity_item("Carla", scanned, confidence=90)]}
+    preview, written = _confirmed(world, mode, "write_entity", sure)
+    assert (
+        f"### statement 1 · entity · Person · transitive under previously://event/{under} · "
+        "by model:claude-code · new entity"
+    ) in _text(preview)
+    assert _text(written).endswith(" · transitive")
+    assert _graph_payloads(world)[-1][1]["under"] == under
+    # The control: below the threshold of the class, the same item is a proposal.
+    unsure = {"items": [_entity_item("Dora", scanned, confidence=79)]}
+    _preview, proposal = _confirmed(world, mode, "write_entity", unsure)
+    assert _text(proposal).endswith(" · open")
+    count = len(_assertions(world))
+    for level in ("direct", "transitive"):
+        named = {"items": [_entity_item("Erna", scanned, responsibility=level)]}
+        refused = _write(world, mode, "write_entity", named)
+        assert refused.is_error
+        assert _text(refused).startswith("Error: write_entity did not run: ")
+    assert len(_assertions(world)) == count
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_class_that_changes_between_preview_and_confirmation_refuses_the_write(
+    world: World, mode: str
+) -> None:
+    """Review Focus 2: the level the preview showed is sealed into the
+    handle, and the confirmation is held to it. A class revoked in between,
+    or one set in between, refuses the write, and nothing is written."""
+    _graphed(world)
+    scanned = world.ids["attachments_only"]
+    set_class(world.storage, PERSON_CLASS, statement="people", recorded_at=T0)
+    sure = {"items": [_entity_item("Carla", scanned, confidence=90)]}
+    preview = _write(world, mode, "write_entity", sure)
+    set_class(
+        world.storage, replace(PERSON_CLASS, revoked=True), statement="no more", recorded_at=T0
+    )
+    count = len(_assertions(world))
+    refused = _write(world, mode, "write_entity", {**sure, "confirm": _handle(_text(preview))})
+    assert _text(refused) == (
+        "Error: the approval class changed since the preview; call again without confirm"
+    )
+    assert len(_assertions(world)) == count
+    # Set in between: the preview showed a proposal, the class would make it transitive.
+    proposal = _write(world, mode, "write_entity", sure)
+    set_class(
+        world.storage, replace(PERSON_CLASS, name="claude_again"), statement="again", recorded_at=T0
+    )
+    again = _write(world, mode, "write_entity", {**sure, "confirm": _handle(_text(proposal))})
+    assert _text(again) == (
+        "Error: the approval class changed since the preview; call again without confirm"
+    )
+    # The control: a new preview shows the new level, and its handle writes.
+    _preview, written = _confirmed(world, mode, "write_entity", sure)
+    assert _text(written).endswith(" · transitive")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_direct_version_written_between_preview_and_confirmation_refuses_the_write(
+    world: World, mode: str
+) -> None:
+    ids = _graphed(world)
+    scanned = world.ids["attachments_only"]
+    proposal = {"items": [_entity_item("Bert", scanned)]}
+    _confirmed(world, mode, "write_entity", proposal)
+    (bert, _payload) = _graph_payloads(world)[-1]
+    change = {"items": [_entity_item("Bertram", scanned, subject=bert)]}
+    preview = _write(world, mode, "write_entity", change)
+    assert "· proposed · by model:claude-code · new version of" in _text(preview)
+    direct = replace(_person("Berti", scanned), subject=bert)
+    write_claims(world.storage, world.storage, [direct], recorded_at=T0)
+    refused = _write(world, mode, "write_entity", {**change, "confirm": _handle(_text(preview))})
+    assert _text(refused) == (
+        "Error: a direct version was written since the preview; call again without confirm"
+    )
+    assert ids.anna  # the world is the same throughout
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_version_against_a_direct_entity_is_an_objection_and_never_replaces_it(
+    world: World, mode: str
+) -> None:
+    ids = _graphed(world)
+    scanned = world.ids["attachments_only"]
+    against = {"items": [_entity_item("Anna Maria", scanned, confidence=100, subject=ids.anna)]}
+    set_class(world.storage, PERSON_CLASS, statement="people", recorded_at=T0)
+    preview, written = _confirmed(world, mode, "write_entity", against)
+    assert (
+        f"· entity · Person · proposed · objection to previously://event/{ids.anna} · "
+        f"by model:claude-code · new version of previously://event/{ids.anna}"
+    ) in _text(preview)
+    (objection, payload) = _graph_payloads(world)[-1]
+    assert (payload["responsibility"], payload["contests"]) == (OPEN, ids.anna)
+    page = _text(_tool(world, mode, "list_entities", {"subject": ids.anna}))
+    assert "field name: Anna\n" in page
+    assert f"contested by previously://event/{objection}" in page.splitlines()[2]
+    assert _text(written).endswith(" · open")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_header_counts_the_objections_the_client_may_see(world: World, mode: str) -> None:
+    """The header of every result counts the objections pending, as the
+    2026-10-14 assignments specification asks, one the client may not see
+    left out, and says nothing where there is none."""
+    ids = _graphed(world)
+    scanned, plain = world.ids["attachments_only"], world.ids["plain"]
+
+    def headers(client: str = "claude-code") -> list[str]:
+        return [
+            _header(_tool(world, mode, "list_entities", client=client)),
+            _header(_tool(world, mode, "whoami", client=client)),
+            _header(_tool(world, mode, "previously", client=client)),
+        ]
+
+    assert headers() == [
+        "previously · list_entities · page 1",
+        "previously · whoami",
+        "previously · chronicle · page 1",
+    ]
+    _confirmed(
+        world, mode, "write_entity", {"items": [_entity_item("Anna M", scanned, subject=ids.anna)]}
+    )
+    assert headers() == [
+        "previously · list_entities · 1 objection pending · page 1",
+        "previously · whoami · 1 objection pending",
+        "previously · chronicle · 1 objection pending · page 1",
+    ]
+    _confirmed(
+        world, mode, "write_entity", {"items": [_entity_item("Anna B", scanned, subject=ids.anna)]}
+    )
+    assert headers()[1] == "previously · whoami · 2 objections pending"
+    # An objection to Lea, whom claude-code may not see: not counted for it.
+    hidden = {"items": [_entity_item("Lea M", plain, subject=ids.lea)]}
+    _confirmed(world, mode, "write_entity", hidden, client="local-harness")
+    assert headers()[1] == "previously · whoami · 2 objections pending"
+    # The control: the client that sees Lea counts all three.
+    assert headers("local-harness")[1] == "previously · whoami · 3 objections pending"
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_end_the_client_may_not_see_and_one_that_does_not_exist_give_the_same_sentence(
+    world: World, mode: str
+) -> None:
+    """Review Focus 3: the answers differ in the id and nothing else, with
+    and without confirm, and neither writes. A subject the client may not
+    see is named as missing too."""
+    ids = _graphed(world)
+    scanned = world.ids["attachments_only"]
+    missing = 999_999
+    count = len(_assertions(world))
+    answers: dict[int, list[str]] = {}
+    for end in (ids.lea, missing):
+        item = {
+            "type": "holds",
+            "from": end,
+            "to": ids.treasurer,
+            "sources": [{"event": scanned}],
+            "confidence": 50,
+        }
+        answers[end] = [
+            _text(_write(world, mode, "write_relation", {"items": [item], **extra}))
+            for extra in ({}, {"confirm": "anything"})
+        ]
+    assert answers[ids.lea] == ["Error: an end of the relation is not an entity that stands"] * 2
+    assert answers[missing] == answers[ids.lea]
+    subjects = [
+        _text(
+            _write(
+                world,
+                mode,
+                "write_entity",
+                {"items": [_entity_item("X", scanned, subject=subject)]},
+            )
+        ).replace(str(subject), "ID")
+        for subject in (ids.lea, missing)
+    ]
+    assert subjects == ["Error: the subject ID names no entity or relation that stands"] * 2
+    assert len(_assertions(world)) == count
+    # The control: the client that may see Lea is shown the preview.
+    item = {
+        "type": "holds",
+        "from": ids.lea,
+        "to": ids.treasurer,
+        "sources": [{"event": scanned}],
+        "confidence": 50,
+    }
+    local = _write(world, mode, "write_relation", {"items": [item]}, client="local-harness")
+    assert not local.is_error, _text(local)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_question_waits_in_triage_and_write_triage_answer_answers_it(
+    world: World, mode: str
+) -> None:
+    ids = _graphed(world)
+    scanned = world.ids["attachments_only"]
+    secretary = ids.secretary
+    asking = {"items": [_question_item(ids.anna, [ids.treasurer, secretary], scanned)]}
+    _preview, _written = _confirmed(world, mode, "write_relation", asking)
+    (question, payload) = _graph_payloads(world)[-1]
+    assert payload["to"] == {"candidates": [ids.treasurer, secretary]}
+
+    triage = _untagged(_text(_tool(world, mode, "list_triage")))
+    assert (
+        f"### previously://event/{question} · question · relation · Holds · proposed · "
+        "by model:claude-code · new relation\n<<<customer-content TAG>>>\n"
+        "type: holds\n"
+        f"from: entity {ids.anna} Anna\n"
+        f"to one of: entity {ids.treasurer} Treasurer, entity {secretary} Secretary\n"
+    ) in triage
+
+    stranger = _write(
+        world, mode, "write_triage_answer", {"question": question, "choice": ids.anna}
+    )
+    assert _text(stranger) == f"Error: the answer names {ids.anna}, which is none of the candidates"
+    answered = _write(
+        world,
+        mode,
+        "write_triage_answer",
+        {"question": question, "choice": secretary, "reason": "the minutes say so"},
+    )
+    (answer, stored) = _graph_payloads(world)[-1]
+    assert _text(answered) == f"previously · write_triage_answer · written\n\nassertion {answer}"
+    assert (stored["author"], stored["responsibility"], stored["approves"]) == (
+        "model:claude-code",
+        DIRECT,
+        question,
+    )
+    assert stored["to"] == {"entity": secretary}
+    assert verify(world.storage) == []
+    again = _write(
+        world,
+        mode,
+        "write_triage_answer",
+        {"question": question, "choice": secretary, "reason": "the minutes say so"},
+    )
+    assert _text(again) == _text(answered)
+    assert _graph_payloads(world)[-1][0] == answer
+    access = _last_access(world).access
+    assert f"previously://event/{question} " not in _text(_tool(world, mode, "list_triage"))
+    assert access.arguments == {
+        "statements": 1,
+        "proposals": [question],
+        "ends": [secretary],
+        "written": [],
+    }
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_question_the_client_may_not_see_is_answered_as_one_that_does_not_wait(
+    world: World, mode: str
+) -> None:
+    ids = _graphed(world)
+    plain = world.ids["plain"]
+    asking = {"items": [_question_item(ids.lea, [ids.treasurer, ids.secretary], plain)]}
+    _confirmed(world, mode, "write_relation", asking, client="local-harness")
+    (question, _payload) = _graph_payloads(world)[-1]
+    answers = [
+        _text(
+            _write(world, mode, "write_triage_answer", {"question": q, "choice": ids.treasurer})
+        ).replace(str(q), "ID")
+        for q in (question, 999_999, ids.anna)
+    ]
+    assert answers == ["Error: event ID is no question that waits"] * 3
+    # The control: the client that may see it answers it.
+    local = _write(
+        world,
+        mode,
+        "write_triage_answer",
+        {"question": question, "choice": ids.treasurer},
+        client="local-harness",
+    )
+    assert not local.is_error, _text(local)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_proposal_of_the_client_is_approved_with_write_approve(world: World, mode: str) -> None:
+    """The first acceptance of the 2026-10-14 assignments specification: an
+    MCP client proposes an entity, and the operator approves it, through the
+    client that asks the person first."""
+    _graphed(world)
+    scanned = world.ids["attachments_only"]
+    _confirmed(world, mode, "write_entity", {"items": [_entity_item("Bert", scanned)]})
+    (bert, _payload) = _graph_payloads(world)[-1]
+
+    approved = _write(world, mode, "write_approve", {"ids": [bert]})
+
+    (approval, stored) = _graph_payloads(world)[-1]
+    assert _text(approved) == f"previously · write_approve · written\n\nassertion {approval}"
+    assert (stored["author"], stored["responsibility"], stored["approves"]) == (
+        "model:claude-code",
+        DIRECT,
+        bert,
+    )
+    page = _text(_tool(world, mode, "list_entities", {"subject": bert}))
+    assert " · entity · Person · active · direct · 2 versions · 0 proposals" in page
+    again = _write(world, mode, "write_approve", {"ids": [bert]})
+    assert _text(again) == _text(approved)
+    assert verify(world.storage) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_approve_refuses_a_question_and_a_mixed_call_and_a_hidden_version(
+    world: World, mode: str
+) -> None:
+    ids = _graphed(world)
+    scanned, plain = world.ids["attachments_only"], world.ids["plain"]
+    asking = {"items": [_question_item(ids.anna, [ids.treasurer, ids.secretary], scanned)]}
+    _confirmed(world, mode, "write_relation", asking, client="local-harness")
+    (question, _payload) = _graph_payloads(world)[-1]
+    _confirmed(world, mode, "write_entity", {"items": [_entity_item("Bert", scanned)]})
+    (bert, _payload) = _graph_payloads(world)[-1]
+    obligation = _proposal(world, "attachments_only")
+    hidden = {"items": [_entity_item("Lea M", plain, subject=ids.lea)]}
+    _confirmed(world, mode, "write_entity", hidden, client="local-harness")
+    (objection, _payload) = _graph_payloads(world)[-1]
+
+    asked = _write(world, mode, "write_approve", {"ids": [question]}, client="local-harness")
+    assert _text(asked) == (
+        f"Error: event {question} is a question: answer it with write_triage_answer"
+    )
+    mixed = _write(world, mode, "write_approve", {"ids": [bert, obligation]})
+    assert _text(mixed) == (
+        "Error: one call approves obligations and decisions, or entities and relations, not both"
+    )
+    count = len(_assertions(world))
+    # The hidden objection is named as missing, alone and beside a visible one.
+    for listed in ([objection], [obligation, objection], [bert, objection]):
+        refused = _write(world, mode, "write_approve", {"ids": listed})
+        assert (
+            _text(refused) == f"Error: event {objection} is not a proposal this client can answer"
+        )
+    assert len(_assertions(world)) == count
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_reject_rejects_an_objection_and_the_header_lets_go_of_it(
+    world: World, mode: str
+) -> None:
+    ids = _graphed(world)
+    scanned = world.ids["attachments_only"]
+    against = {"items": [_entity_item("Anna M", scanned, subject=ids.anna)]}
+    _confirmed(world, mode, "write_entity", against)
+    (objection, _payload) = _graph_payloads(world)[-1]
+    assert _header(_tool(world, mode, "whoami")) == "previously · whoami · 1 objection pending"
+
+    rejected = _write(
+        world, mode, "write_reject", {"proposal": objection, "reason": "the name stands"}
+    )
+
+    assert not rejected.is_error, _text(rejected)
+    (rejection, stored) = _assertions(world)[-1]
+    assert stored is not None and (stored["assertion"], stored["of"]) == (REJECTION, objection)
+    assert _header(_tool(world, mode, "whoami")) == "previously · whoami"
+    again = _write(
+        world, mode, "write_reject", {"proposal": objection, "reason": "the name stands"}
+    )
+    assert _text(again) == f"previously · write_reject · written\n\nassertion {rejection}"
+    assert verify(world.storage) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_list_triage_puts_objections_first_then_questions_then_proposals_then_placeholders(
+    world: World, mode: str
+) -> None:
+    ids = _graphed(world)
+    scanned, plain = world.ids["attachments_only"], world.ids["plain"]
+    _confirmed(world, mode, "write_entity", {"items": [_entity_item("Bert", scanned)]})
+    (proposal, _payload) = _graph_payloads(world)[-1]
+    asking = {"items": [_question_item(ids.anna, [ids.treasurer, ids.secretary], scanned)]}
+    _confirmed(world, mode, "write_relation", asking)
+    (question, _payload) = _graph_payloads(world)[-1]
+    against = {"items": [_entity_item("Anna M", scanned, subject=ids.anna)]}
+    _confirmed(world, mode, "write_entity", against)
+    (objection, _payload) = _graph_payloads(world)[-1]
+    hidden = {"items": [_entity_item("Lea M", plain, subject=ids.lea)]}
+    _confirmed(world, mode, "write_entity", hidden, client="local-harness")
+
+    page = _text(_tool(world, mode, "list_triage"))
+
+    assert page.splitlines()[0] == "previously · list_triage · 1 objection pending · page 1"
+    assert re.findall(r"^### previously://event/(\d+) · (\w+) · ", page, re.MULTILINE) == [
+        (str(objection), "objection"),
+        (str(question), "question"),
+        (str(proposal), "proposal"),
+    ]
+    assert page.splitlines()[-1].startswith(f"[withheld: previously://event/{ids.lea} — ")
+    assert "change fields.name: Anna → Anna M" in page
+    assert "Lea M" not in page and PRIVATE_NAME not in page
+    # The control: the client that sees Lea is shown her objection, and two in the header.
+    local = _text(_tool(world, mode, "list_triage", client="local-harness"))
+    assert local.splitlines()[0] == "previously · list_triage · 2 objections pending · page 1"
+    assert "change fields.name: " + PRIVATE_NAME + " → Lea M" in local
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_list_triage_pages_go_on_across_the_sections(world: World, mode: str) -> None:
+    """A cursor carries the section of the last item and its id, so the next
+    page goes on where the last one stopped, in the next section too."""
+    ids = _graphed(world)
+    scanned = world.ids["attachments_only"]
+    long_reason = "r" * 900
+    for number in range(80):
+        write_claims(
+            world.storage,
+            world.storage,
+            [
+                replace(
+                    _person(f"Person {number}", scanned),
+                    author=model_author("claude-code"),
+                    responsibility=OPEN,
+                    confidence=50,
+                    reason=long_reason,
+                )
+            ],
+            recorded_at=T0,
+        )
+    write_claims(
+        world.storage,
+        world.storage,
+        [
+            replace(
+                _person("Anna M", scanned),
+                author=model_author("claude-code"),
+                responsibility=OPEN,
+                confidence=50,
+                subject=ids.anna,
+                contests=ids.anna,
+            )
+        ],
+        recorded_at=T0,
+    )
+    seen: list[str] = []
+    cursor: str | None = None
+    pages = 0
+    while True:
+        arguments = {} if cursor is None else {"cursor": cursor}
+        page = _text(_tool(world, mode, "list_triage", arguments))
+        pages += 1
+        seen += re.findall(r"^### previously://event/(\d+) · ", page, re.MULTILINE)
+        found = re.search(r"More results: call again with cursor=(\S+)$", page)
+        if found is None:
+            break
+        cursor = found.group(1)
+    assert pages > 1
+    assert len(seen) == len(set(seen)) == 81
+    refused = _tool(world, mode, "list_entities", {"cursor": cursor or "x"})
+    assert _text(refused).startswith("Error: cursor is not valid for these filters")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_access_of_a_graph_write_holds_counts_and_ids_and_no_text(
+    world: World, mode: str
+) -> None:
+    """Decision 15 of the 2026-10-14 assignments plan: the number of claims,
+    the source ids, the ids of the ends, whether confirm was given and the
+    ids written, and not a word of a field, a reason or a name."""
+    ids = _graphed(world)
+    scanned = world.ids["attachments_only"]
+    entity = _entity_item(PRIVATE_NAME, scanned, reason=PRIVATE_REASON)
+    _preview, _written = _confirmed(world, mode, "write_entity", {"items": [entity]})
+    (bert, _payload) = _graph_payloads(world)[-1]
+    relation: dict[str, Any] = {
+        "type": "holds",
+        "from": bert,
+        "to": ids.treasurer,
+        "sources": [{"event": scanned}],
+        "confidence": 50,
+        "reason": PRIVATE_REASON,
+        "fields": {},
+    }
+    _preview, _written = _confirmed(world, mode, "write_relation", {"items": [relation]})
+    (relates, _payload) = _graph_payloads(world)[-1]
+    refused = _write(world, mode, "write_entity", {"items": [{**entity, "sources": PRIVATE_TEXT}]})
+    assert refused.is_error
+
+    rows = [row for row in _accesses(world) if row.access.name.startswith("write_")]
+    assert [row.access.arguments for row in rows] == [
+        {"statements": 1, "sources": [scanned], "confirm": False, "written": []},
+        {"statements": 1, "sources": [scanned], "confirm": True, "written": [bert]},
+        {
+            "statements": 1,
+            "sources": [scanned],
+            "confirm": False,
+            "ends": sorted([bert, ids.treasurer]),
+            "written": [],
+        },
+        {
+            "statements": 1,
+            "sources": [scanned],
+            "confirm": True,
+            "ends": sorted([bert, ids.treasurer]),
+            "written": [relates],
+        },
+        {"statements": 1, "sources": [], "confirm": False, "written": []},
+    ]
+    found = [s for payload in _access_payloads(world) for s in _strings_in(payload)]
+    for private in (PRIVATE_NAME, PRIVATE_REASON, PRIVATE_TEXT):
+        assert not any(private in s for s in found)
+    # The control: the same search finds them in what was written.
+    stored = [s for _, payload in _assertions(world) for s in _strings_in(payload)]
+    for private in (PRIVATE_NAME, PRIVATE_REASON):
+        assert any(private in s for s in stored)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_handle_of_write_assertion_does_not_confirm_write_entity_or_the_other_way(
+    world: World, mode: str
+) -> None:
+    _graphed(world)
+    scanned = world.ids["attachments_only"]
+    entity = {"items": [_entity_item("Bert", scanned)]}
+    assertion = {"items": [_item(scanned)]}
+    graph_handle = _handle(_text(_write(world, mode, "write_entity", entity)))
+    assertion_handle = _handle(_text(_write(world, mode, "write_assertion", assertion)))
+    sentence = (
+        "Error: the handle was sealed for other statements than these; "
+        "call again without confirm for a new one"
+    )
+    crossed = [
+        _text(_write(world, mode, "write_entity", {**entity, "confirm": assertion_handle})),
+        _text(_write(world, mode, "write_assertion", {**assertion, "confirm": graph_handle})),
+    ]
+    assert crossed == [sentence, sentence]

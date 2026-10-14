@@ -14,12 +14,14 @@ from datetime import timedelta
 from datetime import UTC
 from functools import partial
 from previously.core.errors import InvalidPayload
+from previously.core.graph_write import Decided
 from previously.mcp_server.confirm import expiry
 from previously.mcp_server.confirm import HANDLE_SECONDS
 from previously.mcp_server.confirm import HandleRefused
 from previously.mcp_server.confirm import key_of
 from previously.mcp_server.confirm import MIN_KEY_CHARS
 from previously.mcp_server.confirm import open_handle
+from previously.mcp_server.confirm import open_sealed
 from previously.mcp_server.confirm import payload_digest
 from previously.mcp_server.confirm import seal
 from typing import TYPE_CHECKING
@@ -210,3 +212,66 @@ def test_a_key_of_fewer_than_32_characters_or_none_is_no_key() -> None:
     assert key_of("x" * 31) is None
     assert key_of("x" * 32) == b"x" * 32
     assert key_of("ä" * 32) == "ä".encode() * 32  # characters, not bytes
+
+
+# --- the decisions of a preview of write_entity and write_relation -------------------------
+
+DECIDED = (Decided("transitive", 17, None), Decided("open", None, 12))
+
+
+def _sealed_with(decided: tuple[Decided, ...] = DECIDED) -> str:
+    return seal(
+        KEY, client="claude-code", payloads=PAYLOADS, now=NOW, nonce="n0nce", decided=decided
+    )
+
+
+def _open_sealed(handle: str, *, decisions: bool = True) -> object:
+    return open_sealed(
+        KEY, handle, client="claude-code", payloads=PAYLOADS, now=NOW, decisions=decisions
+    )
+
+
+def test_a_handle_carries_the_decisions_of_the_preview_and_gives_them_back() -> None:
+    opened = open_sealed(
+        KEY, _sealed_with(), client="claude-code", payloads=PAYLOADS, now=NOW, decisions=True
+    )
+    assert (opened.nonce, opened.decided) == ("n0nce", DECIDED)
+    head, _, _ = _sealed_with().partition(".")
+    body = json.loads(base64.urlsafe_b64decode(head + "=" * (-len(head) % 4)))
+    assert body["decided"] == [
+        {"level": "transitive", "under": 17, "contests": None},
+        {"level": "open", "under": None, "contests": 12},
+    ]
+
+
+def test_a_handle_of_write_assertion_keeps_its_form_and_opens_without_decisions() -> None:
+    """A handle sealed before the decisions existed still opens: its body
+    has the four keys it always had, and nothing else."""
+    head, _, _ = _sealed().partition(".")
+    body = json.loads(base64.urlsafe_b64decode(head + "=" * (-len(head) % 4)))
+    assert set(body) == {"client", "digest", "expires", "nonce"}
+    assert (
+        open_sealed(KEY, _sealed(), client="claude-code", payloads=PAYLOADS, now=NOW).decided
+        is None
+    )
+
+
+def test_a_handle_with_decisions_and_one_without_do_not_stand_in_for_each_other() -> None:
+    assert _refusal(lambda: _opened(_sealed_with())) == OTHER_CONTENT
+    assert _refusal(lambda: _open_sealed(_sealed())) == OTHER_CONTENT
+    assert _refusal(lambda: _open_sealed(_sealed_with(DECIDED[:1]))) == OTHER_CONTENT
+    # The control: each opens for the caller it was sealed for.
+    assert _opened(_sealed()) == "n0nce"
+    _open_sealed(_sealed_with())
+
+
+def test_decisions_sealed_with_the_key_but_not_of_the_form_are_refused() -> None:
+    sealed = _sealed_with()
+    for change in (
+        {"decided": "transitive"},
+        {"decided": [{"level": "open", "under": None}]},
+        {"decided": [{"level": 3, "under": None, "contests": None}] * 2},
+        {"decided": [{"level": "open", "under": "17", "contests": None}] * 2},
+        {"decided": [{"level": "open", "under": None, "contests": True}] * 2},
+    ):
+        assert _refusal(partial(_open_sealed, _reencoded(sealed, change))) == NOT_SEALED

@@ -3,7 +3,7 @@
 # Configuration
 
 Previously reads its settings from twenty-one environment variables.
-Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store, fetch or delete a blob, as the table below says per variable, the four `PREVIOUSLY_IMAP_*` variables only by `ingest imap`, the four settings of the model providers only by `gate try`, the four `PREVIOUSLY_MCP_*` variables only by `mcp` and `serve`, and `PREVIOUSLY_LANGUAGE` only by the commands that list or show entities and relations.
+Every command reads `PREVIOUSLY_DSN`; the seven `PREVIOUSLY_BLOB_*` variables are read only by the commands that store, fetch or delete a blob, as the table below says per variable, the four `PREVIOUSLY_IMAP_*` variables only by `ingest imap`, the four settings of the model providers only by `gate try`, the four `PREVIOUSLY_MCP_*` variables only by `mcp` and `serve`, and `PREVIOUSLY_LANGUAGE` only by the commands that list or show entities and relations, and by `mcp` and `serve`.
 
 No setting has a name that Kubernetes gives a variable of a Service.
 For every Service in a namespace, Kubernetes sets variables such as `X_SERVICE_HOST`, `X_PORT` and `X_PORT_8765_TCP` in every pod of that namespace, with `X` the name of the Service upper-cased and `-` written as `_`; a Service named `previously-mcp` sets `PREVIOUSLY_MCP_PORT`.
@@ -188,7 +188,7 @@ A file that can't be read, isn't TOML or has no date `as_of` stops `gate try` be
 
 | Variable | Form | Used by |
 |---|---|---|
-| `PREVIOUSLY_LANGUAGE` | A language tag: two or three lower-case letters, then optional parts after hyphens, such as `en`, `de` or `pt-BR`. | `entity` with an id, `entities`, `relations`, `triage` and `classes sample`. |
+| `PREVIOUSLY_LANGUAGE` | A language tag: two or three lower-case letters, then optional parts after hyphens, such as `en`, `de` or `pt-BR`. | `entity` with an id, `entities`, `relations`, `triage`, `classes sample`, `mcp` and `serve`. |
 
 The variable names the language in which a kind is labeled for an entity that has no working language of its own.
 The default, when it's unset or empty, is `en`.

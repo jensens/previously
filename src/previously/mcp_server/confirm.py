@@ -16,6 +16,14 @@ first call, in whole seconds since the epoch. The key is the setting
 `PREVIOUSLY_MCP_CONFIRM_KEY`, which only the MCP server is given; rotating it
 makes the open handles fail and nothing else.
 
+A handle of `write_entity` or `write_relation` carries one key more,
+`decided`: per statement, the level, the approval class and the contested
+version the preview showed (`level`, `under`, `contests`). The write path
+holds the confirmation to them and refuses a batch whose decision moved in
+between, instead of writing it otherwise than shown. A handle of
+`write_assertion` has no such key, and its form is the one it had before the
+key existed, so a handle sealed before an upgrade still opens after it.
+
 The handle needs no state of its own. Its `nonce` goes into the payload of
 every statement written, and the write path finds a batch that carries it
 and answers with its ids instead of writing again, so confirming twice, or
@@ -33,8 +41,10 @@ reaches the client that presented the handle, which may not be the one it
 was sealed for.
 """
 
+from dataclasses import dataclass
 from previously.core.canonical import canonical
 from previously.core.errors import PreviouslyError
+from previously.core.graph_write import Decided
 from typing import cast
 from typing import Final
 from typing import TYPE_CHECKING
@@ -63,6 +73,7 @@ _EXPIRED: Final = (
     f"the handle has expired: a handle holds for {HANDLE_SECONDS // 60} minutes" + _AGAIN
 )
 _BODY_KEYS: Final = frozenset({"client", "digest", "expires", "nonce"})
+_DECIDED_KEYS: Final = frozenset({"level", "under", "contests"})
 
 
 class HandleRefused(PreviouslyError):
@@ -109,6 +120,15 @@ def _mac(key: bytes, head: str) -> bytes:
     return hmac.new(key, head.encode("utf-8"), hashlib.sha256).digest()
 
 
+@dataclass(frozen=True)
+class Opened:
+    """What an opened handle gives back: the nonce, and the decisions of the
+    preview where it sealed them (`None` for a handle of `write_assertion`)."""
+
+    nonce: str
+    decided: tuple[Decided, ...] | None
+
+
 def seal(
     key: bytes,
     *,
@@ -116,15 +136,22 @@ def seal(
     payloads: Sequence[Mapping[str, object]],
     now: datetime,
     nonce: str,
+    decided: Sequence[Decided] | None = None,
 ) -> str:
     """The handle for writing `payloads` as `client`, holding from `now` for
-    `HANDLE_SECONDS`, that opens to `nonce`."""
-    body = {
+    `HANDLE_SECONDS`, that opens to `nonce`, and with `decided`, one per
+    payload, to the decisions of the preview."""
+    body: dict[str, object] = {
         "client": client,
         "digest": payload_digest(payloads),
         "expires": _seconds(now) + HANDLE_SECONDS,
         "nonce": nonce,
     }
+    if decided is not None:
+        body["decided"] = [
+            {"level": item.level, "under": item.under, "contests": item.contests}
+            for item in decided
+        ]
     head = _encode(canonical(body))
     return f"{head}.{_encode(_mac(key, head))}"
 
@@ -140,9 +167,14 @@ def _body(key: bytes, handle: str) -> Mapping[str, object]:
         raise HandleRefused(_NOT_SEALED) from error
     # Only the holder of the key can seal a body; one of another form is
     # refused all the same, so that nothing below reads a wrong type.
-    if not isinstance(body, dict) or frozenset(cast("dict[str, object]", body)) != _BODY_KEYS:
+    if (
+        not isinstance(body, dict)
+        or frozenset(cast("dict[str, object]", body)) - {"decided"} != _BODY_KEYS
+    ):
         raise HandleRefused(_NOT_SEALED)
     found = cast("dict[str, object]", body)
+    if "decided" in found and _decided(found["decided"]) is None:
+        raise HandleRefused(_NOT_SEALED)
     expires = found["expires"]
     if not (
         all(isinstance(found[name], str) for name in ("client", "digest", "nonce"))
@@ -152,6 +184,28 @@ def _body(key: bytes, handle: str) -> Mapping[str, object]:
     ):
         raise HandleRefused(_NOT_SEALED)
     return found
+
+
+def _is_id(value: object) -> bool:
+    return value is None or (isinstance(value, int) and not isinstance(value, bool))
+
+
+def _decided(value: object) -> tuple[Decided, ...] | None:
+    """The decisions a body carries, or `None` for a list of another form."""
+    if not isinstance(value, list):
+        return None
+    found: list[Decided] = []
+    for item in cast("list[object]", value):
+        if not isinstance(item, dict) or frozenset(cast("dict[str, object]", item)) != (
+            _DECIDED_KEYS
+        ):
+            return None
+        entry = cast("dict[str, object]", item)
+        level, under, contests = entry["level"], entry["under"], entry["contests"]
+        if not (isinstance(level, str) and _is_id(under) and _is_id(contests)):
+            return None
+        found.append(Decided(level, cast("int | None", under), cast("int | None", contests)))
+    return tuple(found)
 
 
 def open_handle(
@@ -164,6 +218,26 @@ def open_handle(
 ) -> str:
     """The nonce of `handle`, if this server sealed it for `client` and for
     exactly `payloads`, and it has not expired at `now`; else `HandleRefused`.
+    `open_sealed` says the rest."""
+    return open_sealed(key, handle, client=client, payloads=payloads, now=now).nonce
+
+
+def open_sealed(
+    key: bytes,
+    handle: str,
+    *,
+    client: str,
+    payloads: Sequence[Mapping[str, object]],
+    now: datetime,
+    decisions: bool = False,
+) -> Opened:
+    """The nonce of `handle` and the decisions it sealed, if this server
+    sealed it for `client` and for exactly `payloads`, and it has not
+    expired at `now`; else `HandleRefused`. `decisions` says whether the
+    caller's handles carry decisions, as those of `write_entity` and
+    `write_relation` do: a handle with none where they are wanted, with some
+    where none are, or with other than one per payload was sealed for other
+    statements than these.
 
     The seal, the client and the digest are compared with
     `hmac.compare_digest`, so that the time a refusal takes tells nothing of
@@ -179,4 +253,9 @@ def open_handle(
         raise HandleRefused(_OTHER_CONTENT)
     if seconds > cast("int", body["expires"]):
         raise HandleRefused(_EXPIRED)
-    return cast("str", body["nonce"])
+    decided = _decided(body["decided"]) if "decided" in body else None
+    if (decided is not None) != decisions or (
+        decided is not None and len(decided) != len(payloads)
+    ):
+        raise HandleRefused(_OTHER_CONTENT)
+    return Opened(cast("str", body["nonce"]), decided)

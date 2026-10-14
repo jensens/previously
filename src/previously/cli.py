@@ -4058,7 +4058,8 @@ def _cmd_mcp(_args: argparse.Namespace) -> int:
     Nothing is printed: standard output is the protocol.
     `PREVIOUSLY_MCP_CONFIRM_KEY` is passed on unread: without it, or shorter
     than 32 characters, the writing tools answer that writing is not
-    configured, and the key is never printed.
+    configured, and the key is never printed. `PREVIOUSLY_LANGUAGE` is the
+    language the labels of kinds are shown in, as on the command line.
 
     The server module is imported here and not at the head, as the adapters
     of the gate are: the MCP SDK, Starlette and uvicorn add about 0.3 s to
@@ -4074,13 +4075,20 @@ def _cmd_mcp(_args: argparse.Namespace) -> int:
     name = os.environ.get(CLIENT_VARIABLE)
     if not name:
         raise PreviouslyError(f"{CLIENT_VARIABLE} is not set: name the client this process serves")
+    language = _language()
     with _storage() as storage:
         with storage.begin() as conn:
             if name not in read_policy(storage, conn).clients:
                 raise PreviouslyError(
                     f'no client "{name}" is in force; add it with previously client add'
                 )
-        run_stdio(storage, name, locker=storage, confirm_key=os.environ.get(KEY_VARIABLE))
+        run_stdio(
+            storage,
+            name,
+            locker=storage,
+            confirm_key=os.environ.get(KEY_VARIABLE),
+            language=language,
+        )
     return 0
 
 
@@ -4103,7 +4111,8 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
     Every request needs the bearer token of a client in force. The host check
     against DNS rebinding lets through the loopback names and those in
     `PREVIOUSLY_MCP_ALLOWED_HOSTS`, separated by commas or blanks.
-    `PREVIOUSLY_MCP_CONFIRM_KEY` is passed on as `_cmd_mcp` passes it.
+    `PREVIOUSLY_MCP_CONFIRM_KEY` and `PREVIOUSLY_LANGUAGE` are passed on as
+    `_cmd_mcp` passes them.
 
     The server module is imported here for the reason `_cmd_mcp` gives.
     """
@@ -4111,6 +4120,7 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
     from previously.mcp_server.server import run_http
 
     host, port = _mcp_address()
+    language = _language()
     allowed = (os.environ.get("PREVIOUSLY_MCP_ALLOWED_HOSTS") or "").replace(",", " ").split()
     where = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
     with _storage() as storage:
@@ -4122,6 +4132,7 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
             allowed_hosts=allowed,
             locker=storage,
             confirm_key=os.environ.get(KEY_VARIABLE),
+            language=language,
         )
     return 0
 

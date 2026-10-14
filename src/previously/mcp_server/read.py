@@ -18,6 +18,7 @@ server writes the access log from what reached the page (`logged`).
 from dataclasses import dataclass
 from dataclasses import replace
 from datetime import date
+from functools import partial
 from previously.contract.rows import EventRow
 from previously.core.access import Delivered
 from previously.core.access import NO_RULE
@@ -26,10 +27,15 @@ from previously.core.access import Withheld
 from previously.core.assertion import approval_note
 from previously.core.assertion import changes
 from previously.core.assertion import DecisionBody
+from previously.core.assertion import DIRECT
 from previously.core.assertion import ObligationBody
 from previously.core.assertion import OPEN
 from previously.core.assertion import overdue
+from previously.core.assertion import parse_statement
+from previously.core.assertion import REJECTION
 from previously.core.assertion import REJECTION_NOTE
+from previously.core.assertion import Source
+from previously.core.assertions import ASSERTION
 from previously.core.assertions import assertion_decisions
 from previously.core.assertions import erased_assertion
 from previously.core.assertions import read_source_events
@@ -42,9 +48,28 @@ from previously.core.chain import read_references
 from previously.core.decide import Candidate
 from previously.core.decide import circles_of
 from previously.core.decide import decide
+from previously.core.decide import Decision
+from previously.core.graph import claim_changes
+from previously.core.graph import ENTITY
+from previously.core.graph import EntityBody
+from previously.core.graph import level_of
+from previously.core.graph import Period
+from previously.core.graph import RECOLLECTION
+from previously.core.graph import RELATION
+from previously.core.graph import RelationBody
+from previously.core.graph import RETRACTED
+from previously.core.graph import TRANSITIVE
+from previously.core.graph_write import claim_decisions
+from previously.core.graph_write import claim_sources
+from previously.core.graph_write import read_claim_events
+from previously.core.graph_write import read_graph
 from previously.core.hashing import iso_utc
 from previously.core.policy import LOCAL_ONLY
 from previously.core.policy import RULE
+from previously.core.vocabulary import display_label
+from previously.core.vocabulary import NAME_FIELD
+from previously.core.vocabulary import read_vocabulary
+from previously.core.vocabulary import REF
 from previously.mcp_server.render import ErasedMark
 from previously.mcp_server.render import ErrorMark
 from previously.mcp_server.render import Head
@@ -59,6 +84,8 @@ from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
+    from collections.abc import Callable
+    from collections.abc import Iterable
     from collections.abc import Mapping
     from collections.abc import Sequence
     from datetime import datetime
@@ -68,9 +95,15 @@ if TYPE_CHECKING:
     from previously.core.assertion import Thread
     from previously.core.assertion import Version
     from previously.core.assertions import SourceEvents
-    from previously.core.decide import Decision
+    from previously.core.graph import Claim
+    from previously.core.graph import ClassState
+    from previously.core.graph import FieldValue
+    from previously.core.graph import Graph
+    from previously.core.graph import GraphThread
+    from previously.core.graph import GraphVersion
     from previously.core.policy import Client
     from previously.core.policy import Policy
+    from previously.core.vocabulary import Vocabulary
     from previously.mcp_server.render import Page
 
 # Rows per query of the chronicle. A page holds at most 60,000 characters, and
@@ -790,3 +823,639 @@ def assertions[Conn](
         reads.append(read)
         size += _weight(read)
     return Seen(tuple(reads))
+
+
+# --- entities and relations ---------------------------------------------------------
+
+# The sections of `list_triage`, in the order a person works through them:
+# objections to what the operator stands for first, so that one does not go
+# under, as the 2026-10-14 assignments specification asks of them, then
+# questions, then every other proposal, and last a placeholder
+# for each entity or relation with something waiting that the policy keeps
+# from the client.
+OBJECTION: Final = "objection"
+QUESTION: Final = "question"
+PROPOSAL: Final = "proposal"
+WITHHELD: Final = "withheld"
+TRIAGE_SECTIONS: Final = (OBJECTION, QUESTION, PROPOSAL, WITHHELD)
+
+
+@dataclass(frozen=True)
+class ThreadVerdict:
+    """What the policy says of an entity or a relation for one client.
+
+    `decisions` are those over the thread's own sources, each with the
+    source it was taken for; `ends` those of the entities a relation names,
+    which decide along; `blocked` is the first that chooses nothing, with
+    its source, or `None`. `shown` is whether the client sees the thread: a
+    relation that starts at an event is no relation between entities, and
+    phase 1 shows none, as `relation_visible` says.
+    """
+
+    decisions: tuple[tuple[str | None, Decision], ...]
+    ends: tuple[Decision, ...]
+    blocked: tuple[str | None, Decision] | None
+    shown: bool
+
+
+def _event_start(thread: GraphThread) -> bool:
+    return any(
+        isinstance(v.claim.body, RelationBody) and isinstance(v.claim.body.start, Source)
+        for v in thread.versions
+    )
+
+
+def relation_ends(thread: GraphThread) -> tuple[int, ...]:
+    """Every entity a version of the relation names, the candidates of a
+    question among them, each once, in the order first named."""
+    named: dict[int, None] = {}
+    for version in thread.versions:
+        body = version.claim.body
+        if not isinstance(body, RelationBody):
+            continue
+        ends = [body.start, *([body.to] if body.to is not None else body.candidates or ())]
+        named.update((end, None) for end in ends if isinstance(end, int))
+    return tuple(named)
+
+
+class GraphView:
+    """The graph of one call as one client may see it.
+
+    An entity is decided over the identities of the source events of every
+    version that stands, as an obligation is, and a recollection as a source
+    `recollection` without identities, which the policy withholds until a
+    rule `source:recollection` exists (decision 12 of the 2026-10-14
+    assignments plan; `claim_verdict`). A relation is decided the same way,
+    and is seen only where every entity that any of its versions names is
+    seen as well: a relation shows the names of its ends. An end whose every
+    version is erased withholds nothing, since nothing of it is left to
+    show; the relation names it as erased, as `get_event` names an erased
+    event to any client.
+
+    The verdicts are taken once per thread and kept for the call.
+    """
+
+    def __init__(self, policy: Policy, client: Client, graph: Graph, events: SourceEvents) -> None:
+        self.policy = policy
+        self.client = client
+        self.graph = graph
+        self._events = events
+        self._verdicts: dict[int, ThreadVerdict] = {}
+
+    def verdict(self, subject: int) -> ThreadVerdict:
+        found = self._verdicts.get(subject)
+        if found is not None:
+            return found
+        thread = self.graph.threads[subject]
+        identities, sources = claim_sources(self._events, thread)
+        recollection = any(v.claim.evidence == RECOLLECTION for v in thread.versions)
+        own = claim_decisions(
+            self.policy, self.client, identities, sources, recollection=recollection
+        )
+        blocked = next(((s, d) for s, d in own if d.chosen is None), None)
+        ends: list[Decision] = []
+        if thread.kind == RELATION:
+            for end in relation_ends(thread):
+                named = self.graph.threads.get(end)
+                if named is None or named.kind != ENTITY:
+                    continue
+                verdict = self.verdict(end)
+                ends.extend(decision for _source, decision in verdict.decisions)
+                if blocked is None and verdict.blocked is not None:
+                    blocked = verdict.blocked
+        found = ThreadVerdict(
+            own, tuple(ends), blocked, blocked is None and not _event_start(thread)
+        )
+        self._verdicts[subject] = found
+        return found
+
+    def seen(self, subject: int) -> bool:
+        """Whether the client sees the thread `subject`; `False` for an id
+        that names none."""
+        return subject in self.graph.threads and self.verdict(subject).shown
+
+    def rules(self, verdict: ThreadVerdict) -> tuple[int, ...]:
+        decisions = [d for _source, d in verdict.decisions] + list(verdict.ends)
+        return tuple(sorted({rule for d in decisions for rule in _rules_of(self.policy, d)}))
+
+    def delivered(self, event: int, verdict: ThreadVerdict) -> Delivered:
+        """The access entry of a thread the client sees, under `event`, with
+        the circles of its own sources, as an obligation has them."""
+        return Delivered(event, (), verdict.decisions[-1][1].circles)
+
+    def withheld(self, event: int, verdict: ThreadVerdict) -> tuple[WithheldMark, Withheld]:
+        """The placeholder of a thread the policy keeps from the client, and
+        its access entry, under `event`."""
+        source, decision = cast("tuple[str | None, Decision]", verdict.blocked)
+        code, reason = withholding(self.policy, self.client, decision)
+        uncovered = decision.fallback.circles if decision.fallback is not None else ()
+        entry = Withheld(event, code, decision.circles, reason, uncovered, source)
+        return WithheldMark(event_uri(event), reason), entry
+
+    def entity_types(self) -> dict[int, str]:
+        """The kind of every entity that stands and that the client sees,
+        by id: what a claim of this client may name as an end or a `ref`,
+        so that an entity it may not see is refused with the sentence of
+        one that does not exist (Review Focus 3 of the 2026-10-14
+        assignments plan)."""
+        return {
+            subject: version.claim.body.type
+            for subject, version in self.graph.entities().items()
+            if self.seen(subject)
+        }
+
+
+def graph_view[Conn](
+    log: LogStore[Conn],
+    conn: Conn,
+    policy: Policy,
+    client: Client,
+    graph: Graph,
+    subjects: Iterable[int] | None = None,
+) -> GraphView:
+    """The view of `graph` for `client`, with the source events of the
+    threads `subjects` names, of every entity those name as an end, or of
+    every thread with `None`, read in two queries."""
+    if subjects is None:
+        threads = list(graph.threads.values())
+    else:
+        wanted = {s for s in subjects if s in graph.threads}
+        for subject in list(wanted):
+            wanted.update(
+                end for end in relation_ends(graph.threads[subject]) if end in graph.threads
+            )
+        threads = [graph.threads[s] for s in sorted(wanted)]
+    return GraphView(policy, client, graph, read_claim_events(log, conn, threads))
+
+
+def objections_seen[Conn](log: LogStore[Conn], conn: Conn, policy: Policy, client: Client) -> int:
+    """How many objections wait that the client may see: those on an entity
+    or a relation it sees, for the header of every result
+    ({ref}`mcp-tools`). One the client may not see is not counted, so that
+    the header tells nothing of what the policy keeps from it."""
+    graph = read_graph(log, conn)
+    waiting = {s: t for s, t in graph.threads.items() if t.objections(graph.classes)}
+    if not waiting:
+        return 0
+    view = graph_view(log, conn, policy, client, graph, waiting)
+    return sum(
+        len(thread.objections(graph.classes))
+        for subject, thread in waiting.items()
+        if view.seen(subject)
+    )
+
+
+def graph_rejections[Conn](
+    log: LogStore[Conn], conn: Conn, thread: GraphThread
+) -> tuple[tuple[int, datetime, Statement], ...]:
+    """The rejections that stand of versions of an entity or a relation, in
+    chain order, as `rejections_of` finds those of an obligation."""
+    named = {version.id for version in thread.versions}
+    found: list[tuple[int, datetime, Statement]] = []
+    for row in log.read_by_kind(conn, ASSERTION):
+        statement = None if row.payload is None else parse_statement(row.payload)
+        if statement is not None and statement.kind == REJECTION and statement.of in named:
+            found.append((row.id, row.recorded_at, statement))
+    return tuple(found)
+
+
+def graph_version(graph: Graph, event_id: int) -> tuple[GraphThread, GraphVersion] | None:
+    """The thread and the version `event_id` names, or `None`."""
+    for thread in graph.threads.values():
+        for version in thread.versions:
+            if version.id == event_id:
+                return thread, version
+    return None
+
+
+# --- the lines of an entity or a relation ---------------------------------------------
+
+
+def _name_of(claim: Claim) -> str | None:
+    value = claim.body.fields.get(NAME_FIELD)
+    return None if value is None else _value_text(value)
+
+
+def _period_text(period: Period) -> str:
+    start = "(open)" if period.start is None else period.start.isoformat()
+    end = "(open)" if period.end is None else period.end.isoformat()
+    return f"{start} to {end}"
+
+
+def _value_text(value: FieldValue) -> str:
+    if isinstance(value, Period):
+        return _period_text(value)
+    if isinstance(value, date):
+        return value.isoformat()
+    return str(value)
+
+
+def entity_text(view: GraphView, entity: int, *, ref: bool = False) -> str:
+    """An entity a line names: `entity N` and its name, or what became of
+    it. An end of a relation the client sees is always one it sees, or one
+    erased; an entity a `ref` field names may be neither, and reads `(not
+    shown)` whether the policy keeps it from the client or it is gone, so
+    that the line does not tell the two apart."""
+    thread = view.graph.threads.get(entity)
+    if thread is None or thread.kind != ENTITY or not view.seen(entity):
+        return f"entity {entity} ({'not shown' if ref else 'erased'})"
+    winner = thread.winner(view.graph.classes)
+    if winner is None:
+        return f"entity {entity} (none stands)"
+    if winner.claim.body.state == RETRACTED:
+        return f"entity {entity} (retracted)"
+    name = _name_of(winner.claim)
+    return f"entity {entity}" if name is None else f"entity {entity} {name}"
+
+
+def _evidence_line(claim: Claim) -> str:
+    if claim.evidence == RECOLLECTION:
+        return "sources: none, the operator's recollection"
+    uris: list[str] = []
+    for source in claim.sources:
+        if source.units is None:
+            uris.append(event_uri(source.event))
+        else:
+            uris.extend(f"{event_uri(source.event)}#unit-{seq}" for seq in source.units)
+    return f"sources: {', '.join(uris)}"
+
+
+def claim_lines(view: GraphView, vocabulary: Vocabulary, claim: Claim) -> list[str]:
+    """The lines of an entity or a relation inside the fence: its kind,
+    what it names, its fields, its state, its reason and its sources as
+    URIs, each of which a client or a mail may have written."""
+    body = claim.body
+    lines = [f"type: {body.type}"]
+    if isinstance(body, EntityBody):
+        if body.language is not None:
+            lines.append(f"language: {body.language}")
+    else:
+        start = body.start
+        lines.append(f"from: {entity_text(view, start) if isinstance(start, int) else 'an event'}")
+        if body.candidates is not None:
+            named = ", ".join(entity_text(view, item) for item in body.candidates)
+            lines.append(f"to one of: {named}")
+        else:
+            lines.append(f"to: {entity_text(view, cast('int', body.to))}")
+        if body.period is not None:
+            lines.append(f"period: {_period_text(body.period)}")
+    spec = vocabulary.kind(claim.kind, body.type)
+    refs = {item.name for item in (spec.fields if spec is not None else ()) if item.type == REF}
+    for name in sorted(body.fields):
+        value = body.fields[name]
+        if name in refs and isinstance(value, int):
+            text = entity_text(view, value, ref=True)
+        else:
+            text = _value_text(value)
+        lines.append(f"field {name}: {text}")
+    lines.append(f"state: {body.state}")
+    lines.append(f"reason: {_NONE if claim.reason is None else claim.reason}")
+    lines.append(_evidence_line(claim))
+    return lines
+
+
+def kind_label(vocabulary: Vocabulary, claim: Claim, language: str) -> str:
+    """The label of the claim's kind, in the entity's working language or
+    in `language`, as `display_label` gives it."""
+    body = claim.body
+    working = body.language if isinstance(body, EntityBody) else None
+    return display_label(vocabulary, claim.kind, body.type, language=working, default=language)
+
+
+def level_words(version: GraphVersion, classes: Mapping[int, ClassState]) -> list[str]:
+    """What a label says of the level of a version: `proposed`, or
+    `transitive under URI` with `class revoked` where its class was revoked
+    without `demote`, or `direct`."""
+    level = level_of(version, classes)
+    if level == OPEN:
+        return ["proposed"]
+    if level != TRANSITIVE:
+        return [level]
+    under = cast("int", version.claim.under)
+    words = [f"transitive under {event_uri(under)}"]
+    state = classes.get(under)
+    if state is not None and state.revoked:
+        words.append("class revoked")
+    return words
+
+
+def _graph_label(view: GraphView, thread: GraphThread, kind: str) -> str:
+    classes = view.graph.classes
+    versions = _plural(len(thread.versions), "version")
+    proposals = _plural(len(thread.pending(classes)), "proposal")
+    winner = thread.winner(classes)
+    if winner is None:
+        return f"{kind} · no version stands · {versions} · {proposals}"
+    words = level_words(winner, classes)
+    state = winner.claim.body.state
+    parts = [kind, *(["proposed", state] if words == ["proposed"] else [state, *words])]
+    parts += [versions, proposals]
+    parts += [f"contested by {event_uri(v.id)}" for v in thread.objections(classes)]
+    return " · ".join(parts)
+
+
+def _graph_history(view: GraphView, vocabulary: Vocabulary, thread: GraphThread) -> list[str]:
+    """Every standing version in chain order: who stated it and at which
+    level, and what it changed against the version before it."""
+    lines: list[str] = []
+    before: Claim | None = None
+    for version in thread.versions:
+        claim = version.claim
+        head = [f"version {version.id}", iso_utc(version.recorded_at), claim.responsibility]
+        if claim.under is not None:
+            head.append(f"under {event_uri(claim.under)}")
+        head.append(claim.author)
+        if claim.contests is not None:
+            head.append(f"contests {event_uri(claim.contests)}")
+        if version.id in thread.rejected:
+            head.append("rejected")
+        elif version.id in thread.approved:
+            head.append("approved")
+        lines.append(" · ".join(head))
+        if before is None:
+            lines.extend(f"set {line}" for line in claim_lines(view, vocabulary, claim))
+        else:
+            lines.extend(
+                f"change {name}: {old} → {new}" for name, old, new in claim_changes(before, claim)
+            )
+        before = claim
+    return lines
+
+
+def _relation_lines(
+    view: GraphView, vocabulary: Vocabulary, subject: int, language: str
+) -> list[str]:
+    """The relations an entity is an end of that the client sees, each on a
+    line of its own: its kind, which way it points, the other end, its
+    period and its level where it is not direct."""
+    lines: list[str] = []
+    classes = view.graph.classes
+    relations = view.graph.relations()
+    for relation_id in sorted(relations):
+        relation = relations[relation_id]
+        body = cast("RelationBody", relation.claim.body)
+        if not isinstance(body.start, int) or not view.seen(relation_id):
+            continue
+        if body.start == subject:
+            way, other = "→", cast("int", body.to)
+        elif body.to == subject:
+            way, other = "←", body.start
+        else:
+            continue
+        label = display_label(vocabulary, RELATION, body.type, language=None, default=language)
+        parts = [f"relation {event_uri(relation_id)}: {label} {way} {entity_text(view, other)}"]
+        if body.period is not None:
+            parts.append(_period_text(body.period))
+        level = level_words(relation, classes)
+        if level != [DIRECT]:
+            parts.extend(level)
+        lines.append(" · ".join(parts))
+    return lines
+
+
+# --- list_entities ----------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EntityListing:
+    """What a call of `list_entities` asked for. With `subject`, the call
+    shows that one entity and the other filters are not applied."""
+
+    types: tuple[str, ...] | None = None
+    state: str | None = None
+    proposals: bool = False
+    subject: int | None = None
+    history: bool = False
+
+
+def _entity_entry(
+    view: GraphView,
+    vocabulary: Vocabulary,
+    thread: GraphThread,
+    listing: EntityListing,
+    language: str,
+) -> Read | None:
+    """The entry of one entity, shown or as a placeholder, or `None` when a
+    filter drops it. The policy decides before every filter that looks at
+    the content, so that a placeholder stands under every one of them alike,
+    as an obligation's does."""
+    subject = thread.subject
+    verdict = view.verdict(subject)
+    rules = view.rules(verdict)
+    if verdict.blocked is not None:
+        mark, entry = view.withheld(subject, verdict)
+        return Read(mark, entry, rules, subject)
+    classes = view.graph.classes
+    winner = thread.winner(classes)
+    if listing.subject is None:
+        if winner is None:
+            return None
+        body = winner.claim.body
+        proposed = level_of(winner, classes) == OPEN
+        pending = bool(thread.pending(classes))
+        listed = (proposed or pending) if listing.proposals else not proposed
+        gone = body.state == RETRACTED and listing.state != RETRACTED and not listing.proposals
+        kept = (listing.types is None or body.type in listing.types) and (
+            listing.state is None or body.state == listing.state
+        )
+        if not listed or gone or not kept:
+            return None
+    shown = winner if winner is not None else thread.versions[-1]
+    label = _graph_label(view, thread, kind_label(vocabulary, shown.claim, language))
+    if listing.history or winner is None:
+        lines = _graph_history(view, vocabulary, thread)
+    else:
+        lines = [
+            *claim_lines(view, vocabulary, winner.claim),
+            *_relation_lines(view, vocabulary, subject, language),
+        ]
+    item = Stated(event_uri(subject), ENTITY, label, tuple(lines))
+    return Read(item, view.delivered(subject, verdict), rules, subject)
+
+
+def entities[Conn](
+    log: LogStore[Conn],
+    conn: Conn,
+    policy: Policy,
+    client: Client,
+    listing: EntityListing,
+    *,
+    after: int | None,
+    language: str,
+) -> Seen:
+    """The entities, by their ids after `after`, as many as fill a page and
+    one more if it exists; each shown with the relations of it the client
+    sees, or a placeholder where the policy keeps it from this client.
+
+    With `listing.subject` the one entity, whatever the other filters say;
+    the placeholder of an erased event when the id names an assertion an
+    erasure took and no entity stands under it; or the error that none
+    stands under the id, as `list_obligations` answers.
+    """
+    graph = read_graph(log, conn)
+    vocabulary = read_vocabulary(log, conn)
+    view = graph_view(log, conn, policy, client, graph)
+    if listing.subject is not None:
+        subject = listing.subject
+        uri = event_uri(subject)
+        thread = graph.threads.get(subject)
+        if thread is None and erased_assertion(log, conn, subject):
+            return Seen((Read(ErasedMark(uri), Delivered(subject, (), ()), event=subject),))
+        if (
+            thread is None
+            or thread.kind != ENTITY
+            or (thread.winner(graph.classes) is None and not listing.history)
+        ):
+            missing = ErrorMark(uri, "no entity stands under this id")
+            return Seen((Read(missing, None, event=subject),))
+        return Seen((cast("Read", _entity_entry(view, vocabulary, thread, listing, language)),))
+    reads: list[Read] = []
+    size = 0
+    for subject in sorted(graph.threads):
+        thread = graph.threads[subject]
+        if (after is not None and subject <= after) or thread.kind != ENTITY:
+            continue
+        if thread.winner(graph.classes) is None:
+            continue
+        read = _entity_entry(view, vocabulary, thread, listing, language)
+        if read is None:
+            continue
+        if size > PAGE_CHARS:
+            return Seen(tuple(reads), more=True)
+        reads.append(read)
+        size += _weight(read)
+    return Seen(tuple(reads))
+
+
+# --- list_triage ------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class Triaged(Seen):
+    """`Seen` with the section of each read, which a cursor of `list_triage`
+    carries."""
+
+    sections: tuple[str, ...] = ()
+
+
+def waiting_versions(graph: Graph) -> dict[str, list[tuple[GraphThread, GraphVersion]]]:
+    """What waits for the operator, by section, each by id: as `previously
+    triage` sorts it. A version is in one section, and a proposal that
+    stands as the winner of its thread counts as one."""
+    found: dict[str, list[tuple[GraphThread, GraphVersion]]] = {
+        section: [] for section in (OBJECTION, QUESTION, PROPOSAL)
+    }
+    classes = graph.classes
+    for thread in graph.threads.values():
+        winner = thread.winner(classes)
+        waiting = list(thread.pending(classes))
+        if winner is not None and level_of(winner, classes) == OPEN:
+            waiting.append(winner)
+        objections = {version.id for version in thread.objections(classes)}
+        question = thread.question(classes)
+        for version in waiting:
+            if version.id in objections:
+                found[OBJECTION].append((thread, version))
+            elif question is not None and version.id == question.id:
+                found[QUESTION].append((thread, version))
+            else:
+                found[PROPOSAL].append((thread, version))
+    for versions in found.values():
+        versions.sort(key=lambda pair: pair[1].id)
+    return found
+
+
+def _triage_label(view: GraphView, thread: GraphThread, version: GraphVersion, kind: str) -> str:
+    claim = version.claim
+    parts = [claim.kind, kind, *level_words(version, view.graph.classes), f"by {claim.author}"]
+    if claim.contests is not None:
+        parts.append(f"contests {event_uri(claim.contests)}")
+    if version.id == thread.subject:
+        parts.append(f"new {claim.kind}")
+    else:
+        parts.append(f"version of {event_uri(thread.subject)}")
+    return " · ".join(parts)
+
+
+def _triage_read(
+    view: GraphView,
+    vocabulary: Vocabulary,
+    section: str,
+    thread: GraphThread,
+    version: GraphVersion,
+    language: str,
+) -> Read:
+    verdict = view.verdict(thread.subject)
+    claim = version.claim
+    lines = claim_lines(view, vocabulary, claim)
+    winner = thread.winner(view.graph.classes)
+    if winner is not None and winner.id != version.id:
+        lines += [
+            f"change {name}: {old} → {new}" for name, old, new in claim_changes(winner.claim, claim)
+        ]
+    label = _triage_label(view, thread, version, kind_label(vocabulary, claim, language))
+    item = Stated(event_uri(version.id), section, label, tuple(lines))
+    return Read(item, view.delivered(version.id, verdict), view.rules(verdict), version.id)
+
+
+def triage[Conn](
+    log: LogStore[Conn],
+    conn: Conn,
+    policy: Policy,
+    client: Client,
+    *,
+    after: tuple[str, int] | None,
+    language: str,
+) -> Triaged:
+    """What waits for the operator, after `after` (a section and an id), as
+    many as fill a page and one more if it exists: the objections, the
+    questions and the proposals of entities and relations the client sees,
+    and then a placeholder for each one with something waiting that the
+    policy keeps from it. A placeholder stands once for its entity or
+    relation, under its id, in no section of what waits: which section it
+    would be in, and how much waits, is content of it."""
+    graph = read_graph(log, conn)
+    vocabulary = read_vocabulary(log, conn)
+    view = graph_view(log, conn, policy, client, graph)
+    found: list[tuple[str, int, Callable[[], Read]]] = []
+    hidden: set[int] = set()
+    for section, pairs in waiting_versions(graph).items():
+        for thread, version in pairs:
+            verdict = view.verdict(thread.subject)
+            if verdict.shown:
+                found.append(
+                    (
+                        section,
+                        version.id,
+                        partial(_triage_read, view, vocabulary, section, thread, version, language),
+                    )
+                )
+            elif verdict.blocked is not None:
+                hidden.add(thread.subject)
+    for subject in sorted(hidden):
+        verdict = view.verdict(subject)
+        mark, entry = view.withheld(subject, verdict)
+        found.append((WITHHELD, subject, partial(Read, mark, entry, view.rules(verdict), subject)))
+    start = 0
+    if after is not None:
+        section, last = after
+        rank = TRIAGE_SECTIONS.index(section)
+        start = next(
+            (
+                index
+                for index, (s, event, _read) in enumerate(found)
+                if TRIAGE_SECTIONS.index(s) > rank or (s == section and event > last)
+            ),
+            len(found),
+        )
+    reads: list[Read] = []
+    sections: list[str] = []
+    size = 0
+    for section, _event, make in found[start:]:
+        if size > PAGE_CHARS:
+            return Triaged(tuple(reads), more=True, sections=tuple(sections))
+        read = make()
+        reads.append(read)
+        sections.append(section)
+        size += _weight(read)
+    return Triaged(tuple(reads), sections=tuple(sections))

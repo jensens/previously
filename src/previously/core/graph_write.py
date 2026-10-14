@@ -668,6 +668,34 @@ def claim_sources(
     return events.named(s.event for version in thread.versions for s in version.claim.sources)
 
 
+def claim_decisions(
+    policy: Policy,
+    client: Client,
+    identities: Sequence[Mapping[str, object]],
+    sources: Sequence[str | None],
+    *,
+    recollection: bool,
+) -> tuple[tuple[str | None, Decision], ...]:
+    """Every decision `claim_verdict` takes, each with the source it was
+    taken for: those of `assertion_decisions`, in their order, and then
+    `recollection` for a recollection. For a caller that records which
+    rules decided, and which source a withholding came from, as the MCP
+    server does for an obligation."""
+    candidate = Candidate(provider=client.processor, model="", effort=None)
+    decisions: list[tuple[str | None, Decision]] = []
+    if sources or identities or not recollection:
+        decided_on = assertion_decisions(policy, client, identities, sources)
+        decisions.extend(zip(tuple(sources) or (None,), decided_on, strict=True))
+    if recollection:
+        decisions.append(
+            (
+                RECOLLECTION,
+                decide(policy, identities=(), source=RECOLLECTION, candidates=(candidate,)),
+            )
+        )
+    return tuple(decisions)
+
+
 def claim_verdict(
     policy: Policy,
     client: Client,
@@ -687,14 +715,12 @@ def claim_verdict(
     the sources and that of the recollection, and the first that chooses
     nothing holds, as in `assertion_verdict`.
     """
-    candidate = Candidate(provider=client.processor, model="", effort=None)
-    decisions: list[Decision] = []
-    if sources or identities or not recollection:
-        decisions.extend(assertion_decisions(policy, client, identities, sources))
-    if recollection:
-        decisions.append(
-            decide(policy, identities=(), source=RECOLLECTION, candidates=(candidate,))
+    decisions = [
+        decision
+        for _source, decision in claim_decisions(
+            policy, client, identities, sources, recollection=recollection
         )
+    ]
     return next((d for d in decisions if d.chosen is None), decisions[-1])
 
 
