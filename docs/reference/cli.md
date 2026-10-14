@@ -1014,10 +1014,21 @@ A kind the file leaves out is retired, and a built-in kind is never retired.
 A second `apply` of the same file finds nothing to change and prints `nothing to change`.
 A refusal comes before the question, so nobody confirms what can't be written.
 
+`apply --base` takes the vocabulary file that ships with the package, and it only adds: it writes the kinds that the log doesn't hold, retired kinds counting as held, and prints an `add` line for each.
+It never retires a kind and never changes one the log holds.
+For each kind the base holds in another form, it prints a `differs` line, a tab, `entity` or `relation`, a tab, and the identifier, and under it one line per attribute that differs, with the value in the log and the value in the base.
+After those lines comes this sentence:
+
+```text
+--base changes no kind the log holds; to take a difference, edit the output of `previously vocabulary show` and apply that file
+```
+
+With nothing to add, it prints `nothing to change` after the `differs` lines and asks nothing.
+
 | Option | Description |
 |---|---|
-| `FILE` | The vocabulary file to apply. |
-| `--base` | Apply the vocabulary file that ships with the package instead of `FILE`. Give one of the two. |
+| `FILE` | The vocabulary file to apply, as the whole vocabulary. |
+| `--base` | Add the kinds of the vocabulary file that ships with the package which the log doesn't hold, instead of applying `FILE`. Give one of the two. |
 | `--yes` | Write without asking. |
 
 (cli-gate)=

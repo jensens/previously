@@ -84,5 +84,20 @@ A kind that another one names in `from`, `to` or a `ref` can't be retired until 
 ## After an update
 
 A release that changes the base vocabulary doesn't change yours.
-`apply --base` compares the base file with the vocabulary in force and treats it as the whole vocabulary: a kind you added is retired and a field you added is removed, and the lines before the question say so.
-So once you've adapted the vocabulary, keep your own file, start it from the new `vocabulary.toml` of the package, and apply that.
+Run `apply --base` after the update; it's safe whether or not you've adapted the vocabulary:
+
+```shell
+previously vocabulary apply --base
+```
+
+It adds the base kinds the log doesn't hold yet, and it changes nothing else: it never retires a kind, and it never changes one the log already holds, yours included.
+For every kind the base holds in another form than your log, it prints a `differs` line with the attributes that differ, the value in the log first and the value in the base second.
+To take such a change, print the vocabulary in force, edit it, and apply the file:
+
+```shell
+previously vocabulary show > vocabulary.toml
+previously vocabulary apply vocabulary.toml
+```
+
+Copy the parts you want from the `vocabulary.toml` of the package into your file before you apply it.
+Unlike `--base`, `apply FILE` treats the file as the whole vocabulary, so a kind that your file leaves out is retired.

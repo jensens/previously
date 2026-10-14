@@ -146,6 +146,15 @@ Neither rewrites anything.
 An assignment that errs elsewhere hides or shows a mail in the wrong place; a membership that errs here releases content.
 So these kinds, and the entity kind `circle`, are fixed in the code, no approval class covers them, and a model writes them `open` and never otherwise.
 `set_class` refuses a class that names one, and the level of a statement of such a kind is `open` even where an event that came another way names the kind in a class.
+A transitive version of such a kind can only have come around the write path, and the fold counts it as `open` too, the same fail-safe as for a class nobody knows; `verify` reports the row.
+
+Only the operator makes a circle or a membership direct, and only on the command line.
+Over MCP, `write_approve` and `write_triage_answer` refuse a version of such a kind with one sentence, before anything is written: a circle or a membership is approved on the command line.
+The reason is that the question a client asks the person before these tools run is a hint, not a lock.
+Claude Code offers "Yes, and don't ask again," and once a person has said that, a model could approve its own memberships with nobody looking.
+The log couldn't tell that approval from the operator's, either: both are direct, and both keep the model as the author.
+Every membership written that way in phases 1 and 2 would be one that phase 3, when the gate starts to read the graph, has to either trust or find a way to distrust.
+`write_reject` stays allowed for these kinds, since a rejection makes nothing stand.
 Phase 1 keeps the gate itself untouched: nothing in the graph reaches `decide`.
 
 (graph-acyclic)=
@@ -186,7 +195,8 @@ Previously treats it as content of a source named `recollection`, with no identi
 Without a rule for that source, the policy has no rule, and the policy without a rule releases nothing to a client that isn't local ({ref}`processing-policy`).
 So an operator's recollection stays out of an MCP client's sight until the operator sets a rule `source:recollection`.
 That's the safe side, and it costs one step when the operator wants Claude Code to see what they remember.
-A relation is visible to a client when its own sources and both its ends are; otherwise the client gets a placeholder, as for any other content.
+A relation is visible to a client when its own sources and both its ends are.
+Otherwise the client doesn't see it at all: the lines of an entity and the triage leave it out, without a placeholder, because a placeholder that appears when somebody writes on a hidden thread would itself be a signal.
 
 (graph-cost)=
 
@@ -194,7 +204,30 @@ A relation is visible to a client when its own sources and both its ends are; ot
 
 Reading folds the whole log of assertions, with no projection table in between.
 That's the simplest design that keeps the graph a function of the log, and it has a price that grows with the number of statements.
-Phase 1 has the measurements below, and the rest are still to be taken.
+
+The final review of phase 1 measured it on a graph of about one entity per two relations: organizations, posts, projects and persons, a `part_of` tree over the projects, a `post_in` for every post, and `holds` for the rest.
+Each figure is the median of three runs, measured on 2026-10-14.
+
+| What | 2,000 relations, 1,000 entities | 10,000 relations, 5,000 entities |
+|---|---|---|
+| Folding the graph alone, `read_graph` | 0.08 s | 0.47 s |
+| `previously entities` | 0.10 s | 0.53 s |
+| `previously relations --at` a day | 0.10 s | 0.54 s |
+| Writing one relation | 0.08 s | 0.47 s |
+| `verify` over the whole log | 0.62 s | 2.77 s |
+| MCP `whoami` | 0.10 s | 0.52 s |
+| MCP `list_entities` | 0.28 s | 1.72 s |
+
+The figures at 100,000 relations are still being measured, and this page gets them when they're in.
+
+Every MCP call pays for the fold, `whoami` included, and so do the tools that have nothing to do with the graph.
+The first line of every result counts the objections pending, and to count them the server folds the whole graph and asks the processing policy about the sources of every objection, once per call.
+Between 2,000 and 10,000 relations the cost grew in line with the graph, so a call costs about half a second at 10,000 relations whatever it asks for.
+A cache keyed on the tip of the chain would not help, since every call writes its own access entry and moves the tip.
+Phase 1 accepts that cost: a graph of a few hundred statements, which is where a pilot starts, costs milliseconds.
+Phase 2 needs a projection or an incremental fold before the data grows, and these figures are what that decision rests on.
+
+Earlier measurements during the build, all on 2026-10-14, show where `verify` grows faster than the graph:
 
 | What | Size | Time |
 |---|---|---|
@@ -202,14 +235,10 @@ Phase 1 has the measurements below, and the rest are still to be taken.
 | `verify` over `part_of` chains | 2,000 edges | 1.77 s |
 | `verify` over `post_in` relations | 2,000 relations | 0.56 s |
 | `verify` over `post_in` relations | 10,000 relations | 2.67 s |
-| The header of an MCP result, `whoami` | 1,000 entities | 53 ms |
-| The header of an MCP result, `whoami` | 5,000 entities | 153 ms |
+| The header of an MCP result, `whoami`, entities without relations | 1,000 entities | 53 ms |
+| The header of an MCP result, `whoami`, entities without relations | 5,000 entities | 153 ms |
 
-All of them were measured on 2026-10-14.
 The first pair shows that `verify` grows faster than the number of edges when the edges are of an acyclic kind: each such edge is checked against the edges before it, so doubling the chain took about three times as long.
-Extrapolated, 10,000 such edges come to about a minute, which isn't measured.
+Extrapolated, 10,000 such edges in one chain come to about a minute, which isn't measured.
 `verify` runs once a day, so a minute would be tolerable, and the question is only how soon an operator with a large graph gets there.
 The `post_in` relations aren't acyclic, and they grow in line with their number.
-The header counts objections on every MCP call, and its cost is the fold it needs for that count, so it grows with the graph on every call and not only on a list.
-The final review of phase 1 measures again at 10,000 and at 100,000 relations, for `entities`, for `relations --at` and for the header, and this page gets its figures when that review is done.
-Those figures decide whether phase 2 gets a projection table, or whether the fold stays the whole of it.

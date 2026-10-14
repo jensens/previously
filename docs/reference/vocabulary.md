@@ -81,7 +81,8 @@ A retired kind has `retired = true`.
 
 ## The base vocabulary
 
-The package ships `vocabulary.toml`, and `previously vocabulary apply --base` applies it.
+The package ships `vocabulary.toml`, and `previously vocabulary apply --base` adds each of its kinds that the log doesn't hold.
+It never retires a kind or changes one the log holds.
 Nothing applies it on its own.
 
 | Kind | Declares | Behaviors | Connects |

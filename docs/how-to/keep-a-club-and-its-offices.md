@@ -20,7 +20,8 @@ previously vocabulary apply --base
 ```
 
 The command prints one line per kind it would write, asks, and prints `vocabulary event ID` for each.
-Run it again after an update that changes the vocabulary; a second run of the same file prints `nothing to change`.
+Run it again after an update; it adds the kinds the update brings and changes none that the log holds, so a kind you've adapted stays as it is.
+A run with nothing to add prints `nothing to change`.
 To change the kinds, see {ref}`adapt-the-vocabulary`.
 
 ## Name the sources

@@ -32,10 +32,12 @@ previously vocabulary apply --base
 
 The command prints one line per kind it would write, asks, and writes one event per kind.
 It needs no `--yes` when the maintainer runs it from a terminal.
-Run it again after an update whose notes say the base vocabulary changed; it prints `nothing to change` otherwise.
+Running it again after an update is safe: it adds the base kinds the log doesn't hold yet and changes nothing else, so it never retires a kind and never changes one the maintainer has adapted.
+Where the new base differs from a kind the log holds, it prints a `differs` line with the attributes, and the maintainer takes the change with `previously vocabulary show`, an edit, and `previously vocabulary apply FILE`.
+With nothing to add, it prints `nothing to change`.
 
 That is a step of the operator and not of a job.
-A CronJob that applied the base vocabulary would undo whatever the maintainer adapts: `apply --base` treats the file as the whole vocabulary and retires a kind that the file leaves out.
+The `differs` lines are for a person to read, and a kind the base adds is one the maintainer should see arrive.
 
 **It stands when** `previously vocabulary show` in the tools pod prints the base vocabulary, with the kinds `organization`, `person`, `post`, `project`, `matter` and the relations `holds`, `post_in`, `part_of`, `involved_in` and `member_of`.
 
@@ -49,8 +51,10 @@ A client that keeps its tool list across sessions has to fetch it again.
 Mistral Vibe may need that; the maintainer knows.
 
 The header of every MCP result now counts the objections waiting for the operator, as `· N objections pending`, only when N is more than zero.
-It costs one fold of the graph per call.
-The maintainer measured `whoami` at 53 ms with 1,000 entities and at 153 ms with 5,000, on 2026-10-14; a pod that is much slower than the maintainer's machine will show more.
+To count them, every call folds the whole graph and asks the policy about the sources of every objection, whatever tool it is.
+The maintainer measured it on 2026-10-14, as medians of three runs: `whoami` took 0.10 s at 2,000 relations and 1,000 entities, and 0.52 s at 10,000 relations and 5,000 entities; `list_entities` took 0.28 s and 1.72 s.
+The cost grows with the graph, and a pod that is much slower than the maintainer's machine will show more.
+At the size of a pilot, a few hundred statements, it is milliseconds; report the time of a call if the graph grows into the thousands of relations.
 
 **It stands when** `list_entities` answers over MCP, from the maintainer's client or with a token from `previously client`, and `previously access` lists the call.
 An empty graph answers with an empty list and no error.
@@ -69,9 +73,11 @@ The default stays as it is until they say so.
 
 - **The gate is untouched.**
   Nothing in the graph reaches the processing policy in this phase, and no approval class covers the kinds the gate will read later.
+  A circle or a membership becomes direct only on the command line: `write_approve` and `write_triage_answer` refuse one.
   A check of the policy after the update gives the same answers as before.
 - **`verify` costs more with a large graph.**
   Over a chain of 2,000 edges of an acyclic kind it took 1.77 s, and the cost grows faster than the number of edges.
+  Over a whole log of 10,000 relations it took 2.77 s, measured on 2026-10-14.
   The daily `verify` job needs no change at the sizes of a pilot.
   If the graph grows into the tens of thousands of relations, report the time of the job.
 

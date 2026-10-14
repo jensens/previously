@@ -537,6 +537,7 @@ Error: item 1: a period is not written with dates YYYY-MM-DD
 Error: event 26 is a question: answer it with write_triage_answer
 Error: one call approves obligations and decisions, or entities and relations, not both
 Error: event 30 is no question that waits
+Error: event 31 is of a kind the gate reads; a circle or a membership is approved on the command line
 Error: the answer names 12, which is none of the candidates
 Error: a line of these statements is longer than the 1,000 characters a preview shows of it; shorten it
 Error: the preview of these statements is longer than a page; write fewer in one call
@@ -677,6 +678,7 @@ The answer is the approval of the question with `to` set to the candidate chosen
 The client has to be allowed to see the relation of the question and every source of it.
 A question it may not see, a version that's no question, and one answered or overtaken already are all refused with `event N is no question that waits`, and a choice that's none of the candidates with `the answer names N, which is none of the candidates`.
 To answer with an entity that isn't a candidate, reject the question and state the relation.
+A question of a kind the gate reads, `member_of` or `in_circle`, is refused with `event N is of a kind the gate reads; a circle or a membership is approved on the command line`, before anything is written; the operator answers it with `previously answer` ({ref}`graph-gate-kinds`).
 An answer of a relation over an acyclic kind that would close a cycle is refused with `the relation would close a cycle over a kind that is acyclic`, which counts relations the client may not see too.
 That sentence tells a call the person confirmed one bit about them, as it does for `write_approve`.
 The tool carries `_meta` with `"anthropic/requiresUserInteraction": true` in `tools/list`, the mark that makes Claude Code ask the person before every call, as `write_approve` and `write_reject` do.
@@ -695,6 +697,8 @@ A question isn't approved: `write_triage_answer` answers it.
 The client has to be allowed to see the entry of each proposal and every source of it.
 Only a proposal that's pending, or that stands because the entry has no direct version, is approved: one that a direct version came after is refused, as `previously approve` refuses it, and `write_reject` still takes it.
 It writes in one call and is idempotent, as {ref}`mcp-answering` describes.
+A proposal of a kind the gate reads, a `circle`, a `member_of` or an `in_circle`, is refused with `event N is of a kind the gate reads; a circle or a membership is approved on the command line`, and nothing of the call is written; the operator approves it with `previously approve` ({ref}`graph-gate-kinds`).
+`write_reject` takes such a proposal like any other.
 An approval of a relation that would close a cycle over an acyclic kind is refused with `the relation would close a cycle over a kind that is acyclic`, which counts relations the client may not see too.
 That sentence tells a call the person confirmed one bit about them, and it's the one way an MCP client learns of a cycle.
 The approval counts as the operator's because the client asks the person before the call; a client that calls `write_approve` without asking writes approvals nobody looked at.
