@@ -661,7 +661,7 @@ def conformance_problem(
     body = claim.body
     spec = vocabulary.kind(claim.kind, body.type)
     if spec is None:
-        return f"the type is not declared as an {claim.kind} kind in the vocabulary"
+        return f"the type is not declared as a kind of {claim.kind} in the vocabulary"
     if spec.retired and new_thread:
         return f"the kind is retired and takes no new {claim.kind}"
     # The gate reads circles and memberships, and a class must never decide

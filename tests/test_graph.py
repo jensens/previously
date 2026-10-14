@@ -683,10 +683,10 @@ def test_a_claim_that_fits_the_vocabulary_has_no_problem() -> None:
 @pytest.mark.parametrize(
     ("claim", "sentence"),
     [
-        (entity(kind="club"), "the type is not declared as an entity kind in the vocabulary"),
+        (entity(kind="club"), "the type is not declared as a kind of entity in the vocabulary"),
         (
             relation(kind="project"),
-            "the type is not declared as an relation kind in the vocabulary",
+            "the type is not declared as a kind of relation in the vocabulary",
         ),
         (entity(kind="relic"), "the kind is retired and takes no new entity"),
         (relation(kind="knew", to=15), "the kind is retired and takes no new relation"),
