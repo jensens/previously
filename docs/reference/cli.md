@@ -564,7 +564,7 @@ FINDING 9: unknown action "teleport"
 | `redaction names a target that does not exist` | The event a redaction names doesn't stand before the redaction in the chain, or doesn't have a unit it names; for a redaction of a blob, an event it names doesn't stand before it or doesn't name the blob in the blob register. | The redaction. |
 | `units are erased in part, which version 1 cannot attest` | An event in hash format 1 has some units without content, and others with it. | The event. |
 | `action has no valid form` | An event of kind `action` carries no `action` name in its payload, or a redaction's payload doesn't have exactly the form `redact` writes. | The action. |
-| `unknown action "<name>"` | An event of kind `action` carries an `action` name that isn't `redaction`, `policy`, `model_call`, `mcp_access` or `vocabulary`. | The action. |
+| `unknown action "<name>"` | An event of kind `action` carries an `action` name that isn't `redaction`, `policy`, `model_call`, `mcp_access`, `vocabulary` or `approval_class`. | The action. |
 
 Sixteen findings come from assertions, the events of the kind `assertion` ({ref}`assertions-reference`):
 

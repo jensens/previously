@@ -32,6 +32,7 @@ from previously.contract.blobs import BlobStore
 from previously.contract.blobs import KeyProvider
 from previously.contract.types import Anchor
 from previously.core.access import access_problem
+from previously.core.action import APPROVAL_CLASS
 from previously.core.action import KNOWN_ACTIONS
 from previously.core.action import MCP_ACCESS
 from previously.core.action import MODEL_CALL
@@ -52,6 +53,7 @@ from previously.core.assertions import stands_on_erased
 from previously.core.blob import fetch_blob
 from previously.core.canonical import canonical
 from previously.core.chain import read_references
+from previously.core.classes import class_problem
 from previously.core.errors import AddressMismatch
 from previously.core.errors import CannotOpen
 from previously.core.errors import InvalidPayload
@@ -742,6 +744,8 @@ def _form_finding(
         return _statement_finding("policy", event_id, check_payload(payload), units)
     if name == VOCABULARY:
         return _statement_finding("vocabulary", event_id, vocabulary_problem(payload), units)
+    if name == APPROVAL_CLASS:
+        return _statement_finding("approval_class", event_id, class_problem(payload), units)
     if name == MODEL_CALL and (problem := _model_call_problem(payload, units)) is not None:
         return Finding(event_id, f"model_call has no valid form: {problem}")
     if name == MCP_ACCESS:

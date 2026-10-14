@@ -5,8 +5,8 @@
 Two kinds of action carry the processing policy and its audit.
 A policy event sets one statement of the policy, and a `model_call` records one attempt of the gate to call a model.
 Both are events of the kind `action`, written with no source key, and `payload.action` names which one.
-`verify` accepts exactly five names there: `redaction`, `policy`, `model_call`, `mcp_access` and `vocabulary`.
-`mcp_access` is the record of a call from an MCP client ({ref}`cli-access`), and `vocabulary` declares a kind of entity or relation ({ref}`vocabulary-reference`).
+`verify` accepts exactly six names there: `redaction`, `policy`, `model_call`, `mcp_access`, `vocabulary` and `approval_class`.
+`mcp_access` is the record of a call from an MCP client ({ref}`cli-access`), `vocabulary` declares a kind of entity or relation ({ref}`vocabulary-reference`), and `approval_class` lets the operator allow a model's statements of a class to count as transitive.
 {ref}`cli-reference` lists the commands that write and read them, and {ref}`processing-policy` explains why they look the way they do.
 
 ## Policy events
