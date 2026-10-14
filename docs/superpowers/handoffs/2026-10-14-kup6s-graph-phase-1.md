@@ -76,8 +76,8 @@ The default stays as it is until they say so.
   A circle or a membership becomes direct only on the command line: `write_approve` and `write_triage_answer` refuse one.
   A check of the policy after the update gives the same answers as before.
 - **`verify` costs more with a large graph.**
-  Over a chain of 2,000 edges of an acyclic kind it took 1.77 s, and the cost grows faster than the number of edges.
-  Over a whole log of 10,000 relations it took 2.77 s, measured on 2026-10-14.
+  Over 2,000 edges of an acyclic kind it took 2.34 s and over 5,000 it took 14.84 s, measured on 2026-10-14: the cost grows roughly with the square of such edges.
+  Over a whole log of 10,000 relations it took 2.77 s.
   The daily `verify` job needs no change at the sizes of a pilot.
   If the graph grows into the tens of thousands of relations, report the time of the job.
 

@@ -218,27 +218,37 @@ Each figure is the median of three runs, measured on 2026-10-14.
 | MCP `whoami` | 0.10 s | 0.52 s |
 | MCP `list_entities` | 0.28 s | 1.72 s |
 
-The figures at 100,000 relations are still being measured, and this page gets them when they're in.
+At 100,000 relations and 50,000 entities, folding the graph, `previously entities` and `previously relations --at` each took about 7.3 s, one write about 7.0 s, and `verify` of the whole log 126 s.
+Those figures are provisional: they were taken on 2026-10-14 while the code was still changing, and a confirmation on a fixed tree is running.
+The MCP calls at that size are still to be measured.
 
 Every MCP call pays for the fold, `whoami` included, and so do the tools that have nothing to do with the graph.
-The first line of every result counts the objections pending, and to count them the server folds the whole graph and asks the processing policy about the sources of every objection, once per call.
+The first line of every result counts the objections pending, and to count them the server does two things once per call: it folds the whole graph, and `objections_seen` reads the source events of every objection and asks the processing policy about them.
 Between 2,000 and 10,000 relations the cost grew in line with the graph, so a call costs about half a second at 10,000 relations whatever it asks for.
+Between 10,000 and 100,000 it grew faster than the graph: the fold took about fifteen times as long for ten times the relations, in the provisional figures.
 A cache keyed on the tip of the chain would not help, since every call writes its own access entry and moves the tip.
 Phase 1 accepts that cost: a graph of a few hundred statements, which is where a pilot starts, costs milliseconds.
 Phase 2 needs a projection or an incremental fold before the data grows, and these figures are what that decision rests on.
 
-Earlier measurements during the build, all on 2026-10-14, show where `verify` grows faster than the graph:
+`verify` grows faster than the graph where the edges are of an acyclic kind.
+The final review measured it over `part_of` edges alone, medians of three runs on 2026-10-14, with no finding in any run:
+
+| `part_of` edges | One chain | A tree |
+|---|---|---|
+| 1,000 | 0.84 s | 0.78 s |
+| 2,000 | 2.34 s | 2.10 s |
+| 5,000 | 14.84 s | 13.05 s |
+
+Measurements during the build, also on 2026-10-14, add the relations of a kind that isn't acyclic, and the header before relations came into it:
 
 | What | Size | Time |
 |---|---|---|
-| `verify` over `part_of` chains | 1,000 edges | 0.57 s |
-| `verify` over `part_of` chains | 2,000 edges | 1.77 s |
 | `verify` over `post_in` relations | 2,000 relations | 0.56 s |
 | `verify` over `post_in` relations | 10,000 relations | 2.67 s |
 | The header of an MCP result, `whoami`, entities without relations | 1,000 entities | 53 ms |
 | The header of an MCP result, `whoami`, entities without relations | 5,000 entities | 153 ms |
 
-The first pair shows that `verify` grows faster than the number of edges when the edges are of an acyclic kind: each such edge is checked against the edges before it, so doubling the chain took about three times as long.
-Extrapolated, 10,000 such edges in one chain come to about a minute, which isn't measured.
+Each edge of an acyclic kind is checked against the edges before it, so `verify` grows about with the square of their number: two and a half times the edges took six times as long, in a chain and in a tree alike.
+Extrapolated, 10,000 such edges come to about a minute, which is an estimate and not a measurement.
 `verify` runs once a day, so a minute would be tolerable, and the question is only how soon an operator with a large graph gets there.
 The `post_in` relations aren't acyclic, and they grow in line with their number.

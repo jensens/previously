@@ -446,16 +446,19 @@ das mit der Endprüfung ins Repository kommt):
   Person bestätigten Aufruf ein Bit über Kanten sagt, die der Client nicht
   sehen darf (`mcp-tools.md`, `explanation/graph.md`). Der Preis ist gewollt;
   zu entscheiden bleibt, ob eine spätere Phase ihn ganz abträgt (Z §9.4).
-- **`verify` wächst überlinear über azyklischen Ketten.** Jede Kante einer
-  azyklischen Art wird gegen die Kanten davor geprüft: 1 000 Kanten
-  `part_of` in einer Kette 0,57 s, 2 000 Kanten 1,77 s, gemessen am
-  2026-10-14 in Aufgabe 4 — gut dreimal so lang für doppelt so viele Kanten,
-  nicht viermal; hochgerechnet sind 10 000 Kanten in einer Kette rund eine
-  Minute, nicht gemessen. Die Endprüfung hat am 2026-10-14 ein ganzes Log mit
-  10 000 Beziehungen gemessen (1 000 davon `part_of` als Baum, Median aus
-  drei Läufen): 2,77 s, bei 2 000 Beziehungen 0,62 s (P-Z1, Ruling T4-c).
-  Die Zahlen bei 100 000 Beziehungen stehen noch aus. Trägt es nicht, wird
-  die Prüfung auf Zyklen in `verify` inkrementell, spätestens mit Phase 2.
+- **`verify` wächst überlinear über azyklischen Kanten, etwa quadratisch.**
+  Jede Kante einer azyklischen Art wird gegen die Kanten davor geprüft.
+  Gemessen von der Endprüfung am 2026-10-14, nur Kanten `part_of`, Median
+  aus drei Läufen, ohne Befund: als Kette 1 000 Kanten 0,84 s, 2 000 2,34 s,
+  5 000 14,84 s; als Baum 0,78 s, 2,10 s, 13,05 s — zweieinhalbmal so viele
+  Kanten, sechsmal so lang. Hochgerechnet sind 10 000 Kanten rund eine
+  Minute, geschätzt, nicht gemessen. (Aufgabe 4 hatte 0,57 s und 1,77 s für
+  die Kette gemessen; die Zahlen der Endprüfung ersetzen sie.) Ein ganzes Log
+  mit 10 000 Beziehungen (1 000 davon `part_of` als Baum) prüfte `verify` in
+  2,77 s, bei 2 000 in 0,62 s; bei 100 000 Beziehungen vorläufig 126 s,
+  gemessen, während die Endprüfung den Baum noch änderte, eine Bestätigung
+  auf festem Stand läuft (P-Z1, Ruling T4-c). Trägt es nicht, wird die
+  Prüfung auf Zyklen in `verify` inkrementell, spätestens mit Phase 2.
 - **Jeder MCP-Aufruf faltet den ganzen Graphen für die Zahl im Kopf.** Um die
   anhängigen Einwände zu zählen, faltet `Service.answer` vor jedem Werkzeug
   den Graphen und fragt die Policy nach den Quellen jedes Einwands, auch bei
@@ -464,8 +467,12 @@ das mit der Endprüfung ins Repository kommt):
   10 000 Beziehungen und 5 000 Entitäten: `whoami` 0,52 s, `list_entities`
   1,72 s, `read_graph` 0,47 s, `previously entities` 0,53 s, ein Schreiben
   0,47 s, `verify` 2,77 s; bei 2 000 Beziehungen `whoami` 0,10 s,
-  `list_entities` 0,28 s, `verify` 0,62 s. Das Wachstum ist linear; die
-  Zahlen bei 100 000 Beziehungen stehen noch aus. Phase 1 nimmt die Kosten
+  `list_entities` 0,28 s, `verify` 0,62 s. Bis 10 000 wächst es linear. Bei
+  100 000 Beziehungen und 50 000 Entitäten vorläufig, gemessen, während die
+  Endprüfung den Baum noch änderte: `read_graph`, `entities` und
+  `relations --at` je etwa 7,3 s, ein Schreiben etwa 7,0 s, fünfzehnmal so
+  lang für zehnmal so viel; die Bestätigung auf festem Stand läuft, die
+  MCP-Aufrufe bei 100 000 sind noch nicht gemessen. Phase 1 nimmt die Kosten
   hin (Ruling F-c): ein Zwischenspeicher, der am Tip hängt, verfällt mit dem
   Zugriffseintrag jedes Aufrufs, und beim Piloten mit einigen hundert
   Aussagen sind es Millisekunden. **Phase 2 braucht eine Projektion oder eine
