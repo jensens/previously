@@ -91,8 +91,9 @@ einen zweiten Client. Nicht gelaufen: der Schlüssel der Vibe-Ask-Einstellung.
 Die Kennzeichnung `requiresUserInteraction` ist am selben Tag gegen
 `0.1.0a6` nachgemessen (unter *Feststellungen und Entitäten*).
 
-Gebaut, nicht abgenommen: Phase 1 der Zuordnungen, der Kern (Z §3–§7), auf dem
-Zweig `worktree-zuordnungen`, nach dem Spec `specs/2026-10-14-zuordnungen.md`
+Abgenommen: Phase 1 der Zuordnungen, der Kern (Z §3–§7), gemergt am 2026-10-14
+(PR #24, `cce8b4b`) und als `v0.1.0a7` veröffentlicht, gebaut auf dem Zweig
+`worktree-zuordnungen` nach dem Spec `specs/2026-10-14-zuordnungen.md`
 (lebendig, nicht eingefroren) und dem Plan `plans/2026-10-14-zuordnungen-phase-1.md`.
 Das Vokabular als Handlung `vocabulary` mit Grundvokabular, Entitäten und
 Beziehungen als Feststellungen mit den drei Stufen `direct`, `transitive` und
@@ -175,15 +176,13 @@ mit `pool_pre_ping` als `v0.1.0a6` am 2026-10-13 veröffentlicht; der Handoff
 `handoffs/2026-10-13-kup6s-a6.md` liegt bei und bittet kup6s, die Umschaltung
 der Primärinstanz zu wiederholen; kup6s hat geantwortet (R6, siehe unten). Die Zuordnungen
 haben ihren Spec (`specs/2026-10-14-zuordnungen.md`, lebendig bis die Seiten
-aller Phasen stehen), und Phase 1 ist gebaut (oben). Was jetzt kommt, in dieser
-Reihenfolge: die Endprüfung in zwei Paketen mit der Messung von `entities`,
-`relations --at` und des Kopfes bei 10 000 und 100 000 Beziehungen
-(Planentscheidung 14), die Zahlen stehen unten unter *Zuordnungen* und auf
-`explanation/graph.md`;
-dann Push und PR; nach dem Merge das Release (die Nummer wählt der Betreuer),
-der Handoff und die Abnahme nach Z §17 Punkt 1, Vellenfeld. Das Release
-(`v0.1.0a7`) und der Handoff sind erledigt (R7); was als Nächstes kommt, ist die
-Abnahme der Phase 1 mit Vellenfeld durch den Betreuer (Z §17 Punkt 1). Erst danach der
+aller Phasen stehen), und Phase 1 ist abgenommen und veröffentlicht (oben): die Endprüfung
+mit der Messung von `entities`, `relations --at` und des Kopfes bei 10 000 und
+100 000 Beziehungen (Planentscheidung 14; die Zahlen stehen unten unter
+*Zuordnungen* und auf `explanation/graph.md`) ist gelaufen, der Merge war PR #24
+(`cce8b4b`), das Release `v0.1.0a7`, der Handoff ist übergeben und beantwortet
+(R7). Was als Nächstes kommt, ist der Lauf mit Vellenfeld nach Z §17 Punkt 1,
+durch den Betreuer in kup6s; er ist keine Bedingung des Merges. Erst danach der
 Plan der Phase 2 (unten unter *Zuordnungen (Phasen 1–4)*).
 Was die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an
 den Einheiten, zu denen es gehört.
@@ -447,7 +446,7 @@ mit dem Ruling oder der Aufgabe.
 
 ### Zuordnungen (Phasen 1–4)
 
-Phase 1 ist gebaut, die Seiten stehen (`explanation/graph.md`). Was sie offen
+Phase 1 ist abgenommen (PR #24, `cce8b4b`), die Seiten stehen (`explanation/graph.md`). Was sie offen
 lässt, mit ihrem Ausführungsprotokoll (`sdd/2026-10-14-zuordnungen-phase-1/`,
 das mit der Endprüfung ins Repository kommt):
 
