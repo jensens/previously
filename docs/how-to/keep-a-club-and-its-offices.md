@@ -36,6 +36,8 @@ previously entity organization --name "Vellenfeld" --source 42
 Where only you know it, state it as your own memory with `--recollection`, which excludes `--source`.
 The rest of this guide uses `--recollection`, because the minutes of a founding in 2009 aren't in the log.
 A recollection has no source, so it stays out of a client's sight until a rule opens it; see {ref}`graph-recollection`.
+A client such as Claude Code sees a placeholder, `no rule covers this content`, where one of them stands.
+`previously policy gaps` tells you which rule would open them: it counts the entities and relations stated from memory under `graph:source:recollection`, the rule `source:recollection`; see {ref}`cli-reference`.
 
 ## Record the club and its parts
 
@@ -68,7 +70,7 @@ previously relate part_of --from 17 --to 10 --recollection
 ```
 
 A period is written `FROM..TO`, and either end may be empty.
-`part_of` is acyclic and transitive: the write path refuses an edge that would make the founding a part of itself, and anything that's part of the founding is part of the club.
+`part_of` is acyclic and transitive: the write path refuses an edge that would close a cycle, as {ref}`the check at the end <check-a-cycle-is-refused>` shows, and anything that's part of the founding is part of the club.
 
 ## Record the offices
 
@@ -144,6 +146,8 @@ previously relate holds --subject 25 --to-date 2021-06-30 --reason "Eva stepped 
 
 The version keeps the ends, the first day and the fields, and the listing now shows `2 versions`.
 To take a relation back altogether, write `previously relate holds --subject 25 --retract`.
+An entity is taken back the same way: `previously entity circle --subject 11 --retract`, which is short for `--state retracted`.
+A retracted entity leaves `previously entities` unless you ask for `--state retracted`.
 To change an entity, such as the name of the board, write a new version with `--subject`:
 
 ```shell
@@ -152,6 +156,50 @@ previously entity circle --subject 11 --name "Vellenfeld board"
 
 Every version stays in the log.
 `previously entity 11 --history` shows them all, and `previously relations --as-of 2026-01-01T00:00:00+00:00` shows the graph as the log stood at that moment.
+
+(check-a-cycle-is-refused)=
+
+## Check that a cycle is refused
+
+The write path refuses an edge that would close a cycle over an acyclic kind.
+To see it, state two projects and make the first a part of the second:
+
+```shell
+previously entity project --name "Phase one" --recollection
+previously entity project --name "Phase two" --recollection
+previously relate part_of --from 30 --to 31 --recollection
+```
+
+Each command ends with the id of what it wrote:
+
+```text
+assertion 30
+assertion 31
+assertion 32
+```
+
+Now make the second a part of the first:
+
+```shell
+previously relate part_of --from 31 --to 30 --recollection
+```
+
+```text
+Error: the relation would close a cycle over a kind that is acyclic
+```
+
+Nothing is written.
+An edge from the club to the founding is refused earlier, for its kinds: `part_of` starts at a matter or a project, and an organization is neither.
+To remove the probe, take the relation back first and then the two entities:
+
+```shell
+previously relate part_of --subject 32 --retract
+previously entity project --subject 30 --retract
+previously entity project --subject 31 --retract
+```
+
+`previously entities --type project` now lists only the founding.
+`previously entities --type project --state retracted` lists the two phases.
 
 ## Let a client look
 

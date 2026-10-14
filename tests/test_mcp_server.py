@@ -66,6 +66,7 @@ from previously.core.graph import EntityBody
 from previously.core.graph import Period
 from previously.core.graph import RELATION
 from previously.core.graph import RelationBody
+from previously.core.graph import RETRACTED
 from previously.core.graph import SOURCES
 from previously.core.graph import STANDING
 from previously.core.graph_write import GraphRefused
@@ -877,7 +878,7 @@ def test_the_prompts_ask_for_work_and_hold_no_content(world: World, mode: str) -
 # The SHA-256 of the tool list as clients see it: name, description, input
 # schema and `_meta` of every tool, sorted by name, as canonical JSON. A change to any of
 # them is a change of the interface, made deliberately and released.
-TOOLS_SHA256 = "58faeb7eb9362dc0946a6162c4fed1825bfd583427476f4986aa3042fa33b902"
+TOOLS_SHA256 = "aadb2816e59e60763ed66316a71bf2d2353a9ac3b15a816d419778c7c32ccab6"
 
 
 def tool_list_digest(tools: list[dict[str, object]]) -> str:
@@ -3312,6 +3313,51 @@ def test_list_entities_filters_by_kind_state_and_proposals_and_shows_a_history(
     assert missing.splitlines()[-1] == (
         f"Error: previously://event/{ids.holds} — no entity stands under this id"
     )
+
+
+def _retract_entity(world: World, subject: int, name: str, source: int) -> None:
+    """A second version of the person that takes the entity back."""
+    retraction = replace(
+        _person(name, source),
+        subject=subject,
+        body=EntityBody("person", None, {"name": name}, RETRACTED),
+    )
+    write_claims(world.storage, world.storage, [retraction], recorded_at=T0)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_list_entities_leaves_out_a_retracted_entity_and_its_placeholder_unless_asked(
+    world: World, mode: str
+) -> None:
+    """As `previously entities` lists active entities by default: a
+    placeholder for a retracted entity would tell the client that it exists,
+    or existed. Lea is withheld from claude-code, Anna is not."""
+    ids = _graphed(world)
+    _retract_entity(world, ids.anna, "Anna", world.ids["attachments_only"])
+    _retract_entity(world, ids.lea, PRIVATE_NAME, world.ids["plain"])
+
+    page = _text(_tool(world, mode, "list_entities"))
+    assert _ITEM.findall(page) == [str(ids.treasurer), str(ids.secretary)]
+    assert f"previously://event/{ids.lea}" not in page
+    assert f"previously://event/{ids.anna} " not in page
+    # Nothing is withheld in the log either: no placeholder was made.
+    access = _last_access(world).access
+    assert [w.event for w in access.withheld] == []
+
+    asked = _text(_tool(world, mode, "list_entities", {"state": "retracted"}))
+    assert _ITEM.findall(asked) == [str(ids.anna), str(ids.lea)]
+    assert f"[withheld: previously://event/{ids.lea} — " in asked
+    assert PRIVATE_NAME not in asked
+    # The control: active is asked for by name and leaves both out too, and
+    # the client that sees Lea sees the retracted state with it by name.
+    active = _text(_tool(world, mode, "list_entities", {"state": "active"}))
+    assert _ITEM.findall(active) == [str(ids.treasurer), str(ids.secretary)]
+    local = _text(
+        _tool(world, mode, "list_entities", {"state": "retracted"}, client="local-harness")
+    )
+    assert _ITEM.findall(local) == [str(ids.anna), str(ids.lea)]
+    assert f"field name: {PRIVATE_NAME}" in local
 
 
 @pytest.mark.db

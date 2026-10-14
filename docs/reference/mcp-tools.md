@@ -412,18 +412,20 @@ When nothing fell back, the line is `No call fell back to local only.`
 The entities that stand, in the order of their ids, each with the relations it's an end of, as {ref}`mcp-entity-form` describes it.
 By default it lists those the operator stands for, direct or transitive; an entity that only a model proposed stays out unless `proposals` is set.
 A retracted entity stays out unless `state` asks for `retracted`, or `proposals` is set.
+The same holds for the placeholder of a retracted entity the policy withholds: it stands only where the entity would be listed, so that a client learns nothing of an entity the listing leaves out.
+A placeholder still stands under every filter that looks at the content other than `state`, as for `list_obligations`.
 
 | Argument | Type | Default | Description |
 |---|---|---|---|
 | `types` | list of strings | none | Only entities of these kinds, as the vocabulary names them. |
-| `state` | string | none | Only this state: `active`, `closed` or `retracted`. |
+| `state` | string | none | Only this state: `active`, `closed` or `retracted`. A retracted entity, and the placeholder of one, is left out unless this is `retracted`. |
 | `proposals` | true or false | false | List what has a proposal pending, or stands as one, instead of what stands. |
 | `subject` | integer | none | The id of one entity. The page shows that entity whatever the other filters say. |
 | `history` | true or false | false | With `subject`, show every version in the order written, each with what it changed against the one before. |
 | `cursor` | string | none | The cursor from the footer of the previous page. |
 
 The title is `list_entities`, followed by each filter given as `· NAME VALUE`, the kinds of `types` separated by commas.
-The cursor, the placeholder of an entity the policy withholds and its passing every filter that looks at the content are those of `list_obligations`.
+The cursor, the placeholder of an entity the policy withholds and its passing the filters other than `state` that look at the content are those of `list_obligations`.
 A `subject` that names no entity answers with a line of its own on the page:
 
 ```text

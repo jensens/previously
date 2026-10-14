@@ -1207,6 +1207,16 @@ class EntityListing:
     history: bool = False
 
 
+def _state_listed(state: str, listing: EntityListing) -> bool:
+    """Whether an entity in `state` is listed under the state filter of
+    `listing`, as `previously entities` lists it: with a state asked for,
+    only that state; without, a retracted entity not, unless what is asked
+    for is the proposals."""
+    if listing.state is not None:
+        return state == listing.state
+    return state != RETRACTED or listing.proposals
+
+
 def _entity_entry(
     view: GraphView,
     vocabulary: Vocabulary,
@@ -1221,11 +1231,20 @@ def _entity_entry(
     subject = thread.subject
     verdict = view.verdict(subject)
     rules = view.rules(verdict)
+    classes = view.graph.classes
+    winner = thread.winner(classes)
+    if (
+        listing.subject is None
+        and winner is not None
+        and not _state_listed(winner.claim.body.state, listing)
+    ):
+        # The state is decided before the policy: a placeholder for an entity
+        # the listing leaves out would tell the client that it exists, or
+        # existed, as `previously entities` does not list it either.
+        return None
     if verdict.blocked is not None:
         mark, entry = view.withheld(subject, verdict)
         return Read(mark, entry, rules, subject)
-    classes = view.graph.classes
-    winner = thread.winner(classes)
     if listing.subject is None:
         if winner is None:
             return None
@@ -1233,11 +1252,8 @@ def _entity_entry(
         proposed = level_of(winner, classes) == OPEN
         pending = bool(thread.pending(classes))
         listed = (proposed or pending) if listing.proposals else not proposed
-        gone = body.state == RETRACTED and listing.state != RETRACTED and not listing.proposals
-        kept = (listing.types is None or body.type in listing.types) and (
-            listing.state is None or body.state == listing.state
-        )
-        if not listed or gone or not kept:
+        kept = listing.types is None or body.type in listing.types
+        if not listed or not kept:
             return None
     shown = winner if winner is not None else thread.versions[-1]
     label = _graph_label(view, thread, kind_label(vocabulary, shown.claim, language))

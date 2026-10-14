@@ -1826,8 +1826,9 @@ def _cmd_policy_gaps(args: argparse.Namespace) -> int:
     if not found:
         print("no call fell back to local only", file=sys.stderr)
     for gap in found:
-        # A withholding of the MCP server is told from a model call by the
-        # prefix, so that every line keeps its three fields.
+        # A withholding of the MCP server, and what stands on a recollection
+        # with no rule, are told from a model call by the prefix, so that
+        # every line keeps its three fields.
         scope = gap.what if gap.origin == "gate" else f"{gap.origin}:{gap.what}"
         print(f"{escape_field(scope)}\t{gap.count}\t{iso_utc(gap.last)}")
     return 0
@@ -3121,8 +3122,12 @@ def _evidence_of(
 
 def _entity_claim(args: argparse.Namespace, vocabulary: Vocabulary, graph: Graph) -> Claim:
     # As for `relate --retract`: a first version that is already retracted
-    # would start an entity that never stood.
-    if args.state == RETRACTED and args.subject is None:
+    # would start an entity that never stood. `--retract` is `--state
+    # retracted`, for the symmetry with `relate --retract`.
+    if args.retract and args.state not in (None, RETRACTED):
+        raise PreviouslyError(f"--retract and --state {args.state} exclude each other")
+    state = RETRACTED if args.retract else args.state
+    if state == RETRACTED and args.subject is None:
         raise PreviouslyError(
             "--state retracted needs --subject: only an entity that stands can be retracted"
         )
@@ -3142,7 +3147,7 @@ def _entity_claim(args: argparse.Namespace, vocabulary: Vocabulary, graph: Graph
         args.what,
         args.language if args.language is not None else (old.language if old else None),
         {**kept, **given},
-        args.state or (old.state if old is not None else ACTIVE),
+        state or (old.state if old is not None else ACTIVE),
     )
     return Claim(
         ENTITY,
@@ -3629,7 +3634,15 @@ def _show_entity(args: argparse.Namespace) -> int:
 
 def _cmd_entity(args: argparse.Namespace) -> int:
     """With the id of an entity, shows it; with a kind, states one."""
-    touched = (args.name, args.field, args.language, args.state, args.subject, args.reason)
+    touched = (
+        args.name,
+        args.field,
+        args.language,
+        args.state,
+        args.subject,
+        args.reason,
+        args.retract or None,
+    )
     if _ID_FORM.fullmatch(args.what) is not None:
         if any(item is not None for item in touched) or args.source or args.recollection:
             raise PreviouslyError(
@@ -3894,6 +3907,7 @@ def _entity_arguments(parser: argparse.ArgumentParser) -> None:
     )
     parser.add_argument("--language", help="the working language of the entity, such as de")
     parser.add_argument("--state", choices=ENTITY_STATES, help="active unless --subject")
+    parser.add_argument("--retract", action="store_true", help="with --subject: --state retracted")
     _asserting(parser)
     _recalling(parser)
     parser.add_argument(
