@@ -63,6 +63,7 @@ from previously.core.vocabulary import ENTITY_KIND
 from previously.core.vocabulary import FieldSpec
 from previously.core.vocabulary import KindSpec
 from previously.core.vocabulary import parse_file
+from previously.core.vocabulary import to_payload
 from previously.storage.keys import DirectoryKeys
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import Engine
@@ -2079,3 +2080,96 @@ def test_an_entity_on_a_source_that_is_no_observation_is_a_finding(db: Engine) -
     assert Finding(on_action, "assertion names a source that is not an observation") in verify(
         storage
     )
+
+
+def _post_question(storage: PostgresStorage) -> tuple[int, int, int, int]:
+    """A post, two organizations and a third, and a model's question which
+    of the first two the post is in."""
+    chair, one, two, three = _claimed(
+        storage,
+        _thing("post", "Obmann"),
+        _thing("organization", "Verein"),
+        _thing("organization", "Club"),
+        _thing("organization", "Bund"),
+    )
+    question = Claim(
+        RELATION, GUESSER, OPEN, SOURCES, (Source(1, None),), None, None, None, None, None, 50,
+        None, RelationBody("post_in", chair, None, (one, two), None, {}, STANDING),
+    )  # fmt: skip
+    (asked,) = _claimed(storage, question)
+    return asked, chair, one, three
+
+
+@pytest.mark.db
+def test_an_answer_with_none_of_the_candidates_is_a_finding(db: Engine) -> None:
+    """Ruling T4-e: a direct version that stands, or a transitive one, on a
+    thread whose question waits, names one of its candidates. The control,
+    a direct answer with a candidate, is no finding, and after it the
+    question no longer waits."""
+    storage = _with_vocabulary(db)
+    posts = ApprovalClass(
+        "posts", GUESSER, RELATION, frozenset({"post_in"}), 10, None, None, revoked=False,
+        demote=False,
+    )  # fmt: skip
+    class_id = set_class(storage, posts, statement="posts", recorded_at=NOW)
+
+    def answer(asked: int, chair: int, to: int, *, author: str, level: str) -> Claim:
+        return Claim(
+            RELATION, author, level, SOURCES, (Source(1, None),), None, None, asked, None,
+            class_id if level == TRANSITIVE else None, 90 if level == TRANSITIVE else None,
+            None, RelationBody("post_in", chair, to, None, None, {}, STANDING),
+        )  # fmt: skip
+
+    asked, chair, one, three = _post_question(storage)
+    direct = _forged(
+        storage, claim_payload(answer(asked, chair, three, author=OPERATOR, level=DIRECT))
+    )
+    asked, chair, one, three = _post_question(storage)
+    transitive = _forged(
+        storage, claim_payload(answer(asked, chair, three, author=GUESSER, level=TRANSITIVE))
+    )
+    asked, chair, one, three = _post_question(storage)
+    _claimed(storage, answer(asked, chair, one, author=OPERATOR, level=DIRECT))
+
+    reason = "relation answers a question with none of its candidates"
+    assert verify(storage) == [Finding(direct, reason), Finding(transitive, reason)]
+
+
+@pytest.mark.db
+def test_a_model_version_after_a_direct_one_that_does_not_object_is_a_finding(
+    db: Engine,
+) -> None:
+    storage = _with_vocabulary(db)
+    (anna,) = _claimed(storage, _thing())
+    plain = _forged(
+        storage,
+        claim_payload(_thing(author=GUESSER, responsibility=OPEN, subject=anna, confidence=10)),
+    )
+    # The control: the objection the write path writes.
+    _claimed(storage, _thing(name="A.", author=GUESSER, subject=anna, confidence=10))
+
+    assert verify(storage) == [
+        Finding(plain, "assertion by a model follows a direct version and does not object to it")
+    ]
+
+
+@pytest.mark.db
+def test_an_open_version_by_the_operator_is_a_finding(db: Engine) -> None:
+    storage = _with_vocabulary(db)
+    forged = _forged(storage, claim_payload(_thing(responsibility=OPEN)))
+
+    assert verify(storage) == [Finding(forged, "assertion is open but written by the operator")]
+
+
+@pytest.mark.db
+def test_a_vocabulary_event_with_units_governs_the_claims_after_it(db: Engine) -> None:
+    """Ruling T4-e: `verify` takes a vocabulary event with units as the read
+    path does, so the event is a finding and the entity written under it is
+    not."""
+    storage = _with_vocabulary(db)
+    declared = append_action(
+        storage, to_payload(TEAM, statement="add"), (RawUnit(1, "Team"),), recorded_at=NOW
+    )
+    _claimed(storage, _thing("team", "Board"))
+
+    assert verify(storage) == [Finding(declared, "vocabulary event has units")]

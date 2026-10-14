@@ -26,11 +26,14 @@ from previously.core.append import append
 from previously.core.append import MAX_BATCH
 from previously.core.assertion import DIRECT
 from previously.core.assertion import model_author
+from previously.core.assertion import OBLIGATION
+from previously.core.assertion import ObligationBody
 from previously.core.assertion import OPEN
 from previously.core.assertion import OPERATOR
 from previously.core.assertion import REJECTION
 from previously.core.assertion import Source
 from previously.core.assertion import Statement
+from previously.core.assertions import check_statements
 from previously.core.assertions import write_statements
 from previously.core.classes import ApprovalClass
 from previously.core.classes import set_class
@@ -54,6 +57,9 @@ from previously.core.graph_write import claim_sources
 from previously.core.graph_write import claim_verdict
 from previously.core.graph_write import CLASS_CHANGED
 from previously.core.graph_write import closes_cycle
+from previously.core.graph_write import Decided
+from previously.core.graph_write import decided
+from previously.core.graph_write import DIRECT_WRITTEN
 from previously.core.graph_write import EntityTypes
 from previously.core.graph_write import GraphRefused
 from previously.core.graph_write import read_claim_events
@@ -258,11 +264,11 @@ def _refused(
     storage: PostgresStorage,
     *claims: Claim,
     at: datetime = T1,
-    expect_levels: tuple[str, ...] | None = None,
+    expect: tuple[Decided, ...] | None = None,
 ) -> str:
     before = _count(storage)
     with pytest.raises(GraphRefused) as refused:
-        write_claims(storage, storage, claims, recorded_at=at, expect_levels=expect_levels)
+        write_claims(storage, storage, claims, recorded_at=at, expect=expect)
     assert _count(storage) == before
     return str(refused.value)
 
@@ -573,17 +579,22 @@ def test_the_preview_shows_the_levels_and_writes_nothing(db: Engine) -> None:
         _checked(storage, entity("person", "Anna", responsibility=OPEN))
 
 
+def _shown(storage: PostgresStorage, *claims: Claim, at: datetime = T1) -> tuple[Decided, ...]:
+    """What a preview shows of the claims: the decision for each."""
+    return tuple(decided(claim) for claim in _checked(storage, *claims, at=at))
+
+
 @pytest.mark.db
 def test_a_class_revoked_since_the_preview_refuses_the_write(db: Engine) -> None:
     """Review Focus 2: the level of the confirmation is the one under the
     tip, and one that differs from the preview is refused, not written."""
     storage = _setup(db)
-    set_class(storage, CLASS, statement="people", recorded_at=T0)
+    class_id = set_class(storage, CLASS, statement="people", recorded_at=T0)
     claim = guess("person", "Anna")
-    levels = tuple(c.responsibility for c in _checked(storage, claim))
-    assert levels == (TRANSITIVE,)
+    shown = _shown(storage, claim)
+    assert shown == (Decided(TRANSITIVE, class_id, None),)
     set_class(storage, replace(CLASS, revoked=True), statement="stop", recorded_at=T1)
-    assert _refused(storage, claim, at=T2, expect_levels=levels) == CLASS_CHANGED
+    assert _refused(storage, claim, at=T2, expect=shown) == CLASS_CHANGED
     # Without a preview to hold it against, the write takes the level now.
     assert _write(storage, claim, at=T2).levels == (OPEN,)
 
@@ -592,22 +603,89 @@ def test_a_class_revoked_since_the_preview_refuses_the_write(db: Engine) -> None
 def test_a_class_set_since_the_preview_refuses_the_write(db: Engine) -> None:
     storage = _setup(db)
     claim = guess("person", "Anna")
-    levels = tuple(c.responsibility for c in _checked(storage, claim))
-    assert levels == (OPEN,)
+    shown = _shown(storage, claim)
+    assert shown == (Decided(OPEN, None, None),)
     set_class(storage, CLASS, statement="people", recorded_at=T1)
-    assert _refused(storage, claim, at=T2, expect_levels=levels) == CLASS_CHANGED
-    # The control: the levels of a preview taken now are written.
-    now = tuple(c.responsibility for c in _checked(storage, claim, at=T2))
-    assert write_claims(storage, storage, [claim], recorded_at=T2, expect_levels=now).levels == (
+    assert _refused(storage, claim, at=T2, expect=shown) == CLASS_CHANGED
+    # The control: the decisions of a preview taken now are written.
+    now = _shown(storage, claim, at=T2)
+    assert write_claims(storage, storage, [claim], recorded_at=T2, expect=now).levels == (
         TRANSITIVE,
     )
 
 
 @pytest.mark.db
-def test_expect_levels_gives_one_level_per_claim(db: Engine) -> None:
+def test_another_class_at_the_same_level_since_the_preview_refuses_the_write(
+    db: Engine,
+) -> None:
+    """Ruling T4-e: the class a claim stands under is part of what the
+    preview showed, not only its level."""
     storage = _setup(db)
-    with pytest.raises(ValueError, match="one level per claim"):
-        write_claims(storage, storage, [guess("person", "A")], recorded_at=T1, expect_levels=())
+    set_class(storage, CLASS, statement="people", recorded_at=T0)
+    claim = guess("person", "Anna", confidence=95)
+    shown = _shown(storage, claim)
+    stricter = replace(CLASS, name="claude_people_strict", threshold=90)
+    stricter_id = set_class(storage, stricter, statement="stricter", recorded_at=T1)
+    now = _shown(storage, claim, at=T2)
+    assert (shown[0].level, now[0]) == (TRANSITIVE, Decided(TRANSITIVE, stricter_id, None))
+    assert _refused(storage, claim, at=T2, expect=shown) == CLASS_CHANGED
+
+
+@pytest.mark.db
+def test_a_direct_version_written_since_the_preview_refuses_the_write(db: Engine) -> None:
+    """Ruling T4-e: an objection that would contest another direct version
+    than the one shown, and a proposal that would become an objection, are
+    refused with a sentence of their own."""
+    storage = _setup(db)
+    (anna,) = _ids(storage, entity("person", "Anna"))
+    objection = guess("person", "Anna Moser", subject=anna)
+    shown = _shown(storage, objection)
+    assert shown == (Decided(OPEN, None, anna),)
+    (newer,) = _ids(storage, entity("person", "Anna Huber", subject=anna))
+    assert _refused(storage, objection, at=T2, expect=shown) == DIRECT_WRITTEN
+
+    proposal = guess("post", "Obmann", confidence=10)
+    (post,) = _ids(storage, proposal, at=T2)
+    further = guess("post", "Obfrau", subject=post, confidence=10)
+    shown = _shown(storage, further, at=T2)
+    assert shown == (Decided(OPEN, None, None),)
+    _ids(storage, entity("post", "Obmann", subject=post), at=T2)
+    assert _refused(storage, further, at=T3, expect=shown) == DIRECT_WRITTEN
+    # The control: a preview taken now is written as shown.
+    now = _shown(storage, objection, at=T3)
+    assert now == (Decided(OPEN, None, newer),)
+    write_claims(storage, storage, [objection], recorded_at=T3, expect=now)
+
+
+@pytest.mark.db
+def test_expect_gives_one_decision_per_claim(db: Engine) -> None:
+    storage = _setup(db)
+    with pytest.raises(ValueError, match="one decision per claim"):
+        write_claims(storage, storage, [guess("person", "A")], recorded_at=T1, expect=())
+
+
+@pytest.mark.db
+def test_a_handle_repeats_only_within_its_own_write_path(db: Engine) -> None:
+    """Ruling T4-e: an obligation batch and a graph batch with the same
+    handle are two batches, each written once."""
+    storage = _setup(db)
+    owed = Statement(
+        OBLIGATION, OPERATOR, DIRECT, (Source(1, None),), None, "shared", None, None, None,
+        ObligationBody("own", "circle:huber", "send the offer", None, "open"),
+    )  # fmt: skip
+    (obligation,) = write_statements(storage, storage, [owed], recorded_at=T1)
+    claim = entity("person", "Anna", handle="shared")
+    assert _checked(storage, claim) == (claim,)
+    written = _write(storage, claim)
+    assert written.ids != (obligation,)
+    assert _write(storage, claim) == written
+    other = replace(owed, handle="graph")
+    (graph_id,) = _write(storage, replace(claim, handle="graph")).ids
+    with storage.begin() as conn:
+        check_statements(storage, conn, [other])
+    (again,) = write_statements(storage, storage, [other], recorded_at=T1)
+    assert again != graph_id
+    assert write_statements(storage, storage, [other], recorded_at=T1) == (again,)
 
 
 # --- The vocabulary -----------------------------------------------------------------
@@ -650,6 +728,49 @@ def test_a_retired_kind_takes_further_versions_but_no_new_entity_or_relation(
     )
     graph = _graph(storage)
     assert (board in graph.entities(), leads in graph.relations()) == (False, False)
+
+
+TEAMS = ApprovalClass(
+    "claude_teams", MODEL, ENTITY, frozenset({"team"}), 80, None, None, revoked=False,
+    demote=False,
+)  # fmt: skip
+
+
+@pytest.mark.db
+def test_approving_a_later_proposal_of_a_thread_that_never_stood_is_new(db: Engine) -> None:
+    """Ruling T4-e: a thread on which no direct or transitive version ever
+    stood is no entity yet, whichever of its proposals an approval names,
+    and neither does a direct version make it one for a kind retired since.
+    Further proposals on it stay possible, as they stand for nobody."""
+    storage = _setup(db)
+    (first,) = _ids(storage, guess("team", "Board", confidence=10))
+    later = guess("team", "The board", subject=first, confidence=10)
+    (proposed,) = _ids(storage, later)
+    _retire_team(storage, at=T1)
+    approval = replace(later, responsibility=DIRECT, approves=proposed)
+    sentence = "the kind is retired and takes no new entity"
+    assert _refused(storage, approval, at=T2) == sentence
+    assert _refused(storage, entity("team", "Board", subject=first), at=T2) == sentence
+    assert _write(storage, guess("team", "Boards", subject=first, confidence=10), at=T2).levels == (
+        OPEN,
+    )
+
+
+@pytest.mark.db
+def test_approving_a_transitive_version_of_a_retired_kind_is_no_new_entity(db: Engine) -> None:
+    """Ruling T4-e: a transitive first version already stood for the
+    operator, so its approval only confirms what stands."""
+    storage = _setup(db)
+    set_class(storage, TEAMS, statement="teams", recorded_at=T0)
+    proposal = guess("team", "Board")
+    (first,) = _ids(storage, proposal)
+    (version,) = _graph(storage).threads[first].versions
+    assert version.claim.responsibility == TRANSITIVE
+    _retire_team(storage, at=T1)
+    approval = replace(
+        version.claim, responsibility=DIRECT, under=None, subject=first, approves=first
+    )
+    assert _write(storage, approval, at=T2).levels == (DIRECT,)
 
 
 @pytest.mark.db
@@ -803,6 +924,47 @@ def test_an_approval_answers_a_question_in_the_models_words(db: Engine) -> None:
     winner = graph.threads[question].winner(graph.classes)
     assert winner is not None
     assert (winner.id, winner.claim.author) == (answered, MODEL)
+    assert graph.threads[question].question(graph.classes) is None
+
+
+POSTS = ApprovalClass(
+    "claude_posts", MODEL, RELATION, frozenset({"post_in"}), 10, None, None, revoked=False,
+    demote=False,
+)  # fmt: skip
+
+
+@pytest.mark.db
+def test_a_class_does_not_answer_a_question_with_none_of_its_candidates(db: Engine) -> None:
+    """Ruling T4-d: a model's claim on a thread whose question waits, and
+    whose end is none of the candidates, is written open whatever its class
+    covers, and the question stays pending."""
+    storage = _setup(db)
+    question, chair, _one, _two, three = _question(storage)
+    set_class(storage, POSTS, statement="posts", recorded_at=T1)
+    outside = relation(
+        "post_in", chair, three, author=MODEL, responsibility=OPEN, confidence=90,
+        subject=question,
+    )  # fmt: skip
+    assert _write(storage, outside, at=T2).levels == (OPEN,)
+    graph = _graph(storage)
+    pending = graph.threads[question].question(graph.classes)
+    assert pending is not None
+    assert pending.id == question
+
+
+@pytest.mark.db
+def test_a_class_answers_a_question_with_one_of_its_candidates(db: Engine) -> None:
+    """The control of the test above: a transitive claim that names a
+    candidate answers the question, as a direct one does (ruling T2-c)."""
+    storage = _setup(db)
+    question, chair, one, _two, _three = _question(storage)
+    set_class(storage, POSTS, statement="posts", recorded_at=T1)
+    inside = relation(
+        "post_in", chair, one, author=MODEL, responsibility=OPEN, confidence=90,
+        subject=question,
+    )  # fmt: skip
+    assert _write(storage, inside, at=T2).levels == (TRANSITIVE,)
+    graph = _graph(storage)
     assert graph.threads[question].question(graph.classes) is None
 
 

@@ -47,6 +47,7 @@ from previously.core.assertion import DecisionBody
 from previously.core.assertion import DIRECT
 from previously.core.assertion import ObligationBody
 from previously.core.assertion import OPEN
+from previously.core.assertion import OPERATOR
 from previously.core.assertion import parse_statement
 from previously.core.assertion import REJECTION
 from previously.core.assertion import Source
@@ -67,9 +68,13 @@ from previously.core.graph import GraphFold
 from previously.core.graph import GraphVersion
 from previously.core.graph import level_of
 from previously.core.graph import parse_claim
+from previously.core.graph import RelationBody
+from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
 from previously.core.graph_write import closes_cycle
 from previously.core.graph_write import EntityTypes
+from previously.core.graph_write import names_a_candidate
+from previously.core.graph_write import pending_question
 from previously.core.graph_write import starts_thread
 from previously.core.graph_write import takes_proposal
 from previously.core.hashing import event_hash
@@ -105,6 +110,7 @@ if TYPE_CHECKING:
     from previously.contract.rows import UnitRow
     from previously.contract.store import LogStore
     from previously.core.assertion import Statement
+    from previously.core.classes import Classes
     from previously.core.graph import Claim
     from previously.core.graph import Graph
     from previously.core.graph import GraphThread
@@ -468,9 +474,13 @@ class _Erasures:
         # a forgery. The form of the known names is checked where each is read.
         if name not in KNOWN_ACTIONS:
             return [Finding(row.id, f'unknown action "{name}"')]
+        # Before the finding about the form: a vocabulary or class event with
+        # units is a finding, and the read path takes it all the same, since
+        # it reads the form alone; so the claims after it are held against
+        # it here too (ruling T4-e of the 2026-10-14 assignments plan).
+        self._assertions.claims.action(name, row.id, row.payload)
         if (finding := _form_finding(name, row.id, row.payload, units)) is not None:
             return [finding]
-        self._assertions.claims.action(name, row.id, row.payload)
         if name == MODEL_CALL and any(unit.content is not None for unit in units):
             self._calls.append((row.id, _inputs_read(row.payload)))
         return []
@@ -562,20 +572,27 @@ class _Claims:
     written under it; a claim of a kind declared only after it does.
 
     What the fold passes over in silence is a finding here, as with an
-    obligation, and the cycle rule is the write path's own question,
-    `closes_cycle`, so that `verify` reports exactly what the write path
-    would have refused. The batch a claim was written in is not known here:
-    the claims before it in the batch are rows before it, which the write
-    path folds in the same way.
+    obligation, and so is what the write path would have refused or written
+    otherwise: the operator's level, the objection against a direct winner,
+    the class of a transitive version, the answer to a pending question,
+    and the cycle rule, which is the write path's own question,
+    `closes_cycle`. The batch a claim was written in is not known here: the
+    claims before it in the batch are rows before it, which the write path
+    folds in the same way. Not held: that a model's open version would have
+    been transitive under a class; an open version stands for nobody.
 
-    Its cost: the graph is built again from the threads one row changed, and
-    a claim of an acyclic kind walks the edges that stood before it, once per
-    claim, so the pass grows with the square of such claims. Measured on
-    2026-10-14 with a chain of `part_of` edges between projects, one run
-    each: 1,000 edges took `verify` 0.57 s and 2,000 took 1.87 s. The write
-    path walks them once per claim too, and the final review of the plan
-    measures what that means at 10,000 and 100,000 relations (decision 14 of
-    the 2026-10-14 assignments plan).
+    Its cost: each row asks a live view of the fold, which builds again only
+    the threads the row before it changed, and a claim of an acyclic kind
+    walks the edges that stood before it, so the pass grows with the square
+    of such claims. Measured on 2026-10-14, one run each, after fix round 1
+    of Task 4 of the 2026-10-14 assignments plan: a chain of `part_of` edges
+    between projects took `verify` 0.57 s at 1,000 edges and 1.77 s at
+    2,000; posts in one organization by `post_in`, no acyclic kind, took
+    0.56 s at 2,000 relations and 2.67 s at 10,000. With the thread map
+    copied once per row, as before that round, the 10,000 took 4.90 s. The
+    write path walks the acyclic edges once per claim too, and the final
+    review of the plan measures what that means at 10,000 and 100,000
+    relations (decision 14 of the 2026-10-14 assignments plan).
     """
 
     def __init__(self) -> None:
@@ -584,9 +601,10 @@ class _Claims:
         self._classes = ClassFold()
 
     def action(self, name: str, event_id: int, payload: Mapping[str, object]) -> None:
-        """Takes in an action of a sound form: a vocabulary or class event
-        changes what holds for the claims after it, any other changes
-        nothing."""
+        """Takes in an action of a known name: a vocabulary or class event
+        of a sound form changes what holds for the claims after it, with
+        units or without, as `read_vocabulary` and `read_classes` take it;
+        any other changes nothing."""
         if name == VOCABULARY:
             self._vocabulary.add(event_id, payload)
         elif name == APPROVAL_CLASS:
@@ -603,7 +621,7 @@ class _Claims:
         return self._fold.subject_of(version_id) is not None
 
     def _found(self, version_id: int) -> tuple[Graph, GraphThread, GraphVersion]:
-        graph = self._fold.graph(self._classes.classes().states)
+        graph = self._fold.current(self._classes.classes().states)
         thread = graph.threads[cast("int", self._fold.subject_of(version_id))]
         return graph, thread, next(v for v in thread.versions if v.id == version_id)
 
@@ -648,51 +666,101 @@ class _Claims:
 
     def claim_reason(self, row: EventRow, claim: Claim) -> str | None:
         """The first thing wrong with what an entity or a relation names,
-        with the vocabulary, its level or the cycle rule, or `None`; then it
-        joins the fold either way, as the fold reads it either way."""
+        with its level, or with the vocabulary, a question or the cycle
+        rule, or `None`; then it joins the fold either way, as the fold reads
+        it either way."""
         classes = self._classes.classes()
-        graph = self._fold.graph(classes.states)
-        subject = claim.subject
-        thread = None if subject is None else graph.threads.get(subject)
-        vocabulary = self._vocabulary.vocabulary()
-        reason: str | None = None
+        graph = self._fold.current(classes.states)
+        thread = None if claim.subject is None else graph.threads.get(claim.subject)
+        reason = (
+            self._claim_references(thread, claim, graph)
+            or self._claim_level(thread, claim, graph, row, classes)
+            or self._claim_rules(thread, claim, graph, row)
+        )
+        self.fold(row)
+        return reason
+
+    def _claim_references(
+        self, thread: GraphThread | None, claim: Claim, graph: Graph
+    ) -> str | None:
+        """What `subject`, `approves` and `contests` name."""
+        subject, contests = claim.subject, claim.contests
         if subject is not None and thread is None and not self._fold.erased(subject):
-            reason = "assertion has a subject that names no earlier entity or relation"
-        elif thread is not None and thread.kind != claim.kind:
-            reason = "assertion has a subject of another kind"
-        elif claim.approves is not None:
-            reason = self._approval_reason(thread, claim, graph)
-        contests = claim.contests
-        if reason is None and contests is not None and not self._fold.erased(contests):
+            return "assertion has a subject that names no earlier entity or relation"
+        if thread is not None and thread.kind != claim.kind:
+            return "assertion has a subject of another kind"
+        if claim.approves is not None:
+            return self._approval_reason(thread, claim, graph)
+        if contests is not None and not self._fold.erased(contests):
             target = (
                 next((v for v in thread.versions if v.id == contests), None) if thread else None
             )
             if target is None or target.claim.responsibility != DIRECT:
-                reason = "objection contests no earlier direct version of its subject"
-        if reason is None:
-            problem = conformance_problem(
-                claim, vocabulary, new_thread=starts_thread(claim), entity_types=EntityTypes(graph)
-            )
-            if problem is not None:
-                reason = f"assertion does not fit the vocabulary of its time: {problem}"
+                return "objection contests no earlier direct version of its subject"
+        return None
+
+    def _claim_level(
+        self,
+        thread: GraphThread | None,
+        claim: Claim,
+        graph: Graph,
+        row: EventRow,
+        classes: Classes,
+    ) -> str | None:
+        """The level against the rules the write path sets it by: the
+        operator's versions are direct, a model's version after a direct
+        winner is an objection against it, and a transitive one stands
+        under a class in force that covers it."""
+        if claim.author == OPERATOR and claim.responsibility == OPEN:
+            return "assertion is open but written by the operator"
+        winner = None if thread is None else thread.winner(graph.classes)
         if (
-            reason is None
-            and claim.responsibility == TRANSITIVE
-            and not classes.covers(
-                cast("int", claim.under),
-                author=claim.author,
-                kind=claim.kind,
-                type_name=claim.body.type,
-                confidence=claim.confidence,
-                recorded_at=row.recorded_at,
-            )
+            claim.author != OPERATOR
+            and claim.approves is None
+            and winner is not None
+            and level_of(winner, graph.classes) == DIRECT
+            and not (claim.responsibility == OPEN and claim.contests == winner.id)
         ):
-            reason = "assertion is transitive under no approval class in force for it"
-        level = level_of(GraphVersion(row.id, row.recorded_at, claim), classes.states)
-        if reason is None and closes_cycle(graph, claim, vocabulary, level=level):
-            reason = "relation closes a cycle over a kind that is acyclic"
-        self.fold(row)
-        return reason
+            return "assertion by a model follows a direct version and does not object to it"
+        if claim.responsibility == TRANSITIVE and not classes.covers(
+            cast("int", claim.under),
+            author=claim.author,
+            kind=claim.kind,
+            type_name=claim.body.type,
+            confidence=claim.confidence,
+            recorded_at=row.recorded_at,
+        ):
+            return "assertion is transitive under no approval class in force for it"
+        return None
+
+    def _claim_rules(
+        self, thread: GraphThread | None, claim: Claim, graph: Graph, row: EventRow
+    ) -> str | None:
+        """The vocabulary in force here, the answer to a pending question,
+        and the cycle rule."""
+        vocabulary = self._vocabulary.vocabulary()
+        problem = conformance_problem(
+            claim,
+            vocabulary,
+            new_thread=starts_thread(claim, thread),
+            entity_types=EntityTypes(graph),
+        )
+        if problem is not None:
+            return f"assertion does not fit the vocabulary of its time: {problem}"
+        asked = pending_question(thread, graph.classes)
+        standing = isinstance(claim.body, RelationBody) and claim.body.state == STANDING
+        # The write path refuses a direct version that stands and names none
+        # of the candidates, and writes a model's that a class would make
+        # transitive as open instead.
+        answers = (claim.responsibility == DIRECT and standing) or (
+            claim.responsibility == TRANSITIVE
+        )
+        if asked is not None and answers and not names_a_candidate(claim, asked):
+            return "relation answers a question with none of its candidates"
+        level = level_of(GraphVersion(row.id, row.recorded_at, claim), graph.classes)
+        if closes_cycle(graph, claim, vocabulary, level=level):
+            return "relation closes a cycle over a kind that is acyclic"
+        return None
 
 
 class _Assertions:

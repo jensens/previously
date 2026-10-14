@@ -27,10 +27,11 @@ decisions, and in the same order inside one transaction ({ref}`concurrency`):
 are direct as given. A model's claim that is no approval becomes an
 objection, open and contesting the winner, when the thread it names has a
 direct winner (the operator stands for that one, and a model does not
-overwrite it); otherwise the approval classes decide between transitive and
-open. `check_claims` says which level the write would set now, and
-`write_claims` with `expect_levels` refuses a batch whose level has moved
-since, instead of writing it at another level than the one shown.
+overwrite it), and stays open on a thread whose question it does not answer
+with a candidate; otherwise the approval classes decide between transitive
+and open. `check_claims` says what the write would decide now, and
+`write_claims` with `expect` refuses a batch whose decision has moved since,
+instead of writing it otherwise than shown.
 
 **A cycle needs no lock of its own** (decision 13 of the 2026-10-14
 assignments plan): the graph is folded under the tip, and every claim goes
@@ -73,6 +74,7 @@ from previously.core.graph import claim_problem
 from previously.core.graph import conformance_problem
 from previously.core.graph import ENTITY
 from previously.core.graph import fold_graph
+from previously.core.graph import GRAPH_KINDS
 from previously.core.graph import GraphFold
 from previously.core.graph import GraphVersion
 from previously.core.graph import level_of
@@ -103,6 +105,7 @@ if TYPE_CHECKING:
     from previously.core.classes import Classes
     from previously.core.decide import Decision
     from previously.core.graph import Claim
+    from previously.core.graph import ClassState
     from previously.core.graph import Graph
     from previously.core.graph import GraphThread
     from previously.core.policy import Client
@@ -111,6 +114,7 @@ if TYPE_CHECKING:
 
 
 CLASS_CHANGED: Final = "the approval class changed since the preview; call again without confirm"
+DIRECT_WRITTEN: Final = "a direct version was written since the preview; call again without confirm"
 
 type _Row = tuple[int, datetime, Mapping[str, object] | None]
 
@@ -118,6 +122,22 @@ type _Row = tuple[int, datetime, Mapping[str, object] | None]
 class GraphRefused(PreviouslyError):
     """A batch of entities and relations the write path does not write: one
     sentence, nothing written, no value of a field and no address in it."""
+
+
+@dataclass(frozen=True)
+class Decided:
+    """What the write path decided for one claim, as a preview shows it:
+    its level, the class it stands under, and the direct version it
+    contests as an objection."""
+
+    level: str
+    under: int | None
+    contests: int | None
+
+
+def decided(claim: Claim) -> Decided:
+    """The decision a claim that `check_claims` returned carries."""
+    return Decided(claim.responsibility, claim.under, claim.contests)
 
 
 @dataclass(frozen=True)
@@ -184,12 +204,47 @@ class EntityTypes(Mapping[int, str]):
         return len(self._graph.entities())
 
 
-def starts_thread(claim: Claim) -> bool:
-    """Whether a claim makes a new entity or relation: a first version, or
-    the approval of one, which makes it stand for the operator for the first
-    time. A retired kind takes neither (Review Focus 4 of the 2026-10-14
-    assignments plan)."""
-    return claim.subject is None or claim.approves == claim.subject
+def starts_thread(claim: Claim, thread: GraphThread | None) -> bool:
+    """Whether a claim makes a new entity or relation, which a retired kind
+    does not take (Review Focus 4 of the 2026-10-14 assignments plan).
+
+    A first version is new. So is a version that would stand for the
+    operator, direct or transitive, on a thread on which no direct or
+    transitive version ever stood, an approval of any of its proposals
+    among them: until then the entity was only proposed, and the proposal
+    of a kind retired since must not become one that stands (ruling T4-e
+    of the 2026-10-14 assignments plan). A further version of one that
+    stood is not new, so it may be renamed, closed or retracted, and
+    neither is an open one, which stands for nobody, or a retraction,
+    which makes nothing stand. `thread` is the thread before the claim;
+    `None` for a subject whose every version is erased, of which nothing
+    is known any more, and which is not counted as new.
+    """
+    if claim.subject is None:
+        return True
+    if thread is None or claim.responsibility == OPEN or claim.body.state == RETRACTED:
+        return False
+    return not any(v.claim.responsibility in (DIRECT, TRANSITIVE) for v in thread.versions)
+
+
+def pending_question(
+    thread: GraphThread | None, classes: Mapping[int, ClassState]
+) -> RelationBody | None:
+    """The body of the question that waits on `thread`, or None."""
+    question = None if thread is None else thread.question(classes)
+    body = None if question is None else question.claim.body
+    return body if isinstance(body, RelationBody) else None
+
+
+def names_a_candidate(claim: Claim, asked: RelationBody) -> bool:
+    """Whether a claim is a relation that stands and points at one of the
+    candidates of the question `asked`: the only way to answer it."""
+    body = claim.body
+    return (
+        isinstance(body, RelationBody)
+        and body.state == STANDING
+        and body.to in (asked.candidates or ())
+    )
 
 
 def closes_cycle(graph: Graph, claim: Claim, vocabulary: Vocabulary, *, level: str) -> bool:
@@ -288,6 +343,13 @@ def _levelled(claim: Claim, graph: Graph, classes: Classes, recorded_at: datetim
         # A model never overwrites what the operator stands for: it objects,
         # and the objection waits for him whatever its confidence.
         return replace(claim, responsibility=OPEN, under=None, contests=winner.id)
+    asked = pending_question(thread, graph.classes)
+    if asked is not None and not names_a_candidate(claim, asked):
+        # A transitive version answers a question (ruling T2-c), and a class
+        # must not answer it with what it never offered: the claim stays a
+        # proposal, and the question stays pending (ruling T4-d of the
+        # 2026-10-14 assignments plan).
+        return replace(claim, responsibility=OPEN, under=None, contests=None)
     body = claim.body
     if isinstance(body, RelationBody) and body.candidates is not None:
         # A question asks the operator; no class answers it in advance.
@@ -364,15 +426,12 @@ def _check_answer(graph: Graph, thread: GraphThread | None, claim: Claim) -> Non
     answers it, and has to name one of its candidates. A retraction asserts
     nothing about the ends and answers it with none."""
     body = claim.body
-    if thread is None or claim.responsibility != DIRECT or not isinstance(body, RelationBody):
+    if claim.responsibility != DIRECT or not isinstance(body, RelationBody):
         return
     if body.state != STANDING:
         return
-    question = thread.question(graph.classes)
-    if question is None:
-        return
-    asked = question.claim.body
-    if isinstance(asked, RelationBody) and body.to not in (asked.candidates or ()):
+    asked = pending_question(thread, graph.classes)
+    if asked is not None and not names_a_candidate(claim, asked):
         raise GraphRefused(f"the answer names {body.to}, which is none of the candidates")
 
 
@@ -383,7 +442,10 @@ def _check_claim(graph: Graph, claim: Claim, vocabulary: Vocabulary) -> None:
     if claim.approves is not None and thread is not None:
         _check_approval(graph, thread, claim)
     problem = conformance_problem(
-        claim, vocabulary, new_thread=starts_thread(claim), entity_types=EntityTypes(graph)
+        claim,
+        vocabulary,
+        new_thread=starts_thread(claim, thread),
+        entity_types=EntityTypes(graph),
     )
     if problem is not None:
         raise GraphRefused(problem)
@@ -401,7 +463,7 @@ def _checked[Conn](
     top: int,
     *,
     recorded_at: datetime,
-    expect_levels: Sequence[str] | None,
+    expect: Sequence[Decided] | None,
 ) -> list[tuple[Claim, Mapping[str, object]]]:
     """The checks the write path runs under its locks and `check_claims`
     runs without, and the claims at their levels with their payloads."""
@@ -418,10 +480,10 @@ def _checked[Conn](
         folded.add(row_id, at, payload, classes.states)
     checked: list[tuple[Claim, Mapping[str, object]]] = []
     for offset, given in enumerate(claims):
-        graph = folded.graph(classes.states)
+        graph = folded.current(classes.states)
         claim = _levelled(given, graph, classes, recorded_at)
-        if expect_levels is not None and claim.responsibility != expect_levels[offset]:
-            raise GraphRefused(CLASS_CHANGED)
+        if expect is not None:
+            _check_expected(expect[offset], decided(claim))
         payload = _payload(claim)
         _check_claim(graph, claim, vocabulary)
         folded.add(top + 1 + offset, recorded_at, payload, classes.states)
@@ -429,15 +491,34 @@ def _checked[Conn](
     return checked
 
 
+def _check_expected(shown: Decided, now: Decided) -> None:
+    """Refuses a claim whose decision under the tip is not the one the
+    preview showed (Review Focus 2 of the 2026-10-14 assignments plan;
+    ruling T4-e). A direct version written since turns a claim into an
+    objection, or into one against another version, and says so; any other
+    change of the level or the class is a class that changed."""
+    if shown.contests != now.contests:
+        raise GraphRefused(DIRECT_WRITTEN)
+    if (shown.level, shown.under) != (now.level, now.under):
+        raise GraphRefused(CLASS_CHANGED)
+
+
 def _repeated(below: Sequence[_Row], handle: str | None) -> list[tuple[int, Mapping[str, object]]]:
-    """The assertions below the tip that carry `handle`, as in
-    `core/assertions.py`."""
+    """The entities and relations below the tip that carry `handle`.
+
+    Only these: an obligation batch with the same handle is another write
+    path's, and answering with its ids would hand the caller ids of
+    something it never wrote (ruling T4-e of the 2026-10-14 assignments
+    plan). `core/assertions.py` keeps to its own kinds the same way.
+    """
     if handle is None:
         return []
     return [
         (event_id, payload)
         for event_id, _at, payload in below
-        if payload is not None and payload.get("handle") == handle
+        if payload is not None
+        and payload.get("assertion") in GRAPH_KINDS
+        and payload.get("handle") == handle
     ]
 
 
@@ -466,9 +547,7 @@ def check_claims[Conn](
         return tuple(
             claim for _id, payload in repeated if (claim := parse_claim(payload)) is not None
         )
-    checked = _checked(
-        log, conn, rows, below, claims, top, recorded_at=recorded_at, expect_levels=None
-    )
+    checked = _checked(log, conn, rows, below, claims, top, recorded_at=recorded_at, expect=None)
     return tuple(claim for claim, _payload in checked)
 
 
@@ -503,18 +582,20 @@ def write_claims[Conn](
     claims: Sequence[Claim],
     *,
     recorded_at: datetime,
-    expect_levels: Sequence[str] | None = None,
+    expect: Sequence[Decided] | None = None,
 ) -> Written:
     """Writes the claims in one transaction, at the levels the write path
     gives them, and returns their ids and levels; or refuses the batch with
     `GraphRefused` and writes nothing.
 
-    With `expect_levels`, the levels a preview showed, one per claim: a
-    level that differs under the tip is refused with `CLASS_CHANGED`
-    (Review Focus 2 of the 2026-10-14 assignments plan). A class revoked or
-    set since the preview, or a direct version written since, which turns a
-    model's claim into an objection, would otherwise have the claim written
-    at a level nobody was shown.
+    With `expect`, the decisions a preview showed, one per claim, as
+    `decided` gives them for what `check_claims` returned: a claim that
+    under the tip contests another direct version, or none where it
+    contested one, is refused with `DIRECT_WRITTEN`, and one at another
+    level or under another class with `CLASS_CHANGED` (Review Focus 2 of
+    the 2026-10-14 assignments plan). Without the comparison, a class
+    revoked or set since the preview, or a direct version written since,
+    would have the claim written otherwise than anybody was shown.
 
     A batch whose handle an assertion in the log carries writes nothing and
     returns the ids and levels of the assertions that carry it and still
@@ -523,8 +604,8 @@ def write_claims[Conn](
     """
     iso_utc(recorded_at)  # fail early if naive
     _check_batch(claims)
-    if expect_levels is not None and len(expect_levels) != len(claims):
-        raise ValueError("expect_levels gives one level per claim")
+    if expect is not None and len(expect) != len(claims):
+        raise ValueError("expect gives one decision per claim")
     handle = claims[0].handle
     events = sorted({source.event for claim in claims for source in claim.sources})
 
@@ -548,7 +629,7 @@ def write_claims[Conn](
             claims,
             top,
             recorded_at=recorded_at,
-            expect_levels=expect_levels,
+            expect=expect,
         )
         ids = _append(log, tip, conn, [payload for _claim, payload in checked], recorded_at)
         return Written(ids, tuple(claim.responsibility for claim, _payload in checked))

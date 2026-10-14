@@ -1766,17 +1766,19 @@ def test_the_reference_quotes_the_findings_about_assertions() -> None:
 
 
 def test_the_reference_quotes_the_findings_about_entities_and_relations() -> None:
-    """The five findings `verify` reports about an entity or a relation alone,
-    as `cli.md` quotes them under `verify` after the sixteen of every
-    assertion: each a reason `_Claims.claim_reason` in `core/verify.py`
+    """The eight findings `verify` reports about an entity or a relation
+    alone, as `cli.md` quotes them under `verify` after the sixteen of every
+    assertion: each a reason one of the three methods `_claim_references`,
+    `_claim_level` and `_claim_rules` of `_Claims` in `core/verify.py`
     returns, with the reason of the vocabulary, behind its prefix, held
     against the sentences `core/graph.py` returns. Every such reason the
-    method returns is quoted, the ones already in the block of the sixteen
+    methods return is quoted, the ones already in the block of the sixteen
     aside, so a new one fails here too.
 
-    The limits are those of the test above, with one function instead of
-    three, and the openings `objection ` and `relation ` beside
-    `assertion `.
+    The limits are those of the test above, with these three functions, and
+    the openings `objection ` and `relation ` beside `assertion `. The
+    three methods were one, `claim_reason`, until fix round 1 of Task 4 of
+    the 2026-10-14 assignments plan split it for ruff's `C901`.
 
     Measured on 2026-10-14: `relation closes a cycle over a kind that is
     acyclic` turned into `... an acyclic kind` on the page goes red, a block
@@ -1788,13 +1790,17 @@ def test_the_reference_quotes_the_findings_about_entities_and_relations() -> Non
     verify = ROOT / "src" / "previously" / "core" / "verify.py"
     common = {line.partition(": ")[2] for line in _quoted_block(page, "Sixteen findings come from")}
     starts = ("assertion ", "objection ", "relation ")
-    returned = _string_constants(verify, "claim_reason")
+    returned = (
+        _string_constants(verify, "_claim_references")
+        | _string_constants(verify, "_claim_level")
+        | _string_constants(verify, "_claim_rules")
+    )
     in_code = {text for text in returned if text.startswith(starts)} - common
     forms = _message_patterns(ROOT / "src" / "previously" / "core" / "graph.py")
     vocabulary_prefix = "assertion does not fit the vocabulary of its time: "
     quoted: set[str] = set()
-    lines = _quoted_block(page, "Five more come from entities and relations alone")
-    assert len(lines) == 5, lines
+    lines = _quoted_block(page, "Eight more come from entities and relations alone")
+    assert len(lines) == 8, lines
     for line in lines:
         prefix, _, reason = line.partition(": ")
         assert re.fullmatch(r"FINDING [0-9]+", prefix), line

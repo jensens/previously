@@ -15,9 +15,9 @@ Inside that transaction, in this order:
 - it locks every source event, ascending, with the row lock an erasure takes
   ({ref}`erasure`), and refuses a source that is missing, erased or no
   observation, and a cited unit that is missing or erased;
-- it reads the tip, and below it every assertion: a handle that one of them
-  carries already makes the call a repeat, and the ids of those are the
-  answer, with nothing written;
+- it reads the tip, and below it every assertion: a handle that one of its
+  obligations, decisions or rejections carries already makes the call a
+  repeat, and the ids of those are the answer, with nothing written;
 - it checks what each statement names (`subject`, `approves`, `of`,
   `replaces`) against what stands below the tip, the statements before it in
   the same batch included; an `of` that names no obligation or decision may
@@ -25,10 +25,12 @@ Inside that transaction, in this order:
   that one the approval classes are read as well, after the tip;
 - it writes every statement on that tip.
 
-A vocabulary or class event read after the tip can only be one that stands
-below it, or one that joined the chain since and takes the position this
+This module reads the approval classes after the tip, and only for such a
+rejection. A class event it reads there can only be one that stands below
+the tip, or one that joined the chain since and takes the position this
 write wanted: the insert then fails, and the next attempt reads again.
-`core/graph_write.py` writes entities and relations in the same order, and
+`core/graph_write.py` writes entities and relations in the same order,
+reads the vocabulary after the tip as well, for the same reason, and
 checks their sources with `check_sources`.
 
 The lock is what keeps an erasure from falling between the check and the
@@ -56,6 +58,7 @@ from previously.core.assertion import assertion_problem
 from previously.core.assertion import DecisionBody
 from previously.core.assertion import DIRECT
 from previously.core.assertion import fold
+from previously.core.assertion import KINDS
 from previously.core.assertion import ObligationBody
 from previously.core.assertion import OPEN
 from previously.core.assertion import parse_statement
@@ -501,13 +504,18 @@ def _prepare(payloads: Sequence[Mapping[str, object]], recorded_at: datetime) ->
 def _repeated(
     below: Sequence[tuple[int, datetime, Mapping[str, object] | None]], handle: str | None
 ) -> tuple[int, ...]:
-    """The ids of the assertions below the tip that carry `handle`."""
+    """The ids of the obligations, decisions and rejections below the tip
+    that carry `handle`. An entity or a relation with the same handle is
+    another write path's, and its ids are no answer to this batch (ruling
+    T4-e of the 2026-10-14 assignments plan)."""
     if handle is None:
         return ()
     return tuple(
         event_id
         for event_id, _at, payload in below
-        if payload is not None and payload.get("handle") == handle
+        if payload is not None
+        and payload.get("assertion") in KINDS
+        and payload.get("handle") == handle
     )
 
 

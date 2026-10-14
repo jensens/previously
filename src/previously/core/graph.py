@@ -56,6 +56,7 @@ from previously.core.vocabulary import PERIOD
 from previously.core.vocabulary import PERIOD_BEHAVIOR
 from previously.core.vocabulary import RELATION_KIND
 from previously.core.vocabulary import TEXT
+from types import MappingProxyType
 from typing import cast
 from typing import Final
 from typing import TYPE_CHECKING
@@ -963,8 +964,8 @@ class GraphFold:
     against what stood before it in the chain, and the write path, which
     holds each claim of a batch against what the claims before it add.
 
-    `graph` builds again only the threads a row changed since the last call;
-    the others are taken over as they were.
+    `graph` and `current` build again only the threads a row changed since
+    the last call; the others are taken over as they were.
     """
 
     def __init__(self) -> None:
@@ -1040,6 +1041,18 @@ class GraphFold:
     def graph(self, classes: Mapping[int, ClassState]) -> Graph:
         """The graph of the rows taken in so far, under `classes`. It does
         not change when more rows are taken in later."""
+        return Graph(dict(self._built()), classes)
+
+    def current(self, classes: Mapping[int, ClassState]) -> Graph:
+        """`graph` without the copy: a view of the threads that follows the
+        fold, so it changes with the next `add`. For a caller that asks it
+        about one row and then takes that row in, as `verify` and the write
+        path do: copying the thread map once per row made a pass over the
+        graph quadratic in its rows."""
+        return Graph(MappingProxyType(self._built()), classes)
+
+    def _built(self) -> dict[int, GraphThread]:
+        """The threads, with those changed since the last call built again."""
         for subject in self._touched:
             draft = self._drafts[subject]
             self._threads[subject] = GraphThread(
@@ -1050,7 +1063,7 @@ class GraphFold:
                 frozenset(draft.approved),
             )
         self._touched.clear()
-        return Graph(dict(self._threads), classes)
+        return self._threads
 
 
 def fold_graph(
