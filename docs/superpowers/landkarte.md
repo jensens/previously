@@ -91,8 +91,22 @@ einen zweiten Client. Nicht gelaufen: der Schlüssel der Vibe-Ask-Einstellung.
 Die Kennzeichnung `requiresUserInteraction` ist am selben Tag gegen
 `0.1.0a6` nachgemessen (unter *Feststellungen und Entitäten*).
 
-Nicht gebaut: die Suche, jede Entität und jede Zuordnung, KI-Schicht,
-jeder Konnektor außer dem für IMAP.
+Gebaut, nicht abgenommen: Phase 1 der Zuordnungen, der Kern (Z §3–§7), auf dem
+Zweig `worktree-zuordnungen`, nach dem Spec `specs/2026-10-14-zuordnungen.md`
+(lebendig, nicht eingefroren) und dem Plan `plans/2026-10-14-zuordnungen-phase-1.md`.
+Das Vokabular als Handlung `vocabulary` mit Grundvokabular, Entitäten und
+Beziehungen als Feststellungen mit den drei Stufen `direct`, `transitive` und
+`open`, die Freigabeklassen mit Trefferquote und Stichprobe, Einwände und
+Rückfragen, die Kommandos `vocabulary`, `entity`, `relate`, `entities`,
+`relations`, `classes`, `triage`, `answer` und `status`, fünf MCP-Werkzeuge
+(fünfzehn in allem) und der Kopf mit der Zahl der Einwände. Ohne Migration und
+ohne Projektionstabelle (Z §10.1). Am Gate ändert sich nichts. Die Seiten stehen
+(`explanation/graph.md`, die drei Anleitungen, die Referenz), der Handoff
+`handoffs/2026-10-14-kup6s-graph-phase-1.md` liegt bei.
+
+Nicht gebaut: die Suche, die Zuordnung von Events (Phase 2), Kreise im Graphen
+und am Gate (Phase 3), Verpflichtungen im Schema (Phase 4), KI-Schicht, jeder
+Konnektor außer dem für IMAP.
 
 ## Was als Nächstes kommt
 
@@ -149,9 +163,15 @@ jetzt kommt: die Abnahme nach F §14 ist gelaufen (2026-10-13, siehe
 *Erledigt*), der Zweig `mcp-erklaeren` ist gemergt (PR #20, `248a001`) und
 mit `pool_pre_ping` als `v0.1.0a6` am 2026-10-13 veröffentlicht; der Handoff
 `handoffs/2026-10-13-kup6s-a6.md` liegt bei und bittet kup6s, die Umschaltung
-der Primärinstanz zu wiederholen; kup6s hat geantwortet (R6, siehe unten). Als nächste
-Einheit mit Spec dann die Zuordnungen (F §1, §15; unten unter *Feststellungen und
-Entitäten*).
+der Primärinstanz zu wiederholen; kup6s hat geantwortet (R6, siehe unten). Die Zuordnungen
+haben ihren Spec (`specs/2026-10-14-zuordnungen.md`, lebendig bis die Seiten
+aller Phasen stehen), und Phase 1 ist gebaut (oben). Was jetzt kommt, in dieser
+Reihenfolge: die Endprüfung in zwei Paketen mit der Messung von `entities`,
+`relations --at` und des Kopfes bei 10 000 und 100 000 Beziehungen
+(Planentscheidung 14), die Zahlen kommen hierher und auf `explanation/graph.md`;
+dann Push und PR; nach dem Merge das Release (die Nummer wählt der Betreuer),
+der Handoff und die Abnahme nach Z §17 Punkt 1, Vellenfeld. Erst danach der
+Plan der Phase 2 (unten unter *Zuordnungen (Phasen 1–4)*).
 Was die Aufnahme offen lässt, steht unten unter *Aufnahme aus IMAP* und an
 den Einheiten, zu denen es gehört.
 
@@ -269,7 +289,10 @@ ebenso, **RA** seine Rückmeldung vom 2026-10-12 auf die Handoffs der
 Einstellungen und der Feststellungen
 (`handoffs/2026-10-12-kup6s-feedback-settings-and-assertions.md`), ebenso,
 **R6** seine Rückmeldung vom 2026-10-13 auf den Handoff von `0.1.0a6`
-(`handoffs/2026-10-13-kup6s-feedback-a6.md`), ebenso.
+(`handoffs/2026-10-13-kup6s-feedback-a6.md`), ebenso, **Z** der Spec der
+Zuordnungen (`specs/2026-10-14-zuordnungen.md`) mit Abschnitt, **P-Z1** das
+Ausführungsprotokoll seiner Phase 1 (`sdd/2026-10-14-zuordnungen-phase-1/`)
+mit dem Ruling oder der Aufgabe.
 
 ### Einwurf-Vertrag (`contract`, Teilprojekt 2)
 
@@ -408,6 +431,60 @@ Einstellungen und der Feststellungen
   Feststellung mit Quelle, weil kein Konnektor Arbeit sieht (F §1, §4, §15).
 - Ob ein Kreis umbenannt werden kann, ohne dass `circle:`-Verweise in
   Feststellungen ins Leere zeigen (F §15).
+
+### Zuordnungen (Phasen 1–4)
+
+Phase 1 ist gebaut, die Seiten stehen (`explanation/graph.md`). Was sie offen
+lässt, mit ihrem Ausführungsprotokoll (`sdd/2026-10-14-zuordnungen-phase-1/`,
+das mit der Endprüfung ins Repository kommt):
+
+- **Der Rest von einem Bit beim Zyklus.** Ein Modell wird für einen Zyklus nie
+  abgewiesen, und keine Klasse deckt eine Art mit dem Verhalten `acyclic`, so
+  dass seine Fassung davon immer `open` bleibt (P-Z1, Ruling T6-a). Übrig
+  bleibt: `write_approve` und `write_triage_answer` über MCP weisen eine
+  Freigabe, die einen Zyklus schlösse, mit einem Satz ab, der einem von der
+  Person bestätigten Aufruf ein Bit über Kanten sagt, die der Client nicht
+  sehen darf (`mcp-tools.md`, `explanation/graph.md`). Der Preis ist gewollt;
+  zu entscheiden bleibt, ob eine spätere Phase ihn ganz abträgt (Z §9.4).
+- **`verify` ist quadratisch über azyklischen Ketten.** Jede Kante einer
+  azyklischen Art wird gegen die Kanten davor geprüft: 1 000 Kanten
+  `part_of` 0,57 s, 2 000 Kanten 1,77 s, gemessen am 2026-10-14; hochgerechnet
+  sind 10 000 Kanten rund eine Minute, nicht gemessen. Die Endprüfung misst
+  bei 10 000 (P-Z1, Ruling T4-c). Trägt es nicht, wird die Prüfung auf Zyklen
+  in `verify` inkrementell, spätestens mit Phase 2.
+- **Der Kopf kostet bei jedem Aufruf eine Faltung des Graphen.** `whoami` bei
+  1 000 Entitäten 53 ms, bei 5 000 153 ms (2026-10-14); wächst mit dem Graphen,
+  nicht nur bei einer Liste. Die Endprüfung misst bei 10 000 und 100 000
+  Beziehungen (P-Z1, Ruling T6-c). Was sie ergibt, entscheidet mit der
+  Messung von `entities` und `relations --at`, ob Phase 2 eine
+  Projektionstabelle bekommt (Planentscheidung 14, Z §3.4).
+- **Zurückgestellte Kleinigkeiten, die Erinnerung verdienen:**
+  - Aufgabe 1: Eine Art, die eine eingebaute nennt, lässt sich stilllegen,
+    ohne dass die Prüfung der Verweise greift — `person` stilllegen, während
+    das eingebaute `member_of` sie nennt, wird nicht abgewiesen und ist
+    ungetestet.
+  - Aufgabe 3: Die Trefferquote zählt eine Fassung als korrigiert, wenn eine
+    spätere transitive Fassung desselben Fadens freigegeben wird (folgt dem
+    Auftrag, ungeprüft festgehalten), und der Gleichstand zweier Klassen
+    nimmt die Kennung des jüngsten Ereignisses je Name, so dass eine neu
+    gesetzte Klasse ihr Dienstalter gegen eine gleichrangige verliert.
+  - Aufgabe 5: Die Spalte der Art zeigt die Beschriftung und nicht den
+    Bezeichner, so dass eine Liste nicht unmittelbar `--type` füttert (die
+    Seite einer Entität zeigt beides), und `entity … --retract` ohne
+    `--subject` kann eine erste Fassung schreiben, die schon widerrufen ist
+    (vom Nachprüfer gesehen, nicht nachgeprüft). `relate --retract` ohne
+    `--subject` ist abgewiesen.
+  - Aufgabe 4: Eine direkte, stehende Beziehung, die Kandidaten trägt, wird
+    auf einem Faden mit anhängiger Rückfrage abgewiesen (vorher schon so,
+    außerhalb der Korrektur).
+- **Phasen 2 bis 4 selbst**, im Spec ausgearbeitet und nicht gebaut: die
+  Zuordnung von Events und Einheiten an Klammern mit `chronicle --in` und
+  `in` über MCP (Z §8, Phase 2), Kreise im Graphen, die das Gate liest, mit
+  der schweren Prüfung der Sicherheitsgrenze (Z §9, Phase 3), und
+  Verpflichtungen und Entscheidungen im Schema (Z §11, Phase 4). Jede mit
+  eigenem Plan, Merge, Release und Abnahme (Z §1, §17); die Relationen
+  `concerns` und `in_circle` mit Ereignis als Beginn kommen mit Phase 2
+  (P-Z1, Ruling P-2).
 
 ### Projektionen
 
@@ -1240,7 +1317,10 @@ auf `assertions.md` unter *What the pilot leaves open*.
   `tests/test_mcp_server.py` scheiterte am 2026-10-13 einmal in einem
   Teillauf; acht Läufe mit wechselnder Reihenfolge danach waren grün. Kommt er
   wieder, die Saat von `pytest-randomly` aus der Ausgabe notieren und damit
-  nachstellen.
+  nachstellen. Diagnose (Endprüfung von Phase 1): der Test scheitert, wenn
+  der Zufallsanteil des Markers eine lange Folge von Ziffern enthält, die die
+  Zahlenprüfung des Testrahmens als Zahl über 2^53 liest; das Auftreten hängt
+  also an der Zufallsfolge und nicht an der Reihenfolge der Tests.
 - Drei geparkte Testlöcher am Doku-Tor (1b §10 Punkt 5).
 - Die Reihenfolge der zwei `stderr`-Hinweise in `cli.md` hält nichts
   mechanisch; `_message_patterns` nimmt auch die `_describe`-Literale auf

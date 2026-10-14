@@ -85,7 +85,7 @@ What it writes stays a proposal, out of every default list, until you approve it
 
 ## Make the client ask before it answers
 
-`write_approve` and `write_reject` count as your own word, so the client has to ask you before it calls either.
+`write_approve`, `write_reject` and `write_triage_answer` count as your own word, so the client has to ask you before it calls any of them.
 Each is one call: you are asked once, and the call writes.
 Set that up before you let a client answer proposals.
 
@@ -96,7 +96,8 @@ For Claude Code, add an ask rule to your user settings in `~/.claude/settings.js
   "permissions": {
     "ask": [
       "mcp__previously__write_approve",
-      "mcp__previously__write_reject"
+      "mcp__previously__write_reject",
+      "mcp__previously__write_triage_answer"
     ]
   }
 }
@@ -105,10 +106,10 @@ For Claude Code, add an ask rule to your user settings in `~/.claude/settings.js
 Claude Code's [documentation of permissions](https://code.claude.com/docs/en/permissions#manage-permissions) says that an ask rule prompts even where an allow rule also matches, and in every permission mode, `auto` and `bypassPermissions` included, except `dontAsk`, which refuses the call instead.
 Without the rule, `auto` mode lets a classifier decide in your place, and Claude Code starts in `auto` mode from v2.1.283 on, as its [documentation of permission modes](https://code.claude.com/docs/en/permission-modes) says.
 The same documentation names a mark an MCP tool can carry, `_meta["anthropic/requiresUserInteraction"]`, that makes Claude Code ask for it as an ask rule does.
-`write_approve` and `write_reject` carry it, so Claude Code asks for them even without the rule.
+`write_approve`, `write_reject` and `write_triage_answer` carry it, so Claude Code asks for them even without the rule.
 Keep the ask rule all the same: it's the requirement, and Vibe and other clients don't know the mark.
 With the rule or the mark, one approval costs one prompt, the one that shows the ids; the model has no reason to ask again in the chat once you told it to approve.
-Never add either tool to `allow`.
+Never add any of the three to `allow`.
 The rule was measured on 2026-10-13 against `0.1.0a5`: in `auto` mode Claude Code showed `Ask rule mcp__previously__write_approve overrides auto mode for this tool` and offered `Yes`, `Yes, and don't ask again` and `No`.
 The mark was measured the same day against `0.1.0a6`, with Claude Code 2.1.296 in `auto` mode and no ask rule for `write_reject`: Claude Code showed its prompt before the call.
 Don't choose the second answer for either tool.
@@ -121,12 +122,15 @@ permission = "ask"
 
 [tools.previously_write_reject]
 permission = "ask"
+
+[tools.previously_write_triage_answer]
+permission = "ask"
 ```
 
 Vibe 2.26.1 lists the tools as `mcp_previously.<tool>`, measured on 2026-10-13, and not as `previously_<tool>`, which is the form its documentation gives.
 Whether the keys above match the tools is therefore unmeasured.
 The default of Vibe asks before every MCP tool, the reading tools included, with `Allow once`, `for this session`, `Always allow` and `Deny`, and shows the full arguments.
-Never choose `Always allow` for `write_approve` or `write_reject`.
+Never choose `Always allow` for `write_approve`, `write_reject` or `write_triage_answer`.
 
 ## Go through the proposals
 

@@ -677,6 +677,8 @@ The answer is the approval of the question with `to` set to the candidate chosen
 The client has to be allowed to see the relation of the question and every source of it.
 A question it may not see, a version that's no question, and one answered or overtaken already are all refused with `event N is no question that waits`, and a choice that's none of the candidates with `the answer names N, which is none of the candidates`.
 To answer with an entity that isn't a candidate, reject the question and state the relation.
+An answer of a relation over an acyclic kind that would close a cycle is refused with `the relation would close a cycle over a kind that is acyclic`, which counts relations the client may not see too.
+That sentence tells a call the person confirmed one bit about them, as it does for `write_approve`.
 The tool carries `_meta` with `"anthropic/requiresUserInteraction": true` in `tools/list`, the mark that makes Claude Code ask the person before every call, as `write_approve` and `write_reject` do.
 
 ### `write_approve`
