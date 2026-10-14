@@ -649,15 +649,22 @@ The cycle rule holds the operator's versions, approvals and answers instead.
 The title is `write_relation`.
 Every source has to be an observation the client may see, and the start, the end or every candidate and a `subject` an entity or a relation the client may see.
 
+A kind whose `from` names `event` in the vocabulary, such as `concerns`, starts at an event: `from` is then an object with `event`, the id, and `units`, the units it concerns in ascending order, left out for the whole event.
+That event is one of the sources of the relation.
+Where no source names it, the server adds the start as a source of its own, so `sources` may be empty for such an item.
+A start the client may not see is refused as a source is, with `event N is not one this client can use as a source`.
+A source that names the event with fewer units than the start is refused as `a statement has no valid form: the event a relation starts at must be among its sources`, and the server doesn't merge the two.
+The preview shows such a start as `from:` and the URI of the event, or one URI per unit, as `sources:` shows a source.
+
 #### The fields of a relation
 
 | Field | Required | Description |
 |---|---|---|
 | `type` | yes | The kind of relation, as the vocabulary declares it. |
-| `from` | yes | The id of the entity it starts at. |
+| `from` | yes | The id of the entity it starts at, or, for a kind that starts at an event, an object with `event` and `units` as for a source. |
 | `to` | one of two | The id of the entity it points at. |
 | `candidates` | one of two | 2 to 5 ids of entities it may point at, for a question. |
-| `sources` | yes | The events it rests on, at least one, as for `write_assertion`. |
+| `sources` | yes | The events it rests on, as for `write_assertion`: at least one, the event it starts at among them, which the server adds where no source names it. |
 | `confidence` | yes | How sure the client is, a whole number from 0 to 100. |
 | `period` | no | When it held, an object with `from` and `to` as for a period field, for a kind with the behavior `period`. |
 | `fields` | no | The fields the kind declares, as for `write_entity`. |
@@ -846,9 +853,9 @@ Its `arguments` hold only these keys, for a call the SDK refused as well:
 | Key | Value |
 |---|---|
 | `statements` | How many statements the call names. |
-| `sources` | `write_assertion`, `write_entity` and `write_relation`: the ids of the source events, ascending, each once. |
+| `sources` | `write_assertion`, `write_entity` and `write_relation`: the ids of the source events, ascending, each once; for `write_relation` an event a `from` names among them. |
 | `proposals` | `write_approve`, `write_reject` and `write_triage_answer`: the ids of the proposals or of the question answered. |
-| `ends` | `write_relation`: the ids of the entities its items name as `from`, `to` and candidates, ascending, each once; `write_triage_answer`: the candidate chosen. |
+| `ends` | `write_relation`: the ids of the entities its items name as `from`, `to` and candidates, ascending, each once, without an event a `from` names; `write_triage_answer`: the candidate chosen. |
 | `confirm` | `write_assertion`, `write_entity` and `write_relation`: `true` where the call gave a handle. |
 | `written` | The ids written, or found written by an earlier confirmation of the same handle; empty for a preview, a refusal, and an answer that stood already. |
 

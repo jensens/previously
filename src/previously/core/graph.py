@@ -95,6 +95,8 @@ ENTITY_STATES: Final = (ACTIVE, CLOSED, RETRACTED)
 RELATION_STATES: Final = (STANDING, RETRACTED)
 
 MAX_CONFIDENCE: Final = 100
+
+START_NOT_A_SOURCE: Final = "the event a relation starts at must be among its sources"
 MIN_CANDIDATES: Final = 2
 MAX_CANDIDATES: Final = 5
 
@@ -138,8 +140,9 @@ class EntityBody:
 @dataclass(frozen=True)
 class RelationBody:
     """`start` is what `from` names: the id of an entity, or a `Source`, an
-    event with the units it cites, which the form admits for phase 2 and
-    `conformance_problem` refuses until then. `to` is the entity it points
+    event with the units it cites, for a relation kind that starts at an
+    event, such as the assignment `concerns`. Such an event is among the
+    sources of the claim (`START_NOT_A_SOURCE`). `to` is the entity it points
     at, or `None` for a question, which names `candidates` instead."""
 
     type: str
@@ -423,10 +426,10 @@ def _entity_problem(payload: Mapping[str, object]) -> str | None:
 
 def _end_problem(value: object) -> str | None:
     if isinstance(value, dict) and set(cast("dict[str, object]", value)) == {"event", "units"}:
-        # An event as the start, with the units it cites, is sound form: the
-        # payload keeps room for what phase 2 brings, and
-        # `conformance_problem` refuses it until then, so that `verify` will
-        # not call a phase 2 event malformed.
+        # An event as the start, with the units it cites: whether the
+        # relation kind starts at an event is the vocabulary's to say
+        # (`conformance_problem`), and that the event is among the sources
+        # is `_start_problem`'s.
         entry = cast("dict[str, object]", value)
         if not _is_id(entry["event"]):
             return "from names an event that is not a whole number of at least 1"
@@ -463,8 +466,51 @@ def _to_problem(value: object, responsibility: object) -> str | None:
     return None
 
 
+def covers(source: Source, start: Source) -> bool:
+    """Whether `source` cites everything the start `start` names: the same
+    event, and the whole of it, or at least the units the start names."""
+    if source.event != start.event:
+        return False
+    if source.units is None:
+        return True
+    return start.units is not None and set(start.units) <= set(source.units)
+
+
+def sources_with_start(start: int | Source, sources: tuple[Source, ...]) -> tuple[Source, ...]:
+    """The sources of a relation that starts at `start`, with an event start
+    added at the end where no source names its event; for the command line
+    and the MCP server, which let the caller leave it out.
+
+    A source that names the event without covering the start stays as given,
+    and the write path refuses the claim with `START_NOT_A_SOURCE`: adding
+    the start beside it would make the claim rest on more of the event than
+    the caller said it does."""
+    if not isinstance(start, Source) or any(source.event == start.event for source in sources):
+        return sources
+    return (*sources, start)
+
+
+def _start_problem(payload: Mapping[str, object]) -> str | None:
+    """A relation that starts at an event rests on that event: one of its
+    sources covers the start. The erasure cascade and `verify` find an
+    assertion by its sources, and the policy decides a relation over them,
+    so a start outside the sources would outlive the erasure of its mail,
+    and nobody would ask the policy about the mail it is about. Run after
+    the form of `from` and of the sources is checked."""
+    origin = cast("dict[str, object]", payload["from"])
+    if "event" not in origin:
+        return None
+    start = _source_of(origin)
+    sources = [_source_of(item) for item in cast("list[object]", payload["sources"])]
+    return None if any(covers(source, start) for source in sources) else START_NOT_A_SOURCE
+
+
 def _relation_problem(payload: Mapping[str, object]) -> str | None:
-    problem = _end_problem(payload["from"]) or _to_problem(payload["to"], payload["responsibility"])
+    problem = (
+        _end_problem(payload["from"])
+        or _to_problem(payload["to"], payload["responsibility"])
+        or _start_problem(payload)
+    )
     if problem is not None:
         return problem
     period = payload["period"]

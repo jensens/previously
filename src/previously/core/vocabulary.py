@@ -227,8 +227,10 @@ def _built_in(declares: str, name: str) -> KindSpec:
                 False,
             )
         case _:
-            # `in_circle` starts at an event, which is no entity kind, so
-            # `from_` is empty until phase 3 gives a relation that start.
+            # `in_circle` is to start at an event once the gate reads it, in
+            # phase 3. Until then `from_` stays empty, and no relation of it
+            # can be written: an entity start finds no kind in it, and an
+            # event start fits only a kind whose `from_` names `event`.
             labels = {"de": "Im Kreis", "en": "In circle"}
             return KindSpec(declares, name, labels, (), frozenset(), (), ("circle",), False)
 

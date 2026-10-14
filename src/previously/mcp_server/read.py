@@ -91,6 +91,7 @@ if TYPE_CHECKING:
     from datetime import datetime
     from previously.contract.rows import UnitRow
     from previously.contract.store import LogStore
+    from previously.core.assertion import Source
     from previously.core.assertion import Statement
     from previously.core.assertion import Thread
     from previously.core.assertion import Version
@@ -844,11 +845,8 @@ class ThreadVerdict:
     source it was taken for; `ends` those of the entities a relation names,
     which decide along; `blocked` is the first that chooses nothing, with
     its source, or `None`. `shown` is whether the client sees the thread,
-    for a relation as `relation_visible` decides it: a relation that starts
-    at an event is not shown, since phase 1 shows none at all. `blocked`
-    is not cleared for one: it holds what the decisions of the relation and
-    its entity ends say, as for any other relation, and nothing reads it for
-    a relation.
+    for a relation as `relation_visible` decides it, an assignment, which
+    starts at an event, among them: that event is one of its sources.
     """
 
     decisions: tuple[tuple[str | None, Decision], ...]
@@ -1047,16 +1045,21 @@ def entity_text(view: GraphView, entity: int, *, ref: bool = False) -> str:
     return f"entity {entity}" if name is None else f"entity {entity} {name}"
 
 
-def _evidence_line(claim: Claim) -> str:
-    if claim.evidence == RECOLLECTION:
-        return "sources: none, the operator's recollection"
+def _source_uris(sources: Iterable[Source]) -> str:
+    """Events as URIs, and the units cited of one as a URI per unit."""
     uris: list[str] = []
-    for source in claim.sources:
+    for source in sources:
         if source.units is None:
             uris.append(event_uri(source.event))
         else:
             uris.extend(f"{event_uri(source.event)}#unit-{seq}" for seq in source.units)
-    return f"sources: {', '.join(uris)}"
+    return ", ".join(uris)
+
+
+def _evidence_line(claim: Claim) -> str:
+    if claim.evidence == RECOLLECTION:
+        return "sources: none, the operator's recollection"
+    return f"sources: {_source_uris(claim.sources)}"
 
 
 def claim_lines(view: GraphView, vocabulary: Vocabulary, claim: Claim) -> list[str]:
@@ -1070,7 +1073,9 @@ def claim_lines(view: GraphView, vocabulary: Vocabulary, claim: Claim) -> list[s
             lines.append(f"language: {body.language}")
     else:
         start = body.start
-        lines.append(f"from: {entity_text(view, start) if isinstance(start, int) else 'an event'}")
+        lines.append(
+            f"from: {entity_text(view, start) if isinstance(start, int) else _source_uris([start])}"
+        )
         if body.candidates is not None:
             named = ", ".join(entity_text(view, item) for item in body.candidates)
             lines.append(f"to one of: {named}")
@@ -1173,6 +1178,8 @@ def _relation_lines(
     for relation_id in sorted(relations):
         relation = relations[relation_id]
         body = cast("RelationBody", relation.claim.body)
+        # An assignment of a mail is no relation between two entities, and a
+        # bracket may have many: the page stays the entity's.
         if not isinstance(body.start, int) or not view.seen(relation_id):
             continue
         if body.start == subject:

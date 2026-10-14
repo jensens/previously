@@ -1447,6 +1447,7 @@ Error: --subject 5 names no entity that stands
 The page of an entity starts with `entity ID`, followed by `(proposal)` or `(transitive)` when the version that stands isn't direct, and by the marks.
 Its lines are a name, a tab and a value: `version`, `type` with the identifier and the label, `state`, `language`, one `field` line per field with the name and the value, `sources`, `evidence`, `reason`, `author`, `responsibility`, `versions` and `proposals`.
 One `relation` line follows for each relation that starts or ends at the entity: the id, the label of the kind, `out` or `in`, the entity at the other end, the period or `-`, and the state.
+An assignment of an event to the entity has no line here; `relations --type concerns --to ID` lists those.
 Each pending version adds one `proposal` line per field it changes, with the id, the author, the field, the old value and the new one.
 
 `--history` prints instead `entity ID: N versions`, and then each version in chain order.
@@ -1461,17 +1462,25 @@ When the id names an assertion an erasure took, it prints `assertion ID is erase
 
 ```text
 previously relate TYPE --from ID --to ID [--from-date DAY] [--to-date DAY] [--field NAME=VALUE ...] [--subject ID] [--retract] [--reason TEXT] (--source SOURCE [--source SOURCE ...] | --recollection) [--yes]
+previously relate TYPE --from-event EVENT[:SEQ,SEQ] --to ID [--field NAME=VALUE ...] [--subject ID] [--retract] [--reason TEXT] [--source SOURCE ...] [--yes]
 ```
 
-`relate` states a relation between two entities.
+`relate` states a relation between two entities, or an assignment of an event to an entity.
 `--from` is the entity it starts at and `--to` the entity it points at.
+`--from-event` is the event it starts at instead, written like a source: `EVENT` for the whole event, `EVENT:SEQ,SEQ` for units of it.
+Only a kind whose `from` names `event` takes it, such as `concerns`, and `--from` and `--from-event` exclude each other.
 `--from-date` and `--to-date` give the first and the last day the relation holds, written `YYYY-MM-DD`; both days count.
 `--field`, `--subject`, `--reason`, `--source`, `--recollection` and `--yes` work as for `entity`.
 
 A relation is ended with a new version: `--subject ID --to-date DAY` keeps the ends, the first day and the fields, and sets the last day.
 A relation is taken back with `--subject ID --retract`, which writes a version in the state `retracted`.
 Without `--subject`, `--retract` is refused as `Error: --retract needs --subject: only a relation that stands can be retracted`.
-Without `--subject`, a missing option is refused as `Error: a relation needs --from, --to and --source or --recollection unless --subject names the one to change`, naming those that are absent.
+Without `--subject`, a missing option is refused as `Error: a relation needs --from or --from-event, --to and --source or --recollection unless --subject names the one to change`, naming those that are absent.
+
+The event a relation starts at is always among its sources.
+Where no `--source` names that event, `relate` adds the start as a source of its own, so `--from-event` needs no `--source`.
+A `--source` that names the event with all of it, or with every unit the start names, is the start's source, and nothing is added.
+A `--source` that names the event with fewer units, and `--recollection`, are refused as `Error: a statement has no valid form: the event a relation starts at must be among its sources`.
 
 ### `entities` and `relations`
 
@@ -1502,6 +1511,7 @@ A line of `entities` holds six tab-separated fields, then the marks:
 
 A line of `relations` holds seven fields, then the marks: the id, the state, the label of the kind, the start, the end, the period written `FROM..TO` or `-`, and `N versions`.
 An end is the id and the name of the entity.
+A start at an event reads `event EVENT`, and `event EVENT #SEQ,SEQ` for units of it; `--from` matches no such start.
 An end whose entity was erased reads `ID (erased)`, one whose entity is retracted `ID (retracted)`, and one whose entity has no version that stands, such as one with only a pending proposal, `ID (none stands)`; the relation stays in the list.
 The type column shows the label of the kind and not its identifier, which `--type` takes; the page of an entity, from `entity ID`, shows both.
 
@@ -1540,7 +1550,7 @@ previously status
 
 `triage` lists what waits for the operator, in the order the operator works through it: objections to what the operator stands for, then questions, then every other proposal.
 Each line holds five tab-separated fields: `objection`, `question` or `proposal`, the id of the version, the label of the kind, a short label and the author.
-A question reads `START -> ? (CANDIDATE, CANDIDATE)`.
+A question reads `START -> ? (CANDIDATE, CANDIDATE)`, with a start at an event written as in `relations`.
 `status` prints three lines, `objections`, `questions` and `proposals`, each with a tab and the number, `0` included.
 
 ### `answer`

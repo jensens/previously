@@ -45,8 +45,11 @@ from previously.core.graph import RelationBody
 from previously.core.graph import SOURCES
 from previously.core.graph_write import check_claims
 from previously.core.graph_write import GraphRefused
+from previously.core.graph_write import read_graph
 from previously.core.graph_write import write_claims
 from previously.core.identity import artifact_hash_of
+from previously.core.members import bracket_edges
+from previously.core.members import members
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
 from previously.core.redact import redact_blob
@@ -54,6 +57,7 @@ from previously.core.redact import redact_event
 from previously.core.sealing import recipient_of
 from previously.core.sealing import seal
 from previously.core.units import split_plaintext
+from previously.core.verify import verify
 from previously.storage.postgres import PostgresStorage
 from typing import cast
 from typing import TYPE_CHECKING
@@ -6394,7 +6398,7 @@ def _graph_log(
     db: object, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> PostgresStorage:
     """A log with two mails (events 1 and 2) and the base vocabulary, so the
-    first entity gets event id 12 (the vocabulary writes nine events)."""
+    first entity gets event id 13 (the vocabulary writes ten events)."""
     storage = _assertion_log(db, monkeypatch)
     assert main(["vocabulary", "apply", "--base", "--yes"]) == 0
     capsys.readouterr()
@@ -7454,3 +7458,158 @@ def test_approve_sends_a_question_to_answer_and_writes_nothing(
     assert len(_standing(db)) == before
     # The control: answering it, which the sentence names, works.
     assert _written(capsys, "answer", str(question), "--choose", str(ids["circle_a"]))
+
+
+# --- assignments: relate concerns --from-event ------------------------------------
+
+
+def _markus(capsys: pytest.CaptureFixture[str]) -> dict[str, int]:
+    """Markus's mail, the example of the 2026-10-14 assignments specification, as
+    mail 1: its units are about the project XZ, and its last, unit 3, about
+    the summer party of the club. Assigned on the command line: the mail to
+    XZ, its last unit to the summer party, and the summer party part of the
+    club."""
+    ids: dict[str, int] = {}
+    ids["xz"] = _written(capsys, "entity", "project", "--name", "XZ", "--source", "2")
+    ids["club"] = _written(capsys, "entity", "organization", "--name", "Verein", "--source", "2")
+    ids["party"] = _written(capsys, "entity", "matter", "--name", "Sommerfest", "--source", "2")
+    ids["part_of"] = _written(
+        capsys,
+        *("relate", "part_of", "--from", str(ids["party"]), "--to", str(ids["club"])),
+        *("--source", "2"),
+    )
+    ids["mail"] = _written(
+        capsys, "relate", "concerns", "--from-event", "1", "--to", str(ids["xz"])
+    )
+    ids["last"] = _written(
+        capsys, "relate", "concerns", "--from-event", "1:3", "--to", str(ids["party"])
+    )
+    return ids
+
+
+@pytest.mark.db
+def test_relate_concerns_assigns_a_mail_and_a_unit_with_the_start_as_their_source(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _graph_log(db, monkeypatch, capsys)
+    ids = _markus(capsys)
+
+    payloads = dict(_standing(db))
+    assert payloads[ids["mail"]]["from"] == {"event": 1, "units": None}
+    assert payloads[ids["mail"]]["sources"] == [{"event": 1, "units": None}]
+    assert payloads[ids["last"]]["from"] == {"event": 1, "units": [3]}
+    assert payloads[ids["last"]]["sources"] == [{"event": 1, "units": [3]}]
+    assert payloads[ids["last"]]["responsibility"] == "direct"
+    lines = _lines(_run(capsys, "relations", "--type", "concerns"))
+    assert lines == [
+        [str(ids["mail"]), "standing", "concerns", "event 1", f"{ids['xz']} XZ", "-", "1 version"],
+        [
+            *(str(ids["last"]), "standing", "concerns", "event 1 #3"),
+            *(f"{ids['party']} Sommerfest", "-", "1 version"),
+        ],
+    ]
+    with storage.begin() as conn:
+        edges = bracket_edges(read_graph(storage, conn))
+    assert [members(edges, ids["xz"]).holds(1, seq) for seq in (1, 2, 3)] == [True, True, False]
+    assert [members(edges, ids["party"]).holds(1, seq) for seq in (1, 2, 3)] == [
+        False,
+        False,
+        True,
+    ]
+    assert [members(edges, ids["club"]).holds(1, seq) for seq in (1, 2, 3)] == [
+        False,
+        False,
+        True,
+    ]
+    # The page of the project is the project's; its assignments are listed
+    # by `relations`, above.
+    page = _run(capsys, "entity", str(ids["xz"]))
+    assert "concerns" not in page
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_relate_concerns_keeps_a_source_that_covers_the_start_and_refuses_one_that_does_not(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source of another event stands beside the start, which is added;
+    one of the same event that covers the start is the start's source; one
+    of the same event with fewer units is refused, not merged."""
+    _graph_log(db, monkeypatch, capsys)
+    xz = str(_written(capsys, "entity", "project", "--name", "XZ", "--source", "2"))
+    beside = _written(
+        capsys, "relate", "concerns", "--from-event", "1:3", "--to", xz, "--source", "2"
+    )
+    covered = _written(
+        capsys, "relate", "concerns", "--from-event", "1:3", "--to", xz, "--source", "1:2,3"
+    )
+    payloads = dict(_standing(db))
+    assert payloads[beside]["sources"] == [
+        {"event": 2, "units": None},
+        {"event": 1, "units": [3]},
+    ]
+    assert payloads[covered]["sources"] == [{"event": 1, "units": [2, 3]}]
+    count = len(_standing(db))
+    argv = ("relate", "concerns", "--from-event", "1:2,3", "--to", xz, "--source", "1:2", "--yes")
+    assert _refused(capsys, *argv) == (
+        "a statement has no valid form: the event a relation starts at must be among its sources"
+    )
+    assert _refused(
+        capsys, "relate", "concerns", "--from-event", "1", "--to", xz, "--recollection", "--yes"
+    ) == ("a statement has no valid form: the event a relation starts at must be among its sources")
+    assert len(_standing(db)) == count
+
+
+@pytest.mark.db
+def test_relate_concerns_refuses_a_start_it_cannot_read_and_one_given_twice(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    xz = str(_written(capsys, "entity", "project", "--name", "XZ", "--source", "2"))
+    assert _refused(capsys, "relate", "concerns", "--from-event", "1:", "--to", xz, "--yes") == (
+        "--from-event is not EVENT or EVENT:SEQ,SEQ: '1:'"
+    )
+    assert _refused(capsys, "relate", "concerns", "--from-event", "1:9", "--to", xz, "--yes") == (
+        "event 1 has no unit 9"
+    )
+    assert _refused(capsys, "relate", "concerns", "--to", xz, "--yes") == (
+        "a relation needs --from or --from-event and --source or --recollection "
+        "unless --subject names the one to change"
+    )
+    with pytest.raises(SystemExit) as both:
+        main(["relate", "concerns", "--from", xz, "--from-event", "1", "--to", xz])
+    assert both.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
+@pytest.mark.db
+def test_an_assignment_is_retracted_and_a_models_question_about_one_is_answered(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _graph_log(db, monkeypatch, capsys)
+    ids = _markus(capsys)
+    _written(capsys, "relate", "concerns", "--subject", str(ids["last"]), "--retract")
+    listed = _lines(_run(capsys, "relations", "--type", "concerns"))
+    assert [line[0] for line in listed] == [str(ids["mail"])]
+    payload = dict(_standing(db))[_standing(db)[-1][0]]
+    assert (payload["state"], payload["from"]) == ("retracted", {"event": 1, "units": [3]})
+
+    asking = RelationBody(
+        "concerns", Source(1, (1,)), None, (ids["xz"], ids["party"]), None, {}, "standing"
+    )
+    (question,) = _model_writes(storage, _model_claim(RELATION, asking))
+    assert _lines(_run(capsys, "triage")) == [
+        [
+            *("question", str(question), "concerns"),
+            f"event 1 #1 -> ? ({ids['xz']} XZ, {ids['party']} Sommerfest)",
+            "model:claude-code",
+        ],
+    ]
+    answer = _written(capsys, "answer", str(question), "--choose", str(ids["party"]))
+    stands = _lines(_run(capsys, "relations", "--type", "concerns"))
+    assert [(line[0], line[3], line[4]) for line in stands] == [
+        (str(ids["mail"]), "event 1", f"{ids['xz']} XZ"),
+        (str(question), "event 1 #1", f"{ids['party']} Sommerfest"),
+    ]
+    assert dict(_standing(db))[answer]["approves"] == question
+    assert verify(storage) == []

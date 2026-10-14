@@ -110,6 +110,7 @@ from previously.core.graph import Period
 from previously.core.graph import RELATION
 from previously.core.graph import RelationBody
 from previously.core.graph import SOURCES
+from previously.core.graph import sources_with_start
 from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
 from previously.core.graph_write import check_claims
@@ -406,7 +407,9 @@ _WRITE_ENTITY: Final = (
 _WRITE_RELATION: Final = (
     f"States 1 to {MAX_STATEMENTS} relations from one entity to another, each of a kind "
     "the vocabulary declares, between entities this client can see, and resting on "
-    "observations it can see. Where it is unclear which entity a relation points at, "
+    "observations it can see. A kind that starts at an event, such as concerns, assigns "
+    "an observation or some of its units to an entity: from names the event, which is "
+    "one of the sources. Where it is unclear which entity a relation points at, "
     "it names 2 to 5 candidates in place of to, and asks the operator a question "
     "instead of guessing; a question is always a proposal. The confidence, the "
     "level, an objection, subject and the two calls are those of write_entity."
@@ -564,14 +567,45 @@ class EntityItem(BaseModel):
     ] = None
 
 
+class EventStartItem(BaseModel):
+    """An event, or units of it, as the start of an assignment such as
+    concerns."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event: Annotated[int, Field(description="the id of an observation this client can see")]
+    units: Annotated[
+        list[int] | None,
+        Field(description="the units of it that it concerns, ascending; left out for all of it"),
+    ] = None
+
+
 class RelationItem(BaseModel):
-    """A relation as write_relation takes it: to an entity, or to candidates."""
+    """A relation as write_relation takes it: from an entity or an event, to
+    an entity, or to candidates."""
 
     model_config = ConfigDict(extra="forbid")
 
     type: Annotated[str, Field(description="the kind of relation, as the vocabulary declares it")]
-    start: Annotated[int, Field(alias="from", description="the id of the entity it starts at")]
-    sources: Annotated[list[SourceItem], Field(description="the events it rests on, at least one")]
+    start: Annotated[
+        int | EventStartItem,
+        Field(
+            alias="from",
+            description=(
+                "the id of the entity it starts at, or for a kind that starts at an event, "
+                "such as concerns, the event with the units it concerns"
+            ),
+        ),
+    ]
+    sources: Annotated[
+        list[SourceItem],
+        Field(
+            description=(
+                "the events it rests on, at least one; an event it starts at is one of them, "
+                "and is added where no source names it"
+            )
+        ),
+    ]
     confidence: Annotated[int, Field(description=_CONFIDENCE_HELP)]
     to: Annotated[
         int | None, Field(description="the id of the entity it points at; or give candidates")
@@ -2210,9 +2244,17 @@ def _relation_claim(number: int, item: RelationItem, client: str, vocabulary: Vo
         if item.candidates is None
         else tuple(_event_id(number, candidate) for candidate in item.candidates)
     )
+    given = item.start
+    start = (
+        _event_id(number, given)
+        if isinstance(given, int)
+        else Source(
+            _event_id(number, given.event), None if given.units is None else tuple(given.units)
+        )
+    )
     body = RelationBody(
         item.type,
-        _event_id(number, item.start),
+        start,
         _optional_id(number, item.to),
         candidates,
         None if item.period is None else _period_of(number, item.period),
@@ -2224,7 +2266,10 @@ def _relation_claim(number: int, item: RelationItem, client: str, vocabulary: Vo
         model_author(client),
         OPEN,
         SOURCES,
-        _sources_of(number, item.sources),
+        # The start of an assignment is among its sources; left out, it is
+        # added, so that the policy decides over the mail and an erasure of
+        # the mail takes the assignment along.
+        sources_with_start(start, _sources_of(number, item.sources)),
         item.reason,
         None,
         _optional_id(number, item.subject),
@@ -2393,7 +2438,12 @@ def write_record(name: str, arguments: Mapping[str, object]) -> dict[str, object
                     events.update(_event_ids([cast("dict[str, object]", source).get("event")]))
             candidates = entry.get("candidates")
             named = cast("list[object]", candidates) if isinstance(candidates, list) else []
-            ends.update(_event_ids([entry.get("from"), entry.get("to"), *named]))
+            start = entry.get("from")
+            if isinstance(start, dict):
+                # An event an assignment starts at is one of its sources.
+                events.update(_event_ids([cast("dict[str, object]", start).get("event")]))
+                start = None
+            ends.update(_event_ids([start, entry.get("to"), *named]))
         record: dict[str, object] = {
             "statements": len(listed),
             "sources": sorted(events),

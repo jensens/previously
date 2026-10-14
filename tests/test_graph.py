@@ -35,6 +35,7 @@ from previously.core.graph import claim_problem
 from previously.core.graph import ClassState
 from previously.core.graph import CLOSED
 from previously.core.graph import conformance_problem
+from previously.core.graph import covers
 from previously.core.graph import ENTITY
 from previously.core.graph import EntityBody
 from previously.core.graph import FieldValue
@@ -51,7 +52,9 @@ from previously.core.graph import RELATION
 from previously.core.graph import RelationBody
 from previously.core.graph import RETRACTED
 from previously.core.graph import SOURCES
+from previously.core.graph import sources_with_start
 from previously.core.graph import STANDING
+from previously.core.graph import START_NOT_A_SOURCE
 from previously.core.graph import TRANSITIVE
 from previously.core.vocabulary import built_in_kinds
 from previously.core.vocabulary import ENTITY_KIND
@@ -164,12 +167,14 @@ def relation(
     fields: Mapping[str, FieldValue] | None = None,
     state: str = STANDING,
 ) -> Claim:
+    """A relation resting on event 6, or, when it starts at an event, on
+    that event as the start names it: the start is among the sources."""
     return Claim(
         RELATION,
         author,
         responsibility,
         SOURCES,
-        (Source(6, (1, 2)),),
+        (start,) if isinstance(start, Source) else (Source(6, (1, 2)),),
         None,
         None,
         subject,
@@ -1647,3 +1652,90 @@ def cast_statement(statement: Statement | None) -> Statement:
 def cast_int(value: int | None) -> int:
     assert value is not None
     return value
+
+
+# --- An event at the start is among the sources (decision 3 of the 2026-10-15
+# assignments plan, phase 2) -----------------------------------------------------
+
+
+def assigned(start: Source, *sources: Source, evidence: str = SOURCES) -> Claim:
+    """An assignment of `start` to project 11, resting on `sources`."""
+    claim = relation(kind="concerns", start=start, to=11)
+    return replace(claim, evidence=evidence, sources=sources)
+
+
+@pytest.mark.parametrize(
+    ("start", "sources"),
+    [
+        (Source(5, None), (Source(5, None),)),
+        (Source(5, (2,)), (Source(5, None),)),
+        (Source(5, (2, 3)), (Source(5, (1, 2, 3)),)),
+        (Source(5, (2, 3)), (Source(7, None), Source(5, (2, 3)))),
+    ],
+)
+def test_a_source_that_covers_the_start_makes_the_form_sound(
+    start: Source, sources: tuple[Source, ...]
+) -> None:
+    """`units: null` covers every unit; a list covers the units it lists."""
+    claim = assigned(start, *sources)
+
+    assert claim_problem(claim_payload(claim)) is None
+    assert fold_graph([row(1, claim)], {}).threads[1].versions[0].claim == claim
+
+
+@pytest.mark.parametrize(
+    ("start", "sources"),
+    [
+        (Source(5, None), (Source(6, None),)),
+        (Source(5, None), (Source(5, (1, 2)),)),
+        (Source(5, (2, 3)), (Source(5, (2,)),)),
+        (Source(5, (2, 3)), (Source(5, (2,)), Source(5, (3,)))),
+    ],
+)
+def test_a_start_no_source_covers_is_no_sound_form_and_does_not_stand(
+    start: Source, sources: tuple[Source, ...]
+) -> None:
+    """Measured red with `_start_problem` answering None. Two sources of the
+    same event that cover the start only together do not: one entry covers
+    it, as the rule says, and the command line and the MCP server add the
+    start as one entry of its own."""
+    claim = assigned(start, *sources)
+
+    assert claim_problem(claim_payload(claim)) == START_NOT_A_SOURCE
+    assert parse_claim(claim_payload(claim)) is None
+    assert fold_graph([row(1, claim)], {}).threads == {}
+
+
+def test_a_recollection_does_not_start_at_an_event() -> None:
+    """A recollection has no sources, so nothing can cover the start: an
+    assignment rests on the mail it is about."""
+    claim = assigned(Source(5, None), evidence=RECOLLECTION)
+
+    assert claim_problem(claim_payload(claim)) == START_NOT_A_SOURCE
+
+
+def test_an_entity_at_the_start_needs_no_source_of_its_own() -> None:
+    """The control of the two tests above: the rule reads an event start
+    only."""
+    claim = replace(relation(), sources=(Source(6, None),))
+
+    assert claim_problem(claim_payload(claim)) is None
+
+
+def test_covers_reads_the_event_and_the_units() -> None:
+    assert covers(Source(5, None), Source(5, (1,)))
+    assert covers(Source(5, (1, 2)), Source(5, (2,)))
+    assert not covers(Source(5, (1, 2)), Source(5, None))
+    assert not covers(Source(6, None), Source(5, None))
+
+
+def test_sources_with_start_adds_an_event_start_that_no_source_names() -> None:
+    start = Source(5, (2,))
+
+    assert sources_with_start(start, ()) == (start,)
+    assert sources_with_start(start, (Source(6, None),)) == (Source(6, None), start)
+    assert sources_with_start(start, (Source(5, None),)) == (Source(5, None),)
+    # Named with other units: left as given, for the form to refuse, not
+    # merged into a claim that rests on more than the caller said.
+    assert sources_with_start(start, (Source(5, (1,)),)) == (Source(5, (1,)),)
+    assert sources_with_start(10, (Source(6, None),)) == (Source(6, None),)

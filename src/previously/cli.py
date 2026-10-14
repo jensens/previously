@@ -98,6 +98,7 @@ from previously.core.graph import RELATION
 from previously.core.graph import RelationBody
 from previously.core.graph import RETRACTED
 from previously.core.graph import SOURCES
+from previously.core.graph import sources_with_start
 from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
 from previously.core.graph_write import check_claims
@@ -2287,12 +2288,12 @@ _BLANK_OBLIGATION = ObligationBody("", "", "", None, "open")
 _BLANK_DECISION = DecisionBody("", (), date.min, "valid", None)
 
 
-def _parse_source(text: str) -> AssertionSource:
+def _parse_source(text: str, option: str = "--source") -> AssertionSource:
     """`EVENT` for the whole event, `EVENT:SEQ,SEQ` for units of it. Strict:
     anything else, white space around a number included, is refused."""
     found = _SOURCE_FORM.fullmatch(text)
     if found is None:
-        raise PreviouslyError(f"--source is not EVENT or EVENT:SEQ,SEQ: {text!r}")
+        raise PreviouslyError(f"{option} is not EVENT or EVENT:SEQ,SEQ: {text!r}")
     units = found[2]
     return AssertionSource(
         int(found[1]), None if units is None else tuple(int(seq) for seq in units.split(","))
@@ -3179,13 +3180,23 @@ def _relation_claim(args: argparse.Namespace, vocabulary: Vocabulary, graph: Gra
             f"{args.what} is not declared as a kind of relation in the vocabulary"
         )
     given = _parse_fields(args, spec)
+    named: int | AssertionSource | None = (
+        _parse_source(args.start_event, "--from-event")
+        if args.start_event is not None
+        else args.start
+    )
+    start = named if named is not None else (old.start if old else None)
     evidence = _evidence_of(args, base)
-    start = args.start if args.start is not None else (old.start if old else None)
+    if isinstance(start, AssertionSource) and (evidence is None or evidence[0] == SOURCES):
+        # The event an assignment starts at is among its sources; left out,
+        # it is added. A recollection keeps none, and the write path refuses
+        # it with the rule's sentence.
+        evidence = (SOURCES, sources_with_start(start, () if evidence is None else evidence[1]))
     end = args.to if args.to is not None else (old.to if old else None)
     absent = [
         flag
         for flag, missing in (
-            ("--from", start is None),
+            ("--from or --from-event", start is None),
             ("--to", end is None),
             ("--source or --recollection", evidence is None),
         )
@@ -3322,6 +3333,20 @@ def _end_text(graph: Graph, entity: int) -> str:
     return f"{entity} {_name_of(winner.claim)}"
 
 
+def _event_start_text(start: AssertionSource) -> str:
+    """The event an assignment starts at: `event E`, and `event E #3,4` for
+    units of it."""
+    if start.units is None:
+        return f"event {start.event}"
+    return f"event {start.event} #{','.join(str(seq) for seq in start.units)}"
+
+
+def _start_text(graph: Graph, start: int | AssertionSource) -> str:
+    """The start of a relation: an entity as `_end_text` names it, or an
+    event as `_event_start_text` does."""
+    return _end_text(graph, start) if isinstance(start, int) else _event_start_text(start)
+
+
 def _marks(
     vocabulary: Vocabulary, graph: Graph, kinds: Mapping[int, str], version: GraphVersion
 ) -> list[str]:
@@ -3373,7 +3398,7 @@ def _claim_label(graph: Graph, claim: Claim) -> str:
     body = claim.body
     if isinstance(body, EntityBody):
         return escape_field(_name_of(claim))
-    start = _end_text(graph, body.start) if isinstance(body.start, int) else "(an event)"
+    start = _start_text(graph, body.start)
     if body.to is not None:
         return escape_field(f"{start} -> {_end_text(graph, body.to)}")
     candidates = ", ".join(_end_text(graph, item) for item in body.candidates or ())
@@ -3437,7 +3462,7 @@ def _relation_line(
     default: str,
 ) -> str:
     body = cast("RelationBody", winner.claim.body)
-    start = _end_text(graph, body.start) if isinstance(body.start, int) else "(an event)"
+    start = _start_text(graph, body.start)
     return "\t".join(
         (
             str(thread.subject),
@@ -3483,7 +3508,8 @@ def _claim_fields(claim: Claim) -> list[tuple[str, str]]:
     if isinstance(body, EntityBody):
         fields.append(("language", _NO_VALUE if body.language is None else body.language))
     else:
-        fields.append(("from", str(body.start) if isinstance(body.start, int) else "(an event)"))
+        start = body.start
+        fields.append(("from", str(start) if isinstance(start, int) else _event_start_text(start)))
         if body.candidates is not None:
             fields.append(("to", "candidates " + ", ".join(str(item) for item in body.candidates)))
         else:
@@ -3546,6 +3572,9 @@ def _entity_lines(
         elif related.to == thread.subject and isinstance(related.start, int):
             way, other = "in", related.start
         else:
+            # An assignment of a mail is no relation between two entities,
+            # and a bracket may have many: `relations --type concerns --to
+            # ID` lists them, and the page stays the entity's.
             continue
         label = display_label(
             vocabulary, RELATION_KIND, related.type, language=None, default=default
@@ -3917,8 +3946,16 @@ def _entity_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _relate_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("what", metavar="TYPE", help="the kind of the relation")
-    parser.add_argument(
+    start = parser.add_mutually_exclusive_group()
+    start.add_argument(
         "--from", dest="start", type=int, metavar="ID", help="the entity it starts at"
+    )
+    start.add_argument(
+        "--from-event",
+        dest="start_event",
+        metavar="EVENT[:SEQ,SEQ]",
+        help="the event, or units of it, an assignment such as concerns starts at; "
+        "a source of its own unless --source names the event",
     )
     parser.add_argument("--to", type=int, metavar="ID", help="the entity it points at")
     parser.add_argument("--from-date", help="the first day it holds, YYYY-MM-DD")

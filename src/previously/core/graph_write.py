@@ -271,6 +271,8 @@ def closes_cycle(graph: Graph, claim: Claim, vocabulary: Vocabulary, *, level: s
     if not isinstance(body, RelationBody) or body.state != STANDING or body.to is None:
         return False
     if isinstance(body.start, Source):
+        # An assignment is no edge between entities, and `Graph.reaches`
+        # walks none: it can close no cycle.
         return False
     spec = vocabulary.kind(RELATION_KIND, body.type)
     if spec is None or ACYCLIC not in spec.behaviors:
@@ -764,13 +766,14 @@ def relation_visible(
     that entity, or to `None` for one whose every version is erased: of
     that one nothing is left to show, and it withholds nothing, as
     `get_event` names an erased event to any client. An id `ends` lacks is
-    not seen. A question names its candidates as ends. A relation one of
-    whose versions starts at an event is no relation between entities, and
-    phase 1 shows none."""
-    if any(
-        not isinstance(v.claim.body, RelationBody) or isinstance(v.claim.body.start, Source)
-        for v in thread.versions
-    ):
+    not seen. A question names its candidates as ends.
+
+    A relation that starts at an event, an assignment, is decided like any
+    other: its start is among its sources (`START_NOT_A_SOURCE`), so the
+    policy decides over the mail it is about: a client that may not see the
+    mail does not see the assignment either. The entity it points at is its
+    one end and decides along, as for any relation."""
+    if any(not isinstance(v.claim.body, RelationBody) for v in thread.versions):
         return False
     verdict = claim_verdict(
         policy,

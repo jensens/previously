@@ -878,7 +878,7 @@ def test_the_prompts_ask_for_work_and_hold_no_content(world: World, mode: str) -
 # The SHA-256 of the tool list as clients see it: name, description, input
 # schema and `_meta` of every tool, sorted by name, as canonical JSON. A change to any of
 # them is a change of the interface, made deliberately and released.
-TOOLS_SHA256 = "0a0ca0650508cca9a840054366695bec023fbee6cd6f4e251caeedf00f67b366"
+TOOLS_SHA256 = "553dad73f5890918477268800521b902e3b300900183d67074d9e5abb83f1ef7"
 
 
 def tool_list_digest(tools: list[dict[str, object]]) -> str:
@@ -4224,3 +4224,159 @@ def test_a_relation_is_shown_by_the_one_rule_of_core(world: World, mode: str) ->
     assert f"relation previously://event/{row.id}:" not in page
     # The control: Anna's relation to an entity is shown.
     assert f"relation previously://event/{ids.holds}:" in page
+
+
+# --- assignments: write_relation from an event (the 2026-10-15 assignments plan,
+# phase 2) -------------------------------------------------------------------------
+
+
+def _assigned_world(world: World) -> tuple[int, int]:
+    """The world of `_graphed`, with two projects of the operator on the
+    scanned mail, which `claude-code` sees."""
+    _graphed(world)
+    scanned = world.ids["attachments_only"]
+    xz, party = write_claims(
+        world.storage,
+        world.storage,
+        [_project("XZ", scanned), _project("Sommerfest", scanned)],
+        recorded_at=T0,
+    ).ids
+    return xz, party
+
+
+def _assignment_item(start: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    return {"type": "concerns", "from": start, "sources": [], "confidence": 60, **fields}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_relation_assigns_a_mail_and_adds_it_as_a_source(world: World, mode: str) -> None:
+    xz, _party = _assigned_world(world)
+    scanned = world.ids["attachments_only"]
+    item = _assignment_item({"event": scanned, "units": [1]}, to=xz)
+
+    preview, written = _confirmed(world, mode, "write_relation", {"items": [item]})
+
+    (assigned, payload) = _graph_payloads(world)[-1]
+    assert payload["from"] == {"event": scanned, "units": [1]}
+    assert payload["sources"] == [{"event": scanned, "units": [1]}]
+    assert payload["responsibility"] == OPEN
+    assert (f"from: previously://event/{scanned}#unit-1\nto: entity {xz} XZ\n") in _untagged(
+        _text(preview)
+    )
+    assert _text(written).endswith(f"assertion {assigned} · open")
+    assert _last_access(world).access.arguments == {
+        "statements": 1,
+        "sources": [scanned],
+        "confirm": True,
+        "ends": [xz],
+        "written": [assigned],
+    }
+    whole = _assignment_item({"event": scanned}, to=xz, sources=[{"event": scanned}])
+    _confirmed(world, mode, "write_relation", {"items": [whole]})
+    assert _graph_payloads(world)[-1][1]["sources"] == [{"event": scanned, "units": None}]
+    assert verify(world.storage) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_assignment_of_a_mail_the_client_may_not_see_is_refused_as_one_that_is_missing(
+    world: World, mode: str
+) -> None:
+    """The start is a source, and a source the client may not use is refused
+    with one sentence for a hidden event and a missing one."""
+    xz, _party = _assigned_world(world)
+    count = len(_assertions(world))
+    answers = [
+        _text(
+            _write(
+                world,
+                mode,
+                "write_relation",
+                {"items": [_assignment_item({"event": event}, to=xz)]},
+            )
+        ).replace(str(event), "ID")
+        for event in (world.ids["plain"], 999_999)
+    ]
+    assert answers == ["Error: event ID is not one this client can use as a source"] * 2
+    assert len(_assertions(world)) == count
+    # The control: the client that may see the plain mail is shown the preview.
+    local = _write(
+        world,
+        mode,
+        "write_relation",
+        {"items": [_assignment_item({"event": world.ids["plain"]}, to=xz)]},
+        client="local-harness",
+    )
+    assert not local.is_error, _text(local)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_source_that_names_fewer_units_of_the_start_is_refused_and_not_merged(
+    world: World, mode: str
+) -> None:
+    xz, _party = _assigned_world(world)
+    scanned = world.ids["attachments_only"]
+    item = _assignment_item(
+        {"event": scanned, "units": [1, 2]}, to=xz, sources=[{"event": scanned, "units": [1]}]
+    )
+
+    refused = _write(world, mode, "write_relation", {"items": [item]})
+
+    assert _text(refused) == (
+        "Error: a statement has no valid form: "
+        "the event a relation starts at must be among its sources"
+    )
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_model_asks_which_bracket_a_mail_concerns_and_takes_an_assignment_back(
+    world: World, mode: str
+) -> None:
+    xz, party = _assigned_world(world)
+    scanned = world.ids["attachments_only"]
+    asking = _assignment_item({"event": scanned}, candidates=[xz, party])
+    _confirmed(world, mode, "write_relation", {"items": [asking]})
+    (question, _payload) = _graph_payloads(world)[-1]
+    triage = _untagged(_text(_tool(world, mode, "list_triage")))
+    assert (
+        f"### previously://event/{question} · question · relation · concerns · proposed · "
+        "by model:claude-code · new relation\n<<<customer-content TAG>>>\n"
+        "type: concerns\n"
+        f"from: previously://event/{scanned}\n"
+        f"to one of: entity {xz} XZ, entity {party} Sommerfest\n"
+    ) in triage
+
+    _confirmed(
+        world, mode, "write_relation", {"items": [_assignment_item({"event": scanned}, to=xz)]}
+    )
+    (assigned, _payload) = _graph_payloads(world)[-1]
+    retraction = _assignment_item({"event": scanned}, to=xz, subject=assigned, state="retracted")
+    _confirmed(world, mode, "write_relation", {"items": [retraction]})
+    (_retracted, payload) = _graph_payloads(world)[-1]
+    assert (payload["subject"], payload["state"]) == (assigned, "retracted")
+    assert verify(world.storage) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_assignment_of_a_mail_the_client_may_not_see_is_not_shown_to_it(
+    world: World, mode: str
+) -> None:
+    """The policy decides an assignment over the mail it is about: the
+    proposal of `local-harness` about the plain mail waits in its triage and
+    not in that of `claude-code`, which may see the project but not the
+    mail."""
+    xz, _party = _assigned_world(world)
+    plain = world.ids["plain"]
+    item = _assignment_item({"event": plain}, to=xz)
+    _confirmed(world, mode, "write_relation", {"items": [item]}, client="local-harness")
+    (assigned, _payload) = _graph_payloads(world)[-1]
+
+    hidden = _text(_tool(world, mode, "list_triage"))
+    shown = _text(_tool(world, mode, "list_triage", client="local-harness"))
+
+    assert f"previously://event/{assigned} " not in hidden
+    assert f"previously://event/{assigned} " in shown
