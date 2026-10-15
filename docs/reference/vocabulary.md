@@ -40,8 +40,10 @@ A language tag is two or three lower-case letters, then any number of groups of 
 - A field named `period` has the type `period`, and an entity kind with the behavior `period` has one.
 - A relation kind has no field `period`, because the relation has a period of its own.
 - A relation kind that isn't built in names at least one kind in `from` and in `to`.
-- `event` stands only in `from`. It says that the relation starts at an event or at units of one, and it may stand beside entity kinds.
-- `*` stands only in `to`, and only alone. It says that the relation points at an entity of any kind that stands.
+- `event` stands only in `from`.
+  It says that the relation starts at an event or at units of one, and it may stand beside entity kinds.
+- `*` stands only in `to`, and only alone.
+  It says that the relation points at an entity of any kind that stands.
 - `event` and `*` aren't entity kinds, so a check of the kinds a relation names skips them, and no entity kind may be named `event`.
 
 ## What a write checks

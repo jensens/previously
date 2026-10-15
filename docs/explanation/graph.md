@@ -68,7 +68,7 @@ An entity with fields can be written out as triples without loss, so an export s
 
 The log is the truth, and the graph is **folded** from the assertions and the actions `vocabulary` and `approval_class`.
 Since the second phase the readers don't fold the whole log every time: a projection says which threads a question concerns, and the fold of those threads gives the answer ({ref}`graph-readers`).
-The projection is a disposable index and holds no content, so it stores no second copy of the graph.
+The projection is a disposable index and holds no content, only ids, counts, words of the vocabulary and the period dates of a relation, so it stores no second copy of the graph.
 A triple store holds its edges as the truth and changes them in place, and here nothing is ever changed: a new version is a new event, and what holds is a function of the log.
 That has three consequences that the rest of the system relies on.
 Reading the graph as it stood at an earlier moment is the same fold over the log up to that moment, so the question "what did Previously know in March about the board of 2019" has an answer.
@@ -267,34 +267,52 @@ That's the simplest design that keeps the graph a function of the log, and it ha
 Since phase 2 the readers read from the projection `graph`, and fold from the log only the threads the projection names for their question, while the write path and `verify` still fold the whole log ({ref}`graph-readers`).
 The header folds the threads with an objection, `triage` and `list_triage` those where something waits, and `entities` on the command line the entities of the kind it's asked for.
 MCP `list_entities` folds every entity on every page, whatever its filters ask, because the policy decides each entity before any filter, and the placeholder of one it withholds passes every filter, so that the client never learns its kind or its state.
-The figures below are those of phase 1, the ones that decision rests on.
 
-The final review of phase 1 measured it on a graph of about one entity per two relations: organizations, posts, projects and persons, a `part_of` tree over the projects, a `post_in` for every post, and `holds` for the rest.
-Each figure is the median of three runs, measured on 2026-10-14.
+The final review of phase 2 measured the cost on 2026-10-15, on an i7-11370H with eight threads, from a fixed detached copy of commit `22b3dec`.
+The graph is the one the final review of phase 1 measured, about one entity per two relations: organizations, posts, projects and persons, a `part_of` tree over the projects, a `post_in` for every post, and `holds` for the rest.
+A mailbox stands beside it: 1,000 mails at 10,000 relations and 10,000 at 100,000, a `concerns` assignment for every second mail, three in ten of them of single units and four in ten into three large brackets, and one project that nothing is assigned to.
+That makes 16,513 events at 10,000 relations and 165,013 at 100,000.
+Each figure is the median of three runs, and `verify` found nothing in any of them.
 
-| What | 2,000 relations, 1,000 entities | 10,000 relations, 5,000 entities |
+| What | 10,000 relations | 100,000 relations |
 |---|---|---|
-| Folding the graph alone, `read_graph` | 0.08 s | 0.47 s |
-| `previously entities` | 0.10 s | 0.53 s |
-| `previously relations --at` a day | 0.10 s | 0.54 s |
-| Writing one relation | 0.08 s | 0.47 s |
-| `verify` over the whole log | 0.62 s | 2.77 s |
-| MCP `whoami` | 0.10 s | 0.52 s |
-| MCP `list_entities` | 0.28 s | 1.72 s |
+| `previously project`, the first build | 3.54 s | 34.6 s |
+| `previously project`, nothing new | 0.022 s | 0.023 s |
+| `previously project` after one write | 0.038 s | 0.040 s |
+| `previously entities`, every entity printed | 0.30 s | 3.51 s |
+| `previously relations --at` a day | 0.69 s | 6.78 s |
+| `previously chronicle --within`, a large bracket | 0.040 s | 0.143 s |
+| `previously chronicle --within`, the empty bracket | 0.042 s | 0.135 s |
+| MCP `whoami` | 0.012 s | 0.019 s |
+| MCP `list_entities` | 0.69 s | 4.97 s |
+| MCP `list_triage` | 0.015 s | 0.033 s |
+| MCP `previously` with `within`, a large bracket | 1.75 s | 17.5 s |
+| MCP `previously` with `within`, the empty bracket | 0.025 s | 0.135 s |
+| Writing one relation, `write_claims` | 0.54 s | 6.94 s |
+| `verify` over the whole log | 3.57 s | 130 s |
+| `previously project --check` | 1.02 s | 10.6 s |
 
-At 100,000 relations and 50,000 entities, on the same day and machine, folding the graph took 7.35 s, the median of three runs.
-Single runs gave the rest: MCP `whoami` 7.69 s, MCP `list_entities` 23.7 s, `previously entities` 7.59 s, `previously relations --at` 7.50 s, writing one relation 7.34 s, and `verify` of the whole log 135 s.
-With 20 objections pending, `whoami` took 7.33 s and `list_entities` 24.2 s, so the count itself costs little next to the fold.
+Interactive use needs a call or a list to answer in less than about a second, and by that measure the projection carries what it was built for.
+The header and `whoami`, triage, a catch-up, `chronicle --within` on the command line and the empty bracket over MCP all stay far below a second at 100,000 relations, so the header no longer costs every call what the whole graph costs.
+The first build, 35 s at 100,000 relations, is paid once for each version of the projection: by `previously project` after an upgrade, or else by the first reader.
 
-In phase 1 every MCP call paid for the fold, `whoami` included, and so did the tools that have nothing to do with the graph.
-The first line of every result counts the objections pending, and to count them the server did two things once per call: it folded the whole graph, and `objections_seen` read the source events of every objection and asked the processing policy about them.
-Between 2,000 and 10,000 relations the cost grew in line with the graph, so a call cost about half a second at 10,000 relations whatever it asks for.
-Between 10,000 and 100,000 it grew faster than the graph: the fold took about sixteen times as long for ten times the relations.
+What doesn't carry at 100,000 relations are the reads whose cost is the graph or the log itself, not the question.
+A full listing, `entities` or `relations --at`, takes its subjects from the projection and still folds each listed thread from the log, because what it shows comes from there, and printing every line of a graph that size takes 3.5 s and 6.8 s.
+MCP `list_entities` takes 5 s, because it folds every entity on every page, whatever its filters ask.
+`within` over MCP takes 17.5 s for a large bracket, and 1.75 s already at 10,000, although one page comes back.
+Deciding the client's view reads the sources of every edge the answer can turn on, and finding the newest member event reads the payload of every member, so the cost grows with the bracket and not with the page.
+On the command line the same bracket takes 0.14 s, because the operator walks every edge without asking the policy, and the selection goes into the query of the chronicle.
+A write still folds the whole log and costs 7 s.
+`verify` takes 130 s, which is fine for a nightly job, and `project --check` folds the log as well, at 10.6 s, which is fine for a check.
+
+Phase 1 had no projection, and every MCP call paid for the fold, `whoami` included, and so did the tools that have nothing to do with the graph.
+The first line of every result counts the objections pending, and to count them the server folded the whole graph once per call and asked the processing policy about the sources of every objection.
 A cache keyed on the tip of the chain wouldn't have helped, since every call writes its own access entry and moves the tip.
-At 10,000 relations the lists, a write and the header still carried, though `list_entities` at 1.7 s was already above a second.
-At 100,000 none of them carried: every call of every tool waited more than seven seconds.
-Phase 1 accepted that cost: a graph of a few hundred statements, which is where a pilot starts, costs milliseconds.
-Phase 2 built the projection `graph` before the data grows past the pilot, and the readers read from it; a write still folds the whole log, and still costs what the table says.
+The final review of phase 1 measured that on 2026-10-14, on the same machine at commit `9967268`, over the same graph without the mails.
+At 10,000 relations a call cost about half a second, whatever it asked for, and `list_entities` 1.7 s.
+At 100,000 every call of every tool waited more than seven seconds: in single runs `whoami` took 7.69 s, `list_entities` 23.7 s, `previously entities` 7.59 s and `relations --at` 7.50 s.
+Phase 1 accepted that cost, since a graph of a few hundred statements, which is where a pilot starts, costs milliseconds, and phase 2 built the projection before the data grows past the pilot.
+Between the two, `whoami` went from 7.69 s to 0.019 s and `list_entities` from 23.7 s to 4.97 s, while a write, 7.34 s then and 6.94 s now, stayed where it was, because the write path still folds.
 
 `verify` grows faster than the graph where the edges are of an acyclic kind.
 The final review measured it over `part_of` edges alone, medians of three runs on 2026-10-14, with no finding in any run:
@@ -305,16 +323,14 @@ The final review measured it over `part_of` edges alone, medians of three runs o
 | 2,000 | 2.34 s | 2.10 s |
 | 5,000 | 14.84 s | 13.05 s |
 
-Measurements during the build, also on 2026-10-14, add the relations of a kind that isn't acyclic, and the header before relations came into it:
+Measurements during the build of phase 1, also on 2026-10-14, add the relations of a kind that isn't acyclic:
 
 | What | Size | Time |
 |---|---|---|
 | `verify` over `post_in` relations | 2,000 relations | 0.56 s |
 | `verify` over `post_in` relations | 10,000 relations | 2.67 s |
-| The header of an MCP result, `whoami`, entities without relations | 1,000 entities | 53 ms |
-| The header of an MCP result, `whoami`, entities without relations | 5,000 entities | 153 ms |
 
 Each edge of an acyclic kind is checked against the edges before it, so `verify` grows about with the square of their number: two and a half times the edges took six times as long, in a chain and in a tree alike.
-A chain of 10,000 `part_of` edges took 78.6 s in a single run, and the whole log of 100,000 relations 135 s.
+A chain of 10,000 `part_of` edges took 78.6 s in a single run, and the whole log of 100,000 relations 135 s in phase 1 and 130 s in phase 2, with the mails beside it.
 `verify` runs once a day, so it stays acceptable as a daily job at those sizes.
 The `post_in` relations aren't acyclic, and they grow in line with their number.

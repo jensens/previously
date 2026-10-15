@@ -753,6 +753,16 @@ das mit der Endprüfung ins Repository kommt):
 
 ### Storage-Schnittstelle
 
+- **Eine fehlende Berechtigung meldet sich als unvollständiges Schema.**
+  `_transaction` in `storage/postgres.py` übersetzt jeden `ProgrammingError`
+  nach dem Verbinden in `MigrationPending` („database schema incomplete —
+  `previously migrate` has not run yet“), und psycopg führt
+  `InsufficientPrivilege` (SQLSTATE 42501) als `ProgrammingError`, nachgesehen
+  am 2026-10-15 mit dem psycopg des Locks. Eine Rolle ohne Schreibrecht auf
+  die Projektionstabellen bekommt also richtige, langsame Antworten und im Log
+  einen Satz, der zum falschen Befehl rät. Die SQLSTATE-Klasse 42 zu trennen
+  (42501 gegen 42P01) gäbe den richtigen Satz (P-Z2, Fixwelle der Endprüfung,
+  beim Schreiben des Handoffs gefunden).
 - Worauf `core` baut, steht nicht im Protokoll: Isolationsstufe von `begin()`
   und `snapshot()`, die Fehlerklassen `ChainPositionTaken` und
   `SourceKeyTaken` aus `previously.storage.errors`, und dass `LogStore` und

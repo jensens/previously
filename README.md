@@ -119,7 +119,7 @@ merely described.
   replaces the general one, an erasure of the mail takes its assignments
   along, and over MCP the bracket is read with `within`, through the edges
   the client may see. The graph is read from a projection that holds no
-  content; see
+  content beyond the period dates of a relation; see
   [About entities, relations and the vocabulary](docs/explanation/graph.md) and
   [How to assign mails and read the chronicle of a bracket](docs/how-to/assign-mails-and-read-a-bracket.md)
 - the thirty-four commands `migrate`, `append`, `ingest`, `redact`, `log`,

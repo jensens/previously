@@ -7,7 +7,7 @@ This page explains what that promise means in practice and why the two content-b
 Three sections follow on the worker that keeps them current: how it catches up in batches, why a gap in the log can't arise and is checked for all the same, and which test makes the promise more than a claim.
 Two more follow on the commands that read them: why `log` and `chronicle` are two commands rather than one with more options, and what the commands say about what they don't know.
 Two follow on the chronicle: how it follows an erasure, and why the per-source statistics don't have to, and why it shows observations only.
-A last one follows on the graph, which keeps no content and folds again only the threads that new events touch.
+A last one follows on the graph, which keeps no content beyond the period dates of a relation and folds again only the threads that new events touch.
 
 ## Derivable and disposable
 
@@ -290,6 +290,7 @@ A count of units with content is one an erasure would lower below the bookmark, 
 Until the second phase of the assignments every reader of the graph folded the whole log: every assertion, every approval class, every version of every thread.
 At 100,000 relations that took seven seconds, and every MCP call paid it for the count of objections in its header.
 The projection `graph` keeps what the fold makes of each thread, so that a reader can look it up instead.
+Measured on 2026-10-15 at commit `22b3dec`, on an i7-11370H, `whoami` with that header takes 0.019 s at 100,000 relations, where phase 1 took 7.69 s; {ref}`graph-cost` has the rest of the figures and what they mean for a reader.
 
 It keeps two tables under one name.
 `p_graph_version` says which versions and which rejections belong to which thread.
@@ -335,6 +336,7 @@ The second starts where the first committed, so neither sees half a batch and no
 A reader of the graph doesn't wait for anybody to run `previously project`.
 Every listing of the command line and every MCP call first catches the projection up, in transactions of its own, and then reads in a snapshot of its own.
 When nothing is new, the catch-up costs two short transactions: one locks the state row, and the other locks it again and finds the tip of the log where the projection stands.
+Measured the same day, `previously project` with nothing new takes 0.022 s at 10,000 relations and 0.023 s at 100,000, and 0.040 s after one write, so the cost doesn't grow with the log.
 An MCP call always finds one thing new, the access entry of the call before it, and that batch touches no thread, so it ends before it reads any approval class.
 
 The projection then says which threads a question concerns, and the log says what they hold.
@@ -345,11 +347,14 @@ The rows alone would answer more cheaply, but they hold no content, and a listin
 The ends of the relations come along in the same go, and a thread nobody asked about yet is folded when a line names it, so no question of a reader ever meets a thread the projection left out.
 
 The chronicle of a bracket asks the rows alone.
-An assignment or a hierarchy edge is no more than its kind, its two ends and the level of its winner, and `p_graph_thread` holds all four, so finding what belongs to a bracket for the operator folds no thread and reads nothing of the log but the vocabulary ({ref}`chronicle-of-a-bracket`).
+An assignment or a hierarchy edge is no more than its kind, its two ends and the level of its winner, and `p_graph_thread` holds all four, so the walk that finds what belongs to a bracket for the operator folds no thread and reads nothing of the log but the vocabulary ({ref}`chronicle-of-a-bracket`).
+Around the walk, `chronicle --within` folds one thread, the bracket's own, to check that it stands, and reads the approval classes, as every reader of the projection does.
 On the command line the selection then goes into the query of `p_chronicle`, before its limit.
 Over MCP an edge counts only where the client sees it, and deciding that reads the edge's sources.
 So the server walks every edge first, which finds every event that can belong, and decides the client's view only for the edges the result can turn on: the parts below the bracket, and the assignments of the events that walk found, those of a unit of its own to another bracket among them.
 Taking edges away shrinks the walk, and adds a unit only where it takes away the assignment that excluded it, so no other edge can change the answer.
+That bound keeps the answer right and doesn't make it cheap: it decides the view for every edge that can turn the answer, and the server reads the payload of every member event to find the newest, so the cost grows with the bracket and not with the page.
+Measured on 2026-10-15 at commit `22b3dec`, a call with `within` over a large bracket took 1.75 s at 10,000 relations and 17.5 s at 100,000, over the empty one 0.025 s and 0.135 s, while `chronicle --within` on the command line answered for the same large bracket in 0.143 s ({ref}`graph-cost`).
 The chronicle then reads the log, as it always has, keeps the events of the bracket as it reads, and stops at the last of them.
 
 The header of every MCP result is where this matters most.
@@ -371,3 +376,8 @@ So a reader holds the state row in its snapshot against the outcome of its own c
 It does the same where its catch-up fails, whatever the cause: a catch-up stopped by such a rebuild, one that meets a gap in the log and stops with `ProjectionGap`, and one whose database fails it.
 The fold reads the log whole and needs none of what failed, so a state the worker guards against takes no reader down with it, and no MCP call either, although every call catches up first.
 Either way it says so once, on standard error or in the server's log and never in a result, and the answer is the fold's: slower, never empty, never half-built, and never an error.
+
+A catch-up with much to do does it inside the reader that finds it.
+The first build after an upgrade that changes the projection's version took 3.5 s at 10,000 relations and 35 s at 100,000, measured the same day, and a large ingest leaves a catch-up of its own size.
+Two catch-ups take turns at the state row, batch by batch, and no lock timeout is set, so every reader that arrives meanwhile waits at the lock, takes its share of the batches, and answers only once the projection has reached the tip.
+That keeps every answer current and costs those readers the wait, which is why an upgrade or a bulk ingest is followed by `previously project`, so that the wait falls on the operator's command and not on a client's call.
