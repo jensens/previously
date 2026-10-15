@@ -198,6 +198,35 @@ That's the safe side, and it costs one step when the operator wants Claude Code 
 A relation is visible to a client when its own sources and both its ends are.
 Otherwise the client doesn't see it at all: the lines of an entity and the triage leave it out, without a placeholder, because a placeholder that appears when somebody writes on a hidden thread would itself be a signal.
 
+(chronicle-of-a-bracket)=
+
+## The chronicle of a bracket finds, and releases nothing
+
+A bracket is any entity an assignment can point at: a project, a matter, a club.
+Its chronicle holds what's assigned to it and to everything below it, so the chronicle of a club holds that of its summer party.
+Which relations count is the vocabulary's business, not the code's: an assignment is any relation kind that starts at `event`, and the hierarchy is any relation kind with the behavior `transitive`.
+In the base vocabulary those are `concerns` and `part_of`, and a vocabulary that declares a second transitive kind gets a second hierarchy, which is what declaring it means.
+
+People don't stay on one topic.
+Markus writes about the project XZ from his firm's address and adds at the end that the caterer has confirmed, which belongs to the summer party of the club and not to the customer.
+Most mails belong to one bracket as a whole, so one assignment of the mail covers its units, and only a unit that differs gets an assignment of its own.
+When finding, the more specific replaces the general: the afterthought about the caterer stands in the chronicle of the summer party and not in that of XZ.
+Whoever wants it in both assigns it to both.
+An open proposal for a unit is the exception: it adds the unit where it points and takes nothing away from its mail's assignment, because a proposal that nobody stands for must not remove what the operator set.
+
+Periods play no part.
+A chronicle is about content, and a structure that ended still held what it held.
+
+The chronicle of a bracket is a filter, never a key.
+The command line is the operator's tool and shows every unit that belongs.
+Over MCP, the processing policy decides every event that the filter keeps, just as it decides without the filter, so an event withheld from the client stands as the same placeholder with `within` and without it, and no unit appears that the client wouldn't see in the whole chronicle.
+That matters for the order of the work: finding happens after the gate has had its say, so an assignment can't open anything, and in this phase it can only find.
+A bracket that the client may not see is refused with the sentence of one that doesn't exist, since an empty page would tell the client that an entity stands under the id.
+
+What the filter doesn't hide is the assignment itself.
+A placeholder in the chronicle of a bracket tells the client that something withheld belongs there, as a placeholder under the filter `circle` tells that somebody of the circle takes part.
+And the walk down the hierarchy and along the assignments doesn't ask whether the client may see each edge, so a client can learn that an event it sees belongs to a bracket it sees through an entity or a relation it may not see, without learning which.
+
 (graph-cost)=
 
 ## What it costs

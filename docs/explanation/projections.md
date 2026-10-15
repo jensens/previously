@@ -344,6 +344,11 @@ So a listing shows what it showed when it folded the log, and it still reads eve
 The rows alone would answer more cheaply, but they hold no content, and a listing that showed what the rows hold would need the content in them.
 The ends of the relations come along in the same go, and a thread nobody asked about yet is folded when a line names it, so no question of a reader ever meets a thread the projection left out.
 
+The chronicle of a bracket asks the rows alone.
+An assignment or a hierarchy edge is no more than its kind, its two ends and the level of its winner, and `p_graph_thread` holds all four, so finding what belongs to a bracket folds no thread and reads nothing of the log but the vocabulary ({ref}`chronicle-of-a-bracket`).
+On the command line the selection then goes into the query of `p_chronicle`, before its limit.
+Over MCP the chronicle reads the log, as it always has, and keeps the events of the bracket as it reads.
+
 The header of every MCP result is where this matters most.
 It counts the threads with `objections > 0`, folds only those, and asks the policy only about them, so it folds no thread and asks the policy nothing while no objection waits.
 `test_a_call_reads_no_assertion_in_full_and_of_the_graph_only_what_is_new` holds that a call reads no assertion in full, none at all when nothing waits and nothing is new, and only the new version when one was written.

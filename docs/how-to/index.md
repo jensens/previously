@@ -16,6 +16,7 @@ set-a-policy-and-try-a-call
 connect-claude-code-and-vibe
 record-what-is-owed-and-decided
 keep-a-club-and-its-offices
+assign-mails-and-read-a-bracket
 adapt-the-vocabulary
 let-a-model-stand-for-a-class
 add-a-migration

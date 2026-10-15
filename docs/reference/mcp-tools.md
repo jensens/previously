@@ -255,11 +255,17 @@ The chronicle: the observations in the order of `occurred_at`, then `id`, that m
 | `source` | string | none | Only events of this source, such as `email`. |
 | `since` | string | none | Only events from this time on, inclusive. An ISO 8601 date, which means midnight UTC, or a moment with a zone. |
 | `until` | string | none | Only events before this time, exclusive. The same form as `since`. |
+| `within` | integer | none | The id of an entity, the bracket: only the events of which a unit belongs to it or to an entity that's part of it, each with only the units that belong. |
 | `cursor` | string | none | The cursor from the footer of the previous page. |
 
-The title is `chronicle`, followed by each filter given as `· NAME VALUE`.
+The title is `chronicle`, followed by each filter given as `· NAME VALUE`, such as `chronicle · within 12`.
 Each event is shown with its heading and all its units, or as a placeholder.
+With `within`, a shown event carries only the units that belong to the bracket, and the access entry names those.
+A unit belongs to the bracket as it does for `previously chronicle --within` ({ref}`cli-reference`).
+The policy decides every event as it does without `within`, so an event it keeps from the client stands as the same placeholder.
+A bracket the client may not see is refused with the sentence of an id that names no entity, and so are an id of an event, a relation or a retracted entity, and an id below 1 or beyond 2^53 − 1.
 A cursor carries the id of the last item the page consumed, the filters and the number of the page it opens, encoded as base64url without padding; it isn't sealed, and grants nothing, because every call decides again.
+A cursor carries `within` as text, such as `"12"`, and the access entry as the number the call gave.
 A cursor for other filters, a malformed one, or one whose id names no observation is refused.
 
 ### `get_event`
@@ -743,6 +749,7 @@ Error: the client claude-code is not in force: it was revoked or never added
 Error: no circle nowhere exists; list_circles names the circles
 Error: since is not an ISO 8601 date, or a moment with a zone, such as 2026-09-01
 Error: since has no zone; give a date, or a moment such as 2026-09-01T09:00+02:00
+Error: within 12 is not an entity that stands
 Error: cursor is not valid for these filters; call again without a cursor for the first page
 Error: ids takes 1 to 20 event ids, this call gave 0
 Error: from_unit is a unit number, 1 or more

@@ -114,10 +114,12 @@ from previously.core.graph import SOURCES
 from previously.core.graph import sources_with_start
 from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
+from previously.core.graph_read import bracket_members
 from previously.core.graph_read import projected_graph
 from previously.core.graph_read import projection_stands
 from previously.core.graph_write import check_claims
 from previously.core.graph_write import decided
+from previously.core.graph_write import EntityTypes
 from previously.core.graph_write import GraphRefused
 from previously.core.graph_write import read_graph
 from previously.core.graph_write import starts_thread
@@ -211,6 +213,7 @@ if TYPE_CHECKING:
     from previously.contract.store import RedactionStore
     from previously.core.graph import FieldValue
     from previously.core.graph_write import Decided
+    from previously.core.members import Members
     from previously.core.policy import Client
     from previously.core.policy import Policy
     from previously.core.policy import Provider
@@ -285,8 +288,11 @@ _CHRONICLE: Final = (
     "The chronicle: the observations (mails and other sources) in time order, "
     "each with a heading (URI, time, source, sender → recipients) and all its units "
     "inside a fence of foreign content. The filters combine: circle (a member of the "
-    "circle is involved), source, since and until. An event the processing policy "
-    "keeps from this client stands as a placeholder with the reason. A page stays "
+    "circle is involved), source, since, until, and within (what belongs to an entity "
+    "or to an entity that is part of it: the events assigned to it, each with only the "
+    "units that belong). An event the processing policy "
+    "keeps from this client stands as a placeholder with the reason, with within as "
+    "without. A page stays "
     f"under {PAGE_CHARS:,} characters, and its footer names the cursor of the next page. An "
     "event is cited as previously://event/<id>, a unit as "
     "previously://event/<id>#unit-<n>."
@@ -439,6 +445,10 @@ _SOURCE = Field(description="a source, such as email")
 _SINCE = Field(description=f"from this time on, inclusive: {_MOMENT_HELP}")
 _UNTIL = Field(description=f"before this time, exclusive: {_MOMENT_HELP}")
 _CURSOR = Field(description="the cursor from the footer of the previous page")
+_WITHIN = Field(
+    description="the id of an entity, as list_entities gives it: only what belongs to it "
+    "or to an entity that is part of it"
+)
 _IDS = Field(description=f"1 to {MAX_IDS} event ids")
 _OBLIGATION_STATE = Field(description="only this state: open, fulfilled or cancelled")
 _DECISION_STATE = Field(description="only this state: valid or revoked")
@@ -1120,6 +1130,8 @@ class Service[Conn]:
         circle = filters.get("circle")
         if circle is not None and circle not in policy.circles:
             raise Refused(f"no circle {circle} exists; list_circles names the circles")
+        within = filters.get("within")
+        found = None if within is None else self.bracket(conn, policy, client, int(within))
         since = moment(filters.get("since"), "since")
         until = moment(filters.get("until"), "until")
         after: tuple[datetime, int] | None = None
@@ -1143,6 +1155,7 @@ class Service[Conn]:
             since=since,
             until=until,
             after=after,
+            within=found,
         )
 
         def cursor_for(index: int) -> str:
@@ -1158,6 +1171,24 @@ class Service[Conn]:
             objections=_pending(),
         )
         return _paged(seen, rendered)
+
+    def bracket(self, conn: Conn, policy: Policy, client: Client, bracket: int) -> Members:
+        """What belongs to `bracket`, in the graph of the call.
+
+        A bracket the client may not see is refused in the words of one
+        that doesn't exist: an empty page would tell the client that an
+        entity it may not see stands under the id
+        ({ref}`chronicle-of-a-bracket`). An id beyond what an event id can
+        be is refused alike, before the lookup would hand it to the
+        database."""
+        graph = self.graph_now(conn)
+        if (
+            not 1 <= bracket <= MAX_SAFE_INT
+            or bracket not in EntityTypes(graph)
+            or not graph_view(self.log, conn, policy, client, graph, (bracket,)).seen(bracket)
+        ):
+            raise Refused(f"within {bracket} is not an entity that stands")
+        return bracket_members(self.log, conn, graph, bracket)
 
     def event_page(
         self, conn: Conn, policy: Policy, client: Client, ids: Sequence[int], from_unit: int | None
@@ -2656,12 +2687,17 @@ def _tools[Conn](server: MCPServer, service: Service[Conn]) -> None:
         source: Annotated[str | None, _SOURCE] = None,
         since: Annotated[str | None, _SINCE] = None,
         until: Annotated[str | None, _UNTIL] = None,
+        within: Annotated[int | None, _WITHIN] = None,
         cursor: Annotated[str | None, _CURSOR] = None,
     ) -> CallToolResult:
+        # The filters are text, as a cursor carries them; the access entry
+        # keeps `within` as the number the client gave.
+        bracket = None if within is None else str(within)
         filters = cast(
-            "dict[str, str]", _given(circle=circle, source=source, since=since, until=until)
+            "dict[str, str]",
+            _given(circle=circle, source=source, since=since, until=until, within=bracket),
         )
-        call = ("tool", "previously", _given(**filters, cursor=cursor))
+        call = ("tool", "previously", _given(**{**filters, "within": within}, cursor=cursor))
         return _ok(
             service.answer(
                 ctx.request_context.request,

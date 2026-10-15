@@ -23,6 +23,7 @@ keep the two apart.
 
 from contextlib import contextmanager
 from previously.contract.rows import ChronicleRow
+from previously.contract.rows import ChronicleSelection
 from previously.contract.rows import EventRow
 from previously.contract.rows import GraphThreadRow
 from previously.contract.rows import GraphVersionRow
@@ -49,12 +50,16 @@ from previously.storage.schema import projection_state
 from previously.storage.schema import source_key
 from previously.storage.schema import unit
 from previously.storage.schema import watermark
+from sqlalchemy import any_
+from sqlalchemy import BigInteger
 from sqlalchemy import Connection
 from sqlalchemy import create_engine
 from sqlalchemy import delete
 from sqlalchemy import Engine
 from sqlalchemy import func
 from sqlalchemy import insert
+from sqlalchemy import Integer
+from sqlalchemy import literal
 from sqlalchemy import null
 from sqlalchemy import or_
 from sqlalchemy import Row
@@ -63,6 +68,7 @@ from sqlalchemy import select
 from sqlalchemy import tuple_
 from sqlalchemy import update
 from sqlalchemy import URL
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.exc import IntegrityError
@@ -1164,13 +1170,29 @@ class PostgresStorage:
         since: datetime | None,
         until: datetime | None,
         limit: int,
+        within: ChronicleSelection | None = None,
     ) -> list[ChronicleRow]:
-        """Time order, half-open window: `since` inclusive, `until` exclusive."""
+        """Time order, half-open window: `since` inclusive, `until` exclusive.
+
+        With `within`, only the units it selects, chosen in the query and so
+        before the limit: a unit outside takes no place under it. The ids go
+        in as arrays, two bind parameters each, so that a bracket with many
+        events doesn't run into the limit on bind parameters that a list of
+        `IN` would.
+        """
         query = select(p_chronicle)
         if since is not None:
             query = query.where(p_chronicle.c.occurred_at >= since)
         if until is not None:
             query = query.where(p_chronicle.c.occurred_at < until)
+        if within is not None:
+            key = tuple_(p_chronicle.c.event_id, p_chronicle.c.seq)
+            whole = p_chronicle.c.event_id == any_(
+                literal(sorted(within.events), ARRAY(BigInteger))
+            )
+            query = query.where(
+                or_(whole & key.not_in(_pairs(within.excluded)), key.in_(_pairs(within.units)))
+            )
         query = query.order_by(
             p_chronicle.c.occurred_at, p_chronicle.c.event_id, p_chronicle.c.seq
         ).limit(limit)
@@ -1220,6 +1242,20 @@ def _event_row(row: Row[Any]) -> EventRow:
         hash_version=row.hash_version,
         payload_salt=row.payload_salt,
     )
+
+
+def _pairs(pairs: frozenset[tuple[int, int]]) -> Select[int, int]:
+    """`(event_id, seq)` pairs as rows of a query, out of two arrays."""
+    ordered = sorted(pairs)
+    table = (
+        func.unnest(
+            literal([event_id for event_id, _seq in ordered], ARRAY(BigInteger)),
+            literal([seq for _event_id, seq in ordered], ARRAY(Integer)),
+        )
+        .table_valued("event_id", "seq")
+        .render_derived()
+    )
+    return select(table.c.event_id, table.c.seq)
 
 
 def _unreadable() -> InvalidDsn:

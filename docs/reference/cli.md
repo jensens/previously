@@ -63,7 +63,7 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `show` | The event was printed. | No event exists at the given `event_id`. | The input was invalid, or storage raised an error. |
 | `blob` | The blob was written to the file. | No event names the blob, or the blob is erased. | The input was invalid, a blob setting is missing or invalid, the blob is missing from the store, can't be opened or doesn't match its address, the file can't be written, or storage or the blob store raised an error. |
 | `project` | Every projection stands at the tip of the log, and with `--check` every row of the graph projection agrees with the fold. | With `--check`, a row of the graph projection differs from the fold. | Storage raised an error, the worker found a gap in the log, or a catch-up at another version rebuilt a projection while this one ran. |
-| `chronicle` | The chronicle was printed, even when the window holds no row. | Not used. | The input was invalid, or storage raised an error. |
+| `chronicle` | The chronicle was printed, even when the window holds no row, or the bracket of `--within` none. | Not used. | The input was invalid, including a `--within` that names no entity that stands, or storage raised an error. |
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
 | `policy` | The statement was written, `show` printed the policy, or `gaps` printed what fell back, even when nothing did. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the statement was refused, or storage raised an error. |
 | `client` | The client was added and its token printed, revoked, or listed, even when none exists. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the processor isn't declared, no such client exists to revoke, or storage raised an error. |
@@ -874,6 +874,7 @@ Prints the chronicle in time order, one line per unit of an observation; the uni
 | `--since` | No | — | An ISO 8601 timestamp with a UTC offset, as an inclusive lower bound on `occurred_at`. |
 | `--until` | No | — | An ISO 8601 timestamp with a UTC offset, as an exclusive upper bound on `occurred_at`. |
 | `--limit` | No | `50` | The maximum number of lines to print, at least 1. |
+| `--within` | No | — | The id of an entity, the bracket: only the units that belong to it, or to an entity that's part of it. |
 
 Each line holds six tab-separated fields, in this order: `event_id`, `seq`, `occurred_at` (ISO 8601), `source`, `external_id`, and `content`.
 An event with no source attribution prints two empty fields in place of `source` and `external_id`.
@@ -888,6 +889,21 @@ The stored values are unchanged; the escaping is part of the output format.
 `--since` and `--until` form a half-open window, so a `--since` equal to or later than `--until` selects nothing.
 Both need a UTC offset; without one, `chronicle` returns 2 and prints one sentence to standard error.
 A `--limit` below 1 is refused the same way, before anything is read.
+
+`--within` prints the lines of the units that belong to the bracket, with the same fields, in the same order and under the same `--since`, `--until` and `--limit`.
+A unit belongs when an assignment points at the bracket or at an entity below it, through any relation kind with the behavior `transitive`, such as `part_of`.
+An assignment of a unit of its own replaces the assignment of its event for that unit, unless it's an open proposal ({ref}`chronicle-of-a-bracket`).
+Assignments and hierarchy edges count at every level and whatever their period.
+`--limit` counts only the units of the bracket, so a unit outside it takes no place.
+A bracket that nothing belongs to prints nothing and returns 0.
+An id that isn't an entity that stands, such as a relation, an event or a retracted entity, is refused before anything is read:
+
+```text
+Error: --within 999 is not an entity that stands
+```
+
+`--within` catches the graph projection up first and reads the assignments from it, with the same fallback and the same line on standard error as the listings of the graph ({ref}`cli-graph`).
+The chronicle itself isn't caught up, and its lag prints as below.
 
 Two notices go to standard error, and both leave the exit code at 0.
 The first prints when `--limit` cuts the output, the second when the projection stands behind the tip of the log, and a single run can print both in that order:
@@ -1440,7 +1456,7 @@ A label that exists only in another language stands in the first language in alp
 A version that today's vocabulary wouldn't take carries `(does not fit the vocabulary)`, and a transitive version whose approval class was revoked carries `(class revoked)`.
 Both are marks and change nothing in the log.
 
-`entities`, `relations` without `--as-of`, `entity ID`, `triage`, `status`, `classes list` and `classes sample` bring the graph projection up to the tip of the log first, without a line of output, and then read the graph from it ({ref}`graph-readers`).
+`entities`, `relations` without `--as-of`, `entity ID`, `triage`, `status`, `classes list`, `classes sample` and `chronicle --within` bring the graph projection up to the tip of the log first, without a line of output, and then read the graph from it ({ref}`graph-readers`).
 Where that catch-up fails, or the projection was rebuilt between the catch-up and the read, the command folds the log instead and prints one line on standard error:
 
 ```text

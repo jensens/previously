@@ -104,6 +104,18 @@ class ChronicleRow:
 
 
 @dataclass(frozen=True)
+class ChronicleSelection:
+    """Which units of the chronicle a reader asks for, by `(event_id, seq)`:
+    every unit of each event in `events` except those `excluded` names, and
+    each unit `units` names. What belongs to a bracket comes in this form
+    ({ref}`chronicle-of-a-bracket`)."""
+
+    events: frozenset[int]
+    excluded: frozenset[tuple[int, int]]
+    units: frozenset[tuple[int, int]]
+
+
+@dataclass(frozen=True)
 class SourceStatsRow:
     source: str
     events: int

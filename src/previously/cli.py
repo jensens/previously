@@ -59,6 +59,7 @@ from previously.core.assertions import thread_circles
 from previously.core.assertions import write_statements
 from previously.core.blob import fetch_blob
 from previously.core.blob import store_blob
+from previously.core.canonical import MAX_SAFE_INT
 from previously.core.chain import read_references
 from previously.core.classes import ApprovalClass
 from previously.core.classes import class_payload
@@ -102,17 +103,20 @@ from previously.core.graph import SOURCES
 from previously.core.graph import sources_with_start
 from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
+from previously.core.graph_read import bracket_members
 from previously.core.graph_read import check_graph
 from previously.core.graph_read import projected_graph
 from previously.core.graph_read import projection_stands
 from previously.core.graph_write import check_claims
 from previously.core.graph_write import decided
+from previously.core.graph_write import EntityTypes
 from previously.core.graph_write import read_graph
 from previously.core.graph_write import write_claims
 from previously.core.hashing import is_address
 from previously.core.hashing import iso_utc
 from previously.core.identity import artifact_hash_of
 from previously.core.ingest import ingest
+from previously.core.members import chronicle_selection
 from previously.core.policy import Circle
 from previously.core.policy import Client
 from previously.core.policy import Inference
@@ -199,6 +203,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from previously.contract.blobs import BlobStore
     from previously.contract.blobs import KeyProvider
+    from previously.contract.rows import ChronicleSelection
     from previously.contract.rows import EventRow
     from previously.contract.types import Anchor
     from previously.core.assertion import Thread
@@ -1497,6 +1502,12 @@ def _chronicle_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--since", help="ISO 8601 with a zone, inclusive")
     parser.add_argument("--until", help="ISO 8601 with a zone, exclusive")
     parser.add_argument("--limit", type=int, default=50)
+    parser.add_argument(
+        "--within",
+        type=int,
+        metavar="N",
+        help="only what belongs to entity N, or to an entity that is part of it",
+    )
 
 
 def _cmd_chronicle(args: argparse.Namespace) -> int:
@@ -1521,14 +1532,27 @@ def _cmd_chronicle(args: argparse.Namespace) -> int:
     # refused here too rather than silently read as local time.
     since = parse_moment(args.since) if args.since else None
     until = parse_moment(args.until) if args.until else None
-    with _storage() as storage, storage.begin() as conn:
-        # Tip and bookmark in one statement, not in two: a transaction is not
-        # a moment under READ COMMITTED (see `tip_and_bookmark`).
-        position = storage.tip_and_bookmark(conn, CHRONICLE.name)
-        # One more than the limit: if that extra row comes back, the window was
-        # cut. Counting the printed lines against the limit cannot tell a
-        # window that ends exactly at the limit from one that was cut there.
-        rows = storage.read_chronicle(conn, since=since, until=until, limit=args.limit + 1)
+    with _storage() as storage:
+        # The graph is caught up as every reader of it catches it up, before
+        # the snapshot; the chronicle is not, and its lag is the line below.
+        outcome = None if args.within is None else _caught_up(storage)
+        # A snapshot, not `begin`: a reader of the graph holds the projection
+        # against its catch-up in its snapshot ({ref}`graph-readers`), and the
+        # members of the bracket and the rows they select are read at one
+        # moment. Tip and bookmark stay one statement (see
+        # `tip_and_bookmark`), which is a moment under either.
+        with storage.snapshot() as conn:
+            position = storage.tip_and_bookmark(conn, CHRONICLE.name)
+            within = None
+            if args.within is not None:
+                within = _bracket_selection(storage, conn, outcome, args.within)
+            # One more than the limit: if that extra row comes back, the window
+            # was cut. Counting the printed lines against the limit cannot tell
+            # a window that ends exactly at the limit from one that was cut
+            # there.
+            rows = storage.read_chronicle(
+                conn, since=since, until=until, limit=args.limit + 1, within=within
+            )
     # Every string field through `escape_field`, not `content` alone: a tab or
     # a newline in `source` or `external_id` would otherwise add a field or
     # break the record in two (see `escape_field`).
@@ -1550,6 +1574,19 @@ def _cmd_chronicle(args: argparse.Namespace) -> int:
     if lag:
         print(lag, file=sys.stderr)
     return 0
+
+
+def _bracket_selection(
+    storage: PostgresStorage, conn: Connection, outcome: Outcome | None, bracket: int
+) -> ChronicleSelection:
+    """The units of the chronicle that belong to `bracket`, an entity that
+    stands, found in the graph the reader reads ({ref}`graph-readers`)."""
+    graph = _reader_graph(storage, conn, outcome)
+    # An id beyond what an event id can be in a payload names no entity, and
+    # is refused before the lookup, which would hand it to the database.
+    if not 1 <= bracket <= MAX_SAFE_INT or bracket not in EntityTypes(graph):
+        raise InvalidPayload(f"--within {bracket} is not an entity that stands")
+    return chronicle_selection(bracket_members(storage, conn, graph, bracket))
 
 
 def _cmd_stats(_args: argparse.Namespace) -> int:

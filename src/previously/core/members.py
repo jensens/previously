@@ -26,6 +26,7 @@ holds what it held.
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from previously.contract.rows import ChronicleSelection
 from previously.core.assertion import DIRECT
 from previously.core.assertion import Source
 from previously.core.graph import level_of
@@ -129,6 +130,19 @@ class Members:
         if units is None:
             return seq not in self.excluded.get(event_id, frozenset())
         return seq in units
+
+
+def chronicle_selection(found: Members) -> ChronicleSelection:
+    """The units of the chronicle that `found` holds, in the form a query
+    takes them: `ChronicleSelection` selects exactly the `(event_id, seq)`
+    for which `Members.holds` answers yes."""
+    return ChronicleSelection(
+        events=frozenset(event for event, units in found.events.items() if units is None),
+        excluded=frozenset((event, seq) for event, seqs in found.excluded.items() for seq in seqs),
+        units=frozenset(
+            (event, seq) for event, seqs in found.events.items() if seqs is not None for seq in seqs
+        ),
+    )
 
 
 def bracket_edges(graph: Graph, vocabulary: Vocabulary) -> tuple[BracketEdge, ...]:

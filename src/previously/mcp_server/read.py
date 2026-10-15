@@ -102,6 +102,7 @@ if TYPE_CHECKING:
     from previously.core.graph import Graph
     from previously.core.graph import GraphThread
     from previously.core.graph import GraphVersion
+    from previously.core.members import Members
     from previously.core.policy import Client
     from previously.core.policy import Policy
     from previously.core.vocabulary import Vocabulary
@@ -109,11 +110,12 @@ if TYPE_CHECKING:
 
 # Rows per query of the chronicle. A page holds at most 60,000 characters, and
 # a mail of the pilot runs from a few hundred to a few thousand, so one batch
-# fills a page unless a circle filter drops most of the rows; then the loop
-# reads the next batch, and so on until the page is full or the log ends.
-# The bound is per query, not per call: how many rows a sparse circle costs is
-# an open limit of the pilot, and a derived view of its own waits until
-# reading the log is too slow ({ref}`mcp-open-limits`).
+# fills a page unless a circle filter or a bracket (`within`) drops most of
+# the rows; then the loop reads the next batch, and so on until the page is
+# full or the log ends. The bound is per query, not per call: how many rows a
+# sparse circle or a small bracket costs is an open limit of the pilot, and a
+# derived view of its own waits until reading the log is too slow
+# ({ref}`mcp-open-limits`).
 BATCH: Final = 200
 
 # How much of a page an item is taken to fill before it is rendered: its text
@@ -376,6 +378,7 @@ def chronicle[Conn](
     since: datetime | None,
     until: datetime | None,
     after: tuple[datetime, int] | None,
+    within: Members | None = None,
 ) -> Seen:
     """The observations after `after` in time order, as many as fill a page
     and one more if it exists, each shown or as a placeholder.
@@ -383,6 +386,13 @@ def chronicle[Conn](
     `circle` keeps the events a member of the circle is involved in, as
     `decide` counts it, own identities left out; an erased event has no
     participants any more and drops out of a circle filter.
+
+    `within` keeps the events of which anything belongs to a bracket, and
+    of each shown event the units that do. It selects and releases nothing
+    ({ref}`chronicle-of-a-bracket`): the policy decides every event it keeps
+    as it decides without it, so an event withheld from the client stands
+    as the same placeholder, and a unit shown is one the client sees
+    without `within` too.
     """
     reads: list[Read] = []
     size = 0
@@ -400,13 +410,18 @@ def chronicle[Conn](
                 row.payload is None or circle not in circles_of(policy, _identities(row.payload))
             ):
                 continue
+            if within is not None and row.id not in within.events:
+                continue
             pending.append(_decided(policy, client, row, keys.get(row.id)))
         shown_ids = [item.row.id for item in pending if item.read is None]
         units = log.units_by_event(conn, shown_ids)
         for item in pending:
             if size > PAGE_CHARS:
                 return Seen(tuple(reads), more=True)
-            read = item.read or _shown(item, units.get(item.row.id, []), full=False, from_unit=None)
+            event_units = units.get(item.row.id, [])
+            if within is not None:
+                event_units = [u for u in event_units if within.holds(item.row.id, u.seq)]
+            read = item.read or _shown(item, event_units, full=False, from_unit=None)
             reads.append(read)
             size += _weight(read)
         if len(rows) < BATCH:

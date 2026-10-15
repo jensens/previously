@@ -885,7 +885,7 @@ def test_the_prompts_ask_for_work_and_hold_no_content(world: World, mode: str) -
 # The SHA-256 of the tool list as clients see it: name, description, input
 # schema and `_meta` of every tool, sorted by name, as canonical JSON. A change to any of
 # them is a change of the interface, made deliberately and released.
-TOOLS_SHA256 = "553dad73f5890918477268800521b902e3b300900183d67074d9e5abb83f1ef7"
+TOOLS_SHA256 = "56be7eefe6910b3eef50c74d80f7543ac1364bfac0316cc5d1d5abfe4d26cbec"
 
 
 def tool_list_digest(tools: list[dict[str, object]]) -> str:
@@ -4664,3 +4664,282 @@ def test_an_assignment_of_a_mail_the_client_may_not_see_is_not_shown_to_it(
 
     assert f"previously://event/{assigned} " not in hidden
     assert f"previously://event/{assigned} " in shown
+
+
+# --- the chronicle of a bracket: previously with within (the 2026-10-15
+# assignments plan, phase 2) --------------------------------------------------------
+
+_CATERER = "Ach übrigens, der Caterer hat zugesagt."
+
+
+def _markus_mail(number: int, to: str) -> bytes:
+    """Markus's mail from his firm's address, about the project XZ, with an
+    afterthought about the summer party of the club in its last paragraph:
+    unit 1 is the subject, units 2 and 3 are about XZ, and unit 4 is the
+    afterthought. To `office@`, which has a rule, `claude-code` sees it."""
+    return "\r\n".join(
+        [
+            "From: Markus <markus@firma.example>",
+            f"To: {to}",
+            "Subject: Projekt XZ",
+            f"Date: Wed, 07 Oct 2026 10:{number:02d}:00 +0000",
+            f"Message-ID: <markus-{number}@firma.example>",
+            "Content-Type: text/plain; charset=utf-8",
+            "",
+            "Der Entwurf für XZ liegt bei.",
+            "",
+            "Die Abnahme von XZ ist am Freitag.",
+            "",
+            _CATERER,
+            "",
+        ]
+    ).encode()
+
+
+@dataclass(frozen=True)
+class Brackets:
+    """The brackets of Markus's mail, the mail, and the entities of
+    `_graphed`."""
+
+    xz: int
+    club: int
+    party: int
+    mail: int
+    graphed: Graphed
+
+
+def _assign(world: World, event: int, units: tuple[int, ...] | None, to: int) -> int:
+    """The operator assigns `event`, or those of its units, to `to`."""
+    start = Source(event, units)
+    claim = Claim(
+        RELATION,
+        OPERATOR,
+        DIRECT,
+        SOURCES,
+        (start,),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        RelationBody("concerns", start, to, None, None, {}, STANDING),
+    )
+    (assigned,) = write_claims(world.storage, world.storage, [claim], recorded_at=T0).ids
+    return assigned
+
+
+def _brackets(world: World) -> Brackets:
+    """The world of `_graphed`, and Markus's mail assigned: the whole of it
+    to the project XZ, its afterthought to the summer party, and the summer
+    party part of the club, all by the operator, on the scanned mail."""
+    graphed = _graphed(world)
+    scanned = world.ids["attachments_only"]
+    club_claim = replace(
+        _project("Verein", scanned),
+        body=EntityBody("organization", None, {"name": "Verein"}, ACTIVE),
+    )
+    xz, club, party = write_claims(
+        world.storage,
+        world.storage,
+        [_project("XZ", scanned), club_claim, _project("Sommerfest", scanned)],
+        recorded_at=T0,
+    ).ids
+    _relate(world, party, club, kind="part_of")
+    mail = _take_in(world.storage, _markus_mail(0, "office@example.org"))
+    _assign(world, mail, None, xz)
+    _assign(world, mail, (4,), party)
+    return Brackets(xz, club, party, mail, graphed)
+
+
+def _units_shown(page: str) -> dict[int, list[int]]:
+    """The units each shown event of a page shows, by event."""
+    found: dict[int, list[int]] = {}
+    for part in re.split(r"(?=^### previously://event/)", page, flags=re.MULTILINE):
+        heading = _EVENT_HEADING.match(part)
+        if heading is not None:
+            found[int(heading.group(1))] = [int(seq) for seq in _UNIT.findall(part)]
+    return found
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_shows_of_markus_mail_only_the_units_of_the_bracket(
+    world: World, mode: str
+) -> None:
+    """Point 2 of the acceptance of the 2026-10-14 assignments
+    specification, over MCP: the summer party holds the afterthought, so
+    does the club one level up, and the project the rest of the mail."""
+    ids = _brackets(world)
+
+    party = _text(_tool(world, mode, "previously", {"within": ids.party}))
+    assert party.splitlines()[0] == f"previously · chronicle · within {ids.party} · page 1"
+    assert _units_shown(party) == {ids.mail: [4]}
+    assert _CATERER in party
+    assert "Die Abnahme von XZ" not in party
+    access = _last_access(world).access
+    assert access.arguments == {"within": ids.party}
+    assert [(entry.event, entry.units) for entry in access.delivered] == [(ids.mail, (4,))]
+
+    assert _units_shown(_text(_tool(world, mode, "previously", {"within": ids.club}))) == {
+        ids.mail: [4]
+    }
+    xz = _text(_tool(world, mode, "previously", {"within": ids.xz}))
+    assert _units_shown(xz) == {ids.mail: [1, 2, 3]}
+    assert _CATERER not in xz
+    # The control: without within the mail is shown whole, beside the others.
+    whole = _units_shown(_text(_tool(world, mode, "previously")))
+    assert whole[ids.mail] == [1, 2, 3, 4]
+    assert len(whole) > 1
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_finds_by_the_fold_what_it_finds_by_the_projection(
+    world: World, mode: str
+) -> None:
+    """A server without the projection folds the log for every call, and
+    finds the members of a bracket by that fold: the same pages."""
+    ids = _brackets(world)
+    folding = build_server(world.storage, stdio_client="claude-code")
+    for bracket in (ids.party, ids.club, ids.xz, ids.mail + 1_000):
+        arguments = {"within": bracket}
+        projected = _untagged(_text(_tool(world, mode, "previously", arguments)))
+        folded = _untagged(
+            _text(
+                _session(folding, mode, lambda s, given=arguments: s.call_tool("previously", given))
+            )
+        )
+        assert projected == folded
+        # Only the id that names nothing is an error, so that agreeing is not
+        # agreeing on a refusal.
+        assert projected.startswith("Error: ") == (bracket == ids.mail + 1_000)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_shows_a_withheld_mail_as_the_placeholder_it_is_without(
+    world: World, mode: str
+) -> None:
+    """Review Focus 3 of the 2026-10-15 assignments plan: within finds, it
+    releases nothing. A mail of the circle `team`, which has no rule, is
+    assigned to the summer party: `claude-code` gets its placeholder with
+    within as without, and `local-harness`, which processes locally, its
+    content."""
+    ids = _brackets(world)
+    hidden = _take_in(world.storage, _team_mail(1))
+    _assign(world, hidden, None, ids.party)
+    placeholder = re.compile(rf"^\[withheld: previously://event/{hidden} — .*$", re.MULTILINE)
+
+    within = _text(_tool(world, mode, "previously", {"within": ids.party}))
+    (withheld,) = _last_access(world).access.withheld
+    without = _text(_tool(world, mode, "previously"))
+
+    assert "All 412 checks passed." not in within
+    found = placeholder.search(within)
+    assert found is not None
+    assert found.group(0) in without
+    assert _units_shown(within) == {ids.mail: [4]}
+    assert withheld.event == hidden
+    # The control: the client that may see the mail sees it under within.
+    local = _text(_tool(world, mode, "previously", {"within": ids.party}, client="local-harness"))
+    assert "All 412 checks passed." in local
+    assert placeholder.search(local) is None
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_shows_no_unit_the_client_does_not_see_without_it(
+    world: World, mode: str
+) -> None:
+    """Review Focus 3: for every client and every bracket, what a page with
+    within delivers is among what the page without delivers, unit by unit,
+    and what it withholds is withheld there too."""
+    ids = _brackets(world)
+    hidden = _take_in(world.storage, _team_mail(1))
+    _assign(world, hidden, None, ids.party)
+    _assign(world, world.ids["plain"], (1,), ids.xz)
+    _assign(world, world.ids["html_blockquote"], None, ids.club)
+    for client in ("claude-code", "local-harness"):
+        _tool(world, mode, "previously", client=client)
+        everything = _accesses(world)[-1].access
+        assert everything.outcome == "ok"
+        units = {(entry.event, seq) for entry in everything.delivered for seq in entry.units}
+        withheld = {entry.event for entry in everything.withheld}
+        for bracket in (ids.party, ids.club, ids.xz):
+            _tool(world, mode, "previously", {"within": bracket}, client=client)
+            selected = _accesses(world)[-1].access
+            assert selected.outcome == "ok"
+            assert selected.delivered or selected.withheld
+            assert {(e.event, seq) for e in selected.delivered for seq in e.units} <= units
+            assert {entry.event for entry in selected.withheld} <= withheld
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_a_bracket_the_client_may_not_see_is_refused_as_a_missing_one(
+    world: World, mode: str
+) -> None:
+    """Review Focus 3: Lea stands on the plain mail, which `claude-code` may
+    not see. An empty page would tell it that she exists; the refusal of an
+    id that names no entity tells it nothing."""
+    ids = _brackets(world)
+    graphed = ids.graphed
+    answers = [
+        _tool(world, mode, "previously", {"within": bracket})
+        for bracket in (graphed.lea, 999_999, graphed.holds, ids.mail, 0)
+    ]
+    assert all(answer.is_error for answer in answers)
+    texts = {
+        _text(answer).replace(str(bracket), "ID")
+        for answer, bracket in zip(
+            answers, (graphed.lea, 999_999, graphed.holds, ids.mail, 0), strict=True
+        )
+    }
+    assert texts == {"Error: within ID is not an entity that stands"}
+    assert _accesses(world)[-1].access.arguments == {"within": 0}
+    # The control: the client that may see Lea gets her chronicle, empty.
+    local = _tool(world, mode, "previously", {"within": graphed.lea}, client="local-harness")
+    assert not local.is_error
+    assert _units_shown(_text(local)) == {}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_carries_within_in_its_cursor_from_page_to_page(
+    world: World, mode: str
+) -> None:
+    ids = _brackets(world)
+    members: list[int] = []
+    for number in range(5):
+        member = _take_in(world.storage, _long_mail(number * 2, 10, 150))
+        _assign(world, member, None, ids.xz)
+        members.append(member)
+        _take_in(world.storage, _long_mail(number * 2 + 1, 10, 150))
+    seen: list[int] = []
+    cursor: str | None = None
+    pages = 0
+    while True:
+        arguments: dict[str, Any] = {"within": ids.xz}
+        if cursor is not None:
+            arguments["cursor"] = cursor
+        page = _text(_tool(world, mode, "previously", arguments))
+        pages += 1
+        assert page.startswith(f"previously · chronicle · within {ids.xz} · page {pages}")
+        seen.extend(int(found) for found in _ITEM.findall(page))
+        found = re.search(r"call again with cursor=(\S+)$", page)
+        if found is None:
+            break
+        cursor = found.group(1)
+        assert json.loads(_decoded(found.group(1)))["filters"] == {"within": str(ids.xz)}
+    assert pages >= 2
+    assert seen == [*members, ids.mail]
+    assert cursor is not None
+    # A cursor of within, given without it, is refused like any other of
+    # other filters.
+    refused = _tool(world, mode, "previously", {"cursor": cursor})
+    assert _text(refused) == (
+        "Error: cursor is not valid for these filters; call again without a cursor for the "
+        "first page"
+    )

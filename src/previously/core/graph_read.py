@@ -34,6 +34,7 @@ from previously.core.graph import Graph
 from previously.core.graph import GraphThread
 from previously.core.graph import RELATION
 from previously.core.graph_write import relation_ends
+from previously.core.members import bracket_edges
 from previously.core.members import bracket_kinds
 from previously.core.members import BracketEdge
 from previously.core.members import members
@@ -252,6 +253,19 @@ def read_brackets[Conn](
         for row in rows
     ]
     return members(edges, bracket, kinds)
+
+
+def bracket_members[Conn](log: LogStore[Conn], conn: Conn, graph: Graph, bracket: int) -> Members:
+    """`members` of `bracket` in the graph a reader reads in the snapshot of
+    `conn`: over the rows of the projection where `graph` is read from it
+    (`read_brackets`), and over the edges of the fold where the reader
+    folded the log instead, because the projection didn't stand where its
+    catch-up left it. A reader finds the members in the graph it shows."""
+    if isinstance(graph, ProjectedGraph):
+        projected = cast("ProjectedGraph[Conn]", graph)
+        return read_brackets(log, projected.index.store, conn, bracket)
+    vocabulary = read_vocabulary(log, conn)
+    return members(bracket_edges(graph, vocabulary), bracket, bracket_kinds(vocabulary))
 
 
 def _cell(value: object) -> str:

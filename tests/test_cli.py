@@ -7876,3 +7876,193 @@ def test_a_listing_folds_the_log_when_its_catch_up_fails(
             f"the graph projection could not be caught up ({stopped}); "
             "this command folds the log instead\n"
         )
+
+
+# --- the chronicle of a bracket: chronicle --within ---------------------------------
+
+_MAIL_1 = "2026-10-30T09:00:00+00:00\temail\tm1"
+
+
+def _within(capsys: pytest.CaptureFixture[str], bracket: int, *argv: str) -> list[str]:
+    """The lines of `chronicle --within bracket`, which has to say nothing
+    on standard error."""
+    out = _run(capsys, "chronicle", "--within", str(bracket), *argv)
+    assert capsys.readouterr().err == ""
+    return out.splitlines()
+
+
+@pytest.mark.db
+def test_chronicle_within_shows_the_units_of_a_bracket_and_one_level_up_those_of_the_club(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Markus, point 2 of the acceptance of the 2026-10-14 assignments
+    specification: mail 1 is about the project XZ, its last unit about the
+    summer party, and the summer party is part of the club. The chronicle
+    of the summer party holds the last unit, so does the club's, one level
+    up, and the project's holds the others: the more specific replaces the
+    general."""
+    storage = _graph_log(db, monkeypatch, capsys)
+    ids = _markus(capsys)
+    _run(capsys, "project")
+
+    assert _within(capsys, ids["party"]) == [f"1\t3\t{_MAIL_1}\tThree."]
+    assert _within(capsys, ids["club"]) == [f"1\t3\t{_MAIL_1}\tThree."]
+    assert _within(capsys, ids["xz"]) == [f"1\t1\t{_MAIL_1}\tOne.", f"1\t2\t{_MAIL_1}\tTwo."]
+    # The control: the whole chronicle holds both mails, the second of
+    # which belongs to no bracket.
+    assert len(_run(capsys, "chronicle").splitlines()) == 6
+
+    # A unit assigned on its own after `project`: the reader catches the
+    # graph up and finds it, and says that the chronicle itself stands one
+    # event behind, as `chronicle` does.
+    _written(capsys, "relate", "concerns", "--from-event", "1:2", "--to", str(ids["party"]))
+    assert main(["chronicle", "--within", str(ids["party"])]) == 0
+    assert capsys.readouterr() == (
+        f"1\t2\t{_MAIL_1}\tTwo.\n1\t3\t{_MAIL_1}\tThree.\n",
+        "projection is 1 event behind; run `previously project`\n",
+    )
+    _run(capsys, "project")
+    assert _within(capsys, ids["xz"]) == [f"1\t1\t{_MAIL_1}\tOne."]
+
+    # An erased unit takes its assignments with it, and an assignment of
+    # the whole mail falls with it too (ruling T2-b of the 2026-10-15
+    # assignments plan): what is left is the unit assigned on its own.
+    _run(capsys, "redact", "units", "1", "3", "--reason", "wrong")
+    assert _within(capsys, ids["party"]) == [f"1\t2\t{_MAIL_1}\tTwo."]
+    assert _within(capsys, ids["xz"]) == []
+    assert verify(storage) == []
+
+
+def _observation_at(storage: PostgresStorage, name: str, day: int) -> int:
+    """An observation with one unit, `name`, on day `day` of October 2026."""
+    _append("email", name, name, f"2026-10-{day:02d}T09:00:00Z")
+    with storage.begin() as conn:
+        tip = storage.tip(conn)
+    assert tip is not None
+    return tip.id
+
+
+@pytest.mark.db
+def test_chronicle_within_counts_its_limit_and_its_window_among_the_units_of_the_bracket(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A unit outside the bracket takes no place under `--limit`: the
+    selection is made in the query, before the limit, so that the notice of
+    a cut says what it says without `--within`."""
+    storage = _graph_log(db, monkeypatch, capsys)
+    days = {name: _observation_at(storage, name, day) for day, name in enumerate("ABCD", 1)}
+    project = _written(capsys, "entity", "project", "--name", "P", "--source", "2")
+    for name in "ACD":
+        _written(
+            capsys, "relate", "concerns", "--from-event", str(days[name]), "--to", str(project)
+        )
+    _run(capsys, "project")
+
+    def line(name: str) -> str:
+        day = "ABCD".index(name) + 1
+        return f"{days[name]}\t1\t2026-10-{day:02d}T09:00:00+00:00\temail\t{name}\t{name}"
+
+    assert _within(capsys, project) == [line("A"), line("C"), line("D")]
+    assert _within(capsys, project, "--limit", "3") == [line("A"), line("C"), line("D")]
+    assert main(["chronicle", "--within", str(project), "--limit", "2"]) == 0
+    assert capsys.readouterr() == (
+        f"{line('A')}\n{line('C')}\n",
+        "output truncated at 2 lines; raise --limit or narrow --since/--until\n",
+    )
+    window = ("--since", "2026-10-02T00:00:00Z", "--until", "2026-10-04T00:00:00Z")
+    assert _within(capsys, project, *window) == [line("C")]
+    # The control: without `--within` the same window holds B as well.
+    assert len(_run(capsys, "chronicle", *window).splitlines()) == 2
+
+
+@pytest.mark.db
+def test_chronicle_within_refuses_what_is_not_an_entity_that_stands_and_shows_an_empty_one(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    ids = _markus(capsys)
+    gone = _written(capsys, "entity", "project", "--name", "Alt", "--source", "2")
+    _written(capsys, "entity", "project", "--subject", str(gone), "--retract")
+    empty = _written(capsys, "entity", "project", "--name", "Leer", "--source", "2")
+    _run(capsys, "project")
+
+    # Nothing at that id, a relation, a mail, a retracted entity, and an
+    # id no event can have.
+    for bracket in (999_999, ids["part_of"], 1, gone, 0):
+        assert _refused(capsys, "chronicle", "--within", str(bracket)) == (
+            f"--within {bracket} is not an entity that stands"
+        )
+    # The control: an entity nothing is assigned to has an empty chronicle.
+    assert _within(capsys, empty) == []
+
+
+@pytest.mark.db
+def test_chronicle_within_finds_from_the_projection_what_the_fold_finds(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The oracle is the fold, as for the listings: the same commands with
+    the reader swapped back. The history holds an open proposal of a unit
+    of its own, which adds the unit to the summer party and takes it from
+    nothing (ruling T2-c of the 2026-10-15 assignments plan), and a question,
+    which points at no bracket yet."""
+    storage = _graph_log(db, monkeypatch, capsys)
+    ids = _listed_history(storage, capsys)
+    proposal = RelationBody("concerns", Source(1, (1,)), ids["party"], None, None, {}, "standing")
+    _model_writes(storage, _model_claim(RELATION, proposal, confidence=40))
+    _run(capsys, "project")
+    brackets = [ids[name] for name in ("party", "club", "xz", "anna")]
+    projected = [_within(capsys, bracket) for bracket in brackets]
+    monkeypatch.setattr("previously.cli.projected_graph", _fold_instead)
+    folded = [_within(capsys, bracket) for bracket in brackets]
+    assert projected == folded
+    assert projected == [
+        [f"1\t1\t{_MAIL_1}\tOne.", f"1\t3\t{_MAIL_1}\tThree."],
+        [f"1\t1\t{_MAIL_1}\tOne.", f"1\t3\t{_MAIL_1}\tThree."],
+        [f"1\t1\t{_MAIL_1}\tOne.", f"1\t2\t{_MAIL_1}\tTwo."],
+        [],
+    ]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("cause", ["rebuilt", "failed"])
+def test_chronicle_within_folds_the_log_when_the_projection_does_not_stand(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, cause: str
+) -> None:
+    """Ruling T4-b of the 2026-10-15 assignments plan: a rebuild between the
+    catch-up and the snapshot, or a catch-up that fails, costs a fold and
+    one line on standard error, never an empty chronicle."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    _graph_log(db, monkeypatch, capsys)
+    ids = _markus(capsys)
+    _run(capsys, "project")
+    expected = _within(capsys, ids["club"])
+    assert expected
+    assert isinstance(db, Engine)
+    stopped = "projection graph was rebuilt while this catch-up ran"
+
+    def rebuilt_after(
+        log: PostgresStorage, store: PostgresStorage, projection: Projection
+    ) -> Outcome:
+        outcome = catch_up(log, store, projection)
+        with db.begin() as c:
+            c.execute(text("UPDATE projection_state SET version = 7 WHERE name = 'graph'"))
+            c.execute(text("DELETE FROM p_graph_thread"))
+            c.execute(text("DELETE FROM p_graph_version"))
+        return outcome
+
+    def failing(log: PostgresStorage, store: PostgresStorage, projection: Projection) -> Outcome:
+        del log, store, projection
+        raise ProjectionRebuilt(stopped)
+
+    monkeypatch.setattr("previously.cli.catch_up", rebuilt_after if cause == "rebuilt" else failing)
+    assert main(["chronicle", "--within", str(ids["club"])]) == 0
+    captured = capsys.readouterr()
+    assert captured.out.splitlines() == expected
+    warning = (
+        "the graph projection was rebuilt since this command caught it up"
+        if cause == "rebuilt"
+        else f"the graph projection could not be caught up ({stopped})"
+    )
+    assert captured.err == f"{warning}; this command folds the log instead\n"
