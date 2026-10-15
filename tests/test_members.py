@@ -121,9 +121,11 @@ def test_a_kind_other_than_concerns_that_starts_at_an_event_is_an_assignment() -
 
 
 def test_a_kind_the_gate_reads_is_no_assignment_even_when_it_starts_at_an_event() -> None:
-    """Ruling T2-e: `in_circle` is to start at an event in phase 3, and a
-    circle is no bracket. A vocabulary written by hand in which it already
-    does still feeds nothing into `members`. The control is `concerns` in
+    """Ruling T2-e of the 2026-10-15 assignments plan, phase 2: a kind the
+    gate reads is no assignment, whatever it starts at. `in_circle` is to
+    start at an event in phase 3, and a circle is no bracket, so a
+    vocabulary written by hand in which it already does still feeds
+    nothing into `members`. The control is `concerns` in
     the same vocabulary."""
     in_circle = _relation_kind("in_circle", ("event",), ("circle",))
     kinds = bracket_kinds(_vocabulary(in_circle))
@@ -193,9 +195,11 @@ def test_a_transitive_assignment_of_a_unit_replaces_as_a_direct_one_does() -> No
 
 
 def test_a_proposal_for_a_unit_adds_it_and_takes_nothing_from_its_events_assignment() -> None:
-    """Ruling T2-c: a model's open assignment of the last unit to the summer
-    party finds the unit there, and the operator's assignment of the whole
-    mail to XZ keeps it. Measured red with the level ignored."""
+    """Ruling T2-c of the 2026-10-15 assignments plan, phase 2: an open
+    edge adds and takes nothing away, so a model's open assignment of the
+    last unit to the summer party finds the unit there, and the operator's
+    assignment of the whole mail to XZ keeps it. Measured red with the
+    level ignored."""
     proposed = _markus(OPEN)
 
     assert members(proposed, XZ, KINDS).holds(MAIL, 4)
@@ -315,7 +319,9 @@ def test_bracket_edges_takes_every_level_and_leaves_out_questions_retractions_an
 
 
 def test_a_hierarchy_edge_whose_period_ended_still_carries_what_it_held() -> None:
-    """Ruling T2-d: finding ignores periods. Measured red with
+    """Ruling T2-d of the 2026-10-15 assignments plan, phase 2: finding
+    ignores periods, since a structure that ended still held what it held.
+    Measured red with
     `graph.relations(at=…)` in `bracket_edges`."""
     ended = Period(date(2019, 1, 1), date(2020, 12, 31))
     graph = fold_graph(
@@ -431,7 +437,9 @@ def test_a_unit_belongs_by_its_own_assignments_else_by_its_events(
     """Review Focus 4 of the 2026-10-15 assignments plan, phase 2: a unit
     with an assignment of its own to another bracket that stands for
     someone does not appear in the bracket of its event, and a unit without
-    one does (ruling T2-c). `events`, `excluded` and `brackets` are held to
+    one does. Only an edge that stands for someone replaces the one of its
+    event; an open one adds the unit and takes nothing (ruling T2-c of the
+    2026-10-15 assignments plan, phase 2). `events`, `excluded` and `brackets` are held to
     the oracle as well as `holds`."""
     edges = [
         *(part(0, whole_of, whole) for whole_of, whole in parts),
