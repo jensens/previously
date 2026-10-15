@@ -27,19 +27,22 @@ Controller überlassen hat („wähle, was hier am besten passt“):
   mit dem Bericht der einen Fixwelle; `final-docs-review.md`: die Endprüfung
   der Dokumentation, parallel dazu; `final-rereview.md`: die Nachprüfung der
   Fixwelle.
+- `final-fix-2-*.md`: die Fixrunde nach der Durchsicht des Betreuers am offenen
+  PR #26 — Auftrag, Bericht mit Nachbesserung, Prüfung, Nachprüfung.
 - `measurements.md`: die Messung bei 10 000 und 100 000 Beziehungen, auf einer
   festen Kopie von `22b3dec`, auf einem i7-11370H.
 - [`progress.md`](progress.md): das Hauptbuch mit jeder Entscheidung unter
   `Ruling` — `P-1`, `P-2` aus der Vorprüfung, `T2-a` bis `T5-c` aus den
-  Aufgaben, `F-a` und `F-b` aus der Endprüfung.
+  Aufgaben, `F-a` und `F-b` aus der Endprüfung, `F-c` bis `F-f` aus der Fixrunde
+  danach.
 
 ## Warum das hier liegt
 
-Der Baum zitiert acht Entscheidungen dieser Ausführung, jede als
+Der Baum zitiert zehn Entscheidungen dieser Ausführung, jede als
 `ruling <label> of the 2026-10-15 assignments plan`: `T2-a` bis `T2-f`,
-`T4-b` und `T5-c`. Jede löst in `progress.md` genau einmal zu der
-Entscheidung auf, die sie nennt (`grep -cE '^Ruling <label>[: ]'`, gemessen am
-2026-10-15 auf `9ad6eeb`). Die Bezeichner gibt es nur in dieser Ausführung;
+`T4-b`, `T5-c`, `F-c` und `F-e`. Jede löst in `progress.md` genau einmal zu
+der Entscheidung auf, die sie nennt (`grep -cE '^Ruling <label>[: ]'`,
+gemessen am 2026-10-15 auf `9b4ffef`). Die Bezeichner gibt es nur in dieser Ausführung;
 `T2-c` dieses Plans und `T2-c` des Plans vom 2026-10-14 sind zwei
 verschiedene Entscheidungen, und beide werden aus dem Baum zitiert.
 
@@ -52,10 +55,19 @@ verschiedene Entscheidungen, und beide werden aus dem Baum zitiert.
   Zuordnungen seither aus dem geltenden Vokabular.
 - **Die Messung auf festem Stand:** die Lehre aus Phase 1 galt von Anfang an;
   gemessen wurde auf einer festen Kopie, nicht auf dem Worktree.
-- **Zwei Reste geparkt (`F-b`):** die Zeilenzahlen von `cli.py` und
-  `server.py` auf der Landkarte und ein Satz auf
-  `docs/explanation/module-boundaries.md`, der die Zeiträume der Graph-Tabellen
-  verschweigt, bleiben für den nächsten Zweig.
+- **Ein Weg, den Graphen auszuliefern (`F-c`, `F-e`):** nach dem Öffnen von
+  PR #26 verwarf der Betreuer den Rückfall der Leser auf die Faltung des
+  ganzen Logs: zwei Rechenwege seien falsch, bei einem Konflikt gewinne der
+  erste und der zweite wiederhole begrenzt. Begründet und freigegeben im
+  Gespräch, umgesetzt in einer Fixrunde: Leser holen nur nach und bauen nie
+  neu, ein Neubau dazwischen wird einmal wiederholt, alles andere ist ein
+  Fehler, und nur `previously project` baut. Die Faltung des ganzen Logs
+  bleibt für `verify`, `project --check`, `--as-of`, den Schreibweg und —
+  als offener Punkt der Landkarte (`F-f`) — für `policy gaps`.
+- **Zwei Reste, erst geparkt (`F-b`), dann mitgenommen (`F-d`):** die
+  Zeilenzahlen von `cli.py` und `server.py` auf der Landkarte und ein Satz auf
+  `docs/explanation/module-boundaries.md`, der die Zeiträume der
+  Graph-Tabellen verschwieg.
 - **Die Prüfungsdiffs** (`review-*.diff`) liegen nicht hier: sie sind aus
   `git` jederzeit neu zu erzeugen und hätten das Verzeichnis um ein Vielfaches
   vergrößert.
