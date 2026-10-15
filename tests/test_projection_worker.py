@@ -10,6 +10,7 @@ incremental step, and that is the failure that kills projections.
 """
 
 from dataclasses import dataclass
+from dataclasses import replace
 from datetime import datetime
 from datetime import timedelta
 from datetime import UTC
@@ -19,14 +20,33 @@ from hypothesis import settings
 from hypothesis import strategies as st
 from previously.contract.rows import ChronicleRow
 from previously.contract.rows import EventRow
+from previously.contract.rows import GraphThreadRow
+from previously.contract.rows import GraphVersionRow
 from previously.contract.rows import ProjectionState
 from previously.contract.rows import SourceStatsRow
 from previously.contract.rows import UnitRow
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
+from previously.core.assertion import DIRECT
+from previously.core.assertion import model_author
+from previously.core.assertion import OPEN
+from previously.core.assertion import OPERATOR
+from previously.core.assertion import REJECTION
+from previously.core.assertion import Source
+from previously.core.assertion import Statement
+from previously.core.assertions import write_statements
 from previously.core.errors import ProjectionGap
 from previously.core.errors import ProjectionRebuilt
+from previously.core.graph import ACTIVE
+from previously.core.graph import Claim
+from previously.core.graph import ENTITY
+from previously.core.graph import EntityBody
+from previously.core.graph import RELATION
+from previously.core.graph import RelationBody
+from previously.core.graph import SOURCES
+from previously.core.graph import STANDING
+from previously.core.graph_write import write_claims
 from previously.core.projection import PROJECTIONS
 from previously.core.projection.chronicle import CHRONICLE
 from previously.core.projection.chronicle import ChronicleProjection
@@ -36,6 +56,9 @@ from previously.core.projection.worker import catch_up
 from previously.core.redact import redact_event
 from previously.core.redact import redact_units
 from previously.core.units import split_plaintext
+from previously.core.vocabulary import apply_vocabulary
+from previously.core.vocabulary import base_vocabulary
+from previously.core.vocabulary import parse_file
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import Connection
 from sqlalchemy import Engine
@@ -68,15 +91,24 @@ def _raw(n: int, source: str, occurred_at: datetime, text_: str = "one\n\ntwo") 
     )
 
 
-def _snapshot(db: Engine) -> tuple[list[tuple[object, ...]], list[tuple[object, ...]]]:
-    """Both projection tables as sorted tuples — rows, not a digest, so a
-    failure names the field that moved (the lesson of the pinned hash vector)."""
+type _Rows = list[tuple[object, ...]]
+
+
+def _snapshot(db: Engine) -> tuple[_Rows, _Rows, _Rows, _Rows]:
+    """Every projection table as sorted tuples — rows, not a digest, so a
+    failure names the field that moved (the lesson of the pinned hash
+    vector): the chronicle, the statistics, and the two tables of the
+    graph."""
     with db.begin() as c:
         chronicle = [
             tuple(r) for r in c.execute(text("SELECT * FROM p_chronicle ORDER BY event_id, seq"))
         ]
         stats = [tuple(r) for r in c.execute(text("SELECT * FROM p_source_stats ORDER BY source"))]
-    return chronicle, stats
+        versions = [tuple(r) for r in c.execute(text("SELECT * FROM p_graph_version ORDER BY id"))]
+        threads = [
+            tuple(r) for r in c.execute(text("SELECT * FROM p_graph_thread ORDER BY subject"))
+        ]
+    return chronicle, stats, versions, threads
 
 
 def _project_all(storage: PostgresStorage) -> None:
@@ -122,12 +154,19 @@ def test_incremental_equals_rebuilt(db: Engine) -> None:
 
     All three remeasured on 2026-10-05, with sixteen tests in this file and
     eleven in `test_projection_derive.py`, and each came out as above.
+
+    The graph walks the same two paths since 2026-10-15
+    ({ref}`graph-projection`): a project, an assignment that falls with the
+    unit it rests on, and a proposal with its rejection. With the graph
+    keeping the rows of `p_graph_version` a rebuild would not write
+    (`_stale` returning nothing), this test fails on the comparison.
     """
     storage = PostgresStorage(db)
     moments = [NOW, NOW + timedelta(days=1), NOW - timedelta(days=5)]
     for n, moment in enumerate(moments, start=1):
         append(storage, [_raw(n, "email", moment)], recorded_at=NOW)
         _project_all(storage)  # the incremental path, one event at a time
+    project, _assigned, proposal, rejection = _graph_history(storage, lambda: _project_all(storage))
     incremental = _snapshot(db)
 
     _force_rebuild(storage)
@@ -137,6 +176,48 @@ def test_incremental_equals_rebuilt(db: Engine) -> None:
     assert incremental == rebuilt
     (stats_row,) = rebuilt[1]
     assert stats_row[3] == NOW - timedelta(days=5)  # first_seen is the earliest, not the last
+    # The graph kept the project; the assignment fell with its unit, the
+    # proposal with its rejection, and both tables say so on both paths.
+    assert [row[0] for row in rebuilt[3]] == [project]
+    assert [(row[0], row[2]) for row in rebuilt[2]] == [
+        (project, "entity"),
+        (proposal, "entity"),
+        (rejection, "rejection"),
+    ]
+
+
+def _graph_history(storage: PostgresStorage, after_each: Callable[[], None]) -> tuple[int, ...]:
+    """The base vocabulary, the operator's project and an assignment of unit
+    1 of event 2 to it, a model's proposal and its rejection, and the erasure
+    of that unit, which takes the assignment; `after_each` runs after every
+    step. Returns the ids of project, assignment, proposal and rejection."""
+    apply_vocabulary(storage, parse_file(base_vocabulary()), recorded_at=NOW)
+    after_each()
+    project = Claim(
+        ENTITY, OPERATOR, DIRECT, SOURCES, (Source(1, None),), None, None, None, None, None,
+        None, None, EntityBody("project", "de", {"name": "XZ"}, ACTIVE),
+    )  # fmt: skip
+    (project_id,) = write_claims(storage, storage, [project], recorded_at=NOW).ids
+    after_each()
+    assigned = replace(
+        project,
+        kind=RELATION,
+        sources=(Source(2, (1,)),),
+        body=RelationBody("concerns", Source(2, (1,)), project_id, None, None, {}, STANDING),
+    )
+    (assigned_id,) = write_claims(storage, storage, [assigned], recorded_at=NOW).ids
+    after_each()
+    proposal = replace(project, author=model_author("claude"), responsibility=OPEN, confidence=10)
+    (proposal_id,) = write_claims(storage, storage, [proposal], recorded_at=NOW).ids
+    after_each()
+    rejection = Statement(
+        REJECTION, OPERATOR, DIRECT, (Source(1, None),), None, None, None, None, proposal_id, None
+    )
+    (rejection_id,) = write_statements(storage, storage, [rejection], recorded_at=NOW)
+    after_each()
+    redact_units(storage, storage, 2, [1], reason="a third party", recorded_at=NOW)
+    after_each()
+    return project_id, assigned_id, proposal_id, rejection_id
 
 
 @pytest.mark.db
@@ -220,6 +301,27 @@ class _FailingStore:
     def upsert_source_stats(self, conn: Connection, rows: Sequence[SourceStatsRow]) -> None:
         self._inner.upsert_source_stats(conn, rows)
 
+    def insert_graph_versions(self, conn: Connection, rows: Sequence[GraphVersionRow]) -> None:
+        self._inner.insert_graph_versions(conn, rows)
+
+    def graph_versions(self, conn: Connection, ids: Sequence[int]) -> dict[int, GraphVersionRow]:
+        return self._inner.graph_versions(conn, ids)
+
+    def graph_version_ids(self, conn: Connection, subjects: Sequence[int]) -> dict[int, list[int]]:
+        return self._inner.graph_version_ids(conn, subjects)
+
+    def class_subjects(self, conn: Connection, under_ids: Sequence[int]) -> set[int]:
+        return self._inner.class_subjects(conn, under_ids)
+
+    def delete_graph_versions(self, conn: Connection, ids: Sequence[int]) -> None:
+        self._inner.delete_graph_versions(conn, ids)
+
+    def upsert_graph_threads(self, conn: Connection, rows: Sequence[GraphThreadRow]) -> None:
+        self._inner.upsert_graph_threads(conn, rows)
+
+    def delete_graph_threads(self, conn: Connection, subjects: Sequence[int]) -> None:
+        self._inner.delete_graph_threads(conn, subjects)
+
 
 @pytest.mark.db
 def test_an_abort_leaves_rows_and_up_to_id_in_step(db: Engine) -> None:
@@ -267,7 +369,7 @@ def test_an_empty_log_is_up_to_date_at_zero(db: Engine) -> None:
     storage = PostgresStorage(db)
     outcome = catch_up(storage, storage, CHRONICLE)
     assert (outcome.rebuilt_from, outcome.events, outcome.up_to_id) == (0, 0, 0)
-    assert _snapshot(db) == ([], [])
+    assert _snapshot(db) == ([], [], [], [])
 
 
 @pytest.mark.db
@@ -289,7 +391,7 @@ def test_an_event_without_a_source_is_in_the_chronicle_and_not_in_the_stats(db: 
             None,
         )
     _project_all(storage)
-    chronicle, stats = _snapshot(db)
+    chronicle, stats, _versions, _threads = _snapshot(db)
     assert any(r[0] == 2 and r[6] is None for r in chronicle)  # event_id 2, source NULL
     assert [r[0] for r in stats] == ["email"]
     assert stats[0][1] == 1  # one event counted, not two

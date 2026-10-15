@@ -1321,6 +1321,7 @@ def test_project_on_an_empty_log_is_up_to_date_at_zero_but_still_names_a_rebuild
     assert capsys.readouterr().out.splitlines() == [
         "chronicle       up to date, up_to_id 0",
         "source-stats    up to date, up_to_id 0",
+        "graph           up to date, up_to_id 0",
     ]
 
     with db.begin() as c:
@@ -1329,6 +1330,7 @@ def test_project_on_an_empty_log_is_up_to_date_at_zero_but_still_names_a_rebuild
     assert capsys.readouterr().out.splitlines() == [
         "chronicle       rebuilt: version 4 -> 3, 0 events, up_to_id 0",
         "source-stats    up to date, up_to_id 0",
+        "graph           up to date, up_to_id 0",
     ]
 
 
@@ -1354,6 +1356,7 @@ def test_project_says_which_path_it_took(
     assert first == [
         "chronicle       built: 1 event, up_to_id 1",
         "source-stats    built: 1 event, up_to_id 1",
+        "graph           built: 1 event, up_to_id 1",
     ]
 
     _append("email", "m2", "Again", "2026-10-02T09:00:00Z")
@@ -1363,6 +1366,7 @@ def test_project_says_which_path_it_took(
     assert second == [
         "chronicle       caught up: 1 event, up_to_id 2",
         "source-stats    caught up: 1 event, up_to_id 2",
+        "graph           caught up: 1 event, up_to_id 2",
     ]
 
     assert main(["project"]) == 0
@@ -1370,14 +1374,16 @@ def test_project_says_which_path_it_took(
     assert third == [
         "chronicle       up to date, up_to_id 2",
         "source-stats    up to date, up_to_id 2",
+        "graph           up to date, up_to_id 2",
     ]
 
     # The fourth path, and the only one invisible in the table itself: the
     # stored version is raised past the one the code declares, the way a
     # rolled-back release leaves it, and the next run empties `p_chronicle` and
     # builds it again. Without this line `rebuilt:` would be a format the
-    # reference page promises and nothing produces. `source-stats` is left
-    # alone, so the two projections report different paths in the same run.
+    # reference page promises and nothing produces. `source-stats` and
+    # `graph` are left alone, so the projections report different paths in
+    # the same run.
     with db.begin() as c:
         c.execute(text("UPDATE projection_state SET version = 4 WHERE name = 'chronicle'"))
     capsys.readouterr()
@@ -1386,6 +1392,7 @@ def test_project_says_which_path_it_took(
     assert fourth == [
         "chronicle       rebuilt: version 4 -> 3, 2 events, up_to_id 2",
         "source-stats    up to date, up_to_id 2",
+        "graph           up to date, up_to_id 2",
     ]
 
 
@@ -1944,13 +1951,14 @@ def test_redact_event_prints_the_redaction_and_show_names_it(
     capsys.readouterr()
 
     # Nothing was projected before, so the catch-up after the redaction
-    # builds both projections and says so on standard error.
+    # builds all three projections and says so on standard error.
     assert main(["redact", "event", "1", "--reason", "wrong recipient"]) == 0
     out, err = capsys.readouterr()
     assert (out, err) == (
         "redacted by event 2\n",
         "chronicle       built: 2 events, up_to_id 2\n"
-        "source-stats    built: 2 events, up_to_id 2\n",
+        "source-stats    built: 2 events, up_to_id 2\n"
+        "graph           built: 2 events, up_to_id 2\n",
     )
 
     assert main(["show", "1"]) == 0
@@ -2101,6 +2109,7 @@ def test_redact_units_names_each_tombstone(
     assert err == (
         "chronicle       built: 2 events, up_to_id 2\n"
         "source-stats    built: 2 events, up_to_id 2\n"
+        "graph           built: 2 events, up_to_id 2\n"
         f"{standing}"
         "unit 3 was already erased\n"
         f"{standing}"
@@ -2406,7 +2415,8 @@ def test_redact_beside_a_project_holding_rows_ends_without_a_traceback(
     assert errors == []
     assert capsys.readouterr() == (
         "redacted by event 3\n",
-        "source-stats    built: 3 events, up_to_id 3\n",
+        "source-stats    built: 3 events, up_to_id 3\n"
+        "graph           built: 3 events, up_to_id 3\n",
     )
     with storage.begin() as conn:
         rows = storage.read_chronicle(conn, since=None, until=None, limit=10)
@@ -2441,6 +2451,7 @@ def test_redact_reports_a_rebuild_it_runs_on_standard_error(
     assert capsys.readouterr().out.splitlines() == [
         "chronicle       up to date, up_to_id 2",
         "source-stats    up to date, up_to_id 2",
+        "graph           up to date, up_to_id 2",
     ]
 
 
@@ -3331,7 +3342,8 @@ def test_redact_event_deletes_its_blob_and_says_which_one_stays(
     assert capsys.readouterr() == (
         "redacted by event 4\n",
         "chronicle       built: 4 events, up_to_id 4\n"
-        "source-stats    built: 4 events, up_to_id 4\n" + _stays(shared_address, 2, 3),
+        "source-stats    built: 4 events, up_to_id 4\n"
+        "graph           built: 4 events, up_to_id 4\n" + _stays(shared_address, 2, 3),
     )
     assert _bucket(blobs.store) == [shared_address]
 

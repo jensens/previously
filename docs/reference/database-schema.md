@@ -2,12 +2,12 @@
 
 # Database schema
 
-Previously stores its data in eight PostgreSQL tables.
+Previously stores its data in ten PostgreSQL tables.
 Three hold the log: `event`, `unit`, and `source_key`.
 One is the blob register beside the log: `event_blob`.
 One is the watermark of the connectors: `watermark`.
-Three hold projections, which are derived from the log and disposable: `projection_state`, `p_chronicle`, and `p_source_stats`; {ref}`projections` explains what that means.
-`src/previously/storage/schema.py` declares all eight as SQLAlchemy Core tables, with no ORM.
+Five hold projections, which are derived from the log and disposable: `projection_state`, `p_chronicle`, `p_source_stats`, `p_graph_version`, and `p_graph_thread`; {ref}`projections` explains what that means.
+`src/previously/storage/schema.py` declares all ten as SQLAlchemy Core tables, with no ORM.
 Each event relates to zero or more units, to at most one source key, and to zero or more rows of the blob register.
 
 ```{mermaid}
@@ -142,7 +142,7 @@ Three more tables hold projections derived from the tables above.
 
 | Column | Type | Accepts NULL | Meaning |
 |---|---|---|---|
-| `name` | `text` | No | The projection's name, such as `chronicle` or `source-stats`. |
+| `name` | `text` | No | The projection's name: `chronicle`, `source-stats`, or `graph`. |
 | `up_to_id` | `bigint` | No | The highest event `id` this projection has processed; `0` before any run. |
 | `version` | `integer` | No | The projection code's derivation version; a mismatch triggers a rebuild. |
 | `built_at` | `timestamp with time zone` | No | When this row was last written. |
@@ -194,6 +194,69 @@ Three more tables hold projections derived from the tables above.
 |---|---|---|
 | `p_source_stats_pkey` | `source` | Primary key. |
 | `p_source_stats_last_event_id_fkey` | `last_event_id` | Foreign key to `event.id`. |
+
+## `p_graph_version`
+
+One row for each version of an entity or a relation, and for each rejection of one, by the thread it belongs to.
+The projection `graph` keeps it together with `p_graph_thread`, and a rebuild empties both.
+
+| Column | Type | Accepts NULL | Meaning |
+|---|---|---|---|
+| `id` | `bigint` | No | The assertion event of the version or the rejection. |
+| `subject` | `bigint` | No | The thread: the subject a version names, or its own `id` for a first version; for a rejection, the subject of the version it rejects. |
+| `kind` | `text` | No | One of `entity`, `relation`, `rejection`. |
+| `under` | `bigint` | Yes | The approval class event a version names; `NULL` for a rejection and for a version under no class. |
+
+A row stands for an event that isn't erased.
+A rejection has a row only while the version it rejects has one, and only when that version comes before it in the chain.
+
+### Constraints and indexes
+
+| Name | On | Enforces |
+|---|---|---|
+| `p_graph_version_pkey` | `id` | Primary key. |
+| `p_graph_version_id_fkey` | `id` | Foreign key to `event.id`. |
+| `p_graph_version_kind_check` | `kind` | `kind IN ('entity','relation','rejection')`. |
+| `p_graph_version_subject_idx` | `subject` | Not unique; no constraint. |
+
+## `p_graph_thread`
+
+One row for each entity and each relation whose versions have a winner: what the fold of its versions makes of it under the approval classes in force.
+A thread whose every version is erased, rejected, or answered has no row.
+No column holds content: the text columns hold words of the vocabulary and of the fold.
+
+| Column | Type | Accepts NULL | Meaning |
+|---|---|---|---|
+| `subject` | `bigint` | No | The thread, as `p_graph_version.subject` names it. |
+| `kind` | `text` | No | `entity` or `relation`. |
+| `type` | `text` | No | The winner's kind of entity or relation, as the vocabulary names it. |
+| `winner_id` | `bigint` | No | The `id` of the winning version. |
+| `level` | `text` | No | The level the winner counts at: `direct`, `transitive`, or `open`. |
+| `state` | `text` | No | The winner's state: `active`, `closed`, or `retracted` for an entity, `standing` or `retracted` for a relation. |
+| `start_entity` | `bigint` | Yes | The entity a relation starts at; `NULL` for an entity and for a relation that starts at an event. |
+| `start_event` | `bigint` | Yes | The event a relation starts at; `NULL` otherwise. |
+| `start_units` | `integer[]` | Yes | The units of `start_event` the relation starts at; `NULL` for all of them, and when `start_event` is `NULL`. |
+| `to_entity` | `bigint` | Yes | The entity a relation points at; `NULL` for an entity and for a question. |
+| `candidates` | `bigint[]` | Yes | The entities a question names; `NULL` otherwise. |
+| `period_start` | `date` | Yes | The first day of a relation's period; `NULL` without a period or with an open start. |
+| `period_end` | `date` | Yes | The last day of a relation's period; `NULL` without a period or with an open end. |
+| `pending` | `integer` | No | The number of versions that wait for the operator. |
+| `objections` | `integer` | No | The number of pending versions that contest the direct winner. |
+| `question` | `boolean` | No | Whether a question of the thread waits for an answer. |
+
+### Constraints and indexes
+
+| Name | On | Enforces |
+|---|---|---|
+| `p_graph_thread_pkey` | `subject` | Primary key. |
+| `p_graph_thread_subject_fkey` | `subject` | Foreign key to `event.id`. |
+| `p_graph_thread_kind_check` | `kind` | `kind IN ('entity','relation')`. |
+| `p_graph_thread_kind_type_idx` | `kind`, `type` | Not unique; no constraint. |
+| `p_graph_thread_to_entity_idx` | `to_entity` | Not unique; no constraint. |
+| `p_graph_thread_start_event_idx` | `start_event` | Not unique; no constraint. |
+
+The migration `0006_graph` creates both tables.
+Its way back drops them and the row of `graph` in `projection_state`, since both can be derived again from the log.
 
 ## `watermark`
 

@@ -517,10 +517,11 @@ def test_the_declared_columns_match_the_migrated_database(db: Engine) -> None:
 
 @pytest.mark.db
 def test_the_projection_tables_exist(db: Engine) -> None:
-    """Stage 1b adds three tables ({ref}`projections`); the migration has to
-    create all three, the metadata has to declare all three, and the two
-    have to agree — `test_the_declared_indexes_exist_in_the_migrated_database`
-    above covers the index the same way."""
+    """Stage 1b added three tables ({ref}`projections`), and `0006_graph` two
+    more for the graph; the migrations have to create all five, the metadata
+    has to declare all five, and the two have to agree —
+    `test_the_declared_indexes_exist_in_the_migrated_database` above covers
+    the indexes the same way."""
     with db.connect() as c:
         names = set(
             c.execute(
@@ -531,8 +532,10 @@ def test_the_projection_tables_exist(db: Engine) -> None:
             .scalars()
             .all()
         )
-    assert {"projection_state", "p_chronicle", "p_source_stats"} <= names
-    assert {"projection_state", "p_chronicle", "p_source_stats"} <= set(metadata.tables)
+    tables = {"projection_state", "p_chronicle", "p_source_stats", "p_graph_version"}
+    tables |= {"p_graph_thread"}
+    assert tables <= names
+    assert tables <= set(metadata.tables)
 
 
 @pytest.mark.db

@@ -2,11 +2,12 @@
 
 # About derived views
 
-Stage 1b adds three tables that carry no truth of their own: `projection_state`, `p_chronicle`, and `p_source_stats`.
+Stage 1b added three tables that carry no truth of their own: `projection_state`, `p_chronicle`, and `p_source_stats`, and the second phase of the assignments adds two for the graph, `p_graph_version` and `p_graph_thread`.
 This page explains what that promise means in practice and why the two content-bearing tables look the way they do.
 Three sections follow on the worker that keeps them current: how it catches up in batches, why a gap in the log can't arise and is checked for all the same, and which test makes the promise more than a claim.
 Two more follow on the commands that read them: why `log` and `chronicle` are two commands rather than one with more options, and what the commands say about what they don't know.
-A last section follows on how the chronicle follows an erasure, and why the per-source statistics don't have to.
+Two follow on the chronicle: how it follows an erasure, and why the per-source statistics don't have to, and why it shows observations only.
+A last one follows on the graph, which keeps no content and folds again only the threads that new events touch.
 
 ## Derivable and disposable
 
@@ -17,7 +18,7 @@ Nothing may come to depend on a projection that a rebuild wouldn't reproduce, be
 The consequence lands on the schema itself.
 A projection carries a foreign key onto `event`, because a projection built for an event that doesn't exist must never stand.
 It carries no foreign key onto another projection, because that would make one derived table depend on another derived table's current state rather than on the log—exactly the dependency the promise rules out.
-{ref}`database-schema` lists the three tables with their columns; this page is where the reason for that missing foreign key belongs.
+{ref}`database-schema` lists the five tables with their columns; this page is where the reason for that missing foreign key belongs.
 
 ## What the two tables are for
 
@@ -281,3 +282,47 @@ An erasure leaves the rows of its units in the log as tombstones, so no row disa
 `units` therefore counts the units recorded, erased ones included, and not the units that still carry content.
 A count of units with content is one an erasure would lower below the bookmark, where the worker never looks again, and keeping it right would take arithmetic that subtracts or a rebuild after every erasure.
 `test_the_stats_keep_counting_an_erased_unit` holds the count before and after an erasure, on the incremental path and rebuilt.
+
+(graph-projection)=
+
+## The graph, folded again thread by thread
+
+Until the second phase of the assignments every reader of the graph folded the whole log: every assertion, every approval class, every version of every thread.
+At 100,000 relations that took seven seconds, and every MCP call paid it for the count of objections in its header.
+The projection `graph` keeps what the fold makes of each thread, so that a reader can look it up instead.
+
+It keeps two tables under one name.
+`p_graph_version` says which versions and which rejections belong to which thread.
+`p_graph_thread` holds, for each thread that has a winner, what the winner is: its kind, type, level and state, its ends, its period, and the counts of pending versions and objections.
+Neither table holds content.
+No name, no field and no source is in them, only ids, counts and words of the vocabulary.
+A reader that shows a version reads it from the log by its id, and that's what lets an erasure hold here without this projection deleting any content: what an erasure takes is gone from the log, and the projection never had it.
+The chronicle had to learn to delete rows when erasure came; the graph never holds a row worth deleting for its content.
+
+A catch-up doesn't fold the batch into stored rows the way `p_source_stats` adds counts.
+A winner isn't additive: a rejection, an approval or a revoked class can turn an older version into the winner again, and an erasure takes a version back out of the fold, which the fold has no step for.
+So a batch marks the threads it touches and folds each of them again from scratch, from its rows in the log, under the approval classes as of the batch's last event.
+A thread is touched by a version of it and by a rejection of one of its versions.
+It's touched by an erasure of one of its rows, and of its subject, since an erased subject still lets later versions of it stand.
+It's touched by an approval class event of a name one of its versions stands under, because every event of a name shares the state of the newest one.
+An erased action may have been a class event, and its name goes with its payload, so the erasure of any action folds every thread under a class again; that's rare, and folding again is always safe.
+A vocabulary event touches nothing, because the fold doesn't read the vocabulary: what fits the vocabulary is the reader's to decide.
+
+Marking too much costs time and nothing else, since folding a thread again gives the same thread however often it runs.
+Marking too little leaves a thread where it stood, and nothing would say so.
+That asymmetry is why the assurance for this projection is a comparison with the fold rather than with a rebuild alone.
+`test_property_the_projection_stands_where_the_fold_does` writes random histories through the write path—versions at every level, assignments of mails and of their units, questions, objections, approvals, rejections, erasures of versions, of mails whose claims the cascade takes, and of class events, classes revoked with and without `demote`—catches up at random points in batches of random size, and after every catch-up holds each row against what `fold_graph` over the whole log makes of its thread.
+Each way a thread changes also has a test of its own, and each was measured red with the marking it needs taken out.
+
+`p_graph_version` is held to the rebuild as well, and that took a rule.
+A catch-up that read a version before it was erased has a row for it, while a rebuild reads the tombstone and writes none.
+So folding a thread again also takes out the rows a rebuild wouldn't write: an erased version or rejection, and a rejection whose version is erased.
+After that, both tables are what reading the log now gives, whichever batches the catch-ups cut it into.
+
+What the projection doesn't follow is what the write path never writes.
+A version written around it that approves or contests a version of another thread counts in the fold once that other version is erased, and the erasure doesn't touch the thread that names it.
+A payload set to `NULL` by hand, without a redaction, is a tombstone without an order, which `verify` reports, and nothing tells the projection to look again.
+In both cases the log stays right and the projection can lag behind it; a rebuild brings it back.
+
+Two readers that catch up at once take turns at the state row of `projection_state`, as every projection does.
+The second starts where the first committed, so neither sees half a batch and no row is written twice; `test_two_catch_ups_at_once_write_every_row_once_and_end_where_the_fold_does` holds that, and the primary key of `p_graph_version` would refuse a second row for one version if it didn't.

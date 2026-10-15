@@ -31,7 +31,7 @@ See {ref}`cli-reference` for the four outcomes and their exact wording.
 ## Force a rebuild after a change to the derivation
 
 Raise the projection's version in the code whenever you change how its rows are derived.
-`ChronicleProjection.version` in `src/previously/core/projection/chronicle.py` carries the chronicle's version, and `SourceStatsProjection.version` in `src/previously/core/projection/source_stats.py` carries the statistics' version.
+`ChronicleProjection.version` in `src/previously/core/projection/chronicle.py` carries the chronicle's version, `SourceStatsProjection.version` in `src/previously/core/projection/source_stats.py` carries the statistics' version, and `GraphProjection.version` in `src/previously/core/projection/graph.py` carries the graph's version.
 Read the current value there, and raise it by one.
 For a chronicle at version 3, the line becomes this one:
 
@@ -40,9 +40,9 @@ version: int = 4
 ```
 
 Then run `previously project`.
-It empties that projection's table and builds it again from the log.
+It empties that projection's tables and builds them again from the log.
 The line for the projection you raised begins with `rebuilt:`, names the version it moved from and to, and ends with the number of events projected and the new `up_to_id`.
-The line for the projection you left alone reports `up to date`.
+The lines for the projections you left alone report `up to date`.
 If `previously redact` runs before `previously project` does, it catches the projections up itself, and prints the same `rebuilt:` line on standard error.
 
 A raised version rebuilds the rows and leaves the table's columns and indexes as they are.
@@ -62,7 +62,7 @@ Pass `psql` the plain `postgresql://` form of the connection, not the value of `
 Take the host, port, database and credentials from the value you have set; see {ref}`configuration-reference` for its form.
 
 With no state row left to compare against, that projection's line begins with `built:` instead of `rebuilt:`.
-The line for the other projection again reports `up to date`.
+The lines for the other projections again report `up to date`.
 
 :::{warning}
 The `DELETE` drops the bookmark and leaves the rows of `p_chronicle` standing.

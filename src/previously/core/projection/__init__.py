@@ -4,6 +4,7 @@
 """Projections: derived, disposable views over the log ({ref}`projections`)."""
 
 from previously.core.projection.chronicle import CHRONICLE
+from previously.core.projection.graph import GRAPH
 from previously.core.projection.source_stats import SOURCE_STATS
 from previously.core.projection.worker import Batch
 from previously.core.projection.worker import catch_up
@@ -12,6 +13,15 @@ from previously.core.projection.worker import Projection
 
 
 # Every projection the command line catches up, in this order.
-PROJECTIONS: tuple[Projection, ...] = (CHRONICLE, SOURCE_STATS)
+PROJECTIONS: tuple[Projection, ...] = (CHRONICLE, SOURCE_STATS, GRAPH)
 
-__all__ = ["CHRONICLE", "PROJECTIONS", "SOURCE_STATS", "Batch", "Outcome", "Projection", "catch_up"]
+__all__ = [
+    "CHRONICLE",
+    "GRAPH",
+    "PROJECTIONS",
+    "SOURCE_STATS",
+    "Batch",
+    "Outcome",
+    "Projection",
+    "catch_up",
+]

@@ -25,6 +25,7 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
+    from previously.contract.store import LogStore
     from previously.contract.store import ProjectionStore
     from previously.core.projection.worker import Batch
 
@@ -127,7 +128,9 @@ class ChronicleProjection:
     name: str = "chronicle"
     version: int = 3
 
-    def write[Conn](self, store: ProjectionStore[Conn], conn: Conn, batch: Batch) -> None:
+    def write[Conn](
+        self, store: ProjectionStore[Conn], log: LogStore[Conn], conn: Conn, batch: Batch
+    ) -> None:
         # Insert first, then delete. A redaction that `redact` wrote finds
         # its target's units erased already, and the order makes no
         # difference to it. It does to a target that still carries what its

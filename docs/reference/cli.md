@@ -101,9 +101,9 @@ It takes no arguments.
 `migrate` prints one line to standard output, in one of two forms:
 
 ```text
-migrated: (empty) -> 0005_watermark
-migrated: 0002_projections -> 0005_watermark
-up to date: 0005_watermark
+migrated: (empty) -> 0006_graph
+migrated: 0002_projections -> 0006_graph
+up to date: 0006_graph
 ```
 
 The first form names the revision the database was at, or `(empty)` for a database without a schema, and the newest revision, which the database is at now.
@@ -119,14 +119,14 @@ The lock is a session lock outside any transaction, and a `migrate` that fails g
 A database at a revision this version doesn't know, such as one that a newer version of previously has migrated already, is refused, and nothing changes:
 
 ```text
-Error: the database is at revision 0006_example, which this version of previously does not know; it knows revisions up to 0005_watermark
+Error: the database is at revision 0007_example, which this version of previously does not know; it knows revisions up to 0006_graph
 ```
 
 A database that refuses the role in `PREVIOUSLY_DSN` the reading of the revision or a step of the migration gives one sentence that names the newest revision and the database's own reason:
 
 ```text
-Error: the database refused the migration to 0005_watermark: permission denied for schema public
-Error: the database refused the migration to 0005_watermark: permission denied for table alembic_version
+Error: the database refused the migration to 0006_graph: permission denied for schema public
+Error: the database refused the migration to 0006_graph: permission denied for table alembic_version
 ```
 
 The first comes from a role that may not create a table in schema `public`, which since PostgreSQL 15 is every role but the owner of the database and a superuser.
@@ -796,7 +796,7 @@ On every error, the temporary file is gone and an existing `--output` is unchang
 Brings every projection up to the tip of the log.
 It takes no arguments.
 
-`project` prints one line per projection, `chronicle` first and `source-stats` second.
+`project` prints one line per projection: `chronicle` first, `source-stats` second, and `graph` third.
 Each line holds the projection's name padded to 15 characters, a space, and the outcome of the run.
 There are four outcomes:
 

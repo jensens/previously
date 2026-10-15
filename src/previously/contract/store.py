@@ -13,7 +13,9 @@ the repository in bash or fish:
 The files are every module of `core` that names `LogStore`, twelve that day
 with `core/assertions.py`, and fifteen on 2026-10-14, when `core/vocabulary.py`,
 `core/classes.py` and `core/graph_write.py` joined them and the count stayed
-fifteen; it is not copied from the method list of the implementation.
+fifteen; sixteen on 2026-10-15, when `core/projection/graph.py` joined them,
+reading the log through `events_by_id` and `actions`, and the count stayed
+fifteen again; it is not copied from the method list of the implementation.
 Where `__pycache__` directories exist, `grep -rl` lists their compiled files
 as well, and the first `grep` takes no name out of them, so the count stays
 the same. The docstring is raw so that the text in this file is the command, backslashes as
@@ -78,6 +80,8 @@ if TYPE_CHECKING:
     from datetime import datetime
     from previously.contract.rows import ChronicleRow
     from previously.contract.rows import EventRow
+    from previously.contract.rows import GraphThreadRow
+    from previously.contract.rows import GraphVersionRow
     from previously.contract.rows import ProjectionState
     from previously.contract.rows import SourceStatsRow
     from previously.contract.rows import Tip
@@ -178,6 +182,19 @@ class ProjectionStore[Conn](Protocol):
     (`ON CONFLICT DO UPDATE SET …`) the correctness of the incremental step
     would sit in `storage`, and the claim "derivation without SQL" would be
     false.
+
+    The graph projection keeps two tables under one name, and
+    `truncate_projection("graph")` empties both. `insert_graph_versions`
+    writes rows of `p_graph_version`, `graph_versions` reads those of the
+    given ids, `graph_version_ids` the ids of every row of the given
+    subjects, and `class_subjects` the subjects of the versions under any of
+    the given approval class events; `delete_graph_versions` takes the rows
+    of the given ids. `upsert_graph_threads` writes rows of `p_graph_thread`
+    as given, replacing what stood under their subjects, and
+    `delete_graph_threads` takes the rows of the given subjects. Which
+    threads to fold again and what they stand at is decided in
+    `core.projection.graph`, for the reason `upsert_source_stats` gives. An
+    empty sequence is no statement for any of them.
     """
 
     def begin(self) -> AbstractContextManager[Conn]: ...
@@ -188,6 +205,13 @@ class ProjectionStore[Conn](Protocol):
     def delete_chronicle(self, conn: Conn, event_id: int, seqs: Sequence[int] | None) -> None: ...
     def source_stats(self, conn: Conn, sources: Sequence[str]) -> dict[str, SourceStatsRow]: ...
     def upsert_source_stats(self, conn: Conn, rows: Sequence[SourceStatsRow]) -> None: ...
+    def insert_graph_versions(self, conn: Conn, rows: Sequence[GraphVersionRow]) -> None: ...
+    def graph_versions(self, conn: Conn, ids: Sequence[int]) -> dict[int, GraphVersionRow]: ...
+    def graph_version_ids(self, conn: Conn, subjects: Sequence[int]) -> dict[int, list[int]]: ...
+    def class_subjects(self, conn: Conn, under_ids: Sequence[int]) -> set[int]: ...
+    def delete_graph_versions(self, conn: Conn, ids: Sequence[int]) -> None: ...
+    def upsert_graph_threads(self, conn: Conn, rows: Sequence[GraphThreadRow]) -> None: ...
+    def delete_graph_threads(self, conn: Conn, subjects: Sequence[int]) -> None: ...
 
 
 class WatermarkStore[Conn](Protocol):

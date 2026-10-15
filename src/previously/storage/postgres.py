@@ -24,6 +24,8 @@ keep the two apart.
 from contextlib import contextmanager
 from previously.contract.rows import ChronicleRow
 from previously.contract.rows import EventRow
+from previously.contract.rows import GraphThreadRow
+from previously.contract.rows import GraphVersionRow
 from previously.contract.rows import ProjectionState
 from previously.contract.rows import SourceStatsRow
 from previously.contract.rows import Tip
@@ -40,6 +42,8 @@ from previously.storage.errors import TransactionAborted
 from previously.storage.schema import event
 from previously.storage.schema import event_blob
 from previously.storage.schema import p_chronicle
+from previously.storage.schema import p_graph_thread
+from previously.storage.schema import p_graph_version
 from previously.storage.schema import p_source_stats
 from previously.storage.schema import projection_state
 from previously.storage.schema import source_key
@@ -719,11 +723,13 @@ class PostgresStorage:
 
     # --- ProjectionStore ({ref}`projections`) --------------------------------
 
-    # Name as the caller knows it -> table. `truncate_projection` takes the
-    # name and not the table, because `core` must not know a `Table`.
-    _PROJECTION_TABLES: ClassVar[dict[str, Table]] = {
-        "chronicle": p_chronicle,
-        "source-stats": p_source_stats,
+    # Name as the caller knows it -> its tables. `truncate_projection` takes
+    # the name and not a table, because `core` must not know a `Table`; a
+    # projection may keep more than one, and a rebuild empties them all.
+    _PROJECTION_TABLES: ClassVar[dict[str, tuple[Table, ...]]] = {
+        "chronicle": (p_chronicle,),
+        "source-stats": (p_source_stats,),
+        "graph": (p_graph_thread, p_graph_version),
     }
 
     def projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
@@ -786,15 +792,16 @@ class PostgresStorage:
         )
 
     def truncate_projection(self, conn: Connection, name: str) -> None:
-        """Empties one projection table. A plain DELETE, not TRUNCATE: TRUNCATE
-        takes an ACCESS EXCLUSIVE lock and is not transactional in the sense
-        that matters here — the caller's transaction has to be able to roll
-        it back together with the state row."""
+        """Empties the tables of one projection. A plain DELETE, not TRUNCATE:
+        TRUNCATE takes an ACCESS EXCLUSIVE lock and is not transactional in the
+        sense that matters here — the caller's transaction has to be able to
+        roll it back together with the state row."""
         try:
-            table = self._PROJECTION_TABLES[name]
+            tables = self._PROJECTION_TABLES[name]
         except KeyError:
             raise ValueError(f"unknown projection {name!r}") from None
-        conn.execute(delete(table))
+        for table in tables:
+            conn.execute(delete(table))
 
     def insert_chronicle(self, conn: Connection, rows: Sequence[ChronicleRow]) -> None:
         if not rows:
@@ -878,6 +885,98 @@ class PostgresStorage:
             ],
         )
 
+    def insert_graph_versions(self, conn: Connection, rows: Sequence[GraphVersionRow]) -> None:
+        """A plain insert: every id is read once, in the batch that holds it,
+        so a second row for one id is a catch-up that went wrong, and the
+        primary key says so."""
+        if not rows:
+            return
+        conn.execute(
+            insert(p_graph_version),
+            [{"id": r.id, "subject": r.subject, "kind": r.kind, "under": r.under} for r in rows],
+        )
+
+    def graph_versions(self, conn: Connection, ids: Sequence[int]) -> dict[int, GraphVersionRow]:
+        if not ids:
+            return {}
+        return {
+            row.id: GraphVersionRow(row.id, row.subject, row.kind, row.under)
+            for row in conn.execute(select(p_graph_version).where(p_graph_version.c.id.in_(ids)))
+        }
+
+    def graph_version_ids(self, conn: Connection, subjects: Sequence[int]) -> dict[int, list[int]]:
+        """The ids of every row under each of `subjects`, ascending; a subject
+        without a row is not in the result."""
+        if not subjects:
+            return {}
+        found: dict[int, list[int]] = {}
+        for row in conn.execute(
+            select(p_graph_version.c.subject, p_graph_version.c.id)
+            .where(p_graph_version.c.subject.in_(subjects))
+            .order_by(p_graph_version.c.id)
+        ):
+            found.setdefault(row.subject, []).append(row.id)
+        return found
+
+    def class_subjects(self, conn: Connection, under_ids: Sequence[int]) -> set[int]:
+        """The subjects of the versions under any of `under_ids`. No index
+        serves `under`: a class event is rare, and the table is read once for
+        it."""
+        if not under_ids:
+            return set()
+        return set(
+            conn.execute(
+                select(p_graph_version.c.subject)
+                .distinct()
+                .where(p_graph_version.c.under.in_(under_ids))
+            ).scalars()
+        )
+
+    def delete_graph_versions(self, conn: Connection, ids: Sequence[int]) -> None:
+        if not ids:
+            return
+        conn.execute(delete(p_graph_version).where(p_graph_version.c.id.in_(ids)))
+
+    def upsert_graph_threads(self, conn: Connection, rows: Sequence[GraphThreadRow]) -> None:
+        """Writes the rows as given, each replacing the row of its subject —
+        what a thread stands at is folded in `core` ({ref}`projections`)."""
+        if not rows:
+            return
+        statement = pg_insert(p_graph_thread)
+        columns = [column.name for column in p_graph_thread.columns if column.name != "subject"]
+        conn.execute(
+            statement.on_conflict_do_update(
+                index_elements=[p_graph_thread.c.subject],
+                set_={name: statement.excluded[name] for name in columns},
+            ),
+            [
+                {
+                    "subject": r.subject,
+                    "kind": r.kind,
+                    "type": r.type,
+                    "winner_id": r.winner_id,
+                    "level": r.level,
+                    "state": r.state,
+                    "start_entity": r.start_entity,
+                    "start_event": r.start_event,
+                    "start_units": None if r.start_units is None else list(r.start_units),
+                    "to_entity": r.to_entity,
+                    "candidates": None if r.candidates is None else list(r.candidates),
+                    "period_start": r.period_start,
+                    "period_end": r.period_end,
+                    "pending": r.pending,
+                    "objections": r.objections,
+                    "question": r.question,
+                }
+                for r in rows
+            ],
+        )
+
+    def delete_graph_threads(self, conn: Connection, subjects: Sequence[int]) -> None:
+        if not subjects:
+            return
+        conn.execute(delete(p_graph_thread).where(p_graph_thread.c.subject.in_(subjects)))
+
     # --- WatermarkStore -------------------------------------------------------
 
     def watermark(self, conn: Connection, connector: str) -> Watermark | None:
@@ -920,8 +1019,34 @@ class PostgresStorage:
         )
 
     # --- Reads for the command line, outside the protocols -------------------
-    # Like `units`: only `cli` calls these. The protocols hold what `core`
-    # needs, and `core` never reads a projection back.
+    # Like `units`: only `cli` and the tests call these. The protocols hold
+    # what `core` needs, and `core` reads a projection back only to catch it
+    # up, as the graph reads its versions to fold a thread again.
+
+    def read_graph_threads(self, conn: Connection) -> list[GraphThreadRow]:
+        """Every row of `p_graph_thread`, by subject: what the tests hold
+        against the fold."""
+        return [
+            GraphThreadRow(
+                subject=row.subject,
+                kind=row.kind,
+                type=row.type,
+                winner_id=row.winner_id,
+                level=row.level,
+                state=row.state,
+                start_entity=row.start_entity,
+                start_event=row.start_event,
+                start_units=None if row.start_units is None else tuple(row.start_units),
+                to_entity=row.to_entity,
+                candidates=None if row.candidates is None else tuple(row.candidates),
+                period_start=row.period_start,
+                period_end=row.period_end,
+                pending=row.pending,
+                objections=row.objections,
+                question=row.question,
+            )
+            for row in conn.execute(select(p_graph_thread).order_by(p_graph_thread.c.subject))
+        ]
 
     def tip_and_bookmark(self, conn: Connection, name: str) -> TipAndBookmark:
         """Both numbers out of **one** statement, for the lag of one projection.

@@ -45,7 +45,15 @@ class Projection(Protocol):
     `name` and `version` are read-only properties, not attributes: the
     implementations are frozen dataclasses, whose fields pyright treats as
     read-only, and a protocol attribute `name: str` is mutable — the two
-    would not match."""
+    would not match.
+
+    `write` writes through `store` and may read the log through `log`, both
+    in the transaction of `conn`: the graph folds a thread again from its
+    versions in the log, so that its tables need to hold no content
+    ({ref}`projections`). The other two read only the batch. Two parameters
+    for one store, the way `catch_up` takes two, and the log stays
+    read-only to a projection, since `LogStore` holds no method that
+    changes it."""
 
     @property
     def name(self) -> str: ...
@@ -53,7 +61,9 @@ class Projection(Protocol):
     @property
     def version(self) -> int: ...
 
-    def write[Conn](self, store: ProjectionStore[Conn], conn: Conn, batch: Batch) -> None: ...
+    def write[Conn](
+        self, store: ProjectionStore[Conn], log: LogStore[Conn], conn: Conn, batch: Batch
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -156,7 +166,7 @@ def catch_up[Conn](
                 units=log.units_by_event(conn, ids),
                 keys=log.source_keys(conn, ids),
             )
-            projection.write(store, conn, batch)
+            projection.write(store, log, conn, batch)
             state = replace(state, up_to_id=events[-1].id, built_at=datetime.now(UTC))
             store.set_projection_state(conn, state)
             processed += len(events)
