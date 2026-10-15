@@ -27,7 +27,7 @@ Gebaut und abgenommen, auf `main`:
 | Einheit 4 | MCP-Lesezugang: Clients als Prinzipale mit Token und Verarbeitungskette (`client`); die Zusage um Betreiber, Training, Unterverarbeiter und Herkunft des Modells erweitert, die Regel um die vier passenden Einschränkungen; `previously mcp` (stdio) und `previously serve` (HTTP, beide Generationen, Bereitschaft über `GET /healthz` ohne Token); fünf Werkzeuge, zwei Ressourcen-Vorlagen, zwei Prompts, jeder Inhalt nur nach `decide` mit der Kette des Clients; das Zugriffsprotokoll als `mcp_access` und `previously access`; `policy gaps` zählt, was MCP zurückhielt; die Seiten `mcp-interface.md`, `mcp-tools.md` und die Anleitung `connect-claude-code-and-vibe.md`; der Handoff `handoffs/2026-10-11-kup6s-mcp.md` | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, beide eingefroren am 2026-10-11 | PR #12, `ffa28fb`; veröffentlicht als `v0.1.0a3` am 2026-10-11; Bedingung 9 erledigt am 2026-10-11, nach Entscheidung des Betreuers auf den Lauf von kup6s (RG), ohne Vibe und ohne die drei Kreise |
 | Einheit 5 | Feststellungen: Verpflichtung und Entscheidung mit Quellen (`core/assertion.py`, `core/assertions.py`), Vorschläge, Freigabe und Ablehnung, Lesen durch Falten des Logs, die Kommandos dazu, fünf MCP-Werkzeuge; die Antworten in einem Aufruf (PR #20) | `specs/2026-10-12-pilot-feststellungen.md`, eingefroren am 2026-10-12 | PR #17, `4735e3f`; veröffentlicht als `v0.1.0a5`; die Abnahme nach F §14 lief am 2026-10-13; `v0.1.0a6` mit PR #20 |
 | Zuordnungen, Phase 1 | Das Vokabular als Handlung `vocabulary` mit Grundvokabular (`core/vocabulary.py`), Entitäten und Beziehungen als Feststellungen (`core/graph.py`, `core/graph_write.py`), die Freigabeklassen (`core/classes.py`), die Kommandos dazu, fünf MCP-Werkzeuge | `specs/2026-10-14-zuordnungen.md` (lebendig) | PR #24, `cce8b4b`; veröffentlicht als `v0.1.0a7`; der Lauf mit Vellenfeld nach Z §17 Punkt 1 lief am 2026-10-14 in kup6s (die vier Befunde sind geschlossen, `14de3d3`) |
-| Zuordnungen, Phase 2 | Die Zuordnung von Events und Einheiten an Klammern: die Art `concerns` im Grundvokabular (`from = ["event"]`, `to = ["*"]`), ein Event am Anfang ist Quelle, `members` (die Menge einer Klammer, das Genauere ersetzt das Allgemeine); die Projektion `graph` (Migration `0006_graph`, `p_graph_version`, `p_graph_thread`), von Lesern beim Lesen nachgezogen, mit Rückfall auf das Falten des Logs; `project --check`; `chronicle --within N` und MCP `previously(within=N)`, über MCP zählt eine Kante nur, wo der Client sie sieht; die Seiten und `handoffs/2026-10-15-kup6s-graph-phase-2.md` | `specs/2026-10-14-zuordnungen.md` (lebendig), Plan `plans/2026-10-15-zuordnungen-phase-2.md` | gebaut auf dem Zweig `worktree-zuordnungen-2`, noch nicht gemerged; Endprüfung und Messung am 2026-10-15 gelaufen, die Fixwelle danach; PR, Release und Handoff stehen aus |
+| Zuordnungen, Phase 2 | Die Zuordnung von Events und Einheiten an Klammern: die Art `concerns` im Grundvokabular (`from = ["event"]`, `to = ["*"]`), ein Event am Anfang ist Quelle, `members` (die Menge einer Klammer, das Genauere ersetzt das Allgemeine); die Projektion `graph` (Migration `0006_graph`, `p_graph_version`, `p_graph_thread`), von Lesern beim Lesen nachgezogen und nur von `previously project` gebaut, ohne Rückfall auf das Falten des Logs (Fixrunde F2); `project --check`; `chronicle --within N` und MCP `previously(within=N)`, über MCP zählt eine Kante nur, wo der Client sie sieht; die Seiten und `handoffs/2026-10-15-kup6s-graph-phase-2.md` | `specs/2026-10-14-zuordnungen.md` (lebendig), Plan `plans/2026-10-15-zuordnungen-phase-2.md` | gebaut auf dem Zweig `worktree-zuordnungen-2`, noch nicht gemerged; Endprüfung und Messung am 2026-10-15 gelaufen, die Fixwelle danach; PR, Release und Handoff stehen aus |
 
 Mit Stufe 1c ist Teilprojekt 1 gebaut und abgeschlossen, wie die Architektur
 es in §12.1 zuschneidet: Log, Projektionen, Blobs. Die Auslieferung und die
@@ -568,13 +568,12 @@ das mit der Endprüfung ins Repository kommt):
   überschrieben, ohne gezeigt worden zu sein. Dasselbe Muster wie bei
   `policy`, mit einem Betreiber harmlos. `--base` rechnet die fehlenden Arten
   seit der Endprüfung in der Schreib-Transaktion (P-Z1, Ruling F-a).
-- **`cli.py` teilen.** 4 274 Zeilen zur Endprüfung; die Befehle des Graphen
-  stehen in einem Block (etwa Zeilen 2 995–3 950) und könnten ohne
-  Verhaltensänderung `previously/cli_graph.py` werden (P-Z1, Endprüfung).
-  Nach Phase 2 sind es 4 483 Zeilen, und `mcp_server/server.py` wuchs von
-  3 062 auf 3 245; `cli.py` ist das Modul, das jede Aufgabe berührt. Vor
-  Phase 3, die `in_circle` dazubringt, nach Familien teilen: Leser des
-  Graphen, Schreiber, Betrieb (P-Z2, Endprüfung M-4).
+- **`cli.py` teilen.** Die Befehle des Graphen stehen in einem Block und
+  könnten ohne Verhaltensänderung `previously/cli_graph.py` werden (P-Z1,
+  Endprüfung). Mit Phase 2 wuchsen `cli.py` und `mcp_server/server.py`
+  weiter, und `cli.py` ist das Modul, das jede Aufgabe berührt. Vor Phase 3,
+  die `in_circle` dazubringt, nach Familien teilen: Leser des Graphen,
+  Schreiber, Betrieb (P-Z2, Endprüfung M-4).
 - **Zurückgestellte Kleinigkeiten, die Erinnerung verdienen:**
   - Aufgabe 1: Eine Art, die eine eingebaute nennt, lässt sich stilllegen,
     ohne dass die Prüfung der Verweise greift — `person` stilllegen, während
@@ -634,10 +633,6 @@ das mit der Endprüfung ins Repository kommt):
   antworten mit demselben Satz, aber eine verborgene Klammer geht erst durch die
   Sichtbarkeitsprüfung; ein Client könnte den Unterschied messen. Die Probe ist
   grob, gibt keinen Inhalt frei und ist von der Art, die die Schreibwerkzeuge schon hinnehmen (Aufgabe 5, Review ⚠️ 4).
-- **Eine Rolling-Update-Lücke ohne Lösung.** Zwei Versionen nebeneinander
-  bauen die Projektion einander um, jeder Aufruf fällt auf das Falten zurück
-  (richtig, langsamer). Der Handoff sagt es: das Update zu Ende führen, dann
-  `previously project`.
 - **`relations --at` und `entities` nutzen die Projektion nur zur Hälfte.**
   Die Projektion gibt die Kennungen, aber jeder gelistete Faden wird aus dem Log
   gefaltet, weil die Leser zeigen, was im Log steht (Ruling T4-a der Phase 2).
@@ -645,15 +640,11 @@ das mit der Endprüfung ins Repository kommt):
   10 000 und 6,78 s bei 100 000 Beziehungen, `entities` 0,30 s und 3,51 s, je
   mit jeder Zeile auf der Ausgabe. Eine volle Liste über 100 000 trägt nicht;
   ein Filter oder eine Seite davor wäre die Antwort (P-Z2, Endprüfung, Messung).
-- **Der Rückfall auf das Falten und die Prüfung einer Klammer stehen zweimal.**
-  `cli.py` `_caught_up`, `_reader_graph` und `_graph_warning` gegen
-  `server.py` `caught_up` und `read_graph`; `cli.py` `_bracket_selection` gegen
-  `server.py` `bracket` (dieselbe Prüfung `1 <= N <= MAX_SAFE_INT` und `N in
-  EntityTypes(graph)`). Der Befund I-1 der Endprüfung musste deshalb zweimal
-  behoben werden. Ein kleines `projection_graph_or_none` in
-  `core/graph_read.py` könnte „steht, sonst `None`“ tragen; das Tupel der
-  Ausnahmen kann nicht nach `core`, `StorageError` steht in `storage`
-  (P-Z2, Endprüfung M-3).
+- **Die Prüfung einer Klammer steht zweimal.** `cli.py` `_bracket_selection`
+  gegen `server.py` `bracket` (dieselbe Prüfung `1 <= N <= MAX_SAFE_INT` und
+  `N in EntityTypes(graph)`). Der Rückfall auf das Falten, der ebenfalls
+  zweimal stand, ist seit der Fixrunde F2 entfernt; beide Leser gehen durch
+  `graph_snapshot` in `core/graph_read.py` (P-Z2, Endprüfung M-3).
 - **Ein Leser liest die Klassen zum Schnappschuss, die Zeilen zum Nachzug.**
   `core/graph_read.py` liest `read_classes(log, conn)` über den ganzen Log, die
   Zeilen (`level`, `pending`) sind unter den Klassen bei `up_to_id` gefaltet.
@@ -679,16 +670,31 @@ das mit der Endprüfung ins Repository kommt):
   `cascaded: assertion N`, aber keinen Hinweis „den Rest neu zuordnen“. Bewusst
   auf der sicheren Seite; offen, ob ein Satz in einer Anleitung oder in der
   Ausgabe von `redact` genügt (P-Z2, Endprüfung ⚠️ 4).
-- **Die Zeilensperre von `projection_state` hat kein Zeitlimit.** Jeder
-  Leser der Kommandozeile und jeder MCP-Aufruf zieht die Projektion nach und
-  nimmt dabei die Zeile `FOR UPDATE`; kein `lock_timeout` steht in `src`. Der
-  erste Aufruf nach einer großen Aufnahme oder nach einem Upgrade, das
-  `GRAPH.version` hebt, macht den ganzen Nachzug im Aufruf (der erste Bau
-  dauert bei 100 000 Beziehungen 34,6 s), und jeder gleichzeitige Aufruf wartet
-  so lange an der Sperre. Der Handoff sagt, nach einem Upgrade und nach einer
-  großen Aufnahme `previously project` laufen zu lassen; ob ein Leser
-  stattdessen nach einer Frist auf das Falten zurückfallen soll, ist offen
-  (P-Z2, Endprüfung ⚠️ 2).
+- **Beobachten: der Nachzug im Aufruf nach einer großen Aufnahme.** Jeder
+  Leser der Kommandozeile und jeder MCP-Aufruf zieht die Projektion nach,
+  bevor er liest, und nimmt dabei die Zeile von `projection_state` `FOR
+  UPDATE`; kein `lock_timeout` steht in `src`. Der erste Aufruf nach einer
+  großen Aufnahme zahlt den Nachzug, und jeder gleichzeitige wartet so lange
+  an der Sperre. Ein Nachzug kostet höchstens, was ein Bau kostet: 3,54 s bei
+  10 000 und 34,6 s bei 100 000 Beziehungen (2026-10-15, `22b3dec`). Nach
+  einem Upgrade baut kein Leser mehr, das tut `previously project` im
+  Upgrade-Schritt (Ruling F-c der Phase 2). Massenaufnahmen von 10 000 Mails
+  sind nach dem Betreuer unwahrscheinlich oder sehr selten; der Handoff rät,
+  danach `previously project` laufen zu lassen. Schwelle: ein Aufruf, der
+  nach einer Aufnahme länger als eine Sekunde am Nachzug hängt. Nächste
+  Gegenmaßnahme dann: der Schreibweg zieht die Projektion in seiner eigenen
+  Transaktion nach; ein Worker mit `LISTEN/NOTIFY` erst danach. Ein Rückfall
+  auf das Falten nach einer Frist ist keine Antwort mehr (Ruling F-c der
+  Phase 2; P-Z2, Endprüfung ⚠️ 2).
+- **Beobachten: die Bauzeit gegen das Upgrade-Fenster.** Nur `previously
+  project` baut eine Projektion, im Upgrade-Schritt nach `migrate` und bevor
+  die neue Fassung dient. Hebt eine Fassung `GRAPH.version`, schlagen die
+  Graph-Aufrufe der alten Pods vom Beginn des Baus an fehl, bis sie ersetzt
+  sind, und ihre Bereitschaftsprobe sagt 503. Der Bau wächst linear mit dem
+  Log: 3,54 s bei 10 000 und 34,6 s bei 100 000 Beziehungen (2026-10-15,
+  `22b3dec`). Schwelle: der Bau dauert länger, als das Upgrade-Fenster des
+  Betreibers verträgt. Dann: die neue Fassung in Schattentabellen neben der
+  alten bauen und umschalten (Ruling F-c der Phase 2, Fixrunde F2).
 - **Phasen 3 und 4 selbst**, im Spec ausgearbeitet und nicht gebaut (Phase 2,
   die Zuordnung von Events und Einheiten mit `chronicle --within` und `within`
   über MCP, ist gebaut, der Parameter heißt `within` und nicht `in`): Kreise im Graphen, die das Gate liest, mit
@@ -753,16 +759,6 @@ das mit der Endprüfung ins Repository kommt):
 
 ### Storage-Schnittstelle
 
-- **Eine fehlende Berechtigung meldet sich als unvollständiges Schema.**
-  `_transaction` in `storage/postgres.py` übersetzt jeden `ProgrammingError`
-  nach dem Verbinden in `MigrationPending` („database schema incomplete —
-  `previously migrate` has not run yet“), und psycopg führt
-  `InsufficientPrivilege` (SQLSTATE 42501) als `ProgrammingError`, nachgesehen
-  am 2026-10-15 mit dem psycopg des Locks. Eine Rolle ohne Schreibrecht auf
-  die Projektionstabellen bekommt also richtige, langsame Antworten und im Log
-  einen Satz, der zum falschen Befehl rät. Die SQLSTATE-Klasse 42 zu trennen
-  (42501 gegen 42P01) gäbe den richtigen Satz (P-Z2, Fixwelle der Endprüfung,
-  beim Schreiben des Handoffs gefunden).
 - Worauf `core` baut, steht nicht im Protokoll: Isolationsstufe von `begin()`
   und `snapshot()`, die Fehlerklassen `ChainPositionTaken` und
   `SourceKeyTaken` aus `previously.storage.errors`, und dass `LogStore` und
@@ -1641,6 +1637,21 @@ auf `assertions.md` unter *What the pilot leaves open*.
   Nachtrag).
 
 ## Erledigt, seit es auf einer Liste stand
+
+- ~~Eine fehlende Berechtigung meldet sich als unvollständiges Schema~~
+  (P-Z2, Fixwelle der Endprüfung, beim Schreiben des Handoffs gefunden) —
+  geschlossen in der Fixrunde F2, PR #26: `_transaction` übersetzt SQLSTATE
+  42501 in `PrivilegeMissing` mit dem Grund der Datenbank („the role of
+  PREVIOUSLY_DSN lacks a privilege on database …: permission denied for
+  table projection_state“). Gemessen am 2026-10-15 mit einer Rolle, die die
+  Projektionstabellen nur lesen darf: auf `a4c04f2` bekam `entities` den
+  Satz „database schema incomplete“ als Warnung und faltete den Log, ohne die
+  Übersetzung den Satz als Fehler, mit ihr den richtigen Grund.
+- ~~Eine Rolling-Update-Lücke ohne Lösung~~ (P-Z2) — geschlossen in der
+  Fixrunde F2, PR #26 (Ruling F-c der Phase 2): nur `previously project`
+  baut; alte Pods bauen nicht zurück, sondern schlagen beim Graphen fehl und
+  melden sich über `/healthz` als nicht bereit, bis sie ersetzt sind. Der
+  Handoff verlangt `previously project` nach `migrate` und vor dem Dienst.
 
 - ~~Ein Ereignis als Beginn einer Beziehung, was Phase 2 ändern muss~~
   (P-Z1, Endprüfung) — geschlossen mit Phase 2 der Zuordnungen, PR #26

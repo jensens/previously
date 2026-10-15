@@ -197,7 +197,8 @@ class ProjectionStore[Conn](Protocol):
     same way, and returns `None`: a second transaction asking meanwhile
     waits until the first ends and then finds the row the first committed.
     Version 0 is no version a projection declares, so a placeholder that
-    were ever committed as it is would only make the next catch-up rebuild.
+    were ever committed as it is would only make the next `previously
+    project` rebuild, and every other catch-up stop until it has.
 
     `delete_chronicle` takes the chronicle rows of one event: those of the
     named units, or with `None` every row of the event; an empty sequence is
@@ -270,8 +271,9 @@ class GraphStore[Conn](Protocol):
     `read_graph_versions` gives every row of `p_graph_version` by id, which
     `previously project --check` holds against what a rebuild would write.
     `projection_state` reads the state row of a projection without locking
-    it: a reader holds it against the outcome of its catch-up, and folds the
-    log where the projection no longer stands there.
+    it: a reader holds it against the outcome of its catch-up, and catches
+    up again where the projection no longer stands there, and the readiness
+    probe of the MCP server holds its version against the code's.
     """
 
     def read_graph_threads(

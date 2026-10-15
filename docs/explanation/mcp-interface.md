@@ -177,7 +177,10 @@ With it, the SDK publishes metadata that sends a client to an authorization serv
 So a small wrapper of the server's own checks the token, and moving to an authorization server later replaces that wrapper and nothing else.
 
 One request passes without a token: `GET /healthz`, the probe that tells a deployment whether the server is ready.
-It answers `ok` after a trivial query of the database, or 503 when the database doesn't answer, and it reaches no MCP, returns no data and writes no entry.
+It answers `ok` after one read of the graph projection's state row, or 503 when the database doesn't answer, and it reaches no MCP, returns no data and writes no entry.
+It also answers 503, with a body of its own, while the graph projection isn't at the version this release declares: every graph call would fail meanwhile, since only `previously project` builds the projection ({ref}`graph-readers`), and a pod that isn't ready gets no requests.
+That's what keeps a rolling update that changes the projection's version in order: once the new release's `previously project` has run, the old pods drop out and the new ones come in.
+The probe reads the state row and doesn't catch up, so it stays one read however far the projection lags; the next call catches up.
 A switchover of the database's primary costs requests while it lasts: for the seconds in which no primary answers, the probe gets 503, and so would a tool call, because the database doesn't answer.
 After it, requests succeed again.
 A connection that died while it sat idle, whether in a switchover or a restart of the database, costs no request on top of that: the storage checks a pooled connection when it takes it from the pool, and replaces a dead one before the request uses it.

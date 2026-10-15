@@ -65,7 +65,7 @@ def _write_both(storage: PostgresStorage) -> None:
 def test_an_action_with_units_is_not_in_the_chronicle_and_an_observation_is(db: Engine) -> None:
     storage = PostgresStorage(db)
     _write_both(storage)
-    catch_up(storage, storage, CHRONICLE)
+    catch_up(storage, storage, CHRONICLE, rebuild=True)
     rows = _rows(db)
     assert [(r[0], r[1]) for r in rows] == [(1, 1), (1, 2)]
     assert {r[4] for r in rows} == {"observation"}
@@ -78,7 +78,7 @@ def test_the_upgrade_to_version_3_rebuilds_and_ends_as_a_fresh_build(db: Engine)
     derived them, and the first catch-up of version 3 rebuilds the table."""
     storage = PostgresStorage(db)
     _write_both(storage)
-    catch_up(storage, storage, CHRONICLE)
+    catch_up(storage, storage, CHRONICLE, rebuild=True)
     fresh = _rows(db)
     with db.begin() as conn:
         conn.execute(
@@ -92,7 +92,7 @@ def test_the_upgrade_to_version_3_rebuilds_and_ends_as_a_fresh_build(db: Engine)
         storage.set_projection_state(conn, ProjectionState("chronicle", 2, 2, NOW))
     assert len(_rows(db)) == len(fresh) + 1
 
-    outcome = catch_up(storage, storage, CHRONICLE)
+    outcome = catch_up(storage, storage, CHRONICLE, rebuild=True)
     assert outcome.rebuilt_from == 2
     assert _rows(db) == fresh
 
@@ -135,7 +135,7 @@ def _three_observations(storage: PostgresStorage) -> None:
             payload={"text": "a b c d"},
         )
         append(storage, [raw], recorded_at=NOW)
-    catch_up(storage, storage, CHRONICLE)
+    catch_up(storage, storage, CHRONICLE, rebuild=True)
 
 
 @pytest.mark.db

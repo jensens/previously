@@ -84,6 +84,20 @@ class MigrationPending(StorageError):
     """
 
 
+class PrivilegeMissing(StorageError):
+    """The database refused a statement because the role lacks a privilege
+    on what it touched (SQLSTATE `42501`).
+
+    Translates the `sqlalchemy.exc.ProgrammingError` that carries that
+    state, which would otherwise read as `MigrationPending`: psycopg files
+    `InsufficientPrivilege` under `ProgrammingError`, beside the undefined
+    table of a schema that is behind, and the advice to migrate sent an
+    operator whose role lacks a grant to the wrong command. The message
+    names database, host and port, and the server's reason, which names the
+    table; never the role's password.
+    """
+
+
 class MigrationFailed(StorageError):
     """The database refused a step of `previously migrate`: reading the
     revision it is at, or applying a revision.

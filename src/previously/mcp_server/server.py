@@ -51,6 +51,7 @@ The header of every result counts the objections pending that the client may
 see, counted once per call in its snapshot ({ref}`mcp-tools`).
 """
 
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from dataclasses import replace
@@ -94,7 +95,6 @@ from previously.core.canonical import KEY_PATTERN
 from previously.core.canonical import MAX_SAFE_INT
 from previously.core.clients import client_for_token
 from previously.core.errors import InvalidPayload
-from previously.core.errors import PreviouslyError
 from previously.core.gaps import gaps
 from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
@@ -114,8 +114,8 @@ from previously.core.graph import SOURCES
 from previously.core.graph import sources_with_start
 from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
+from previously.core.graph_read import graph_snapshot
 from previously.core.graph_read import projected_graph
-from previously.core.graph_read import projection_stands
 from previously.core.graph_write import check_claims
 from previously.core.graph_write import decided
 from previously.core.graph_write import EntityTypes
@@ -135,6 +135,8 @@ from previously.core.vocabulary import is_language_tag
 from previously.core.vocabulary import read_vocabulary
 from previously.mcp_server.auth import CLIENT_STATE
 from previously.mcp_server.auth import guarded
+from previously.mcp_server.auth import NOT_BUILT
+from previously.mcp_server.auth import NOT_READY
 from previously.mcp_server.confirm import expiry
 from previously.mcp_server.confirm import HandleRefused
 from previously.mcp_server.confirm import key_of
@@ -180,7 +182,6 @@ from previously.mcp_server.render import Stated
 from previously.mcp_server.render import STATED_LINE_CHARS
 from previously.storage.errors import OperationFailed
 from previously.storage.errors import ServerUnreachable
-from previously.storage.errors import StorageError
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -201,6 +202,7 @@ import uvicorn
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from collections.abc import Generator
     from collections.abc import Mapping
     from collections.abc import Sequence
     from mcp.server.caching import CacheableMethod
@@ -218,7 +220,6 @@ if TYPE_CHECKING:
     from previously.core.policy import Policy
     from previously.core.policy import Provider
     from previously.core.policy import Rule
-    from previously.core.projection import Outcome as CaughtUp
     from previously.core.vocabulary import Vocabulary
     from previously.mcp_server.read import GraphView
     from previously.mcp_server.read import Seen
@@ -899,11 +900,13 @@ class Service[Conn]:
     one it reads the projection through; one without the other is refused.
     Without both, every call folds the log, as the server did before the
     projection existed, which is the oracle the tests hold the projection
-    against. A call whose catch-up fails, or that finds the projection
-    rebuilt in its snapshot, folds the log as well, with one warning in the
-    server's log and nothing in its result. The tools that write fold the
-    log either way: the write path checks against the tip it locks
-    ({ref}`graph-readers`).
+    against: `previously mcp` and `previously serve` always pass both. With
+    them, the projection is the only way a call reads the graph: a call
+    whose catch-up fails, or that finds the projection rebuilt in its
+    snapshot more often than `graph_snapshot` retries, fails as any call
+    fails on an error inside the server, with the reason in the server's
+    log ({ref}`graph-readers`). The tools that write fold the log either
+    way: the write path checks against the tip it locks.
     """
 
     def __init__(
@@ -928,41 +931,21 @@ class Service[Conn]:
             )
         self.projected = None if graph is None or projections is None else (graph, projections)
 
-    def caught_up(self) -> CaughtUp | None:
-        """Brings the graph projection up to the tip before a call opens its
-        snapshot. `None` without the projection, and where the catch-up
-        failed, which the server's log says once: the call then folds the
-        log. So no call fails over a rebuild by another version of the code,
-        which a rolling update runs beside this one, nor over any other
-        refusal of `catch_up` (a `PreviouslyError`, a gap in the log above
-        where the projection stands among them: the fold reads the log
-        whole), nor over a `StorageError`. Since every call catches up
-        first, a refusal that escaped here would fail every tool, `whoami`
-        included. A programming error still reaches the call's own
-        handler."""
+    @contextmanager
+    def reading(self) -> Generator[tuple[Conn, Graph]]:
+        """The snapshot of a call and the graph it reads there: from the
+        projection in a snapshot of `graph_snapshot`, which catches it up
+        first, without building it, and catches up once more where
+        `previously project` rebuilt it in between. What stops it is the
+        call's error, never a fold instead ({ref}`graph-readers`). Without
+        the projection, the fold of the log in a snapshot of its own."""
         if self.projected is None:
-            return None
-        try:
-            return catch_up(self.log, self.projected[1], GRAPH)
-        except (PreviouslyError, StorageError) as error:
-            logger.warning(
-                "the graph projection could not be caught up, so a call folds the log: %s", error
-            )
-            return None
-
-    def read_graph(self, conn: Conn, outcome: CaughtUp | None) -> Graph:
-        """The graph of a call: from the projection where it stands where
-        the call's catch-up left it, else folded from the log, with one
-        warning in the server's log where a rebuild came in between
-        ({ref}`graph-readers`)."""
-        if self.projected is None or outcome is None:
-            return read_graph(self.log, conn)
-        if not projection_stands(self.projected[0], conn, outcome):
-            logger.warning(
-                "the graph projection was rebuilt since the call caught it up, so it folds the log"
-            )
-            return read_graph(self.log, conn)
-        return projected_graph(self.log, self.projected[0], conn)
+            with self.log.snapshot() as conn:
+                yield conn, read_graph(self.log, conn)
+            return
+        store, projections = self.projected
+        with graph_snapshot(self.log, projections, store) as conn:
+            yield conn, projected_graph(self.log, store, conn)
 
     def client_name(self, request: object) -> str | None:
         if self.stdio_client is not None:
@@ -1027,10 +1010,9 @@ class Service[Conn]:
         try:
             if name is None:
                 raise Refused(_NO_CLIENT)
-            # In transactions of its own, before the snapshot: what the call
-            # reads is what the log held when it began.
-            caught = self.caught_up()
-            with self.log.snapshot() as conn:
+            # The catch-up runs in transactions of its own, before the
+            # snapshot: what the call reads is what the log held when it began.
+            with self.reading() as (conn, graph):
                 policy = read_policy(self.log, conn)
                 client = policy.clients.get(name)
                 if client is None:
@@ -1042,7 +1024,6 @@ class Service[Conn]:
                     "processor": policy.ids.get((PROVIDER, client.processor)),
                     "rules": [],
                 }
-                graph = self.read_graph(conn, caught)
                 pending = _FOLDED.set(
                     _Folded(graph, objections_seen(self.log, conn, policy, client, graph))
                 )
@@ -2635,7 +2616,13 @@ def build_server[Conn](
     With `graph` and `projections`, the stores of `log` that read and catch
     up the graph projection, every call catches the projection up and reads
     the graph from it; without either, every call folds the log
-    (`Service`)."""
+    (`Service`).
+
+    With them, the server catches the projection up once before it is built,
+    without building it, and a projection it cannot catch up stops it there
+    with the error: `ProjectionNotBuilt` where `previously project` has not
+    built it at this code's version, which is the sentence an operator needs
+    and every call would otherwise fail with one by one."""
     if not is_language_tag(language):
         raise ValueError("the language is not a language tag such as en or pt-BR")
     service = Service(
@@ -2647,6 +2634,8 @@ def build_server[Conn](
         graph=graph,
         projections=projections,
     )
+    if projections is not None:
+        catch_up(log, projections, GRAPH, rebuild=False)
     server: MCPServer = MCPServer(
         SERVER_NAME,
         version=version("previously"),
@@ -3179,12 +3168,33 @@ def build_app[Conn](
             client = client_for_token(read_policy(log, conn), token)
         return None if client is None else client.name
 
-    def ready() -> bool:
-        # The newest event's id and hash, one indexed query: the cheapest
-        # question `LogStore` has, and nothing of it leaves this function.
+    def ready() -> str | None:
+        # With the projection, its state row, one read by primary key: the
+        # server is ready only while the graph projection is at the version
+        # this code declares, which a rolling update that changes the
+        # version takes from the old pods once `previously project` of the
+        # new release has run, and gives the new ones from then on. A
+        # catch-up here would make the probe as slow as the log is new. The
+        # state row may lag behind the tip, which the next call catches up.
+        # Without the projection, the newest event's id and hash, one
+        # indexed query: the cheapest question `LogStore` has. Nothing of
+        # either leaves this function.
         try:
             with log.snapshot() as conn:
-                log.tip(conn)
+                if graph is None:
+                    log.tip(conn)
+                else:
+                    state = graph.projection_state(conn, GRAPH.name)
+                    if state is None or state.version != GRAPH.version:
+                        found = "not built" if state is None else f"at version {state.version}"
+                        logger.warning(
+                            "the readiness probe found projection %s %s, and this code "
+                            "declares version %d",
+                            GRAPH.name,
+                            found,
+                            GRAPH.version,
+                        )
+                        return NOT_BUILT
         except (ServerUnreachable, OperationFailed) as error:
             # A database that does not answer is an expected state, not a
             # fault of this process: a switchover of the primary refuses
@@ -3193,11 +3203,11 @@ def build_app[Conn](
             # The storage error's sentence says what a traceback chain of
             # three or four exceptions would, once per failed check.
             logger.warning("the readiness probe found no database: %s", error)
-            return False
+            return NOT_READY
         except Exception:
             logger.exception("the readiness probe failed for an unexpected reason")
-            return False
-        return True
+            return NOT_READY
+        return None
 
     app.add_middleware(guarded, resolve=resolve, ready=ready)
     return app
@@ -3237,8 +3247,11 @@ def run_http[Conn](
     graph: GraphStore[Conn],
     projections: ProjectionStore[Conn],
     language: str = "en",
+    announce: Callable[[], None] | None = None,
 ) -> None:
-    """Serves the app of `build_app` with uvicorn until it is stopped."""
+    """Serves the app of `build_app` with uvicorn until it is stopped.
+    `announce` is called once the app is built, before it listens: a server
+    that refuses to start has announced nothing."""
     app = build_app(
         log,
         allowed_hosts=allowed_hosts,
@@ -3248,4 +3261,6 @@ def run_http[Conn](
         graph=graph,
         projections=projections,
     )
+    if announce is not None:
+        announce()
     uvicorn.run(app, host=host, port=port, log_level="warning")

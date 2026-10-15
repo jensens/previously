@@ -3,14 +3,15 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """Reading the graph from its projection ({ref}`graph-projection`).
 
-A reader catches the projection up first, with `catch_up(log, store,
-GRAPH)` in transactions of its own, and then reads in a snapshot of its own:
-`projected_graph` gives a `Graph` there that answers the questions of a
-reader — which entities, which relations, what waits, what is objected to —
-from the tables of the projection, and folds from the log only the threads
-the answer names. What a reader shows of a thread, its names, fields and
-versions, comes from the log, by id; the projection holds no content and
-only says which threads to fold.
+A reader reads in `graph_snapshot`: it catches the projection up first,
+with `catch_up(log, store, GRAPH, rebuild=False)` in transactions of its
+own, and then reads in a snapshot of its own, where `projected_graph`
+gives a `Graph` that answers the questions of a reader — which entities,
+which relations, what waits, what is objected to — from the tables of the
+projection, and folds from the log only the threads the answer names.
+What a reader shows of a thread, its names, fields and versions, comes
+from the log, by id; the projection holds no content but the dates of a
+period and only says which threads to fold.
 
 A thread folded this way is the one `fold_graph` over the whole log gives,
 since nothing outside its own rows changes what the fold makes of it, so a
@@ -18,16 +19,24 @@ reader shows what it showed when it folded the log, and runs the same code
 on what it shows. Where the projection itself drifted from the log, which
 the page names, `previously project --check` reports the threads.
 
-`--as-of` and the write path still fold the log: the projection knows only
-what stands now, and the write path checks under the tip it locks.
+A reader has no second way to the graph: where the projection is not
+built at this code's version, or a catch-up fails, the reader fails with
+the error ({ref}`graph-readers`). `--as-of`, `verify`,
+`previously project --check` and the write path fold the log on purpose,
+which is no way around the projection: the projection knows only what
+stands now, a check that read it would check it against itself, and the
+write path checks under the tip it locks.
 """
 
 from collections.abc import Mapping
+from contextlib import contextmanager
 from dataclasses import dataclass
 from dataclasses import fields
 from datetime import date
 from previously.core.assertion import Source
 from previously.core.classes import read_classes
+from previously.core.errors import ProjectionNotBuilt
+from previously.core.errors import ProjectionRebuilt
 from previously.core.graph import ENTITY
 from previously.core.graph import fold_graph
 from previously.core.graph import Graph
@@ -41,8 +50,10 @@ from previously.core.members import BracketKinds
 from previously.core.members import members
 from previously.core.projection.graph import class_states
 from previously.core.projection.graph import fold_threads
+from previously.core.projection.graph import GRAPH
 from previously.core.projection.graph import rebuilt_versions
 from previously.core.projection.graph import summary
+from previously.core.projection.worker import catch_up
 from previously.core.vocabulary import read_vocabulary
 from typing import cast
 from typing import Final
@@ -53,6 +64,7 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from collections.abc import Callable
     from collections.abc import Collection
+    from collections.abc import Generator
     from collections.abc import Iterable
     from collections.abc import Iterator
     from collections.abc import Sequence
@@ -60,9 +72,9 @@ if TYPE_CHECKING:
     from previously.contract.rows import GraphVersionRow
     from previously.contract.store import GraphStore
     from previously.contract.store import LogStore
+    from previously.contract.store import ProjectionStore
     from previously.core.graph import GraphVersion
     from previously.core.members import Members
-    from previously.core.projection.worker import Outcome
 
 
 _ASSERTION: Final = "assertion"
@@ -216,8 +228,9 @@ def projected_graph[Conn](
     log: LogStore[Conn], store: GraphStore[Conn], conn: Conn
 ) -> ProjectedGraph[Conn]:
     """The graph of a reader, read from the projection in the snapshot
-    `conn` belongs to, under the approval classes in force. The caller has
-    caught the projection up before it opened the snapshot."""
+    `conn` belongs to, under the approval classes in force. `conn` is one
+    of `graph_snapshot`, in which the projection stands where its catch-up
+    left it."""
     classes = read_classes(log, conn).states
 
     def fold(subjects: Sequence[int]) -> Mapping[int, GraphThread]:
@@ -256,8 +269,8 @@ def read_brackets[Conn](
     log: LogStore[Conn], store: GraphStore[Conn], conn: Conn, bracket: int
 ) -> Members:
     """`members` of `bracket`, over the edges the projection holds, under
-    the vocabulary in force, which is all it reads of the log. The caller
-    has caught the projection up before it opened the snapshot."""
+    the vocabulary in force, which is all it reads of the log, in a
+    snapshot of `graph_snapshot`."""
     kinds = bracket_kinds(read_vocabulary(log, conn))
     return members(projected_bracket_edges(store, conn, kinds), bracket, kinds)
 
@@ -268,8 +281,9 @@ def reader_bracket_edges[Conn](
     """The edges `members` reads in the graph a reader reads in the
     snapshot of `conn`, with the kinds they are read by: out of the rows of
     the projection where `graph` is read from it, and out of the fold where
-    the reader folded the log instead, because the projection didn't stand
-    where its catch-up left it. A reader finds in the graph it shows."""
+    `graph` is one, which is the MCP server built without the projection,
+    the oracle the tests hold the projection against. A reader finds in the
+    graph it shows."""
     vocabulary = read_vocabulary(log, conn)
     kinds = bracket_kinds(vocabulary)
     if isinstance(graph, ProjectedGraph):
@@ -381,16 +395,53 @@ def check_graph[Conn](
     )
 
 
-def projection_stands[Conn](store: GraphStore[Conn], conn: Conn, outcome: Outcome) -> bool:
-    """Whether the projection stands, in the snapshot of `conn`, where the
-    catch-up of `outcome` left it: at the same version, and up to its
-    `up_to_id` or beyond. It doesn't where another catch-up rebuilt it in
-    between, by another version of the code or after a forced rebuild, and
-    a reader then folds the log for that read rather than show an empty or
-    half-built projection as if it were the graph."""
-    state = store.projection_state(conn, outcome.name)
-    return (
-        state is not None
-        and state.version == outcome.version
-        and state.up_to_id >= outcome.up_to_id
+# How often `graph_snapshot` catches up again when the projection, at this
+# code's version, no longer stands in its snapshot where its catch-up left
+# it. One, because the miss it answers is a `previously project` that
+# rebuilt between the catch-up and the snapshot, after an operator deleted
+# the state row, and the second catch-up meets the projection at its own
+# version: it only takes turns with that build under the lock of the state
+# row and carries it on to the tip. A second miss in a row is a rebuild
+# started again in that moment, which a reader reports rather than
+# outlasts. A projection at another version is never retried: catching up
+# cannot change a version, so a retry could only fail the same way again.
+REBUILD_RETRIES: Final = 1
+
+
+@contextmanager
+def graph_snapshot[Conn](
+    log: LogStore[Conn], projections: ProjectionStore[Conn], store: GraphStore[Conn]
+) -> Generator[Conn]:
+    """A snapshot in which the graph projection stands where a catch-up
+    just left it, for a reader to read the graph from ({ref}`graph-readers`).
+
+    It catches the projection up with `rebuild=False`, opens a snapshot of
+    `log`, and holds the state row there against the catch-up's outcome.
+    At another version, or with no state row, it raises
+    `ProjectionNotBuilt`, as the catch-up would. Behind the outcome, it
+    leaves that snapshot and does it all again, `REBUILD_RETRIES` times,
+    and then raises `ProjectionRebuilt`: an empty or half-built projection
+    is never shown as if it were the graph.
+
+    A catch-up that fails fails the reader: a projection not built at this
+    code's version raises `ProjectionNotBuilt`, a gap in the log
+    `ProjectionGap`, a database that refuses its `StorageError`. None of
+    them is answered by folding the log instead: a gap is damage that a
+    fold would answer over silently, and a refusal is a misconfiguration
+    that it would hide."""
+    for _attempt in range(REBUILD_RETRIES + 1):
+        outcome = catch_up(log, projections, GRAPH, rebuild=False)
+        with log.snapshot() as conn:
+            state = store.projection_state(conn, GRAPH.name)
+            if state is None or state.version != GRAPH.version:
+                raise ProjectionNotBuilt(
+                    GRAPH.name, None if state is None else state.version, GRAPH.version
+                )
+            if state.up_to_id >= outcome.up_to_id:
+                yield conn
+                return
+    raise ProjectionRebuilt(
+        f"projection {GRAPH.name} was rebuilt between catching it up and reading it, "
+        f"on each of {REBUILD_RETRIES + 1} tries; read again once `previously project` "
+        "has finished"
     )

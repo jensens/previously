@@ -37,6 +37,7 @@ from previously.storage.errors import ChainPositionTaken
 from previously.storage.errors import InvalidDsn
 from previously.storage.errors import MigrationPending
 from previously.storage.errors import OperationFailed
+from previously.storage.errors import PrivilegeMissing
 from previously.storage.errors import ServerUnreachable
 from previously.storage.errors import SourceKeyTaken
 from previously.storage.errors import TransactionAborted
@@ -309,6 +310,17 @@ class PostgresStorage:
                 raise ServerUnreachable(
                     f"connecting to {where} failed: "
                     "the client library refused a query parameter of PREVIOUSLY_DSN"
+                ) from error
+            if getattr(error.orig, "sqlstate", None) == "42501":
+                # A missing privilege, which psycopg files under the same
+                # class as a missing table: measured on 2026-10-15 with a role
+                # that may only read the projection tables, whose catch-up was
+                # told the schema is incomplete and to run `previously
+                # migrate`, which would have changed nothing.
+                where = _where(engine.url)
+                reason = diagnosis(error, "message_primary") or "permission denied"
+                raise PrivilegeMissing(
+                    f"the role of PREVIOUSLY_DSN lacks a privilege on {where}: {reason}"
                 ) from error
             # `previously migrate` and not `alembic upgrade head`: an installed
             # previously has no `alembic.ini` and no checkout to run Alembic

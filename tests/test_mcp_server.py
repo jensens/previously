@@ -36,6 +36,7 @@ from previously.contract.types import ChannelIdentity
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.contract.types import RawUnit
+from previously.core.access import ACCESS_ERROR
 from previously.core.access import AccessRow
 from previously.core.access import read_access
 from previously.core.append import append
@@ -58,6 +59,7 @@ from previously.core.classes import ApprovalClass
 from previously.core.classes import set_class
 from previously.core.clients import add_client
 from previously.core.clients import revoke_client
+from previously.core.errors import ProjectionNotBuilt
 from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
 from previously.core.graph import claim_payload
@@ -80,6 +82,9 @@ from previously.core.policy import Provider
 from previously.core.policy import read_policy
 from previously.core.policy import Rule
 from previously.core.policy import set_policy
+from previously.core.projection import catch_up
+from previously.core.projection import GRAPH
+from previously.core.projection import PROJECTIONS
 from previously.core.redact import redact_event
 from previously.core.verify import verify
 from previously.core.vocabulary import apply_vocabulary
@@ -87,6 +92,7 @@ from previously.core.vocabulary import base_vocabulary
 from previously.core.vocabulary import FieldSpec
 from previously.core.vocabulary import KindSpec
 from previously.core.vocabulary import parse_file
+from previously.mcp_server.auth import NOT_BUILT
 from previously.mcp_server.confirm import HANDLE_SECONDS
 from previously.mcp_server.confirm import seal
 from previously.mcp_server.read import event_hidden
@@ -105,6 +111,7 @@ from sqlalchemy import text
 from sqlalchemy.pool import NullPool
 from typing import Any
 from typing import cast
+from typing import Final
 from typing import override
 from typing import TYPE_CHECKING
 
@@ -239,6 +246,10 @@ def _world(db: Engine) -> World:
         )
     }
     redact_event(storage, storage, ids["date_unreadable"], reason="test", recorded_at=T0)
+    # What `previously project` does in the upgrade step, before the server
+    # serves: the server catches up, and only `project` builds.
+    for projection in PROJECTIONS:
+        catch_up(storage, storage, projection, rebuild=True)
     with storage.begin() as conn:
         policy_event = next(iter(storage.read_by_kind(conn, "action"))).id
     return World(storage, tokens, ids, policy_event)
@@ -4376,41 +4387,250 @@ def test_one_store_of_the_projection_without_the_other_is_refused(world: World) 
     build_server(world.storage, stdio_client="claude-code")
 
 
-class _RebuiltAfterCatchUp(PostgresStorage):
-    """The real store, where another version of the code empties the graph
-    projection between a call's catch-up and its snapshot: the state row
-    moves to another version, the tables are empty."""
+# What a call answers when it fails inside the server: the reason is in the
+# server's log, never in the result.
+_FAILED_TEXT = "Error: the call failed inside the server; its log says why, this result cannot"
+
+
+def _graph_rows(db: Engine) -> tuple[object, ...]:
+    """Everything of the graph projection: its state row and both tables."""
+    with db.begin() as c:
+        return (
+            c.execute(text("SELECT * FROM projection_state WHERE name = 'graph'")).all(),
+            c.execute(text("SELECT * FROM p_graph_thread ORDER BY subject")).all(),
+            c.execute(text("SELECT * FROM p_graph_version ORDER BY id")).all(),
+        )
+
+
+class _RebuiltBeforeSnapshot(PostgresStorage):
+    """The real store, where `previously project` empties the graph
+    projection at its own version between a call's catch-up and its
+    snapshot, as after an operator deleted the state row: before each of the
+    first `misses` snapshots, its state row goes back to `up_to_id` 0 and
+    its tables are emptied. Every snapshot after those finds it as it is."""
+
+    def __init__(self, engine: Engine, misses: int) -> None:
+        super().__init__(engine)
+        self.misses = misses
+        self.snapshots = 0
 
     @override
     @contextlib.contextmanager
     def snapshot(self) -> Generator[Connection]:
-        with self.begin() as conn:
-            conn.execute(text("UPDATE projection_state SET version = 7 WHERE name = 'graph'"))
-            conn.execute(text("DELETE FROM p_graph_thread"))
-            conn.execute(text("DELETE FROM p_graph_version"))
+        self.snapshots += 1
+        if self.snapshots <= self.misses:
+            with self.begin() as conn:
+                conn.execute(text("UPDATE projection_state SET up_to_id = 0 WHERE name = 'graph'"))
+                conn.execute(text("DELETE FROM p_graph_thread"))
+                conn.execute(text("DELETE FROM p_graph_version"))
         with super().snapshot() as conn:
             yield conn
 
 
-class _CatchUpFails(PostgresStorage):
+class _Armed(PostgresStorage):
+    """The real store, until `armed` is set: then it fails as its subclass
+    says. The server catches up once while it is built, so a store that
+    failed from the start would only show that it refuses to start."""
+
+    armed = False
+
+
+class _CatchUpFails(_Armed):
     """The real store, whose graph catch-up fails with a storage error."""
 
     @override
     def lock_projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
-        raise OperationFailed("the database ended the connection")
+        if self.armed:
+            raise OperationFailed("the database ended the connection")
+        return super().lock_projection_state(conn, name)
 
 
-class _GapAboveTheProjection(PostgresStorage):
+class _GapAboveTheProjection(_Armed):
     """The real store, whose log has a gap where a catch-up reads: a read of
     more than one event leaves out the first one asked for, so `catch_up`
-    refuses with `ProjectionGap`. A read of one event, which is how
-    `get_event` and the fold's lookups read, finds it, so the fold the call
-    falls back on reads the whole log."""
+    refuses with `ProjectionGap`. A read of one event finds it."""
 
     @override
     def read(self, conn: Connection, from_id: int, limit: int) -> Iterator[EventRow]:
         found = super().read(conn, from_id, limit)
-        return found if limit == 1 else (row for row in found if row.id != from_id)
+        if not self.armed or limit == 1:
+            return found
+        return (row for row in found if row.id != from_id)
+
+
+_CALLS_OF_EVERY_KIND: Final = ("list_entities", "list_triage", "whoami")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize(
+    ("change", "found"),
+    [
+        ("DELETE FROM projection_state WHERE name = 'graph'", "is not built"),
+        ("UPDATE projection_state SET version = 7 WHERE name = 'graph'", "stands at version 7"),
+    ],
+    ids=["no-state-row", "other-version"],
+)
+def test_a_call_meeting_a_projection_it_would_have_to_build_fails_and_touches_nothing(
+    world: World,
+    mode: str,
+    db: Engine,
+    change: str,
+    found: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Ruling F-c of the 2026-10-15 assignments plan: only `previously
+    project` builds. A call of a running server that meets no state row, or
+    one at another version, as an old pod does once the new release's
+    `project` has run, fails, says why in the server's log only, and leaves
+    the state row and both tables as they were. Every call catches up
+    first, so `whoami` is among them. Measured red by letting
+    `graph_snapshot` catch up with `rebuild=True`: every call answers, and
+    the rows are rebuilt."""
+    _graphed(world)
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
+    with db.begin() as c:
+        c.execute(text(change))
+    before = _graph_rows(db)
+    caplog.set_level(logging.ERROR, logger="previously.mcp_server.server")
+    for name in _CALLS_OF_EVERY_KIND:
+        caplog.clear()
+        result = _session(server, mode, lambda s, n=name: s.call_tool(n, {}))
+        assert result.is_error
+        assert _text(result) == _FAILED_TEXT
+        assert "projection" not in _text(result)
+        logged = "\n".join(
+            f"{r.getMessage()} {r.exc_info[1] if r.exc_info else ''}" for r in caplog.records
+        )
+        assert f"projection graph {found}, and this code declares version" in logged, name
+        assert _graph_rows(db) == before
+    assert _last_access(world).access.outcome == ACCESS_ERROR
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("change", ["DELETE", "UPDATE"])
+def test_the_server_refuses_to_start_without_a_projection_at_its_version(
+    world: World, db: Engine, change: str
+) -> None:
+    """The server catches the projection up once before it serves, without
+    building it: a projection `previously project` has not built at this
+    code's version stops it with the sentence an operator needs, for stdio
+    and HTTP alike, and builds nothing. Measured red by removing that
+    catch-up from `build_server`: it builds a server."""
+    statement = {
+        "DELETE": "DELETE FROM projection_state WHERE name = 'graph'",
+        "UPDATE": "UPDATE projection_state SET version = 7 WHERE name = 'graph'",
+    }[change]
+    with db.begin() as c:
+        c.execute(text(statement))
+    before = _graph_rows(db)
+    with pytest.raises(ProjectionNotBuilt, match="`previously project`"):
+        build_server(
+            world.storage,
+            stdio_client="claude-code",
+            graph=world.storage,
+            projections=world.storage,
+        )
+    with pytest.raises(ProjectionNotBuilt, match="`previously project`"):
+        build_app(world.storage, allowed_hosts=(), graph=world.storage, projections=world.storage)
+    assert _graph_rows(db) == before
+    # The control: once `project` built it, the server starts, and without
+    # the projection it starts whatever the table holds.
+    build_server(world.storage, stdio_client="claude-code")
+    catch_up(world.storage, world.storage, GRAPH, rebuild=True)
+    build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
+
+
+def _ready(storage: PostgresStorage) -> int:
+    """The status of the readiness probe of a server built with the
+    projection."""
+    app = build_app(storage, allowed_hosts=(), graph=storage, projections=storage)
+
+    async def run() -> int:
+        async with app.router.lifespan_context(app):
+            transport = httpx2.ASGITransport(app=app)
+            async with httpx2.AsyncClient(transport=transport, base_url="http://127.0.0.1") as http:
+                return (await http.get("/healthz")).status_code
+
+    return anyio.run(run)
+
+
+@pytest.mark.db
+def test_the_readiness_probe_is_not_ready_while_the_projection_is_at_another_version(
+    world: World, db: Engine, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A rolling update that changes the projection's version: once the new
+    release's `previously project` ran, an old pod's probe says not ready,
+    and so does a pod whose projection was never built. The probe reads the
+    state row and does not catch up. Measured red by letting the probe read
+    the tip alone: 200 throughout."""
+    _graphed(world)
+    assert _ready(world.storage) == 200
+    for statement in (
+        "UPDATE projection_state SET version = 7 WHERE name = 'graph'",
+        "DELETE FROM projection_state WHERE name = 'graph'",
+    ):
+        # The app is built first; the version changes under it.
+        app = build_app(
+            world.storage, allowed_hosts=(), graph=world.storage, projections=world.storage
+        )
+        with db.begin() as c:
+            c.execute(text(statement))
+        before = _graph_rows(db)
+
+        async def run(a: Any = app) -> tuple[int, str]:
+            async with a.router.lifespan_context(a):
+                transport = httpx2.ASGITransport(app=a)
+                async with httpx2.AsyncClient(
+                    transport=transport, base_url="http://127.0.0.1"
+                ) as http:
+                    response = await http.get("/healthz")
+                    return response.status_code, response.text
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="previously.mcp_server.server"):
+            assert anyio.run(run) == (503, NOT_BUILT)
+        assert "the readiness probe found projection graph" in caplog.text
+        assert _graph_rows(db) == before
+        catch_up(world.storage, world.storage, GRAPH, rebuild=True)
+        # The control: at this code's version again, ready.
+        assert _ready(world.storage) == 200
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_call_catches_up_once_more_after_a_rebuild_and_fails_on_a_second(
+    world: World, mode: str, db: Engine, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A `previously project` that empties the projection at its own version
+    between a call's catch-up and its snapshot costs one more catch-up, and
+    the call answers as it would have; a second one in a row fails the
+    call, though a third try would read. Measured red with
+    `REBUILD_RETRIES` at 0 (the first half) and at 2 (the second)."""
+    _graphed(world)
+    expected = {name: _untagged(_text(_tool(world, mode, name))) for name in _CALLS_OF_EVERY_KIND}
+    for name in _CALLS_OF_EVERY_KIND:
+        once = _RebuiltBeforeSnapshot(db, misses=1)
+        server = build_server(once, stdio_client="claude-code", graph=once, projections=once)
+        result = _session(server, mode, lambda s, n=name: s.call_tool(n, {}))
+        assert not result.is_error, _text(result)
+        assert _untagged(_text(result)) == expected[name]
+        assert once.snapshots == 2
+    twice = _RebuiltBeforeSnapshot(db, misses=2)
+    server = build_server(twice, stdio_client="claude-code", graph=twice, projections=twice)
+    caplog.set_level(logging.ERROR, logger="previously.mcp_server.server")
+    result = _session(server, mode, lambda s: s.call_tool("whoami", {}))
+    assert _text(result) == _FAILED_TEXT
+    assert twice.snapshots == 2
+    assert "on each of 2 tries" in caplog.text
+    # The control: the same store, past its misses, answers.
+    result = _session(server, mode, lambda s: s.call_tool("whoami", {}))
+    assert not result.is_error
+    assert twice.snapshots == 3
 
 
 @pytest.mark.db
@@ -4418,66 +4638,48 @@ class _GapAboveTheProjection(PostgresStorage):
 @pytest.mark.parametrize(
     ("store", "cause"),
     [
-        (_RebuiltAfterCatchUp, "rebuilt since the call caught it up"),
         (_CatchUpFails, "the database ended the connection"),
         (_GapAboveTheProjection, "expected events"),
     ],
-    ids=["rebuilt", "failed", "gap"],
+    ids=["failed", "gap"],
 )
-def test_a_call_folds_the_log_when_its_projection_does_not_stand_and_says_so_only_in_the_log(
+def test_a_call_whose_catch_up_fails_fails_and_folds_nothing(
     world: World,
     mode: str,
     db: Engine,
-    store: type[PostgresStorage],
+    store: type[_Armed],
     cause: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """A rebuild by another version of the code, which a rolling update runs
-    beside this one, makes no call fail and no call answer from empty
-    tables, and nor does a catch-up that fails or that meets a gap in the
-    log: the call folds the log, and the server's log says so once per
-    call, never the result ({ref}`graph-readers`). Every call catches up
-    first, so `whoami` and `get_event` are among the calls: a refusal of
-    the catch-up that escaped would fail them too."""
+    """A gap in the log above where the projection stands is damage, and a
+    database that refuses the catch-up is a fault: either fails the call,
+    with the reason in the server's log, rather than answer from a fold of
+    the log over it ({ref}`graph-readers`). `get_event` reads no graph and
+    fails all the same, because every call catches up first."""
     ids = _graphed(world)
     scanned = world.ids["attachments_only"]
-    _confirmed(
-        world,
-        mode,
-        "write_entity",
-        {"items": [_entity_item("Anna M", scanned, subject=ids.anna)]},
+    hit = store(db)
+    server = build_server(hit, stdio_client="claude-code", graph=hit, projections=hit)
+    hit.armed = True
+    # Two events past the projection, so that a gap has room to stand
+    # between them: with only the tip new, there is none.
+    write_claims(
+        world.storage,
+        world.storage,
+        [_person("Bert", scanned), _person("Clara", scanned)],
+        recorded_at=T0,
     )
-    # A second event past the projection, so that a gap has room to stand
-    # between the two: with only the tip new, there is none.
-    write_claims(world.storage, world.storage, [_person("Bert", scanned)], recorded_at=T0)
-    calls: list[tuple[str, dict[str, Any]]] = [
+    caplog.set_level(logging.ERROR, logger="previously.mcp_server.server")
+    for name, arguments in (
         ("list_entities", {}),
         ("list_entities", {"subject": ids.anna}),
-        ("list_triage", {}),
         ("whoami", {}),
         ("get_event", {"ids": [scanned]}),
-    ]
-    folding = build_server(world.storage, stdio_client="claude-code")
-    hit = store(db)
-    reading = build_server(hit, stdio_client="claude-code", graph=hit, projections=hit)
-    caplog.set_level(logging.WARNING, logger="previously.mcp_server.server")
-    for name, arguments in calls:
-
-        def answer(server: Any, n: str = name, a: dict[str, Any] = arguments) -> str:
-            result = _session(server, mode, lambda s: s.call_tool(n, a))
-            assert not result.is_error, _text(result)
-            return _untagged(_text(result))
-
-        expected = answer(folding)
+    ):
         caplog.clear()
-        found = answer(reading)
-        assert found == expected, name
-        assert "projection" not in found
-        warnings = [r.getMessage() for r in caplog.records if "graph projection" in r.getMessage()]
-        assert len(warnings) == 1, warnings
-        assert cause in warnings[0], warnings
-        # What the fold and the call agree on is not nothing.
-        assert "1 objection pending" in expected.splitlines()[0]
+        result = _session(server, mode, lambda s, n=name, a=arguments: s.call_tool(n, a))
+        assert _text(result) == _FAILED_TEXT, name
+        assert cause in caplog.text, name
 
 
 @pytest.mark.db

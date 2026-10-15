@@ -227,7 +227,7 @@ def _reject(
 
 
 def _project(storage: PostgresStorage, *, batch_size: int = 500) -> None:
-    catch_up(storage, storage, GRAPH, batch_size=batch_size)
+    catch_up(storage, storage, GRAPH, rebuild=True, batch_size=batch_size)
 
 
 def _rows(storage: PostgresStorage) -> list[GraphThreadRow]:
@@ -710,7 +710,7 @@ def test_two_catch_ups_at_once_write_every_row_once_and_end_where_the_fold_does(
 
     def run_first() -> None:
         try:
-            outcomes["first"] = catch_up(first, first, GRAPH, batch_size=2)
+            outcomes["first"] = catch_up(first, first, GRAPH, rebuild=True, batch_size=2)
             seen["first"] = _rows(storage) == _folded(storage)
         except BaseException as error:
             errors.append(error)
@@ -718,7 +718,7 @@ def test_two_catch_ups_at_once_write_every_row_once_and_end_where_the_fold_does(
     def run_second() -> None:
         try:
             assert first.holding.wait(timeout=10)
-            outcomes["second"] = catch_up(storage, storage, GRAPH, batch_size=2)
+            outcomes["second"] = catch_up(storage, storage, GRAPH, rebuild=True, batch_size=2)
             seen["second"] = _rows(storage) == _folded(storage)
         except BaseException as error:
             errors.append(error)

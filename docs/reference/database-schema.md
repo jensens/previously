@@ -144,7 +144,7 @@ Five more tables hold projections derived from the tables above.
 |---|---|---|---|
 | `name` | `text` | No | The projection's name: `chronicle`, `source-stats`, or `graph`. |
 | `up_to_id` | `bigint` | No | The highest event `id` this projection has processed; `0` before any run. |
-| `version` | `integer` | No | The projection code's derivation version; a mismatch triggers a rebuild. |
+| `version` | `integer` | No | The projection code's derivation version; a mismatch makes `previously project` rebuild, and every other catch-up stop. |
 | `built_at` | `timestamp with time zone` | No | When this row was last written. |
 
 ### Constraints and indexes

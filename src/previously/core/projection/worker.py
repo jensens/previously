@@ -13,6 +13,7 @@ from previously.contract.rows import EventRow
 from previously.contract.rows import ProjectionState
 from previously.contract.rows import UnitRow
 from previously.core.errors import ProjectionGap
+from previously.core.errors import ProjectionNotBuilt
 from previously.core.errors import ProjectionRebuilt
 from typing import Protocol
 from typing import TYPE_CHECKING
@@ -87,9 +88,19 @@ def catch_up[Conn](
     store: ProjectionStore[Conn],
     projection: Projection,
     *,
+    rebuild: bool,
     batch_size: int = 500,
 ) -> Outcome:
     """Brings one projection up to the tip of the log, in batches.
+
+    **Only `rebuild=True` builds.** With it, a projection without a state
+    row is built from the start, and one whose state row stands at another
+    version is emptied and built again. Without it, the same finding raises
+    `ProjectionNotBuilt` and the transaction that found it rolls back, so
+    the tables and the state row stay as they were. `previously project`
+    alone passes `True`: every reader, the MCP server and `redact` pass
+    `False` and catch up only ({ref}`projections`). Keyword-only and without
+    a default, so that no caller rebuilds by leaving it out.
 
     **Rows and `up_to_id` move in one transaction or not at all.** An abort in
     the middle leaves a consistent partial projection, and the next run
@@ -126,6 +137,13 @@ def catch_up[Conn](
     with store.begin() as conn:
         state = store.lock_projection_state(conn, projection.name)
         if state is None or state.version != projection.version:
+            if not rebuild:
+                # Raised inside the transaction, which rolls back: the
+                # placeholder `lock_projection_state` wrote for a missing row
+                # goes with it, and nothing of the projection is touched.
+                raise ProjectionNotBuilt(
+                    projection.name, None if state is None else state.version, projection.version
+                )
             # `!=` and not `<`: a rolled-back release derives differently from
             # the table it meets, in either direction.
             rebuilt_from = 0 if state is None else state.version

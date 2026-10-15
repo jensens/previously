@@ -85,7 +85,7 @@ def test_the_way_down_takes_the_state_row_and_the_way_up_builds_the_graph_again(
             storage = PostgresStorage(engine)
             project = _a_project(storage)
             for projection in PROJECTIONS:
-                catch_up(storage, storage, projection)
+                catch_up(storage, storage, projection, rebuild=True)
 
             command.downgrade(config, "0005_watermark")
             with engine.connect() as c:
@@ -95,7 +95,7 @@ def test_the_way_down_takes_the_state_row_and_the_way_up_builds_the_graph_again(
                 assert list(names.scalars()) == ["chronicle", "source-stats"]
 
             command.upgrade(config, "head")
-            outcome = catch_up(storage, storage, GRAPH)
+            outcome = catch_up(storage, storage, GRAPH, rebuild=True)
             assert (outcome.rebuilt_from, outcome.events) == (0, outcome.up_to_id)
             with storage.begin() as conn:
                 rows = storage.read_graph_threads(conn)

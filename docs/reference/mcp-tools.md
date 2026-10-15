@@ -40,7 +40,10 @@ previously · TITLE · N objections pending · page N · next: c=CURSOR · N con
 An objection counts when it's pending on an entity or a relation that the policy lets the client see, as `list_triage` would show it; one on an entity or a relation the policy withholds isn't counted.
 The server counts once per call, in the snapshot the call reads, before the call's own work, so the result of a writing call counts what waited before it wrote.
 Before that snapshot, every call of `mcp` and `serve` brings the graph projection up to the tip of the log, and the count, `list_entities` and `list_triage` read the graph from it ({ref}`graph-readers`).
-Where that catch-up fails, or the projection was rebuilt between the catch-up and the snapshot, the call folds the log instead, and the server writes one warning to its log; the result is the same and says nothing of it.
+The catch-up never builds the projection, and no other way to the graph answers in its place.
+Where the projection isn't built at the version of the server's release, or the catch-up fails, the call fails with the error a call gets for any failure inside the server, and the server's log says why.
+Where `previously project` rebuilt the projection between the catch-up and the snapshot, the call catches up once more and reads; a second rebuild in a row fails the call the same way.
+`whoami` and `get_event` catch up too, so they fail alike.
 What they show of an entity or a relation comes from the log.
 The tools that write fold the log for their checks.
 

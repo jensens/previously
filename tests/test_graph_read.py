@@ -30,6 +30,8 @@ from previously.core.assertion import Statement
 from previously.core.assertions import write_statements
 from previously.core.classes import ApprovalClass
 from previously.core.classes import set_class
+from previously.core.errors import ProjectionNotBuilt
+from previously.core.errors import ProjectionRebuilt
 from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
 from previously.core.graph import ENTITY
@@ -42,9 +44,10 @@ from previously.core.graph import RETRACTED
 from previously.core.graph import SOURCES
 from previously.core.graph import STANDING
 from previously.core.graph_read import differences
+from previously.core.graph_read import graph_snapshot
 from previously.core.graph_read import projected_graph
-from previously.core.graph_read import projection_stands
 from previously.core.graph_read import read_brackets
+from previously.core.graph_read import REBUILD_RETRIES
 from previously.core.graph_write import read_graph
 from previously.core.graph_write import write_claims
 from previously.core.members import bracket_edges
@@ -61,10 +64,12 @@ from previously.storage.postgres import PostgresStorage
 from typing import override
 from typing import TYPE_CHECKING
 
+import contextlib
 import pytest
 
 
 if TYPE_CHECKING:
+    from collections.abc import Generator
     from collections.abc import Sequence
     from previously.contract.rows import EventRow
     from sqlalchemy import Connection
@@ -163,7 +168,7 @@ def _write(storage: PostgresStorage, *claims: Claim) -> tuple[int, ...]:
 
 
 def _project(storage: PostgresStorage) -> None:
-    catch_up(storage, storage, GRAPH)
+    catch_up(storage, storage, GRAPH, rebuild=True)
 
 
 class _Counting(PostgresStorage):
@@ -452,28 +457,147 @@ def test_the_members_of_a_bracket_read_from_the_projection_are_those_of_the_fold
     assert club.holds(2, 3)
 
 
+def _projection_rows(db: Engine) -> tuple[object, ...]:
+    """Everything of the graph projection: its state row and both tables."""
+    from sqlalchemy import text
+
+    with db.begin() as c:
+        return (
+            c.execute(text("SELECT * FROM projection_state WHERE name = 'graph'")).all(),
+            c.execute(text("SELECT * FROM p_graph_thread ORDER BY subject")).all(),
+            c.execute(text("SELECT * FROM p_graph_version ORDER BY id")).all(),
+        )
+
+
+class _RebuiltBeforeSnapshot(PostgresStorage):
+    """The real store, where `previously project` empties the graph
+    projection, at its own version, between a reader's catch-up and its
+    snapshot, as after an operator deleted the state row: before each of the
+    first `misses` snapshots, the state row goes back to `up_to_id` 0 and the
+    tables are emptied. Every snapshot after those finds it as it is."""
+
+    def __init__(self, engine: Engine, misses: int) -> None:
+        super().__init__(engine)
+        self.misses = misses
+        self.snapshots = 0
+
+    @override
+    @contextlib.contextmanager
+    def snapshot(self) -> Generator[Connection]:
+        from sqlalchemy import text
+
+        self.snapshots += 1
+        if self.snapshots <= self.misses:
+            with self.begin() as conn:
+                conn.execute(text("UPDATE projection_state SET up_to_id = 0 WHERE name = 'graph'"))
+                conn.execute(text("DELETE FROM p_graph_thread"))
+                conn.execute(text("DELETE FROM p_graph_version"))
+        with super().snapshot() as conn:
+            yield conn
+
+
+def _listed(storage: PostgresStorage) -> list[int]:
+    """The entities a reader lists, read in `graph_snapshot`."""
+    with graph_snapshot(storage, storage, storage) as conn:
+        return sorted(projected_graph(storage, storage, conn).winners(ENTITY))
+
+
 @pytest.mark.db
-def test_the_projection_stands_where_its_catch_up_left_it_or_the_reader_folds(
-    db: Engine,
+@pytest.mark.parametrize(
+    "change",
+    [
+        "DELETE FROM projection_state WHERE name = 'graph'",
+        "UPDATE projection_state SET version = version + 1 WHERE name = 'graph'",
+    ],
+    ids=["no-state-row", "other-version"],
+)
+def test_a_reader_meeting_a_projection_it_would_have_to_build_fails_and_touches_nothing(
+    db: Engine, change: str
 ) -> None:
-    """A reader holds the state row, in its snapshot, against the outcome of
-    its catch-up: another version, an `up_to_id` behind it as during a
-    rebuild, or no row at all mean the projection doesn't stand there."""
+    """Ruling F-c of the 2026-10-15 assignments plan: only `previously
+    project` builds. A reader meeting no state row, or one at another
+    version, fails with the sentence that names `previously project`, and
+    the state row and both tables are what they were, the rows of the
+    version it met included. Measured red by letting `graph_snapshot` catch
+    up with `rebuild=True`: the read succeeds, and the rows are rebuilt."""
     from sqlalchemy import text
 
     storage, _ids = _history(db)
-    outcome = catch_up(storage, storage, GRAPH)
-    with storage.snapshot() as conn:
-        assert projection_stands(storage, conn, outcome)
-    for change in (
-        "UPDATE projection_state SET version = version + 1 WHERE name = 'graph'",
-        "UPDATE projection_state SET up_to_id = up_to_id - 1 WHERE name = 'graph'",
-        "DELETE FROM projection_state WHERE name = 'graph'",
-    ):
-        with db.begin() as c:
-            c.execute(text(change))
-        with storage.snapshot() as conn:
-            assert not projection_stands(storage, conn, outcome), change
-        outcome = catch_up(storage, storage, GRAPH)
-        with storage.snapshot() as conn:
-            assert projection_stands(storage, conn, outcome)
+    with db.begin() as c:
+        c.execute(text(change))
+    before = _projection_rows(db)
+    with pytest.raises(ProjectionNotBuilt) as raised:
+        _listed(storage)
+    found = (
+        "is not built" if change.startswith("DELETE") else f"stands at version {GRAPH.version + 1}"
+    )
+    assert str(raised.value).startswith(f"projection graph {found}, and this code declares ")
+    assert "`previously project`" in str(raised.value)
+    assert _projection_rows(db) == before
+    # The control: `previously project` builds it, and the reader reads.
+    _project(storage)
+    assert _listed(storage)
+
+
+@pytest.mark.db
+def test_a_rebuild_between_catch_up_and_snapshot_is_caught_up_once_more_and_then_read(
+    db: Engine,
+) -> None:
+    """Ruling F-c of the 2026-10-15 assignments plan: a `previously project`
+    that empties the projection at its own version between a reader's
+    catch-up and its snapshot costs one more catch-up, which carries the
+    build on, and the reader reads the graph it would have read. Measured
+    red with `REBUILD_RETRIES` at 0: `ProjectionRebuilt`."""
+    _history(db)
+    expected = _listed(PostgresStorage(db))
+    assert expected
+    rebuilt = _RebuiltBeforeSnapshot(db, misses=1)
+    assert _listed(rebuilt) == expected
+    assert rebuilt.snapshots == 2
+
+
+@pytest.mark.db
+def test_two_rebuilds_in_a_row_fail_the_reader_though_a_third_try_would_read(
+    db: Engine,
+) -> None:
+    """One retry, not two: with the projection emptied before each of the
+    first two snapshots, a third try would read, and is not taken. Measured
+    red with `REBUILD_RETRIES` at 2: the read succeeds on the third
+    snapshot."""
+    _history(db)
+    assert REBUILD_RETRIES == 1
+    rebuilt = _RebuiltBeforeSnapshot(db, misses=2)
+    with pytest.raises(ProjectionRebuilt, match="on each of 2 tries"):
+        _listed(rebuilt)
+    assert rebuilt.snapshots == 2
+    # The control: the same store, past its misses, reads.
+    assert _listed(rebuilt)
+    assert rebuilt.snapshots == 3
+
+
+@pytest.mark.db
+def test_a_version_change_between_catch_up_and_snapshot_is_not_caught_up_again(
+    db: Engine,
+) -> None:
+    """A projection rebuilt at another version in between is no miss to
+    retry: a catch-up cannot change a version, and the reader fails at the
+    first snapshot that finds it."""
+    from sqlalchemy import text
+
+    _history(db)
+
+    class _OtherVersion(PostgresStorage):
+        snapshots = 0
+
+        @override
+        @contextlib.contextmanager
+        def snapshot(self) -> Generator[Connection]:
+            _OtherVersion.snapshots += 1
+            with self.begin() as conn:
+                conn.execute(text("UPDATE projection_state SET version = 7 WHERE name = 'graph'"))
+            with super().snapshot() as conn:
+                yield conn
+
+    with pytest.raises(ProjectionNotBuilt, match="stands at version 7"):
+        _listed(_OtherVersion(db))
+    assert _OtherVersion.snapshots == 1

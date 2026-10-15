@@ -9,7 +9,7 @@ To let a client propose obligations and decisions as well, and to make it ask yo
 You need three things before you start.
 
 - The `previously` command from the first release with the MCP server, `0.1.0a3`, or from a checkout, where `uv run previously …` runs it.
-- A database that `previously migrate` has brought up to date, with `PREVIOUSLY_DSN` exported, and mail in it ({ref}`ingest-a-mail-folder`).
+- A database that `previously migrate` has brought up to date and `previously project` has built the projections in, with `PREVIOUSLY_DSN` exported, and mail in it ({ref}`ingest-a-mail-folder`).
 - A policy with circles and members, as {ref}`set-a-policy-and-try-a-call` sets one up.
 
 ## Declare the client's processing chain

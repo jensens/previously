@@ -10,7 +10,7 @@ Like them, it says **what** Previously needs, **why**, and **how to recognize th
 
 The release adds one migration, `0006_graph`, which creates two tables, and one kind of relation, `concerns`, which the maintainer's log doesn't hold yet.
 It asks for no new setting and no secret.
-It asks one thing of the database role of every process that reads the graph, which the section on readers below gives with its reason: write access to the projection tables.
+It asks two things, which the sections below give with their reasons: `previously project` runs after `previously migrate` and before the new release serves, and the database role of every process that reads the graph may write the projection tables.
 It adds the assignment of mails and their units to a project, a matter or an organization, the command `chronicle --within`, an argument `within` of the MCP tool `previously`, and the check `previously project --check`.
 The tool list stays at fifteen.
 
@@ -24,11 +24,31 @@ They hold no content, only ids, counts, words of the vocabulary and the period d
 
 **It stands when** the migration job reported `0006_graph`, and `previously migrate` run again in the tools pod prints `up to date: 0006_graph`.
 
-## Two steps after the image
+## `previously project` after the migration, before the release serves
 
-Both are steps of the operator, once, in the tools pod, in this order.
+**Requirement: `previously project` of the new release runs after `previously migrate` and before the first pod of the new release serves**, on this upgrade, on every later upgrade whose release notes say that a projection's version changed, and on a new database.
+A job of the upgrade step after the migration job does it, or an init container of the server that waits for it; how, the environment decides.
 
-First, the new relation kind.
+**Why:** only `previously project` builds a projection.
+The migration `0006_graph` creates the graph projection's tables empty, with no state row, and a reader of this release doesn't build one: it catches up from where the projection stands, and where the projection isn't built at the version its code declares, it fails with a sentence that names `previously project`.
+A reader that built instead would put a build as long as the log inside a client's call, and during a rolling update an old pod would rebuild the old version and a new pod the new one, call after call.
+Earlier builds of this release let a reader that couldn't use the projection fold the whole log instead; that second way to the graph is gone, because it turned misconfiguration and damage into answers that were right and slow.
+
+**What an operator sees if the step is skipped:**
+
+- `previously serve` and `previously mcp` refuse to start, exit code 2, with `Error: projection graph is not built, and this code declares version 1; ` followed by `` `previously project` builds it ``.
+- A server that is already running answers `/healthz` with 503 and the body `Error: the graph projection is not built at this server's version`, and writes one `WARNING` line per probe: `the readiness probe found projection graph not built, and this code declares version 1`.
+  So the readiness probe keeps the new pods out of the Service until the projection stands.
+- A call that reaches such a server anyway fails with `Error: the call failed inside the server; its log says why, this result cannot`, and the log names the projection.
+- The graph listings of the command line exit 2 with the same sentence, and `previously redact` records its redaction and reports it as unfinished, with the advice to run `previously project` and then the same command again.
+
+The build reads the whole log once: milliseconds at the size of a pilot, 3.5 s at 10,000 relations and 35 s at 100,000, measured by the maintainer on 2026-10-15 at commit `22b3dec`.
+
+**It stands when** `previously project` printed a `graph` line that begins with `built:` or `rebuilt:`, or `up to date` where nothing was new, and `/healthz` of every pod of the new release answers 200.
+
+## One step after the image
+
+A step of the operator, once, in the tools pod: the new relation kind.
 Which kinds exist is declared in the log, and `concerns` is new in the base vocabulary:
 
 ```shell
@@ -38,37 +58,23 @@ previously vocabulary apply --base
 On a log from the first phase it prints one line for `concerns` and nothing else, asks, and writes one event.
 It adds the base kinds the log doesn't hold yet and changes nothing that the maintainer adapted.
 With nothing to add, it prints `nothing to change`.
+The readers catch the event up into the projection by themselves.
 
-Second, the projection.
-Readers bring the graph projection up to date by themselves before they read, so this step is not required for correctness.
-It makes the first reader not pay for building it inside a call:
-
-```shell
-previously project
-```
-
-It prints one line per projection and a third line, `graph`, which says `built:` with the number of events on the first run.
-If a reader built the projection first, the line says `caught up:` where events arrived since, and `up to date, up_to_id <id>` where none did.
-The build reads the whole log once.
-At the size of a pilot, a few hundred statements, that is milliseconds.
-
-**They stand when** `previously vocabulary show` lists `concerns` among the relations, and `previously project` prints a `graph` line, `up to date, up_to_id <id>` when you run it a second time.
+**It stands when** `previously vocabulary show` lists `concerns` among the relations.
 
 ## A rolling update runs two versions at once
 
-A projection has a version, and a reader whose code declares another version rebuilds it.
-Two images that both keep the projection `graph` at different versions, running side by side, rebuild it for each other.
-The image of `v0.1.0a7` keeps no `graph` projection, so an update from it doesn't start that exchange by itself.
-It starts with any later release that changes the version of `graph`, and with a pod of an intermediate build, which is why the advice stands for every update from here on.
+A projection has a version, and only `previously project` builds it at the version its code declares.
+The image of `v0.1.0a7` keeps no `graph` projection and reads none, so the update from it meets nothing of this.
+Any later release that changes the version of `graph` does.
 
-What the readers do while it happens is correct and slower.
-A reader checks, in the snapshot it reads from, that the projection stands where its own catch-up left it.
-Where it doesn't, or where the catch-up fails, the reader folds the log for that one call, as the previous release did for every call, and writes one warning line to the server's log.
-The answer is never empty, never half-built and never an error.
+**Requirement: in such an update, `previously project` of the new release runs before the first new pod serves, as above, and the old pods leave once it has.**
+**Why:** from the moment `project` of the new release rebuilt the projection, it stands at a version the old pods don't declare.
+They don't rebuild it back, so the two releases don't undo each other's work; they fail their graph calls instead, and their readiness probe answers 503, until they are replaced.
+The new pods find the projection at their version, and their probe answers 200 from the start.
+The window of failed calls is the time the old pods stay, so a rollout that replaces them promptly keeps it short.
 
-So: finish the rollout, so that only one version runs, then run `previously project` once.
-Warning lines in the log of `previously-mcp` during the rollout are the expected sign, not a fault.
-Lines that continue after the rollout has finished are worth a report.
+**It stands when** after the rollout only pods of the new release run, every `/healthz` answers 200, and the log of `previously-mcp` shows no `the readiness probe found projection graph` line any more.
 
 ## Every reader catches the projection up first
 
@@ -80,18 +86,18 @@ Where much is new, the catch-up does the work inside the call.
 The catch-up takes the row of `graph` in `projection_state` with `SELECT … FOR UPDATE`, inserts it if it's missing, and inserts, updates and deletes rows of `p_graph_version` and `p_graph_thread`.
 So the role of `previously-mcp`, of the tools pod and of any job that reads the graph needs `SELECT`, `INSERT`, `UPDATE` and `DELETE` on those three tables.
 **Why:** the projection is kept current by whoever reads, so that no job has to run for an answer to be current.
-A role without that access gets correct answers and slow ones: every call fails its catch-up, folds the whole log as the previous release did, and writes one warning line to the server's log.
-That line then names `database schema incomplete`, misleadingly: the storage layer says so for every refusal in the class a missing privilege belongs to, and the map carries it as an open point.
+A role without that access gets no answer from the graph: every call fails, and its reason in the server's log, like the error of a listing on the command line, names the missing privilege and the table, such as `the role of PREVIOUSLY_DSN lacks a privilege on database previously at <host>:<port>: permission denied for table projection_state`.
+Until this release's fix round that refusal read `database schema incomplete — previously migrate has not run yet`, and the reader folded the log behind it.
 All pods of Previously in kup6s use the one role that owns the database, as the feedback of 2026-10-12 reports, and that role holds all of it.
-**It stands when** `previously project` in the tools pod prints a `graph` line, and the log of `previously-mcp` shows no line with `the graph projection could not be caught up` once the rollout has finished.
+**It stands when** `previously project` in the tools pod prints a `graph` line, and the log of `previously-mcp` shows no `an MCP call failed` line naming the projection once the rollout has finished.
 
-**Run `previously project` after an upgrade and after a bulk ingest.**
+**Recommended: run `previously project` after a bulk ingest.**
 Two catch-ups of one projection take turns at that row lock, batch by batch, and no lock timeout is set.
 So while a long catch-up runs, every reader that arrives waits at the lock, takes its own turns, and returns only when the projection has reached the tip.
-**Why:** a release that changes the version of `graph` rebuilds the projection on its first catch-up, and a bulk ingest leaves much to catch up; either way the first reader would carry that work and every reader beside it would wait.
-Measured by the maintainer on 2026-10-15, on an i7-11370H at commit `22b3dec`, a first build takes 3.5 s at 10,000 relations and 35 s at 100,000, while a catch-up after one write takes 0.04 s.
+**Why:** a bulk ingest leaves much to catch up, and the first reader would carry that work while every reader beside it waits.
+Measured by the maintainer on 2026-10-15, on an i7-11370H at commit `22b3dec`, a catch-up after one write takes 0.04 s, and the first build of the whole log 3.5 s at 10,000 relations and 35 s at 100,000, which bounds what a catch-up after an ingest can take.
 At the size of a pilot, a few hundred statements, it is milliseconds, and the `project` CronJob every few minutes catches up between calls anyway.
-Running `previously project` by hand right after the step that brought the new events or the new version keeps that wait out of the calls of a client.
+Running `previously project` by hand right after the ingest keeps that wait out of the calls of a client.
 **It stands when** `previously project` run a second time prints `up to date, up_to_id <id>` on its `graph` line.
 
 **Recommended: `previously project --check` as a scheduled job, like `verify`, with an alarm on exit code `1`.**
@@ -128,18 +134,19 @@ Over MCP, an assignment or a part of a bracket counts only where the client may 
 
 ## A host without a cluster
 
-A `docker-compose` file does the same in the same order: change the image tag, run `previously migrate`, run `previously vocabulary apply --base` and then `previously project` once with `docker compose run` or `docker compose exec`.
-A container of `v0.1.0a7` that still runs beside the new one rebuilds nothing, since it keeps no `graph` projection.
-A container of an intermediate build would, so stop that one before you run `project`, as the section on rolling updates says.
+A `docker-compose` file does the same in the same order: change the image tag, run `previously migrate` and then `previously project` with `docker compose run` before the server container starts, then `previously vocabulary apply --base` once.
+A server started before `project` refuses to start with the sentence above, and a restart policy brings it up once `project` has run.
+A container of `v0.1.0a7` that still runs beside the new one reads no `graph` projection; a container of a later release with another version fails its graph calls until it is replaced, and rebuilds nothing.
 The scheduled `project --check` is one more line in the host's cron, beside `verify`.
 This file considers it and builds nothing for it.
 
 ## How to recognize that everything stands
 
 1. The tools pod, the jobs and `previously-mcp` run the new version, and `previously migrate` prints `up to date: 0006_graph`.
-2. `previously vocabulary show` lists `concerns`.
-3. `previously project` prints a `graph` line, and `previously project --check` exits 0.
-4. `previously chronicle --within <id>` answers for an entity that stands.
+2. `previously project` ran before `previously-mcp` of the new version served, and `/healthz` answers 200.
+3. `previously vocabulary show` lists `concerns`.
+4. `previously project` prints a `graph` line, and `previously project --check` exits 0.
+5. `previously chronicle --within <id>` answers for an entity that stands.
    On a log without assignments, it prints no lines and exits 0.
    With an id that is no entity it prints `Error: --within <id> is not an entity that stands` and exits 2, which also shows that the command runs.
-5. `tools/list` of `previously-mcp` still shows fifteen tools, and `previously(within=<id>)` answers over MCP.
+6. `tools/list` of `previously-mcp` still shows fifteen tools, and `previously(within=<id>)` answers over MCP.

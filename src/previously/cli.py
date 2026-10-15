@@ -78,6 +78,7 @@ from previously.core.errors import BatchTooLarge
 from previously.core.errors import CannotOpen
 from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
+from previously.core.errors import ProjectionNotBuilt
 from previously.core.errors import reason_of
 from previously.core.errors import RedactionRefused
 from previously.core.errors import SinkUnwritable
@@ -104,8 +105,8 @@ from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
 from previously.core.graph_read import bracket_members
 from previously.core.graph_read import check_graph
+from previously.core.graph_read import graph_snapshot
 from previously.core.graph_read import projected_graph
-from previously.core.graph_read import projection_stands
 from previously.core.graph_write import check_claims
 from previously.core.graph_write import decided
 from previously.core.graph_write import EntityTypes
@@ -1288,11 +1289,20 @@ def _payload_line(event_id: int) -> str:
     )
 
 
-def _unfinished(redaction_id: int, outstanding: str) -> PreviouslyError:
+def _unfinished(redaction_id: int, outstanding: str, *, unbuilt: bool) -> PreviouslyError:
     """The error of a redaction that stands and is not carried out to its
     end: what stands, what is outstanding, and that the same command
     finishes it — the second call finds the target covered, writes nothing,
-    and does what is left."""
+    and does what is left.
+
+    Where a projection is not built at this code's version (`unbuilt`), the
+    same command alone would stop at it again: `previously project` builds
+    it first, and in building it takes the redaction in."""
+    if unbuilt:
+        return PreviouslyError(
+            f"the redaction is recorded as event {redaction_id}, but it is not finished: "
+            f"{outstanding}; run `previously project`, then the same command again"
+        )
     return PreviouslyError(
         f"the redaction is recorded as event {redaction_id}, but it is not finished: "
         f"{outstanding}; run the same command again"
@@ -1331,33 +1341,33 @@ def _delete_obsolete(result: Redacted) -> str | None:
     return outstanding
 
 
-def _catch_up_after(storage: PostgresStorage) -> str | None:
+def _catch_up_after(storage: PostgresStorage) -> tuple[str, bool] | None:
     """Brings every projection up to the tip once a redaction is recorded, so
     the chronicle stops showing what was erased without waiting for the next
     `project` ({ref}`projections`).
 
     A failure here comes after the redaction committed, and is returned as
     what is outstanding, for the caller to say in its one sentence: what
-    stands, what does not, and that the same command finishes it — the
-    second call finds the target covered, writes nothing and catches up.
-    Only the errors `main` turns into a sentence are caught; anything foreign
-    goes through as a stack trace, as everywhere else.
+    stands, what does not, and how to finish it. Only the errors `main`
+    turns into a sentence are caught; anything foreign goes through as a
+    stack trace, as everywhere else.
 
-    A catch-up that builds a projection from scratch — the first build, or a
-    rebuild after a version change — is named on standard error, in the line
-    `project` prints for it. `project` names its path so that a rebuild is not
-    invisible, and the first `redact` after an upgrade would otherwise rebuild
-    without a word, for as long as the log takes. An ordinary catch-up says
-    nothing, and standard output stays the one line.
+    It catches up and never builds: a projection not built at this code's
+    version is left as it is, and named as what is outstanding, in the
+    words of `ProjectionNotBuilt` without its advice, which `_unfinished`
+    gives when the second value says so. Only `previously project` builds
+    ({ref}`projections`), and the first `redact` after an upgrade would
+    otherwise rebuild for as long as the log takes, inside a command that
+    erases one thing.
     """
     for projection in PROJECTIONS:
         try:
-            outcome = catch_up(storage, storage, projection)
+            catch_up(storage, storage, projection, rebuild=False)
+        except ProjectionNotBuilt as error:
+            return error.finding, True
         except (PreviouslyError, StorageError) as error:
             outstanding = f"projection {projection.name} is not caught up ({error})"
-            return outstanding
-        if outcome.rebuilt_from is not None:
-            print(f"{outcome.name:<15} {_describe(outcome)}", file=sys.stderr)
+            return outstanding, False
     return None
 
 
@@ -1408,14 +1418,15 @@ def _cmd_redact(args: argparse.Namespace) -> int:
         deletion = _delete_obsolete(result)
         catching_up = _catch_up_after(storage)
         approvals = _approvals_of(storage, args)
-    left = [step for step in (deletion, catching_up) if step is not None]
+    outstanding, unbuilt = (None, False) if catching_up is None else catching_up
+    left = [step for step in (deletion, outstanding) if step is not None]
     if left:
         # The units are erased whether or not what follows is finished, and
         # the payload is left as it was either way, so the notice comes beside
         # the sentence of the unfinished redaction too.
         _notice_payload(result, args)
         _notice_approvals(approvals, args)
-        raise _unfinished(result.redaction_id, ", and ".join(left))
+        raise _unfinished(result.redaction_id, ", and ".join(left), unbuilt=unbuilt)
     print(_redacted_line(result))
     for event_id in result.cascaded:
         kind = "assertion" if event_id in result.cascaded_assertions else "model_call"
@@ -1480,7 +1491,7 @@ def _cmd_project(args: argparse.Namespace) -> int:
     # both the log it reads and the projection store it writes.
     with _storage() as storage:
         for projection in PROJECTIONS:
-            outcome = catch_up(storage, storage, projection)
+            outcome = catch_up(storage, storage, projection, rebuild=True)
             print(f"{outcome.name:<15} {_describe(outcome)}")
         if not args.check:
             return 0
@@ -1531,27 +1542,27 @@ def _cmd_chronicle(args: argparse.Namespace) -> int:
     # refused here too rather than silently read as local time.
     since = parse_moment(args.since) if args.since else None
     until = parse_moment(args.until) if args.until else None
-    with _storage() as storage:
-        # The graph is caught up as every reader of it catches it up, before
-        # the snapshot; the chronicle is not, and its lag is the line below.
-        outcome = None if args.within is None else _caught_up(storage)
-        # A snapshot, not `begin`: a reader of the graph holds the projection
-        # against its catch-up in its snapshot ({ref}`graph-readers`), and the
-        # members of the bracket and the rows they select are read at one
-        # moment. Tip and bookmark stay one statement (see
-        # `tip_and_bookmark`), which is a moment under either.
-        with storage.snapshot() as conn:
-            position = storage.tip_and_bookmark(conn, CHRONICLE.name)
-            within = None
-            if args.within is not None:
-                within = _bracket_selection(storage, conn, outcome, args.within)
-            # One more than the limit: if that extra row comes back, the window
-            # was cut. Counting the printed lines against the limit cannot tell
-            # a window that ends exactly at the limit from one that was cut
-            # there.
-            rows = storage.read_chronicle(
-                conn, since=since, until=until, limit=args.limit + 1, within=within
-            )
+    with _storage() as storage, ExitStack() as stack:
+        # A snapshot, not `begin`: under `--within` it is the reader's of the
+        # graph, which catches the graph up before it as every reader of it
+        # does and holds the projection against that catch-up in it
+        # ({ref}`graph-readers`), and the members of the bracket and the rows
+        # they select are read at one moment. The chronicle is not caught up,
+        # and its lag is the line below. Tip and bookmark stay one statement
+        # (see `tip_and_bookmark`), which is a moment under either.
+        within = None
+        if args.within is None:
+            conn = stack.enter_context(storage.snapshot())
+        else:
+            conn, graph = stack.enter_context(_graph_snapshot(storage))
+            within = _bracket_selection(storage, conn, graph, args.within)
+        position = storage.tip_and_bookmark(conn, CHRONICLE.name)
+        # One more than the limit: if that extra row comes back, the window
+        # was cut. Counting the printed lines against the limit cannot tell a
+        # window that ends exactly at the limit from one that was cut there.
+        rows = storage.read_chronicle(
+            conn, since=since, until=until, limit=args.limit + 1, within=within
+        )
     # Every string field through `escape_field`, not `content` alone: a tab or
     # a newline in `source` or `external_id` would otherwise add a field or
     # break the record in two (see `escape_field`).
@@ -1576,11 +1587,10 @@ def _cmd_chronicle(args: argparse.Namespace) -> int:
 
 
 def _bracket_selection(
-    storage: PostgresStorage, conn: Connection, outcome: Outcome | None, bracket: int
+    storage: PostgresStorage, conn: Connection, graph: Graph, bracket: int
 ) -> ChronicleSelection:
     """The units of the chronicle that belong to `bracket`, an entity that
     stands, found in the graph the reader reads ({ref}`graph-readers`)."""
-    graph = _reader_graph(storage, conn, outcome)
     # An id beyond what an event id can be in a payload names no entity, and
     # is refused before the lookup, which would hand it to the database.
     if not 1 <= bracket <= MAX_SAFE_INT or bracket not in EntityTypes(graph):
@@ -3471,72 +3481,46 @@ def _entity_line(
     )
 
 
-def _caught_up(storage: PostgresStorage) -> Outcome | None:
-    """Brings the graph projection up to the tip of the log before a reader
-    opens its snapshot ({ref}`graph-readers`): two short transactions when
-    nothing is new. Silent, as the MCP server's catch-up is: a reader's
-    output is what it reads. A build from scratch, the first or after an
-    upgrade that changed the projection's version, takes as long as the
-    log is, which is why the upgrade runs `project`, whose line names it.
+@contextmanager
+def _graph_snapshot(storage: PostgresStorage) -> Generator[tuple[Connection, Graph]]:
+    """The snapshot a reader of the graph reads in, and the graph it reads
+    there from the projection ({ref}`graph-readers`).
 
-    A catch-up that fails doesn't fail the reader: it says so in one line
-    on standard error and reads by folding the log (`None`). That holds for
-    every refusal of `catch_up`, a `PreviouslyError`: one stopped by another
-    version of the code rebuilding the projection, and a gap in the log
-    above where the projection stands, which the fold doesn't need to be
-    without because it reads the log whole. It holds for a `StorageError`
-    too. A programming error, such as a `KeyError`, still fails the
-    command, so that it is seen."""
-    try:
-        return catch_up(storage, storage, GRAPH)
-    except (PreviouslyError, StorageError) as error:
-        _graph_warning(f"the graph projection could not be caught up ({error})")
-        return None
-
-
-def _reader_graph(storage: PostgresStorage, conn: Connection, outcome: Outcome | None) -> Graph:
-    """The graph a reader reads in its snapshot: from the projection where
-    it stands where the catch-up left it, else folded from the log, with one
-    line on standard error, so that a rebuild in between shows neither an
-    empty graph nor a half-built one ({ref}`graph-readers`)."""
-    if outcome is None:
-        return read_graph(storage, conn)
-    if not projection_stands(storage, conn, outcome):
-        _graph_warning("the graph projection was rebuilt since this command caught it up")
-        return read_graph(storage, conn)
-    return projected_graph(storage, storage, conn)
-
-
-def _graph_warning(cause: str) -> None:
-    print(f"{cause}; this command folds the log instead", file=sys.stderr)
+    `graph_snapshot` catches the projection up first, without building it,
+    and catches up once more where `previously project` rebuilt it in
+    between. Silent, as the MCP server's catch-up is: a reader's output is
+    what it reads. What stops it is an error of the command, as every
+    `PreviouslyError` and `StorageError` is, and `main` says it in one
+    sentence: a projection not built at this code's version, which names
+    `previously project`, a gap in the log, a database that refuses. A
+    reader has no second way to the graph that would answer instead."""
+    with graph_snapshot(storage, storage, storage) as conn:
+        yield conn, projected_graph(storage, storage, conn)
 
 
 def _cmd_entities(args: argparse.Namespace) -> int:
     default = _language()
-    with _storage() as storage:
-        outcome = _caught_up(storage)
-        with storage.snapshot() as conn:
-            graph = _reader_graph(storage, conn, outcome)
-            vocabulary = read_vocabulary(storage, conn)
-            kinds = graph.entity_kinds()
-            found = graph.winners(ENTITY, types=None if args.type is None else (args.type,))
-            for subject in sorted(found):
-                thread, winner = graph.threads[subject], found[subject]
-                body = winner.claim.body
-                proposed = level_of(winner, graph.classes) == OPEN
-                listed = (
-                    (proposed or bool(thread.pending(graph.classes)))
-                    if args.proposals
-                    else not proposed
-                )
-                # A retracted entity is out of the list unless asked for by
-                # name, or unless what stands of it is a proposal.
-                gone = body.state == RETRACTED and args.state != RETRACTED and not args.proposals
-                kept = (args.type is None or body.type == args.type) and (
-                    args.state is None or body.state == args.state
-                )
-                if listed and kept and not gone:
-                    print(_entity_line(graph, vocabulary, kinds, thread, winner, default))
+    with _storage() as storage, _graph_snapshot(storage) as (conn, graph):
+        vocabulary = read_vocabulary(storage, conn)
+        kinds = graph.entity_kinds()
+        found = graph.winners(ENTITY, types=None if args.type is None else (args.type,))
+        for subject in sorted(found):
+            thread, winner = graph.threads[subject], found[subject]
+            body = winner.claim.body
+            proposed = level_of(winner, graph.classes) == OPEN
+            listed = (
+                (proposed or bool(thread.pending(graph.classes)))
+                if args.proposals
+                else not proposed
+            )
+            # A retracted entity is out of the list unless asked for by
+            # name, or unless what stands of it is a proposal.
+            gone = body.state == RETRACTED and args.state != RETRACTED and not args.proposals
+            kept = (args.type is None or body.type == args.type) and (
+                args.state is None or body.state == args.state
+            )
+            if listed and kept and not gone:
+                print(_entity_line(graph, vocabulary, kinds, thread, winner, default))
     return 0
 
 
@@ -3568,29 +3552,27 @@ def _cmd_relations(args: argparse.Namespace) -> int:
     default = _language()
     at = _parse_day("--at", args.at) if args.at is not None else None
     as_of = parse_moment(args.as_of) if args.as_of is not None else None
-    with _storage() as storage:
-        # The projection knows only what stands now; a past moment folds the
-        # log up to it, which is rare and may be slow.
-        outcome = _caught_up(storage) if as_of is None else None
-        with storage.snapshot() as conn:
-            graph = (
-                _reader_graph(storage, conn, outcome)
-                if as_of is None
-                else read_graph(storage, conn, as_of=as_of)
-            )
-            vocabulary = read_vocabulary(storage, conn)
-            kinds = graph.entity_kinds()
-            found = graph.relations(
-                at=at,
-                types=None if args.type is None else (args.type,),
-                start=args.start,
-                to=args.to,
-            )
-            for subject in sorted(found):
-                winner = found[subject]
-                if level_of(winner, graph.classes) != OPEN:
-                    thread = graph.threads[subject]
-                    print(_relation_line(graph, vocabulary, kinds, thread, winner, default))
+    # The projection knows only what stands now; a past moment folds the log
+    # up to it, which is rare and may be slow.
+    with _storage() as storage, ExitStack() as stack:
+        if as_of is None:
+            conn, graph = stack.enter_context(_graph_snapshot(storage))
+        else:
+            conn = stack.enter_context(storage.snapshot())
+            graph = read_graph(storage, conn, as_of=as_of)
+        vocabulary = read_vocabulary(storage, conn)
+        kinds = graph.entity_kinds()
+        found = graph.relations(
+            at=at,
+            types=None if args.type is None else (args.type,),
+            start=args.start,
+            to=args.to,
+        )
+        for subject in sorted(found):
+            winner = found[subject]
+            if level_of(winner, graph.classes) != OPEN:
+                thread = graph.threads[subject]
+                print(_relation_line(graph, vocabulary, kinds, thread, winner, default))
     return 0
 
 
@@ -3729,24 +3711,21 @@ def _entity_history_lines(
 def _show_entity(args: argparse.Namespace) -> int:
     default = _language()
     subject = int(args.what)
-    with _storage() as storage:
-        outcome = _caught_up(storage)
-        with storage.snapshot() as conn:
-            graph = _reader_graph(storage, conn, outcome)
-            vocabulary = read_vocabulary(storage, conn)
-            thread = graph.threads.get(subject)
-            if thread is None and erased_assertion(storage, conn, subject):
-                print(f"assertion {subject} is erased", file=sys.stderr)
-                return 1
-            winner = None if thread is None else thread.winner(graph.classes)
-            if thread is None or thread.kind != ENTITY or (winner is None and not args.history):
-                print(f"no entity stands under event {subject}", file=sys.stderr)
-                return 1
-            kinds = graph.entity_kinds()
-            if args.history or winner is None:
-                lines = _entity_history_lines(graph, vocabulary, kinds, thread)
-            else:
-                lines = _entity_lines(graph, vocabulary, kinds, thread, winner, default)
+    with _storage() as storage, _graph_snapshot(storage) as (conn, graph):
+        vocabulary = read_vocabulary(storage, conn)
+        thread = graph.threads.get(subject)
+        if thread is None and erased_assertion(storage, conn, subject):
+            print(f"assertion {subject} is erased", file=sys.stderr)
+            return 1
+        winner = None if thread is None else thread.winner(graph.classes)
+        if thread is None or thread.kind != ENTITY or (winner is None and not args.history):
+            print(f"no entity stands under event {subject}", file=sys.stderr)
+            return 1
+        kinds = graph.entity_kinds()
+        if args.history or winner is None:
+            lines = _entity_history_lines(graph, vocabulary, kinds, thread)
+        else:
+            lines = _entity_lines(graph, vocabulary, kinds, thread, winner, default)
     for line in lines:
         print(line)
     return 0
@@ -3809,35 +3788,30 @@ def _waiting(graph: Graph) -> dict[str, list[GraphVersion]]:
 def _cmd_triage(args: argparse.Namespace) -> int:
     del args
     default = _language()
-    with _storage() as storage:
-        outcome = _caught_up(storage)
-        with storage.snapshot() as conn:
-            graph = _reader_graph(storage, conn, outcome)
-            vocabulary = read_vocabulary(storage, conn)
-            for kind, versions in _waiting(graph).items():
-                for version in versions:
-                    claim = version.claim
-                    declares = ENTITY_KIND if isinstance(claim.body, EntityBody) else RELATION_KIND
-                    print(
-                        "\t".join(
-                            (
-                                kind,
-                                str(version.id),
-                                _kind_label(vocabulary, declares, claim, default),
-                                _claim_label(graph, claim),
-                                escape_field(claim.author),
-                            )
+    with _storage() as storage, _graph_snapshot(storage) as (conn, graph):
+        vocabulary = read_vocabulary(storage, conn)
+        for kind, versions in _waiting(graph).items():
+            for version in versions:
+                claim = version.claim
+                declares = ENTITY_KIND if isinstance(claim.body, EntityBody) else RELATION_KIND
+                print(
+                    "\t".join(
+                        (
+                            kind,
+                            str(version.id),
+                            _kind_label(vocabulary, declares, claim, default),
+                            _claim_label(graph, claim),
+                            escape_field(claim.author),
                         )
                     )
+                )
     return 0
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
     del args
-    with _storage() as storage:
-        outcome = _caught_up(storage)
-        with storage.snapshot() as conn:
-            waiting = _waiting(_reader_graph(storage, conn, outcome))
+    with _storage() as storage, _graph_snapshot(storage) as (_conn, graph):
+        waiting = _waiting(graph)
     for kind in _TRIAGE_KINDS:
         print(f"{kind}s\t{len(waiting[kind])}")
     return 0
@@ -3939,14 +3913,11 @@ def _cmd_classes_set(args: argparse.Namespace) -> int:
 
 def _cmd_classes_list(args: argparse.Namespace) -> int:
     del args
-    with _storage() as storage:
-        # A hit rate counts the versions under a class, and the projection
-        # says which threads hold one: only those are folded.
-        outcome = _caught_up(storage)
-        with storage.snapshot() as conn:
-            classes = read_classes(storage, conn)
-            graph = _reader_graph(storage, conn, outcome)
-            rates = {rate.name: rate for rate in hit_rates(graph, classes)}
+    # A hit rate counts the versions under a class, and the projection says
+    # which threads hold one: only those are folded.
+    with _storage() as storage, _graph_snapshot(storage) as (conn, graph):
+        classes = read_classes(storage, conn)
+        rates = {rate.name: rate for rate in hit_rates(graph, classes)}
     for name in sorted(classes.by_name):
         item, event_id = classes.by_name[name]
         rate = rates[name]
@@ -3975,32 +3946,29 @@ def _cmd_classes_sample(args: argparse.Namespace) -> int:
     if args.count < 1:
         raise PreviouslyError(f"--count must be at least 1, got {args.count}")
     default = _language()
-    with _storage() as storage:
-        outcome = _caught_up(storage)
-        with storage.snapshot() as conn:
-            classes = read_classes(storage, conn)
-            graph = _reader_graph(storage, conn, outcome)
-            vocabulary = read_vocabulary(storage, conn)
-            current = classes.by_name.get(args.name)
-            if current is None:
-                raise PreviouslyError(f"no approval class is named {args.name}")
-            for version in sample(graph, current[1], args.count, random.SystemRandom()):
-                claim = version.claim
-                declares = ENTITY_KIND if isinstance(claim.body, EntityBody) else RELATION_KIND
-                subject = claim.subject if claim.subject is not None else version.id
-                print(
-                    "\t".join(
-                        (
-                            str(version.id),
-                            str(subject),
-                            declares,
-                            _kind_label(vocabulary, declares, claim, default),
-                            _claim_label(graph, claim),
-                            str(claim.confidence),
-                            escape_field(claim.author),
-                        )
+    with _storage() as storage, _graph_snapshot(storage) as (conn, graph):
+        classes = read_classes(storage, conn)
+        vocabulary = read_vocabulary(storage, conn)
+        current = classes.by_name.get(args.name)
+        if current is None:
+            raise PreviouslyError(f"no approval class is named {args.name}")
+        for version in sample(graph, current[1], args.count, random.SystemRandom()):
+            claim = version.claim
+            declares = ENTITY_KIND if isinstance(claim.body, EntityBody) else RELATION_KIND
+            subject = claim.subject if claim.subject is not None else version.id
+            print(
+                "\t".join(
+                    (
+                        str(version.id),
+                        str(subject),
+                        declares,
+                        _kind_label(vocabulary, declares, claim, default),
+                        _claim_label(graph, claim),
+                        str(claim.confidence),
+                        escape_field(claim.author),
                     )
                 )
+            )
     return 0
 
 
@@ -4319,7 +4287,6 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
     allowed = (os.environ.get("PREVIOUSLY_MCP_ALLOWED_HOSTS") or "").replace(",", " ").split()
     where = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
     with _storage() as storage:
-        print(f"serving MCP over HTTP on http://{where}/mcp", file=sys.stderr)
         run_http(
             storage,
             host=host,
@@ -4330,6 +4297,7 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
             projections=storage,
             confirm_key=os.environ.get(KEY_VARIABLE),
             language=language,
+            announce=lambda: print(f"serving MCP over HTTP on http://{where}/mcp", file=sys.stderr),
         )
     return 0
 

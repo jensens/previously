@@ -36,7 +36,6 @@ from previously.core.assertion import Statement as AssertionStatement
 from previously.core.assertions import write_statements
 from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
-from previously.core.errors import ProjectionRebuilt
 from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
 from previously.core.graph import ENTITY
@@ -55,6 +54,7 @@ from previously.core.members import bracket_kinds
 from previously.core.members import members
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
+from previously.core.projection import PROJECTIONS
 from previously.core.redact import redact_blob
 from previously.core.redact import redact_event
 from previously.core.sealing import recipient_of
@@ -91,8 +91,6 @@ if TYPE_CHECKING:
     from mailserver import MailServer
     from previously.contract.blobs import ClosableSource
     from previously.contract.blobs import StoredBlob
-    from previously.core.projection import Outcome
-    from previously.core.projection import Projection
     from previously.storage.s3 import S3BlobStore
     from sqlalchemy import Connection
     from sqlalchemy import Engine
@@ -1940,10 +1938,16 @@ type WriteVersion1 = Callable[[PostgresStorage, Sequence[RawEvent], datetime], l
 
 
 def _connect(db: object, monkeypatch: pytest.MonkeyPatch) -> Engine:
+    """The test database as `PREVIOUSLY_DSN`, with the projections built on
+    the empty log, as `previously project` builds them after the first
+    `migrate`: `redact` catches them up and never builds one."""
     from sqlalchemy import Engine
 
     assert isinstance(db, Engine)
     monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
+    storage = PostgresStorage(db)
+    for projection in PROJECTIONS:
+        catch_up(storage, storage, projection, rebuild=True)
     return db
 
 
@@ -1955,16 +1959,10 @@ def test_redact_event_prints_the_redaction_and_show_names_it(
     assert main(["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"]) == 0
     capsys.readouterr()
 
-    # Nothing was projected before, so the catch-up after the redaction
-    # builds all three projections and says so on standard error.
+    # The catch-up after the redaction says nothing: it builds nothing.
     assert main(["redact", "event", "1", "--reason", "wrong recipient"]) == 0
     out, err = capsys.readouterr()
-    assert (out, err) == (
-        "redacted by event 2\n",
-        "chronicle       built: 2 events, up_to_id 2\n"
-        "source-stats    built: 2 events, up_to_id 2\n"
-        "graph           built: 2 events, up_to_id 2\n",
-    )
+    assert (out, err) == ("redacted by event 2\n", "")
 
     assert main(["show", "1"]) == 0
     output = capsys.readouterr().out
@@ -2106,19 +2104,11 @@ def test_redact_units_names_each_tombstone(
     assert main(["redact", "units", "1", "1", "3", "--reason", "r"]) == 0
     out, err = capsys.readouterr()
     assert out == "redacted by event 2\nredacted by event 3\n"
-    # The first `redact` builds the projections, which nobody had built; the
-    # second only catches up and says nothing about it. Both say that the
-    # payload, which holds the whole text under `text`, holds the wording of
-    # a unit they erased: unit 3 in the first, unit 1 in the second.
+    # Both say that the payload, which holds the whole text under `text`,
+    # holds the wording of a unit they erased: unit 3 in the first, unit 1
+    # in the second.
     standing = _payload_standing(1)
-    assert err == (
-        "chronicle       built: 2 events, up_to_id 2\n"
-        "source-stats    built: 2 events, up_to_id 2\n"
-        "graph           built: 2 events, up_to_id 2\n"
-        f"{standing}"
-        "unit 3 was already erased\n"
-        f"{standing}"
-    )
+    assert err == f"{standing}unit 3 was already erased\n{standing}"
 
     assert main(["show", "1"]) == 0
     output = capsys.readouterr().out
@@ -2401,7 +2391,7 @@ def test_redact_beside_a_project_holding_rows_ends_without_a_traceback(
 
     def run_project() -> None:
         try:
-            catch_up(project, project, CHRONICLE)
+            catch_up(project, project, CHRONICLE, rebuild=True)
         except BaseException as e:
             errors.append(e)
 
@@ -2418,46 +2408,71 @@ def test_redact_beside_a_project_holding_rows_ends_without_a_traceback(
     assert not thread.is_alive(), "thread is hanging"
 
     assert errors == []
-    assert capsys.readouterr() == (
-        "redacted by event 3\n",
-        "source-stats    built: 3 events, up_to_id 3\n"
-        "graph           built: 3 events, up_to_id 3\n",
-    )
+    assert capsys.readouterr() == ("redacted by event 3\n", "")
     with storage.begin() as conn:
         rows = storage.read_chronicle(conn, since=None, until=None, limit=10)
     assert [(row.event_id, row.seq) for row in rows] == [(1, 1), (1, 2)]
 
 
+def _chronicle_rows(engine: Engine) -> tuple[object, ...]:
+    """The chronicle's state row and its rows."""
+    from sqlalchemy import text
+
+    with engine.begin() as c:
+        return (
+            c.execute(text("SELECT * FROM projection_state WHERE name = 'chronicle'")).all(),
+            c.execute(text("SELECT * FROM p_chronicle ORDER BY event_id, seq")).all(),
+        )
+
+
 @pytest.mark.db
-def test_redact_reports_a_rebuild_it_runs_on_standard_error(
-    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("change", "found"),
+    [
+        ("UPDATE projection_state SET version = 1 WHERE name = 'chronicle'", "stands at version 1"),
+        ("DELETE FROM projection_state WHERE name = 'chronicle'", "is not built"),
+    ],
+    ids=["other-version", "no-state-row"],
+)
+def test_redact_does_not_rebuild_and_names_project_as_what_finishes_it(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+    found: str,
 ) -> None:
-    """A `redact` that is the first catch-up after an upgrade rebuilds the
-    chronicle, and says so in the words of `project`, on standard error:
-    standard output stays the one line ({ref}`projections`). The `project`
-    after it has nothing left to rebuild. The control is
-    `test_after_redact_the_chronicle_no_longer_shows_it`, where the
-    projections are current and `redact` says nothing on standard error."""
+    """Ruling F-c of the 2026-10-15 assignments plan: a `redact` that is the
+    first catch-up after an upgrade does not rebuild the chronicle, which
+    would take as long as the log inside a command that erases one thing.
+    The redaction stands, the chronicle is left as it was, and the sentence
+    says to run `previously project` and then the same command, because the
+    same command alone would stop at the chronicle again. Measured red by
+    letting `_catch_up_after` catch up with `rebuild=True`: exit 0, and the
+    chronicle rebuilt."""
     from sqlalchemy import text
 
     engine = _connect(db, monkeypatch)
     _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
     assert main(["project"]) == 0
     with engine.begin() as c:
-        c.execute(text("UPDATE projection_state SET version = 1 WHERE name = 'chronicle'"))
+        c.execute(text(change))
+    before = _chronicle_rows(engine)
     capsys.readouterr()
 
-    assert main(["redact", "event", "1", "--reason", "r"]) == 0
-    assert capsys.readouterr() == (
-        "redacted by event 2\n",
-        "chronicle       rebuilt: version 1 -> 3, 2 events, up_to_id 2\n",
+    assert _refused(capsys, "redact", "event", "1", "--reason", "r") == (
+        "the redaction is recorded as event 2, but it is not finished: "
+        f"projection chronicle {found}, and this code declares version 3; "
+        "run `previously project`, then the same command again"
     )
+    assert _chronicle_rows(engine) == before
+    # The control: `project` builds it and takes the redaction in, and the
+    # same command finds the target covered and finishes.
     assert main(["project"]) == 0
-    assert capsys.readouterr().out.splitlines() == [
-        "chronicle       up to date, up_to_id 2",
-        "source-stats    up to date, up_to_id 2",
-        "graph           up to date, up_to_id 2",
-    ]
+    assert capsys.readouterr().out.splitlines()[0].startswith("chronicle       ")
+    assert main(["chronicle"]) == 0
+    assert capsys.readouterr().out == ""
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.db
@@ -3330,8 +3345,8 @@ def test_redact_event_deletes_its_blob_and_says_which_one_stays(
 ) -> None:
     """Event 1 has a blob of its own and one it shares with events 2 and 3.
     Erasing event 1 deletes its own blob and leaves the shared one, named
-    with the events that still use it, on standard error after the lines of
-    the catch-up; erasing event 2 names the one event left."""
+    with the events that still use it, on standard error; erasing event 2
+    names the one event left."""
     own, shared = b"only in the first mail", b"in three mails"
     own_address = hashlib.sha256(own).hexdigest()
     shared_address = hashlib.sha256(shared).hexdigest()
@@ -3344,12 +3359,7 @@ def test_redact_event_deletes_its_blob_and_says_which_one_stays(
     capsys.readouterr()
 
     assert main(["redact", "event", "1", "--reason", "r"]) == 0
-    assert capsys.readouterr() == (
-        "redacted by event 4\n",
-        "chronicle       built: 4 events, up_to_id 4\n"
-        "source-stats    built: 4 events, up_to_id 4\n"
-        "graph           built: 4 events, up_to_id 4\n" + _stays(shared_address, 2, 3),
-    )
+    assert capsys.readouterr() == ("redacted by event 4\n", _stays(shared_address, 2, 3))
     assert _bucket(blobs.store) == [shared_address]
 
     assert main(["redact", "event", "2", "--reason", "r"]) == 0
@@ -4965,6 +4975,31 @@ def test_mcp_for_a_client_not_in_force_ends_with_2(
         )
 
 
+@pytest.mark.db
+def test_mcp_and_serve_refuse_to_start_before_project_built_the_graph(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling F-c of the 2026-10-15 assignments plan: the server catches the
+    graph projection up before it serves, and never builds it. Before
+    `previously project`, both commands exit 2 with the sentence that names
+    it, and `serve` hasn't said that it serves. Measured red by removing the
+    catch-up from `build_server`: `mcp` starts and doesn't exit 2."""
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    capsys.readouterr()
+    monkeypatch.setenv("PREVIOUSLY_MCP_CLIENT", "claude-code")
+    monkeypatch.setenv("PREVIOUSLY_MCP_ADDRESS", f"127.0.0.1:{_free_port('127.0.0.1')}")
+    sentence = (
+        "Error: projection graph is not built, and this code declares version 1; "
+        "`previously project` builds it\n"
+    )
+    for command in ("mcp", "serve"):
+        assert main([command]) == 2
+        assert capsys.readouterr() == ("", sentence)
+
+
 @pytest.mark.parametrize(
     "address",
     [
@@ -5059,6 +5094,9 @@ def test_serve_listens_where_the_address_says_beside_the_variables_of_a_service(
         pytest.skip(f"{host} is not an address of this machine")
     where = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
     _setup(db, monkeypatch)
+    # The upgrade step: the server refuses to start before `project` built
+    # the graph projection.
+    assert main(["project"]) == 0
     environment = {
         **os.environ,
         "PREVIOUSLY_MCP_ADDRESS": where,
@@ -5135,6 +5173,7 @@ def test_serve_passes_the_confirm_key_on_to_the_writing_tools(
     the control that the answer depends on the key."""
     port = _free_port("127.0.0.1")
     _setup(db, monkeypatch)
+    assert main(["project"]) == 0
     _declare_local(db, capsys)
     argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s", "--yes"]
     assert main(argv) == 0
@@ -5205,8 +5244,10 @@ def _assertion_mail(external_id: str, *identities: tuple[str, str | None]) -> Ra
 
 def _assertion_log(db: object, monkeypatch: pytest.MonkeyPatch, mails: int = 2) -> PostgresStorage:
     """A log with `mails` observations, ids 1 to `mails`; the first one is
-    from Anna Huber."""
-    _setup(db, monkeypatch)
+    from Anna Huber. The projections are built, as `previously project`
+    builds them before anything reads the graph: a reader and `redact`
+    catch up and never build."""
+    _connect(db, monkeypatch)
     from sqlalchemy import Engine
 
     assert isinstance(db, Engine)
@@ -7814,69 +7855,148 @@ def _expected_listings(capsys: pytest.CaptureFixture[str]) -> list[str]:
     return [_run(capsys, *command) for command in (["entities"], ["triage"], ["status"])]
 
 
+def _graph_rows(db: object) -> tuple[object, ...]:
+    """Everything of the graph projection: its state row and both tables."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    with db.begin() as c:
+        return (
+            c.execute(text("SELECT * FROM projection_state WHERE name = 'graph'")).all(),
+            c.execute(text("SELECT * FROM p_graph_thread ORDER BY subject")).all(),
+            c.execute(text("SELECT * FROM p_graph_version ORDER BY id")).all(),
+        )
+
+
+class _RebuiltBeforeSnapshot(PostgresStorage):
+    """The real store, where `previously project` empties the graph
+    projection at its own version between a reader's catch-up and its
+    snapshot, as after an operator deleted the state row: before each of the
+    first `misses` snapshots, its state row goes back to `up_to_id` 0 and
+    its tables are emptied. Every snapshot after those finds it as it is."""
+
+    def __init__(self, engine: Engine, misses: int) -> None:
+        super().__init__(engine)
+        self.misses = misses
+        self.snapshots = 0
+
+    @contextmanager
+    def snapshot(self) -> Generator[Connection]:
+        from sqlalchemy import text
+
+        self.snapshots += 1
+        if self.snapshots <= self.misses:
+            with self.begin() as conn:
+                conn.execute(text("UPDATE projection_state SET up_to_id = 0 WHERE name = 'graph'"))
+                conn.execute(text("DELETE FROM p_graph_thread"))
+                conn.execute(text("DELETE FROM p_graph_version"))
+        with super().snapshot() as conn:
+            yield conn
+
+
+def _through(monkeypatch: pytest.MonkeyPatch, storage: PostgresStorage) -> None:
+    """Every command from here on works with `storage`, the database of the
+    test seen through a store of its own."""
+
+    def given(dsn: str) -> PostgresStorage:
+        del dsn
+        return storage
+
+    monkeypatch.setattr("previously.cli.from_dsn", given)
+
+
 @pytest.mark.db
-def test_a_listing_folds_the_log_when_the_projection_was_rebuilt_since_its_catch_up(
-    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("change", "found"),
+    [
+        ("DELETE FROM projection_state WHERE name = 'graph'", "is not built"),
+        ("UPDATE projection_state SET version = 7 WHERE name = 'graph'", "stands at version 7"),
+    ],
+    ids=["no-state-row", "other-version"],
+)
+def test_a_listing_meeting_a_projection_it_would_have_to_build_fails_and_touches_nothing(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+    found: str,
 ) -> None:
-    """Another version of the code, or a forced rebuild, empties the
-    projection between a reader's catch-up and its snapshot: the reader
-    finds the state row at another version, says so on standard error and
-    shows the fold, never the empty tables ({ref}`graph-readers`)."""
+    """Ruling F-c of the 2026-10-15 assignments plan: only `previously
+    project` builds. A reader meeting no state row, or one at another
+    version, exits 2 with the sentence that names `previously project`, and
+    leaves the state row and both tables as they were. Measured red by
+    letting `graph_snapshot` catch up with `rebuild=True`: every listing
+    exits 0, and the rows are rebuilt."""
     from sqlalchemy import Engine
     from sqlalchemy import text
 
     storage = _graph_log(db, monkeypatch, capsys)
     _listed_history(storage, capsys)
+    _run(capsys, "project")
     expected = _expected_listings(capsys)
-    assert all(expected)
     assert isinstance(db, Engine)
-
-    def rebuilt_after(
-        log: PostgresStorage, store: PostgresStorage, projection: Projection
-    ) -> Outcome:
-        outcome = catch_up(log, store, projection)
-        with db.begin() as c:
-            c.execute(text("UPDATE projection_state SET version = 7 WHERE name = 'graph'"))
-            c.execute(text("DELETE FROM p_graph_thread"))
-            c.execute(text("DELETE FROM p_graph_version"))
-        return outcome
-
-    monkeypatch.setattr("previously.cli.catch_up", rebuilt_after)
-    for command, shown in zip((["entities"], ["triage"], ["status"]), expected, strict=True):
-        assert main(command) == 0
-        captured = capsys.readouterr()
-        assert captured.out == shown
-        assert captured.err == (
-            "the graph projection was rebuilt since this command caught it up; "
-            "this command folds the log instead\n"
-        )
+    with db.begin() as c:
+        c.execute(text(change))
+    before = _graph_rows(db)
+    for command in (["entities"], ["triage"], ["status"]):
+        sentence = _refused(capsys, *command)
+        assert sentence.startswith(f"projection graph {found}, and this code declares version ")
+        assert "`previously project`" in sentence
+        assert _graph_rows(db) == before
+    # The control: `previously project` builds it, and the listings read.
+    _run(capsys, "project")
+    assert _expected_listings(capsys) == expected
 
 
 @pytest.mark.db
-def test_a_listing_folds_the_log_when_its_catch_up_fails(
+def test_a_listing_catches_up_once_more_after_a_rebuild_between_catch_up_and_snapshot(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A catch-up stopped by another version of the code rebuilding the
-    projection fails no listing: one line on standard error, and the
-    fold."""
+    """A `previously project` that empties the projection at its own version
+    between a reader's catch-up and its snapshot costs one more catch-up,
+    and the listing shows what it shows otherwise, with nothing on standard
+    error ({ref}`graph-readers`). Measured red with `REBUILD_RETRIES` at 0:
+    exit 2 with `ProjectionRebuilt`'s sentence."""
+    from sqlalchemy import Engine
+
     storage = _graph_log(db, monkeypatch, capsys)
     _listed_history(storage, capsys)
+    _run(capsys, "project")
     expected = _expected_listings(capsys)
-    stopped = "projection graph was rebuilt while this catch-up ran"
-
-    def failing(log: PostgresStorage, store: PostgresStorage, projection: Projection) -> Outcome:
-        del log, store, projection
-        raise ProjectionRebuilt(stopped)
-
-    monkeypatch.setattr("previously.cli.catch_up", failing)
+    assert all(expected)
+    assert isinstance(db, Engine)
     for command, shown in zip((["entities"], ["triage"], ["status"]), expected, strict=True):
+        rebuilt = _RebuiltBeforeSnapshot(db, misses=1)
+        _through(monkeypatch, rebuilt)
         assert main(command) == 0
-        captured = capsys.readouterr()
-        assert captured.out == shown
-        assert captured.err == (
-            f"the graph projection could not be caught up ({stopped}); "
-            "this command folds the log instead\n"
-        )
+        assert capsys.readouterr() == (shown, "")
+        assert rebuilt.snapshots == 2
+
+
+@pytest.mark.db
+def test_a_listing_fails_on_a_second_rebuild_in_a_row_though_a_third_try_would_read(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One retry, not two: with the projection emptied before each of the
+    first two snapshots, a third try would read, and the listing does not
+    take it. Measured red with `REBUILD_RETRIES` at 2: exit 0 after three
+    snapshots."""
+    from sqlalchemy import Engine
+
+    storage = _graph_log(db, monkeypatch, capsys)
+    _listed_history(storage, capsys)
+    _run(capsys, "project")
+    assert isinstance(db, Engine)
+    rebuilt = _RebuiltBeforeSnapshot(db, misses=2)
+    _through(monkeypatch, rebuilt)
+    assert _refused(capsys, "status") == (
+        "projection graph was rebuilt between catching it up and reading it, on each of "
+        "2 tries; read again once `previously project` has finished"
+    )
+    assert rebuilt.snapshots == 2
+    # The control: the same store, past its misses, reads.
+    assert _run(capsys, "status") == "objections\t1\nquestions\t1\nproposals\t1\n"
 
 
 class _GapAboveTheProjection(PostgresStorage):
@@ -7890,42 +8010,79 @@ class _GapAboveTheProjection(PostgresStorage):
 
 
 @pytest.mark.db
-def test_a_listing_folds_the_log_when_its_catch_up_meets_a_gap_in_the_log(
+def test_a_listing_whose_catch_up_meets_a_gap_in_the_log_fails_with_it(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A gap above where the projection stands, which `catch_up` refuses
-    with `ProjectionGap`, fails no listing either: the fold reads the log
-    whole and needs no projection, so the reader says so in one line on
-    standard error and shows the fold ({ref}`graph-readers`)."""
+    with `ProjectionGap`, is damage, and the listing says so as its error
+    with exit code 2 rather than answer from a fold of the log over it
+    ({ref}`graph-readers`)."""
     from sqlalchemy import Engine
+
+    storage = _graph_log(db, monkeypatch, capsys)
+    _listed_history(storage, capsys)
+    _run(capsys, "project")
+    # Two events past the projection, so that a gap has room to stand
+    # between them: with only the tip new, there is none.
+    _model_person(storage, "Bert", confidence=40)
+    _model_person(storage, "Clara", confidence=40)
+    assert isinstance(db, Engine)
+    before = _graph_rows(db)
+    _through(monkeypatch, _GapAboveTheProjection(db))
+    for command in (["entities"], ["triage"], ["status"]):
+        assert _refused(capsys, *command).startswith("expected events ")
+    assert _graph_rows(db) == before
+    # The control: the same log through the real store reads.
+    _through(monkeypatch, PostgresStorage(db))
+    assert _run(capsys, "status") == "objections\t1\nquestions\t1\nproposals\t3\n"
+
+
+@pytest.mark.db
+def test_a_role_that_may_only_read_the_projection_is_told_so_and_not_to_migrate(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A role with every right on the log and only `SELECT` on the tables of
+    the projections: a reader's catch-up locks the state row, which the role
+    may not, and the reader fails with the database's reason. Measured on
+    2026-10-15 before `PrivilegeMissing`: "database schema incomplete —
+    previously migrate has not run yet" (backticks around the command left
+    out here), advice that
+    changes nothing for a role that lacks a grant; and before ruling F-c of
+    the 2026-10-15 assignments plan that sentence stood in a warning, and
+    the listing folded the log."""
+    from sqlalchemy import Engine
+    from sqlalchemy import make_url
     from sqlalchemy import text
 
     storage = _graph_log(db, monkeypatch, capsys)
     _listed_history(storage, capsys)
-    expected = _expected_listings(capsys)
+    _run(capsys, "project")
     assert isinstance(db, Engine)
-    # The projection has to be built again, as after an upgrade, so that
-    # the catch-up reads a batch of many events, and meets the gap there.
+    name, password = f"reader_{secrets.token_hex(4)}", secrets.token_hex(16)
+    projections = "projection_state, p_chronicle, p_source_stats, p_graph_thread, p_graph_version"
     with db.begin() as c:
-        c.execute(text("DELETE FROM projection_state WHERE name = 'graph'"))
-    gapped = _GapAboveTheProjection(db)
-
-    def through_the_gap(
-        log: PostgresStorage, store: PostgresStorage, projection: Projection
-    ) -> Outcome:
-        del log
-        return catch_up(gapped, store, projection)
-
-    monkeypatch.setattr("previously.cli.catch_up", through_the_gap)
-    for command, shown in zip((["entities"], ["triage"], ["status"]), expected, strict=True):
-        assert main(command) == 0, capsys.readouterr().err
-        captured = capsys.readouterr()
-        assert captured.out == shown
-        assert captured.err.startswith(
-            "the graph projection could not be caught up (expected events 1.. "
-        )
-        assert captured.err.endswith("); this command folds the log instead\n")
-        assert captured.err.count("\n") == 1
+        c.execute(text(f"CREATE ROLE {name} LOGIN PASSWORD '{password}'"))
+        c.execute(text(f"GRANT USAGE ON SCHEMA public TO {name}"))
+        c.execute(text(f"GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO {name}"))
+        c.execute(text(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {name}"))
+        c.execute(text(f"REVOKE INSERT, UPDATE ON {projections} FROM {name}"))
+    try:
+        url = make_url(db.url.render_as_string(hide_password=False))
+        dsn = url.set(username=name, password=password).render_as_string(hide_password=False)
+        monkeypatch.setenv("PREVIOUSLY_DSN", dsn)
+        where = f"database {url.database} at {url.host}:{url.port}"
+        for command in (["entities"], ["status"]):
+            assert _refused(capsys, *command) == (
+                f"the role of PREVIOUSLY_DSN lacks a privilege on {where}: "
+                "permission denied for table projection_state"
+            )
+        # The control: the same role reads what needs no catch-up.
+        assert main(["chronicle", "--limit", "1"]) == 0
+        capsys.readouterr()
+    finally:
+        with db.begin() as c:
+            c.execute(text(f"DROP OWNED BY {name}"))
+            c.execute(text(f"DROP ROLE {name}"))
 
 
 # --- the chronicle of a bracket: chronicle --within ---------------------------------
@@ -8074,15 +8231,17 @@ def test_chronicle_within_finds_from_the_projection_what_the_fold_finds(
 
 
 @pytest.mark.db
-@pytest.mark.parametrize("cause", ["rebuilt", "failed"])
-def test_chronicle_within_folds_the_log_when_the_projection_does_not_stand(
-    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, cause: str
+@pytest.mark.parametrize("misses", [1, 2])
+def test_chronicle_within_reads_the_projection_once_more_after_a_rebuild_and_fails_on_two(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, misses: int
 ) -> None:
-    """Ruling T4-b of the 2026-10-15 assignments plan: a rebuild between the
-    catch-up and the snapshot, or a catch-up that fails, costs a fold and
-    one line on standard error, never an empty chronicle."""
+    """Ruling F-c of the 2026-10-15 assignments plan, which replaces ruling
+    T4-b of the same plan: `chronicle --within` reads its bracket as every
+    reader of the graph does. A rebuild between the catch-up and the
+    snapshot costs one more catch-up and shows the same chronicle; a second
+    one in a row fails the command, never an empty chronicle and never a
+    fold of the log."""
     from sqlalchemy import Engine
-    from sqlalchemy import text
 
     _graph_log(db, monkeypatch, capsys)
     ids = _markus(capsys)
@@ -8090,29 +8249,12 @@ def test_chronicle_within_folds_the_log_when_the_projection_does_not_stand(
     expected = _within(capsys, ids["club"])
     assert expected
     assert isinstance(db, Engine)
-    stopped = "projection graph was rebuilt while this catch-up ran"
-
-    def rebuilt_after(
-        log: PostgresStorage, store: PostgresStorage, projection: Projection
-    ) -> Outcome:
-        outcome = catch_up(log, store, projection)
-        with db.begin() as c:
-            c.execute(text("UPDATE projection_state SET version = 7 WHERE name = 'graph'"))
-            c.execute(text("DELETE FROM p_graph_thread"))
-            c.execute(text("DELETE FROM p_graph_version"))
-        return outcome
-
-    def failing(log: PostgresStorage, store: PostgresStorage, projection: Projection) -> Outcome:
-        del log, store, projection
-        raise ProjectionRebuilt(stopped)
-
-    monkeypatch.setattr("previously.cli.catch_up", rebuilt_after if cause == "rebuilt" else failing)
-    assert main(["chronicle", "--within", str(ids["club"])]) == 0
-    captured = capsys.readouterr()
-    assert captured.out.splitlines() == expected
-    warning = (
-        "the graph projection was rebuilt since this command caught it up"
-        if cause == "rebuilt"
-        else f"the graph projection could not be caught up ({stopped})"
-    )
-    assert captured.err == f"{warning}; this command folds the log instead\n"
+    rebuilt = _RebuiltBeforeSnapshot(db, misses=misses)
+    _through(monkeypatch, rebuilt)
+    if misses == 1:
+        assert _within(capsys, ids["club"]) == expected
+    else:
+        assert _refused(capsys, "chronicle", "--within", str(ids["club"])).startswith(
+            "projection graph was rebuilt between catching it up and reading it"
+        )
+    assert rebuilt.snapshots == 2

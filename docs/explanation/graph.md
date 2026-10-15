@@ -294,7 +294,7 @@ Each figure is the median of three runs, and `verify` found nothing in any of th
 
 Interactive use needs a call or a list to answer in less than about a second, and by that measure the projection carries what it was built for.
 The header and `whoami`, triage, a catch-up, `chronicle --within` on the command line and the empty bracket over MCP all stay far below a second at 100,000 relations, so the header no longer costs every call what the whole graph costs.
-The first build, 35 s at 100,000 relations, is paid once for each version of the projection: by `previously project` after an upgrade, or else by the first reader.
+The first build, 35 s at 100,000 relations, is paid once for each version of the projection, by `previously project` in the upgrade step: a reader never builds, and fails until `project` has ({ref}`graph-readers`).
 
 What doesn't carry at 100,000 relations are the reads whose cost is the graph or the log itself, not the question.
 A full listing, `entities` or `relations --at`, takes its subjects from the projection and still folds each listed thread from the log, because what it shows comes from there, and printing every line of a graph that size takes 3.5 s and 6.8 s.

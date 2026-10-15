@@ -49,6 +49,12 @@ Every subcommand but `migrate` needs the schema that `migrate` creates, and agai
 Error: database schema incomplete — `previously migrate` has not run yet
 ```
 
+A role that lacks a privilege on a table a command touches, such as a role that may only read the tables of the projections, gets the database's reason instead, with exit code 2:
+
+```text
+Error: the role of PREVIOUSLY_DSN lacks a privilege on database previously at localhost:5432: permission denied for table projection_state
+```
+
 ## Exit codes
 
 | Command | 0 | 1 | 2 |
@@ -56,14 +62,14 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `migrate` | The schema stands at the newest revision, whether `migrate` ran a migration or found it up to date. | Not used. | The database is at a revision this version doesn't know, the database refused to let the role read the revision or apply a migration, or storage raised an error. |
 | `append` | The event was recorded, or an event with the same `--source` and `--external-id` and the same content already existed. | Not used. | The input was invalid, an event with the same `--source` and `--external-id` holds another content, an attachment couldn't be read, a blob setting is missing or invalid, or storage or the blob store raised an error. |
 | `ingest` | The run read every folder, with or without variants. | Not used. | A setting is missing or invalid, or `--folder` is empty, the IMAP server couldn't be reached, refused a step or broke the connection off, the log refused a batch, for a mail with more than 500 events or a variant key held with another content (see {ref}`mail-mapping`), or storage or the blob store raised an error; for one folder or more. |
-| `redact` | The redaction was recorded and carried out, or the target was already covered by one, every blob it made obsolete is gone from the blob store, and every projection stands at the tip of the log. | Not used. | The input was invalid, the redaction was refused, storage raised an error, or after the redaction was recorded a blob couldn't be deleted or the projections couldn't be caught up. |
+| `redact` | The redaction was recorded and carried out, or the target was already covered by one, every blob it made obsolete is gone from the blob store, and every projection stands at the tip of the log. | Not used. | The input was invalid, the redaction was refused, storage raised an error, or after the redaction was recorded a blob couldn't be deleted or the projections couldn't be caught up, a projection not built at this code's version among them. |
 | `log` | The log was printed. | Not used. | The input was invalid, or storage raised an error. |
 | `verify` | The chain has no finding, every anchor holds, and with `--blobs` no blob has a finding. | The chain, an anchor or, with `--blobs`, a blob has at least one finding. | The input was invalid, a blob setting is missing or invalid, an identity file can't be read, or storage or the blob store raised an error. |
 | `anchor` | The anchor line was printed, or the log is empty. | The chain has at least one finding. | Storage raised an error. |
 | `show` | The event was printed. | No event exists at the given `event_id`. | The input was invalid, or storage raised an error. |
 | `blob` | The blob was written to the file. | No event names the blob, or the blob is erased. | The input was invalid, a blob setting is missing or invalid, the blob is missing from the store, can't be opened or doesn't match its address, the file can't be written, or storage or the blob store raised an error. |
 | `project` | Every projection stands at the tip of the log, and with `--check` every row of the graph projection agrees with the fold. | With `--check`, a row of the graph projection differs from the fold. | Storage raised an error, the worker found a gap in the log, or a catch-up at another version rebuilt a projection while this one ran. |
-| `chronicle` | The chronicle was printed, even when the window holds no row, or the bracket of `--within` none. | Not used. | The input was invalid, including a `--within` that names no entity that stands, or storage raised an error. |
+| `chronicle` | The chronicle was printed, even when the window holds no row, or the bracket of `--within` none. | Not used. | The input was invalid, including a `--within` that names no entity that stands, under `--within` the graph projection isn't built at this code's version or couldn't be caught up, or storage raised an error. |
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
 | `policy` | The statement was written, `show` printed the policy, or `gaps` printed what fell back, even when nothing did. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the statement was refused, or storage raised an error. |
 | `client` | The client was added and its token printed, revoked, or listed, even when none exists. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the processor isn't declared, no such client exists to revoke, or storage raised an error. |
@@ -73,14 +79,14 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `reject` | The rejection was written. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the proposal is none, is direct, or is already approved or rejected, the write path refused the rejection, or storage raised an error. |
 | `obligations`, `decisions` | The list was printed, even when no entry matches. | Not used. | The input was invalid, or storage raised an error. |
 | `obligation`, `decision` | The entry was printed. | No entry of that kind stands under the id, or the id names an assertion an erasure took. | Storage raised an error. |
-| `entity` | The entity was written, or the page of an entity was printed. | The confirmation was answered with anything but yes, or not answered, and nothing was written; no entity stands under the id, or the id names an assertion an erasure took. | The input was invalid, including a `--field` that the kind doesn't declare or its type can't read, `--recollection` with `--source`, a kind that isn't in the vocabulary, the write path refused the claim, or storage raised an error. |
+| `entity` | The entity was written, or the page of an entity was printed. | The confirmation was answered with anything but yes, or not answered, and nothing was written; no entity stands under the id, or the id names an assertion an erasure took. | The input was invalid, including a `--field` that the kind doesn't declare or its type can't read, `--recollection` with `--source`, a kind that isn't in the vocabulary, the write path refused the claim, the graph projection isn't built at this code's version or couldn't be caught up, or storage raised an error. |
 | `relate` | The relation was written. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, including a missing `--from`, `--to` or source without `--subject`, the write path refused the claim, or storage raised an error. |
-| `entities`, `relations` | The list was printed, even when no entity or relation matches. | Not used. | The input was invalid, `PREVIOUSLY_LANGUAGE` isn't a language tag, or storage raised an error. |
-| `classes` | The class was written, or `list` or `sample` printed. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, including a class the vocabulary can't carry, a `revoke` or `sample` that names no class, or a `--count` below 1, or storage raised an error. |
-| `triage`, `status` | What waits was printed, even when nothing does. | Not used. | `PREVIOUSLY_LANGUAGE` isn't a language tag (`triage`), or storage raised an error. |
+| `entities`, `relations` | The list was printed, even when no entity or relation matches. | Not used. | The input was invalid, `PREVIOUSLY_LANGUAGE` isn't a language tag, the graph projection isn't built at this code's version or couldn't be caught up, or storage raised an error. |
+| `classes` | The class was written, or `list` or `sample` printed. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, including a class the vocabulary can't carry, a `revoke` or `sample` that names no class, or a `--count` below 1, the graph projection isn't built at this code's version or couldn't be caught up, or storage raised an error. |
+| `triage`, `status` | What waits was printed, even when nothing does. | Not used. | `PREVIOUSLY_LANGUAGE` isn't a language tag (`triage`), the graph projection isn't built at this code's version or couldn't be caught up, or storage raised an error. |
 | `answer` | The answer was written. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The id is no question that waits, the choice is none of its candidates, the write path refused the answer, or storage raised an error. |
-| `mcp` | Standard input closed, and the server ended. | Not used. | `PREVIOUSLY_MCP_CLIENT` is unset or names no client in force, `PREVIOUSLY_LANGUAGE` isn't a language tag, or storage raised an error. |
-| `serve` | The server was stopped with an interrupt, such as Ctrl+C. | Not used. | `PREVIOUSLY_MCP_ADDRESS` isn't an address, `PREVIOUSLY_MCP_HOST` is set without it, `PREVIOUSLY_LANGUAGE` isn't a language tag, or storage raised an error. |
+| `mcp` | Standard input closed, and the server ended. | Not used. | `PREVIOUSLY_MCP_CLIENT` is unset or names no client in force, `PREVIOUSLY_LANGUAGE` isn't a language tag, the graph projection isn't built at this code's version or couldn't be caught up, or storage raised an error. |
+| `serve` | The server was stopped with an interrupt, such as Ctrl+C. | Not used. | `PREVIOUSLY_MCP_ADDRESS` isn't an address, `PREVIOUSLY_MCP_HOST` is set without it, `PREVIOUSLY_LANGUAGE` isn't a language tag, the graph projection isn't built at this code's version or couldn't be caught up, or storage raised an error. |
 | `vocabulary` | `show` printed the vocabulary, `apply` wrote what the file changes, or found nothing to change. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, including neither a file nor `--base`, or both, the file can't be read or has a fault, the write path refused a kind, or storage raised an error. |
 | `gate` | `explain` printed the decision, whether it allows a call or denies it; `try` made the call, got an answer that matches the schema, and recorded it. | Not used. | The event doesn't exist, the price file can't be read, storage raised an error, or `try` recorded a call that was denied, failed, refused by the model, or answered against the schema. |
 
@@ -393,26 +399,21 @@ the approval 9 still carries the words of the proposal 6; redact event 9 to eras
 `redact` works in this order: it records the redaction and sets the tombstones in one transaction, deletes the blobs that no longer have to lie, and brings every projection up to the tip of the log, the way `project` does.
 Only then does it print the line to standard output.
 The chronicle then holds no row of what was erased, without a separate `project`.
-An ordinary catch-up prints nothing.
-A catch-up that builds a projection for the first time, or rebuilds it because its version changed, prints the line `project` prints for that projection, on standard error:
-
-```text
-chronicle       rebuilt: version 2 -> 3, 12000 events, up_to_id 12000
-```
-
-Standard output carries the one line either way.
+The catch-up prints nothing, and it never builds: a projection that has no state row, or whose state row stands at another version than the code declares, is left untouched for `project` to build ({ref}`rebuild-a-projection`).
 If deleting a blob or the catch-up fails, the redaction stays recorded, nothing goes to standard output, one sentence goes to standard error, and the exit code is 2:
 
 ```text
 Error: the redaction is recorded as event 42, but it is not finished: blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 is not deleted from the store (the blob store at http://localhost:9000 is not reachable: EndpointConnectionError); run the same command again
 Error: the redaction is recorded as event 42, but it is not finished: projection chronicle is not caught up (expected events 2.. above id 1, read [3, 4]; the tip is 4); run the same command again
+Error: the redaction is recorded as event 42, but it is not finished: projection chronicle stands at version 2, and this code declares version 3; run `previously project`, then the same command again
 ```
 
 The text in parentheses is the error that stopped it.
+The third form names a projection the catch-up would have had to build, as `is not built` where it has no state row; the same command alone would stop there again, so `project` comes first and takes the redaction in as it builds.
 For `redact units`, the notice that the payload holds the wording of an erased unit, described below, can come before that sentence.
 When several blobs are still to delete, the first form names them all, separated by a comma and a space, as `blobs <hashes> are not deleted from the store`.
 `redact` attempts the catch-up whether or not the deletion failed.
-When both fail, the sentence names the deletion first and then the catch-up, joined by `, and `, and ends in the same advice.
+When both fail, the sentence names the deletion first and then the catch-up, joined by `, and `, and ends in the advice of the catch-up.
 Once the cause is gone, running the same command again finds the target covered, prints `already redacted by event 42`, deletes what's left, and catches up.
 The cause in the second example, a gap in the log, doesn't go away by itself, so until it does the same command fails with the same sentence; a server that didn't answer for a moment is a cause that does go away.
 
@@ -817,6 +818,7 @@ There are four outcomes:
 A count of one prints as `1 event`, every other count as `<n> events`.
 `up to date` carries no count, and `up_to_id 0` means that nothing has been projected yet.
 
+`project` is the only command that builds a projection or rebuilds it at another version; every other command that catches one up stops where it would have to ({ref}`rebuild-a-projection`).
 Two catch-ups of one projection, such as a `project` and the catch-up of a `redact`, take turns at the projection's state row, batch by batch; see {ref}`projections`.
 A catch-up that finds the state row at another version than its own, or gone, between two of its batches stops with exit code 2 and one sentence on standard error:
 
@@ -827,7 +829,7 @@ Error: projection chronicle was rebuilt while this catch-up ran: it has no state
 
 The first means that a catch-up of another version of the code ran against the same database and rebuilt the projection between two batches of this one.
 The second means that the state row was deleted while this catch-up ran, as {ref}`rebuild-a-projection` does by hand to force a rebuild.
-A catch-up rebuilds whenever the version it finds differs from its own, in either direction, so the next `project` of this release rebuilds the table back to its own version, and a `project` of the other release rebuilds it back again.
+`project` rebuilds whenever the version it finds differs from its own, in either direction, so the next `project` of this release rebuilds the table back to its own version, and a `project` of the other release rebuilds it back again.
 Inside `redact`, the same sentence stands in parentheses in the sentence of an unfinished redaction, whose advice to run the same command again holds once only one release runs against the database.
 {ref}`rebuild-a-projection` says what to do.
 
@@ -903,7 +905,7 @@ An id that isn't an entity that stands, such as a relation, an event or a retrac
 Error: --within 999 is not an entity that stands
 ```
 
-`--within` catches the graph projection up first and reads the assignments from it, with the same fallback and the same line on standard error as the listings of the graph ({ref}`cli-graph`).
+`--within` catches the graph projection up first and reads the assignments from it, and fails where the projection isn't built, as the listings of the graph do ({ref}`cli-graph`).
 The chronicle itself isn't caught up, and its lag prints as below.
 
 Two notices go to standard error, and both leave the exit code at 0.
@@ -1458,12 +1460,21 @@ A version that today's vocabulary wouldn't take carries `(does not fit the vocab
 Both are marks and change nothing in the log.
 
 `entities`, `relations` without `--as-of`, `entity ID`, `triage`, `status`, `classes list`, `classes sample` and `chronicle --within` bring the graph projection up to the tip of the log first, without a line of output, and then read the graph from it ({ref}`graph-readers`).
-Where that catch-up fails, or the projection was rebuilt between the catch-up and the read, the command folds the log instead and prints one line on standard error:
+They never build it.
+Where the projection has no state row, or one at another version than the code declares, they exit 2 with one sentence on standard error and leave the projection untouched:
 
 ```text
-the graph projection could not be caught up (projection graph was rebuilt while this catch-up ran: it stands at version 2, and this code declares version 1); this command folds the log instead
-the graph projection was rebuilt since this command caught it up; this command folds the log instead
+Error: projection graph is not built, and this code declares version 1; `previously project` builds it
+Error: projection graph stands at version 2, and this code declares version 1; the release that is to serve builds it with `previously project`
 ```
+
+Where `project` rebuilt the projection at the same version between the catch-up and the read, they catch up once more and read; where that happens twice in a row, they exit 2 with this sentence:
+
+```text
+Error: projection graph was rebuilt between catching it up and reading it, on each of 2 tries; read again once `previously project` has finished
+```
+
+Any other failure of the catch-up, such as a gap in the log or an error of the database, is the command's error as well, with exit code 2 and its own sentence; no command answers from a fold of the log in its place.
 
 What they show of an entity or a relation comes from the log.
 `relations --as-of` folds the log up to that moment instead, and so do the commands that write.
@@ -1659,6 +1670,9 @@ Error: PREVIOUSLY_MCP_CLIENT is not set: name the client this process serves
 Error: no client "claude-code" is in force; add it with previously client add
 ```
 
+Before it reads a request, `mcp` also catches the graph projection up, without building it, and where the projection isn't built at the version this release declares, it returns 2 with the sentence the listings of the graph give ({ref}`cli-graph`).
+A call that meets such a projection later, or whose catch-up fails, fails with an error that says the reason is in the server's log, and the access log records it with the outcome `error`.
+
 Every call reads the policy again.
 A client revoked while the process runs gets an error from its next call on, and the access log records that call with the outcome `error`.
 Standard output carries the protocol and nothing else, and the process ends when standard input closes.
@@ -1673,7 +1687,8 @@ The writing tools write only when `PREVIOUSLY_MCP_CONFIRM_KEY` holds at least 32
 Serves MCP over HTTP under the path `/mcp`, with answers as JSON and without a session.
 A client of the protocol revision `2026-07-28` and one of an earlier revision are served at the same address.
 `serve` takes no options, and reads `PREVIOUSLY_MCP_ADDRESS`, `PREVIOUSLY_MCP_ALLOWED_HOSTS` and, as `mcp` does, `PREVIOUSLY_MCP_CONFIRM_KEY` for the writing tools and `PREVIOUSLY_LANGUAGE` for the labels ({ref}`configuration-reference`).
-On start it prints one line to standard error, and then runs until it's stopped:
+On start it catches the graph projection up, without building it, as `mcp` does, and refuses to start with the same sentence where the projection isn't built at this release's version.
+Then it prints one line to standard error, and runs until it's stopped:
 
 ```text
 serving MCP over HTTP on http://127.0.0.1:8765/mcp
@@ -1701,11 +1716,19 @@ No `mcp_access` is written for such a request, since no client is known.
 The server publishes no Protected Resource Metadata: `/.well-known/oauth-protected-resource` answers 404 to a request with a valid token, and 401 without one, like every other path but the readiness probe.
 
 `GET /healthz` is the readiness probe, and it needs no token.
-It runs one trivial query against the database and answers with the status 200 and the body `ok`, or, when the database doesn't answer, with the status 503 and this body:
+It reads the state row of the graph projection, one query against the database, and answers with the status 200 and the body `ok`, or, when the database doesn't answer, with the status 503 and this body:
 
 ```text
 Error: the database does not answer
 ```
+
+While the graph projection has no state row, or one at another version than this release declares, it answers with the status 503 and this body, and writes one `WARNING` line to the log that names the version it found:
+
+```text
+Error: the graph projection is not built at this server's version
+```
+
+The probe doesn't catch the projection up, so it stays as cheap as one read; the next call catches up whatever it lags.
 
 It reaches no MCP, returns no data and writes no `mcp_access`.
 A check that finds the database unreachable, or a connection that the server ended, writes one `WARNING` line to the log, which carries the sentence of the storage error and no traceback.
