@@ -112,6 +112,16 @@ merely described.
   is never lost; see
   [About entities, relations and the vocabulary](docs/explanation/graph.md) and
   [How to keep a club and its offices](docs/how-to/keep-a-club-and-its-offices.md)
+- **assignments** (`relate concerns --from-event`, `chronicle --within`,
+  `project --check`): a mail, or some of its units, is assigned to a project,
+  a matter or an organization, and the chronicle of that bracket holds what
+  belongs to it and to everything below it. The more specific assignment
+  replaces the general one, an erasure of the mail takes its assignments
+  along, and over MCP the bracket is read with `within`, through the edges
+  the client may see. The graph is read from a projection that holds no
+  content; see
+  [About entities, relations and the vocabulary](docs/explanation/graph.md) and
+  [How to assign mails and read the chronicle of a bracket](docs/how-to/assign-mails-and-read-a-bracket.md)
 - the thirty-four commands `migrate`, `append`, `ingest`, `redact`, `log`,
   `verify`, `anchor`, `show`, `blob`, `project`, `chronicle`, `stats`,
   `policy`, `vocabulary`, `gate`, `client`, `access`, `assert`, `approve`,
@@ -123,8 +133,8 @@ merely described.
 
 **What it does not do:** no header, the view of a project that rests on its
 assertions; no layer behind the gate that proposes assertions by itself; no
-assignment of events to projects, so the chronicle is
-the chronicle of the whole log and not of one project; no job queue — the
+automatic assignment: the operator or a model assigns each mail, and nothing
+assigns on ingest yet; no job queue — the
 projection worker is a command, run when somebody runs it; one connector,
 for an IMAP folder, and none for anything else yet, such as a shared folder
 or an issue tracker; entities and relations don't reach the gate yet, so an actor in an

@@ -4,13 +4,13 @@
 
 Previously keeps more than the mails that arrive.
 It also keeps what the operator knows about the people and things the mails talk about: an association, its chair, the years someone held that post, the project a mail belongs to.
-An **entity** is such a thing, and a **relation** connects two of them, or later an event and a thing.
+An **entity** is such a thing, and a **relation** connects two of them, or an event and a thing.
 Both are assertions, written into the same chain as obligations and decisions, with the events they rest on and an answer to who stands for them.
 
 This page explains why the model has the shape it has: a core that knows no project and no association, a graph with fields on its nodes and edges, three levels of responsibility instead of two, and a few kinds that no class of statements can ever reach.
 {ref}`vocabulary-reference` lists the declarations, {ref}`cli-graph` the commands, {ref}`mcp-tools` the tools, and {ref}`keep-a-club-and-its-offices` shows the routine.
-This page covers the first phase of the model, the core.
-Assigning events and passages to an entity, circles that the gate reads from the graph, and obligations in the vocabulary come in later phases.
+This page covers the core and the assignments of events and passages to an entity.
+Circles that the gate reads from the graph, and obligations in the vocabulary, come in later phases.
 
 (graph-generic-core)=
 
@@ -66,12 +66,13 @@ Previously takes the third.
 It borrows the words where an established vocabulary has them, such as the membership with a period, the post and the holding of a post of the W3C organization ontology, and it takes no technique along: no reasoner, no ontology language.
 An entity with fields can be written out as triples without loss, so an export stays possible.
 
-The graph isn't stored anywhere else.
-The log is the truth, and the graph is **folded** from the assertions and the actions `vocabulary` and `approval_class` every time it's read.
+The log is the truth, and the graph is **folded** from the assertions and the actions `vocabulary` and `approval_class`.
+Since the second phase the readers don't fold the whole log every time: a projection says which threads a question concerns, and the fold of those threads gives the answer ({ref}`graph-readers`).
+The projection is a disposable index and holds no content, so it stores no second copy of the graph.
 A triple store holds its edges as the truth and changes them in place, and here nothing is ever changed: a new version is a new event, and what holds is a function of the log.
 That has three consequences that the rest of the system relies on.
 Reading the graph as it stood at an earlier moment is the same fold over the log up to that moment, so the question "what did Previously know in March about the board of 2019" has an answer.
-The graph needs no migration and no rebuild, because there is no table to fill.
+The projection can be thrown away and built again from the log at any time, because it only points at what the log holds.
 And an erasure takes an entity along with its source the way it takes an obligation, because the entity is an assertion with sources.
 
 (graph-two-times)=
@@ -197,6 +198,30 @@ So an operator's recollection stays out of an MCP client's sight until the opera
 That's the safe side, and it costs one step when the operator wants Claude Code to see what they remember.
 A relation is visible to a client when its own sources and both its ends are.
 Otherwise the client doesn't see it at all: the lines of an entity and the triage leave it out, without a placeholder, because a placeholder that appears when somebody writes on a hidden thread would itself be a signal.
+
+(graph-assignment)=
+
+## An assignment is declared, and its start is a source
+
+An assignment puts a mail, or some of its units, in a bracket.
+It's a relation like the others, with one difference: it starts at an event and not at an entity.
+The vocabulary can say so, since a kind may name `event` as its start and `*`, any kind of entity, as its end.
+
+The kind that does this, `concerns`, is declared in the base vocabulary and isn't built into the code.
+The code builds in only the three kinds that the gate reads.
+A built-in kind for every convenience would make the declared model pointless: each would be a rule that an operator can't adapt without a release, and the next request would add another.
+So the code asks the vocabulary in force instead of naming kinds.
+An assignment is every relation kind that starts at `event`, except the kinds of the gate, and the hierarchy a bracket reaches down is every kind with the behavior `transitive` between entities.
+A vocabulary that declares a second one gets a second hierarchy or a second kind of assignment, which is what declaring it means.
+`in_circle` is never an assignment, because the gate reads it and a rule for finding mustn't.
+
+A relation that starts at an event has that event among its sources.
+The write path refuses one that doesn't, and `verify` reports it.
+The reason is erasure.
+An assignment is an assertion about a mail, and the sources of an assertion are what an erasure follows: when the mail or one of its units is erased, the assignment falls with it, and the processing policy decides the assignment by the policy of its mail.
+Without the event among the sources, an assignment could outlive the mail it was about and keep saying where something stood that's gone.
+The start is checked against the log like any other source: the event exists, its units exist, and none is erased.
+The command line and the MCP tools put the start among the sources themselves when the caller names none.
 
 (chronicle-of-a-bracket)=
 
