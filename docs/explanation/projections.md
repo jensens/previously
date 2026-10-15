@@ -368,5 +368,6 @@ The projection is disposable and the log is the truth, so a projection that drif
 A reader also mustn't take a projection being rebuilt for the graph.
 Between a reader's catch-up and its snapshot, another catch-up can empty the tables: a forced rebuild, or a catch-up by another version of the code, which rebuilds whenever the version it finds isn't its own, as during a rolling update that runs two versions side by side.
 So a reader holds the state row in its snapshot against the outcome of its own catch-up, and where the version differs or `up_to_id` stands behind, it folds the log for that one read.
-It does the same where its catch-up fails, which is what a catch-up stopped by such a rebuild does.
+It does the same where its catch-up fails, whatever the cause: a catch-up stopped by such a rebuild, one that meets a gap in the log and stops with `ProjectionGap`, and one whose database fails it.
+The fold reads the log whole and needs none of what failed, so a state the worker guards against takes no reader down with it, and no MCP call either, although every call catches up first.
 Either way it says so once, on standard error or in the server's log and never in a result, and the answer is the fold's: slower, never empty, never half-built, and never an error.

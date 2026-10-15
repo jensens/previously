@@ -86,6 +86,7 @@ import time
 if TYPE_CHECKING:
     from collections.abc import Callable
     from collections.abc import Generator
+    from collections.abc import Iterator
     from collections.abc import Sequence
     from mailserver import MailServer
     from previously.contract.blobs import ClosableSource
@@ -7876,6 +7877,55 @@ def test_a_listing_folds_the_log_when_its_catch_up_fails(
             f"the graph projection could not be caught up ({stopped}); "
             "this command folds the log instead\n"
         )
+
+
+class _GapAboveTheProjection(PostgresStorage):
+    """The real store, whose log has a gap where a catch-up reads: a read of
+    more than one event leaves out the first one asked for, so `catch_up`
+    refuses with `ProjectionGap`. A read of one event finds it."""
+
+    def read(self, conn: Connection, from_id: int, limit: int) -> Iterator[EventRow]:
+        found = super().read(conn, from_id, limit)
+        return found if limit == 1 else (row for row in found if row.id != from_id)
+
+
+@pytest.mark.db
+def test_a_listing_folds_the_log_when_its_catch_up_meets_a_gap_in_the_log(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gap above where the projection stands, which `catch_up` refuses
+    with `ProjectionGap`, fails no listing either: the fold reads the log
+    whole and needs no projection, so the reader says so in one line on
+    standard error and shows the fold ({ref}`graph-readers`)."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    storage = _graph_log(db, monkeypatch, capsys)
+    _listed_history(storage, capsys)
+    expected = _expected_listings(capsys)
+    assert isinstance(db, Engine)
+    # The projection has to be built again, as after an upgrade, so that
+    # the catch-up reads a batch of many events, and meets the gap there.
+    with db.begin() as c:
+        c.execute(text("DELETE FROM projection_state WHERE name = 'graph'"))
+    gapped = _GapAboveTheProjection(db)
+
+    def through_the_gap(
+        log: PostgresStorage, store: PostgresStorage, projection: Projection
+    ) -> Outcome:
+        del log
+        return catch_up(gapped, store, projection)
+
+    monkeypatch.setattr("previously.cli.catch_up", through_the_gap)
+    for command, shown in zip((["entities"], ["triage"], ["status"]), expected, strict=True):
+        assert main(command) == 0, capsys.readouterr().err
+        captured = capsys.readouterr()
+        assert captured.out == shown
+        assert captured.err.startswith(
+            "the graph projection could not be caught up (expected events 1.. "
+        )
+        assert captured.err.endswith("); this command folds the log instead\n")
+        assert captured.err.count("\n") == 1
 
 
 # --- the chronicle of a bracket: chronicle --within ---------------------------------

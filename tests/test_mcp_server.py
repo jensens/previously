@@ -4400,32 +4400,62 @@ class _CatchUpFails(PostgresStorage):
         raise OperationFailed("the database ended the connection")
 
 
+class _GapAboveTheProjection(PostgresStorage):
+    """The real store, whose log has a gap where a catch-up reads: a read of
+    more than one event leaves out the first one asked for, so `catch_up`
+    refuses with `ProjectionGap`. A read of one event, which is how
+    `get_event` and the fold's lookups read, finds it, so the fold the call
+    falls back on reads the whole log."""
+
+    @override
+    def read(self, conn: Connection, from_id: int, limit: int) -> Iterator[EventRow]:
+        found = super().read(conn, from_id, limit)
+        return found if limit == 1 else (row for row in found if row.id != from_id)
+
+
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
-@pytest.mark.parametrize("store", [_RebuiltAfterCatchUp, _CatchUpFails], ids=["rebuilt", "failed"])
+@pytest.mark.parametrize(
+    ("store", "cause"),
+    [
+        (_RebuiltAfterCatchUp, "rebuilt since the call caught it up"),
+        (_CatchUpFails, "the database ended the connection"),
+        (_GapAboveTheProjection, "expected events"),
+    ],
+    ids=["rebuilt", "failed", "gap"],
+)
 def test_a_call_folds_the_log_when_its_projection_does_not_stand_and_says_so_only_in_the_log(
     world: World,
     mode: str,
     db: Engine,
     store: type[PostgresStorage],
+    cause: str,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """A rebuild by another version of the code, which a rolling update runs
     beside this one, makes no call fail and no call answer from empty
-    tables: the call folds the log, and the server's log says so once per
-    call, never the result ({ref}`graph-readers`)."""
+    tables, and nor does a catch-up that fails or that meets a gap in the
+    log: the call folds the log, and the server's log says so once per
+    call, never the result ({ref}`graph-readers`). Every call catches up
+    first, so `whoami` and `get_event` are among the calls: a refusal of
+    the catch-up that escaped would fail them too."""
     ids = _graphed(world)
+    scanned = world.ids["attachments_only"]
     _confirmed(
         world,
         mode,
         "write_entity",
-        {"items": [_entity_item("Anna M", world.ids["attachments_only"], subject=ids.anna)]},
+        {"items": [_entity_item("Anna M", scanned, subject=ids.anna)]},
     )
+    # A second event past the projection, so that a gap has room to stand
+    # between the two: with only the tip new, there is none.
+    write_claims(world.storage, world.storage, [_person("Bert", scanned)], recorded_at=T0)
     calls: list[tuple[str, dict[str, Any]]] = [
         ("list_entities", {}),
         ("list_entities", {"subject": ids.anna}),
         ("list_triage", {}),
         ("whoami", {}),
+        ("get_event", {"ids": [scanned]}),
     ]
     folding = build_server(world.storage, stdio_client="claude-code")
     hit = store(db)
@@ -4445,6 +4475,7 @@ def test_a_call_folds_the_log_when_its_projection_does_not_stand_and_says_so_onl
         assert "projection" not in found
         warnings = [r.getMessage() for r in caplog.records if "graph projection" in r.getMessage()]
         assert len(warnings) == 1, warnings
+        assert cause in warnings[0], warnings
         # What the fold and the call agree on is not nothing.
         assert "1 objection pending" in expected.splitlines()[0]
 

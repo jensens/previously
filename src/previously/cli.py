@@ -78,7 +78,6 @@ from previously.core.errors import BatchTooLarge
 from previously.core.errors import CannotOpen
 from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
-from previously.core.errors import ProjectionRebuilt
 from previously.core.errors import reason_of
 from previously.core.errors import RedactionRefused
 from previously.core.errors import SinkUnwritable
@@ -3484,12 +3483,17 @@ def _caught_up(storage: PostgresStorage) -> Outcome | None:
     upgrade that changed the projection's version, takes as long as the
     log is, which is why the upgrade runs `project`, whose line names it.
 
-    A catch-up that fails, such as one stopped by another version of the
-    code rebuilding the projection, doesn't fail the reader: it says so in
-    one line on standard error and reads by folding the log (`None`)."""
+    A catch-up that fails doesn't fail the reader: it says so in one line
+    on standard error and reads by folding the log (`None`). That holds for
+    every refusal of `catch_up`, a `PreviouslyError`: one stopped by another
+    version of the code rebuilding the projection, and a gap in the log
+    above where the projection stands, which the fold doesn't need to be
+    without because it reads the log whole. It holds for a `StorageError`
+    too. A programming error, such as a `KeyError`, still fails the
+    command, so that it is seen."""
     try:
         return catch_up(storage, storage, GRAPH)
-    except (ProjectionRebuilt, StorageError) as error:
+    except (PreviouslyError, StorageError) as error:
         _graph_warning(f"the graph projection could not be caught up ({error})")
         return None
 

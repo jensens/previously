@@ -94,7 +94,7 @@ from previously.core.canonical import KEY_PATTERN
 from previously.core.canonical import MAX_SAFE_INT
 from previously.core.clients import client_for_token
 from previously.core.errors import InvalidPayload
-from previously.core.errors import ProjectionRebuilt
+from previously.core.errors import PreviouslyError
 from previously.core.gaps import gaps
 from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
@@ -932,13 +932,19 @@ class Service[Conn]:
         """Brings the graph projection up to the tip before a call opens its
         snapshot. `None` without the projection, and where the catch-up
         failed, which the server's log says once: the call then folds the
-        log, so that a rebuild by another version of the code, which a
-        rolling update runs beside this one, fails no call."""
+        log. So no call fails over a rebuild by another version of the code,
+        which a rolling update runs beside this one, nor over any other
+        refusal of `catch_up` (a `PreviouslyError`, a gap in the log above
+        where the projection stands among them: the fold reads the log
+        whole), nor over a `StorageError`. Since every call catches up
+        first, a refusal that escaped here would fail every tool, `whoami`
+        included. A programming error still reaches the call's own
+        handler."""
         if self.projected is None:
             return None
         try:
             return catch_up(self.log, self.projected[1], GRAPH)
-        except (ProjectionRebuilt, StorageError) as error:
+        except (PreviouslyError, StorageError) as error:
             logger.warning(
                 "the graph projection could not be caught up, so a call folds the log: %s", error
             )
