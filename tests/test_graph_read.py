@@ -43,6 +43,7 @@ from previously.core.graph import SOURCES
 from previously.core.graph import STANDING
 from previously.core.graph_read import differences
 from previously.core.graph_read import projected_graph
+from previously.core.graph_read import projection_stands
 from previously.core.graph_read import read_brackets
 from previously.core.graph_write import read_graph
 from previously.core.graph_write import write_claims
@@ -449,3 +450,30 @@ def test_the_members_of_a_bracket_read_from_the_projection_are_those_of_the_fold
     assert club.holds(1, 2)
     assert not club.holds(1, 1)
     assert club.holds(2, 3)
+
+
+@pytest.mark.db
+def test_the_projection_stands_where_its_catch_up_left_it_or_the_reader_folds(
+    db: Engine,
+) -> None:
+    """A reader holds the state row, in its snapshot, against the outcome of
+    its catch-up: another version, an `up_to_id` behind it as during a
+    rebuild, or no row at all mean the projection doesn't stand there."""
+    from sqlalchemy import text
+
+    storage, _ids = _history(db)
+    outcome = catch_up(storage, storage, GRAPH)
+    with storage.snapshot() as conn:
+        assert projection_stands(storage, conn, outcome)
+    for change in (
+        "UPDATE projection_state SET version = version + 1 WHERE name = 'graph'",
+        "UPDATE projection_state SET up_to_id = up_to_id - 1 WHERE name = 'graph'",
+        "DELETE FROM projection_state WHERE name = 'graph'",
+    ):
+        with db.begin() as c:
+            c.execute(text(change))
+        with storage.snapshot() as conn:
+            assert not projection_stands(storage, conn, outcome), change
+        outcome = catch_up(storage, storage, GRAPH)
+        with storage.snapshot() as conn:
+            assert projection_stands(storage, conn, outcome)

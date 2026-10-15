@@ -38,7 +38,7 @@ previously project --check
 
 It catches up as `previously project` does, then folds the log and prints one line per thread whose row in `p_graph_thread` differs from the fold, beginning with `graph` and the thread's id.
 It returns 0 when no line was printed and 1 otherwise; see {ref}`cli-project-check` for the wording.
-If it reports a thread, force a rebuild of the projection `graph` as the next sections describe, and run the check again.
+If it reports a thread or a version row, force a rebuild of the projection `graph` as the next sections describe, and run the check again.
 
 ## Force a rebuild after a change to the derivation
 

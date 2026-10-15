@@ -836,24 +836,32 @@ Inside `redact`, the same sentence stands in parentheses in the sentence of an u
 ### `--check`
 
 `--check` folds the assertions of the log up to the `up_to_id` of the graph projection, under the approval classes as of that event, and compares each thread with its row in `p_graph_thread` ({ref}`graph-projection`).
+It then compares every row of `p_graph_version` with the row a rebuild from the same assertions would write.
 It writes nothing beyond the catch-up.
-After the lines of the catch-up, it prints one line per thread that differs, ordered by subject, as three tab-separated fields: `graph`, the subject, and what differs.
+After the lines of the catch-up, it prints one line per thread that differs, ordered by subject, and then one line per version row that differs, ordered by id, each as three tab-separated fields: `graph`, the subject or the id, and what differs.
 
 | What differs | Condition |
 |---|---|
-| `COLUMN PROJECTED instead of FOLDED`, separated by `, ` | The row and the fold disagree in these columns. |
+| `COLUMN PROJECTED instead of FOLDED`, separated by `, ` | The row of the thread and the fold disagree in these columns. |
 | `no row instead of winner ID` | The fold has a winner and the projection has no row. |
 | `winner ID instead of no row` | The projection has a row and the fold has no winner. |
+| `version row COLUMN PROJECTED instead of REBUILT`, separated by `, ` | The version row and the rebuild disagree in these columns. |
+| `no version row instead of KIND of SUBJECT` | A rebuild writes the row and the projection has none. |
+| `version row KIND of SUBJECT instead of none` | The projection has the row and a rebuild writes none. |
 
+`KIND` is `entity`, `relation` or `rejection`, and `under ID` follows `SUBJECT` for a version under an approval class.
 A value without one reads `-`, a list reads its items separated by commas, and a flag reads `true` or `false`:
 
 ```text
 graph	17	objections 2 instead of 0
 graph	18	no row instead of winner 18
 graph	20	level open instead of direct, pending 4 instead of 0
+graph	2	version row entity of 2 instead of none
+graph	21	no version row instead of relation of 21
+graph	24	version row under 30 instead of -
 ```
 
-`project --check` exits 0 when every row agrees and 1 when a line was printed.
+`project --check` exits 0 when every row of both tables agrees and 1 when a line was printed.
 A row stays wrong until a rebuild writes it again, as {ref}`rebuild-a-projection` describes.
 An erasure that commits between the catch-up and the comparison can show up as a difference that the next run no longer reports.
 
@@ -1432,7 +1440,14 @@ A label that exists only in another language stands in the first language in alp
 A version that today's vocabulary wouldn't take carries `(does not fit the vocabulary)`, and a transitive version whose approval class was revoked carries `(class revoked)`.
 Both are marks and change nothing in the log.
 
-`entities`, `relations` without `--as-of`, `entity ID`, `triage`, `status`, `classes list` and `classes sample` bring the graph projection up to the tip of the log first, without a line of output, and then read the graph from it ({ref}`graph-projection`).
+`entities`, `relations` without `--as-of`, `entity ID`, `triage`, `status`, `classes list` and `classes sample` bring the graph projection up to the tip of the log first, without a line of output, and then read the graph from it ({ref}`graph-readers`).
+Where that catch-up fails, or the projection was rebuilt between the catch-up and the read, the command folds the log instead and prints one line on standard error:
+
+```text
+the graph projection could not be caught up (projection graph was rebuilt while this catch-up ran: it stands at version 2, and this code declares version 1); this command folds the log instead
+the graph projection was rebuilt since this command caught it up; this command folds the log instead
+```
+
 What they show of an entity or a relation comes from the log.
 `relations --as-of` folds the log up to that moment instead, and so do the commands that write.
 

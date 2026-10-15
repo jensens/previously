@@ -96,6 +96,7 @@ from previously.mcp_server.server import build_app
 from previously.mcp_server.server import build_server
 from previously.mcp_server.server import TOOLS
 from previously.mcp_server.server import write_record
+from previously.storage.errors import OperationFailed
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import Connection
 from sqlalchemy import create_engine
@@ -109,6 +110,7 @@ from typing import TYPE_CHECKING
 
 import anyio
 import base64
+import contextlib
 import hashlib
 import httpx2
 import json
@@ -121,9 +123,11 @@ import re
 if TYPE_CHECKING:
     from collections.abc import Awaitable
     from collections.abc import Callable
+    from collections.abc import Generator
     from collections.abc import Iterator
     from collections.abc import Sequence
     from previously.contract.rows import EventRow
+    from previously.contract.rows import ProjectionState
     from previously.contract.rows import Tip
 
 T0 = datetime(2026, 10, 11, 12, 0, 0, tzinfo=UTC)
@@ -1023,9 +1027,16 @@ def _http[T](
     *,
     allowed_hosts: tuple[str, ...] = (),
     confirm_key: str | None = None,
+    storage: PostgresStorage | None = None,
 ) -> T:
+    store = world.storage if storage is None else storage
     app = build_app(
-        world.storage, allowed_hosts=allowed_hosts, locker=world.storage, confirm_key=confirm_key
+        store,
+        allowed_hosts=allowed_hosts,
+        locker=store,
+        confirm_key=confirm_key,
+        graph=store,
+        projections=store,
     )
 
     async def run() -> T:
@@ -1047,13 +1058,14 @@ def _over_http(
     arguments: dict[str, Any],
     *,
     confirm_key: str | None = None,
+    storage: PostgresStorage | None = None,
 ) -> CallToolResult:
     async def use(http: httpx2.AsyncClient) -> CallToolResult:
         http.headers["Authorization"] = f"Bearer {token}"
         async with Client(streamable_http_client(URL, http_client=http), mode=mode) as session:
             return await session.call_tool(name, arguments)
 
-    return _http(world, use, confirm_key=confirm_key)
+    return _http(world, use, confirm_key=confirm_key, storage=storage)
 
 
 _INITIALIZE = {
@@ -3386,7 +3398,13 @@ def test_the_label_of_a_kind_is_in_the_working_language_else_in_the_servers(
     (grace,) = write_claims(world.storage, world.storage, [english], recorded_at=T0).ids
 
     def heading(language: str, subject: int) -> str:
-        server = build_server(world.storage, stdio_client="claude-code", language=language)
+        server = build_server(
+            world.storage,
+            stdio_client="claude-code",
+            language=language,
+            graph=world.storage,
+            projections=world.storage,
+        )
         result = _session(
             server, mode, lambda s: s.call_tool("list_entities", {"subject": subject})
         )
@@ -4312,6 +4330,123 @@ def test_the_reading_tools_answer_from_the_projection_as_from_the_fold(
     assert _header(_tool(world, mode, "whoami", client="local-harness")) == (
         "previously · whoami · 2 objections pending"
     )
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_over_http_a_call_reads_the_graph_from_the_projection(
+    world: World, mode: str, db: Engine
+) -> None:
+    """`serve` passes the projection through `build_app`: over HTTP a call
+    catches up, reads no assertion in full, and its header and its list hold
+    what was written past the server."""
+    ids = _graphed(world)
+    scanned = world.ids["attachments_only"]
+    objection = replace(
+        _person("Anna B", scanned),
+        author=model_author("claude-code"),
+        responsibility=OPEN,
+        subject=ids.anna,
+        contests=ids.anna,
+        confidence=40,
+    )
+    write_claims(world.storage, world.storage, [objection], recorded_at=T0)
+    counting = _CountingReads(db)
+    token = world.tokens["claude-code"]
+    listed = _over_http(world, token, mode, "list_entities", {}, storage=counting)
+    assert _text(listed).splitlines()[0] == (
+        "previously · list_entities · 1 objection pending · page 1"
+    )
+    assert "field name: Anna\n" in _text(listed)
+    assert counting.folds == 0
+
+
+def test_one_store_of_the_projection_without_the_other_is_refused(world: World) -> None:
+    """Without both, a server would fold the log while its caller meant it
+    to read the projection, and nothing would say so."""
+    sentence = "graph and projections are the two stores of one projection: give both or neither"
+    with pytest.raises(ValueError, match=sentence):
+        build_server(world.storage, stdio_client="claude-code", graph=world.storage)
+    with pytest.raises(ValueError, match=sentence):
+        build_app(world.storage, allowed_hosts=(), projections=world.storage)
+    # The control: both, and neither.
+    build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
+    build_server(world.storage, stdio_client="claude-code")
+
+
+class _RebuiltAfterCatchUp(PostgresStorage):
+    """The real store, where another version of the code empties the graph
+    projection between a call's catch-up and its snapshot: the state row
+    moves to another version, the tables are empty."""
+
+    @override
+    @contextlib.contextmanager
+    def snapshot(self) -> Generator[Connection]:
+        with self.begin() as conn:
+            conn.execute(text("UPDATE projection_state SET version = 7 WHERE name = 'graph'"))
+            conn.execute(text("DELETE FROM p_graph_thread"))
+            conn.execute(text("DELETE FROM p_graph_version"))
+        with super().snapshot() as conn:
+            yield conn
+
+
+class _CatchUpFails(PostgresStorage):
+    """The real store, whose graph catch-up fails with a storage error."""
+
+    @override
+    def lock_projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
+        raise OperationFailed("the database ended the connection")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize("store", [_RebuiltAfterCatchUp, _CatchUpFails], ids=["rebuilt", "failed"])
+def test_a_call_folds_the_log_when_its_projection_does_not_stand_and_says_so_only_in_the_log(
+    world: World,
+    mode: str,
+    db: Engine,
+    store: type[PostgresStorage],
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A rebuild by another version of the code, which a rolling update runs
+    beside this one, makes no call fail and no call answer from empty
+    tables: the call folds the log, and the server's log says so once per
+    call, never the result ({ref}`graph-readers`)."""
+    ids = _graphed(world)
+    _confirmed(
+        world,
+        mode,
+        "write_entity",
+        {"items": [_entity_item("Anna M", world.ids["attachments_only"], subject=ids.anna)]},
+    )
+    calls: list[tuple[str, dict[str, Any]]] = [
+        ("list_entities", {}),
+        ("list_entities", {"subject": ids.anna}),
+        ("list_triage", {}),
+        ("whoami", {}),
+    ]
+    folding = build_server(world.storage, stdio_client="claude-code")
+    hit = store(db)
+    reading = build_server(hit, stdio_client="claude-code", graph=hit, projections=hit)
+    caplog.set_level(logging.WARNING, logger="previously.mcp_server.server")
+    for name, arguments in calls:
+
+        def answer(server: Any, n: str = name, a: dict[str, Any] = arguments) -> str:
+            result = _session(server, mode, lambda s: s.call_tool(n, a))
+            assert not result.is_error, _text(result)
+            return _untagged(_text(result))
+
+        expected = answer(folding)
+        caplog.clear()
+        found = answer(reading)
+        assert found == expected, name
+        assert "projection" not in found
+        warnings = [r.getMessage() for r in caplog.records if "graph projection" in r.getMessage()]
+        assert len(warnings) == 1, warnings
+        # What the fold and the call agree on is not nothing.
+        assert "1 objection pending" in expected.splitlines()[0]
 
 
 @pytest.mark.db

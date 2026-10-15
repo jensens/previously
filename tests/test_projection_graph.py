@@ -53,6 +53,7 @@ from previously.core.graph import RelationBody
 from previously.core.graph import SOURCES
 from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
+from previously.core.graph_read import check_graph
 from previously.core.graph_read import projected_graph
 from previously.core.graph_read import read_brackets
 from previously.core.graph_write import GraphRefused
@@ -1085,6 +1086,10 @@ def _run(history: _History, step: _Step) -> None:
             _project(storage, batch_size=batch_size)
             assert _rows(storage) == _folded(storage)
             _readers_agree(storage)
+            with storage.snapshot() as conn:
+                state = storage.projection_state(conn, GRAPH.name)
+                assert state is not None
+                assert check_graph(storage, storage, conn, state.up_to_id) == []
 
 
 @pytest.mark.db
@@ -1102,7 +1107,8 @@ def test_property_the_projection_stands_where_the_fold_does(
     a winner has no row; at the end, a rebuild writes both tables as the
     incremental path left them. After every catch-up, too, the graph a
     reader reads from the projection answers every question as the fold
-    does, and the members of every entity are those of the fold's edges.
+    does, the members of every entity are those of the fold's edges, and
+    `check_graph` finds no difference in either table.
 
     A step the write path or an erasure refuses writes nothing, and the
     history goes on: what the projection meets is only ever what the log

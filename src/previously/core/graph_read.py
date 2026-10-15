@@ -39,6 +39,7 @@ from previously.core.members import BracketEdge
 from previously.core.members import members
 from previously.core.projection.graph import class_states
 from previously.core.projection.graph import fold_threads
+from previously.core.projection.graph import rebuilt_versions
 from previously.core.projection.graph import summary
 from previously.core.vocabulary import read_vocabulary
 from typing import cast
@@ -54,10 +55,12 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from collections.abc import Sequence
     from previously.contract.rows import GraphThreadRow
+    from previously.contract.rows import GraphVersionRow
     from previously.contract.store import GraphStore
     from previously.contract.store import LogStore
     from previously.core.graph import GraphVersion
     from previously.core.members import Members
+    from previously.core.projection.worker import Outcome
 
 
 _ASSERTION: Final = "assertion"
@@ -295,16 +298,68 @@ def differences(rows: Iterable[GraphThreadRow], graph: Graph) -> list[tuple[int,
     return found
 
 
+def _version_text(row: GraphVersionRow) -> str:
+    under = "" if row.under is None else f" under {row.under}"
+    return f"{row.kind} of {row.subject}{under}"
+
+
+def version_differences(
+    rows: Iterable[GraphVersionRow], rebuilt: Iterable[GraphVersionRow]
+) -> list[tuple[int, str]]:
+    """Every id on which the rows of `p_graph_version` and those a rebuild
+    writes disagree, by id: each column as `version row name projected
+    instead of rebuilt`, a row the rebuild doesn't write, or none where it
+    writes one."""
+    projected = {row.id: row for row in rows}
+    expected = {row.id: row for row in rebuilt}
+    found: list[tuple[int, str]] = []
+    for event_id in sorted(projected.keys() | expected.keys()):
+        here, there = projected.get(event_id), expected.get(event_id)
+        if here == there:
+            continue
+        if here is None:
+            what = f"no version row instead of {_version_text(cast('GraphVersionRow', there))}"
+        elif there is None:
+            what = f"version row {_version_text(here)} instead of none"
+        else:
+            what = "version row " + ", ".join(
+                f"{column.name} {_cell(getattr(here, column.name))} instead of "
+                f"{_cell(getattr(there, column.name))}"
+                for column in fields(here)
+                if getattr(here, column.name) != getattr(there, column.name)
+            )
+        found.append((event_id, what))
+    return found
+
+
 def check_graph[Conn](
     log: LogStore[Conn], store: GraphStore[Conn], conn: Conn, up_to: int
 ) -> list[tuple[int, str]]:
-    """`differences` between the projection and the fold of the log up to
-    event `up_to`, the projection's `up_to_id`, under the classes as of
-    that event: what a rebuild would write, set beside what stands."""
-    rows = [
-        (row.id, row.recorded_at, row.payload)
-        for row in log.read_by_kind(conn, _ASSERTION)
-        if row.id <= up_to
-    ]
-    graph = fold_graph(rows, class_states(log, conn, up_to))
-    return differences(store.read_graph_threads(conn), graph)
+    """What differs between the projection and the log up to event `up_to`,
+    the projection's `up_to_id`: `differences` of the threads against the
+    fold under the classes as of that event, then `version_differences` of
+    the version rows against what a rebuild would write. The readers fold
+    the threads they show from the version rows, so a wrong one there is as
+    much a fault as a wrong thread."""
+    events = [row for row in log.read_by_kind(conn, _ASSERTION) if row.id <= up_to]
+    graph = fold_graph(
+        ((row.id, row.recorded_at, row.payload) for row in events), class_states(log, conn, up_to)
+    )
+    return differences(store.read_graph_threads(conn), graph) + version_differences(
+        store.read_graph_versions(conn), rebuilt_versions(events)
+    )
+
+
+def projection_stands[Conn](store: GraphStore[Conn], conn: Conn, outcome: Outcome) -> bool:
+    """Whether the projection stands, in the snapshot of `conn`, where the
+    catch-up of `outcome` left it: at the same version, and up to its
+    `up_to_id` or beyond. It doesn't where another catch-up rebuilt it in
+    between, by another version of the code or after a forced rebuild, and
+    a reader then folds the log for that read rather than show an empty or
+    half-built projection as if it were the graph."""
+    state = store.projection_state(conn, outcome.name)
+    return (
+        state is not None
+        and state.version == outcome.version
+        and state.up_to_id >= outcome.up_to_id
+    )

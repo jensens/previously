@@ -77,6 +77,7 @@ from previously.core.errors import BatchTooLarge
 from previously.core.errors import CannotOpen
 from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
+from previously.core.errors import ProjectionRebuilt
 from previously.core.errors import reason_of
 from previously.core.errors import RedactionRefused
 from previously.core.errors import SinkUnwritable
@@ -103,6 +104,7 @@ from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
 from previously.core.graph_read import check_graph
 from previously.core.graph_read import projected_graph
+from previously.core.graph_read import projection_stands
 from previously.core.graph_write import check_claims
 from previously.core.graph_write import decided
 from previously.core.graph_write import read_graph
@@ -1464,7 +1466,7 @@ def _project_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--check",
         action="store_true",
-        help="then fold the log and report every thread the graph projection holds otherwise",
+        help="then fold the log and report every row the graph projection holds otherwise",
     )
 
 
@@ -1481,7 +1483,8 @@ def _cmd_project(args: argparse.Namespace) -> int:
         # The projection is disposable and the log is the truth, so a thread
         # the projection holds otherwise must not stay silent: the check
         # folds the log up to where the projection stands and holds every
-        # row against it ({ref}`graph-projection`). It writes nothing.
+        # thread row against the fold and every version row against what a
+        # rebuild would write ({ref}`graph-projection`). It writes nothing.
         with storage.snapshot() as conn:
             state = storage.projection_state(conn, GRAPH.name)
             found = check_graph(storage, storage, conn, 0 if state is None else state.up_to_id)
@@ -3436,22 +3439,47 @@ def _entity_line(
     )
 
 
-def _caught_up(storage: PostgresStorage) -> None:
+def _caught_up(storage: PostgresStorage) -> Outcome | None:
     """Brings the graph projection up to the tip of the log before a reader
-    opens its snapshot ({ref}`graph-projection`); nothing new costs one
-    query. Silent, as the MCP server's catch-up is: a reader's output is
-    what it reads. A build from scratch, the first or after an upgrade that
-    changed the projection's version, takes as long as the log is, which is
-    why the upgrade runs `project`, whose line names it."""
-    catch_up(storage, storage, GRAPH)
+    opens its snapshot ({ref}`graph-readers`): two short transactions when
+    nothing is new. Silent, as the MCP server's catch-up is: a reader's
+    output is what it reads. A build from scratch, the first or after an
+    upgrade that changed the projection's version, takes as long as the
+    log is, which is why the upgrade runs `project`, whose line names it.
+
+    A catch-up that fails, such as one stopped by another version of the
+    code rebuilding the projection, doesn't fail the reader: it says so in
+    one line on standard error and reads by folding the log (`None`)."""
+    try:
+        return catch_up(storage, storage, GRAPH)
+    except (ProjectionRebuilt, StorageError) as error:
+        _graph_warning(f"the graph projection could not be caught up ({error})")
+        return None
+
+
+def _reader_graph(storage: PostgresStorage, conn: Connection, outcome: Outcome | None) -> Graph:
+    """The graph a reader reads in its snapshot: from the projection where
+    it stands where the catch-up left it, else folded from the log, with one
+    line on standard error, so that a rebuild in between shows neither an
+    empty graph nor a half-built one ({ref}`graph-readers`)."""
+    if outcome is None:
+        return read_graph(storage, conn)
+    if not projection_stands(storage, conn, outcome):
+        _graph_warning("the graph projection was rebuilt since this command caught it up")
+        return read_graph(storage, conn)
+    return projected_graph(storage, storage, conn)
+
+
+def _graph_warning(cause: str) -> None:
+    print(f"{cause}; this command folds the log instead", file=sys.stderr)
 
 
 def _cmd_entities(args: argparse.Namespace) -> int:
     default = _language()
     with _storage() as storage:
-        _caught_up(storage)
+        outcome = _caught_up(storage)
         with storage.snapshot() as conn:
-            graph = projected_graph(storage, storage, conn)
+            graph = _reader_graph(storage, conn, outcome)
             vocabulary = read_vocabulary(storage, conn)
             kinds = graph.entity_kinds()
             found = graph.winners(ENTITY, types=None if args.type is None else (args.type,))
@@ -3506,11 +3534,10 @@ def _cmd_relations(args: argparse.Namespace) -> int:
     with _storage() as storage:
         # The projection knows only what stands now; a past moment folds the
         # log up to it, which is rare and may be slow.
-        if as_of is None:
-            _caught_up(storage)
+        outcome = _caught_up(storage) if as_of is None else None
         with storage.snapshot() as conn:
             graph = (
-                projected_graph(storage, storage, conn)
+                _reader_graph(storage, conn, outcome)
                 if as_of is None
                 else read_graph(storage, conn, as_of=as_of)
             )
@@ -3673,9 +3700,9 @@ def _show_entity(args: argparse.Namespace) -> int:
     default = _language()
     subject = int(args.what)
     with _storage() as storage:
-        _caught_up(storage)
+        outcome = _caught_up(storage)
         with storage.snapshot() as conn:
-            graph = projected_graph(storage, storage, conn)
+            graph = _reader_graph(storage, conn, outcome)
             vocabulary = read_vocabulary(storage, conn)
             thread = graph.threads.get(subject)
             if thread is None and erased_assertion(storage, conn, subject):
@@ -3753,9 +3780,9 @@ def _cmd_triage(args: argparse.Namespace) -> int:
     del args
     default = _language()
     with _storage() as storage:
-        _caught_up(storage)
+        outcome = _caught_up(storage)
         with storage.snapshot() as conn:
-            graph = projected_graph(storage, storage, conn)
+            graph = _reader_graph(storage, conn, outcome)
             vocabulary = read_vocabulary(storage, conn)
             for kind, versions in _waiting(graph).items():
                 for version in versions:
@@ -3778,9 +3805,9 @@ def _cmd_triage(args: argparse.Namespace) -> int:
 def _cmd_status(args: argparse.Namespace) -> int:
     del args
     with _storage() as storage:
-        _caught_up(storage)
+        outcome = _caught_up(storage)
         with storage.snapshot() as conn:
-            waiting = _waiting(projected_graph(storage, storage, conn))
+            waiting = _waiting(_reader_graph(storage, conn, outcome))
     for kind in _TRIAGE_KINDS:
         print(f"{kind}s\t{len(waiting[kind])}")
     return 0
@@ -3885,10 +3912,10 @@ def _cmd_classes_list(args: argparse.Namespace) -> int:
     with _storage() as storage:
         # A hit rate counts the versions under a class, and the projection
         # says which threads hold one: only those are folded.
-        _caught_up(storage)
+        outcome = _caught_up(storage)
         with storage.snapshot() as conn:
             classes = read_classes(storage, conn)
-            graph = projected_graph(storage, storage, conn)
+            graph = _reader_graph(storage, conn, outcome)
             rates = {rate.name: rate for rate in hit_rates(graph, classes)}
     for name in sorted(classes.by_name):
         item, event_id = classes.by_name[name]
@@ -3919,10 +3946,10 @@ def _cmd_classes_sample(args: argparse.Namespace) -> int:
         raise PreviouslyError(f"--count must be at least 1, got {args.count}")
     default = _language()
     with _storage() as storage:
-        _caught_up(storage)
+        outcome = _caught_up(storage)
         with storage.snapshot() as conn:
             classes = read_classes(storage, conn)
-            graph = projected_graph(storage, storage, conn)
+            graph = _reader_graph(storage, conn, outcome)
             vocabulary = read_vocabulary(storage, conn)
             current = classes.by_name.get(args.name)
             if current is None:

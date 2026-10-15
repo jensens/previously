@@ -736,9 +736,9 @@ class PostgresStorage:
     }
 
     def projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
-        """The state row of one projection, unlocked, or `None`. Outside the
-        protocol: the worker locks the row instead, and only tests read it
-        this way."""
+        """The state row of one projection, unlocked, or `None`. The worker
+        locks the row instead; a reader of the graph reads it this way, in
+        its snapshot, through `GraphStore`."""
         row = conn.execute(
             select(projection_state).where(projection_state.c.name == name)
         ).one_or_none()
@@ -1102,6 +1102,12 @@ class PostgresStorage:
         result counts them."""
         query = select(p_graph_thread).where(p_graph_thread.c.objections > 0)
         return self._graph_thread_rows(conn, query)
+
+    def read_graph_versions(self, conn: Connection) -> list[GraphVersionRow]:
+        return [
+            GraphVersionRow(row.id, row.subject, row.kind, row.under)
+            for row in conn.execute(select(p_graph_version).order_by(p_graph_version.c.id))
+        ]
 
     def graph_subjects(self, conn: Connection) -> list[int]:
         return list(

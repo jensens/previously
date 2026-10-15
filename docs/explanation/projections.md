@@ -334,7 +334,7 @@ The second starts where the first committed, so neither sees half a batch and no
 
 A reader of the graph doesn't wait for anybody to run `previously project`.
 Every listing of the command line and every MCP call first catches the projection up, in transactions of its own, and then reads in a snapshot of its own.
-When nothing is new, the catch-up costs one query.
+When nothing is new, the catch-up costs two short transactions: one locks the state row, and the other locks it again and finds the tip of the log where the projection stands.
 An MCP call always finds one thing new, the access entry of the call before it, and that batch touches no thread, so it ends before it reads any approval class.
 
 The projection then says which threads a question concerns, and the log says what they hold.
@@ -354,5 +354,11 @@ The write path checks a claim against what stands under the tip it locks, and a 
 `verify` holds every statement against what stood before it in the chain, which no projection keeps.
 
 `previously project --check` is the counterpart of the property for a running system.
-It folds the log up to where the projection stands and names every thread whose row differs.
+It folds the log up to where the projection stands and names every thread whose row differs, and every row of `p_graph_version` that a rebuild wouldn't write as it stands, since a reader folds the threads it shows from those rows.
 The projection is disposable and the log is the truth, so a projection that drifted, by one of the two ways above or by a fault nobody has found yet, mustn't stay silent.
+
+A reader also mustn't take a projection being rebuilt for the graph.
+Between a reader's catch-up and its snapshot, another catch-up can empty the tables: a forced rebuild, or a catch-up by another version of the code, which rebuilds whenever the version it finds isn't its own, as during a rolling update that runs two versions side by side.
+So a reader holds the state row in its snapshot against the outcome of its own catch-up, and where the version differs or `up_to_id` stands behind, it folds the log for that one read.
+It does the same where its catch-up fails, which is what a catch-up stopped by such a rebuild does.
+Either way it says so once, on standard error or in the server's log and never in a result, and the answer is the fold's: slower, never empty, never half-built, and never an error.

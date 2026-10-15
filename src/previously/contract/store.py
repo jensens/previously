@@ -265,6 +265,11 @@ class GraphStore[Conn](Protocol):
     `ProjectionStore`, which a reader needs to fold a thread again from the
     log, and `graph_subjects` gives the subject of every row of
     `p_graph_version`, for a reader that walks every thread.
+    `read_graph_versions` gives every row of `p_graph_version` by id, which
+    `previously project --check` holds against what a rebuild would write.
+    `projection_state` reads the state row of a projection without locking
+    it: a reader holds it against the outcome of its catch-up, and folds the
+    log where the projection no longer stands there.
     """
 
     def read_graph_threads(
@@ -285,6 +290,8 @@ class GraphStore[Conn](Protocol):
     def graph_version_ids(self, conn: Conn, subjects: Sequence[int]) -> dict[int, list[int]]: ...
     def class_subjects(self, conn: Conn, under_ids: Sequence[int]) -> set[int]: ...
     def graph_subjects(self, conn: Conn) -> list[int]: ...
+    def read_graph_versions(self, conn: Conn) -> list[GraphVersionRow]: ...
+    def projection_state(self, conn: Conn, name: str) -> ProjectionState | None: ...
 
 
 class WatermarkStore[Conn](Protocol):

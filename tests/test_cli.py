@@ -36,6 +36,7 @@ from previously.core.assertion import Statement as AssertionStatement
 from previously.core.assertions import write_statements
 from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
+from previously.core.errors import ProjectionRebuilt
 from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
 from previously.core.graph import ENTITY
@@ -89,6 +90,8 @@ if TYPE_CHECKING:
     from mailserver import MailServer
     from previously.contract.blobs import ClosableSource
     from previously.contract.blobs import StoredBlob
+    from previously.core.projection import Outcome
+    from previously.core.projection import Projection
     from previously.storage.s3 import S3BlobStore
     from sqlalchemy import Connection
     from sqlalchemy import Engine
@@ -7776,10 +7779,21 @@ def test_project_check_is_clean_after_a_history_and_names_each_row_falsified_by_
             text("UPDATE p_graph_thread SET level = 'open', pending = 4 WHERE subject = :s"),
             {"s": ids["mail"]},
         )
+        # The version rows the readers fold a thread from: one missing, one
+        # extra, on a mail, and one under a class it was never written under.
+        c.execute(text("DELETE FROM p_graph_version WHERE id = :s"), {"s": ids["part_of"]})
+        c.execute(text("INSERT INTO p_graph_version VALUES (2, 2, 'entity', NULL)"))
+        c.execute(
+            text("UPDATE p_graph_version SET under = :c WHERE id = :s"),
+            {"c": ids["class"], "s": ids["anna"]},
+        )
     falsified = [
         f"graph\t{ids['xz']}\tobjections 2 instead of 0",
         f"graph\t{ids['club']}\tno row instead of winner {ids['club']}",
         f"graph\t{ids['mail']}\tlevel open instead of direct, pending 4 instead of 0",
+        "graph\t2\tversion row entity of 2 instead of none",
+        f"graph\t{ids['part_of']}\tno version row instead of relation of {ids['part_of']}",
+        f"graph\t{ids['anna']}\tversion row under {ids['class']} instead of -",
     ]
     for _run_again in (1, 2):
         out = _run(capsys, "project", "--check", code=1)
@@ -7793,3 +7807,72 @@ def test_project_check_is_clean_after_a_history_and_names_each_row_falsified_by_
     rebuilt = _run(capsys, "project", "--check")
     assert rebuilt.splitlines()[2].startswith("graph           built:")
     assert len(rebuilt.splitlines()) == 3
+
+
+def _expected_listings(capsys: pytest.CaptureFixture[str]) -> list[str]:
+    return [_run(capsys, *command) for command in (["entities"], ["triage"], ["status"])]
+
+
+@pytest.mark.db
+def test_a_listing_folds_the_log_when_the_projection_was_rebuilt_since_its_catch_up(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Another version of the code, or a forced rebuild, empties the
+    projection between a reader's catch-up and its snapshot: the reader
+    finds the state row at another version, says so on standard error and
+    shows the fold, never the empty tables ({ref}`graph-readers`)."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    storage = _graph_log(db, monkeypatch, capsys)
+    _listed_history(storage, capsys)
+    expected = _expected_listings(capsys)
+    assert all(expected)
+    assert isinstance(db, Engine)
+
+    def rebuilt_after(
+        log: PostgresStorage, store: PostgresStorage, projection: Projection
+    ) -> Outcome:
+        outcome = catch_up(log, store, projection)
+        with db.begin() as c:
+            c.execute(text("UPDATE projection_state SET version = 7 WHERE name = 'graph'"))
+            c.execute(text("DELETE FROM p_graph_thread"))
+            c.execute(text("DELETE FROM p_graph_version"))
+        return outcome
+
+    monkeypatch.setattr("previously.cli.catch_up", rebuilt_after)
+    for command, shown in zip((["entities"], ["triage"], ["status"]), expected, strict=True):
+        assert main(command) == 0
+        captured = capsys.readouterr()
+        assert captured.out == shown
+        assert captured.err == (
+            "the graph projection was rebuilt since this command caught it up; "
+            "this command folds the log instead\n"
+        )
+
+
+@pytest.mark.db
+def test_a_listing_folds_the_log_when_its_catch_up_fails(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A catch-up stopped by another version of the code rebuilding the
+    projection fails no listing: one line on standard error, and the
+    fold."""
+    storage = _graph_log(db, monkeypatch, capsys)
+    _listed_history(storage, capsys)
+    expected = _expected_listings(capsys)
+    stopped = "projection graph was rebuilt while this catch-up ran"
+
+    def failing(log: PostgresStorage, store: PostgresStorage, projection: Projection) -> Outcome:
+        del log, store, projection
+        raise ProjectionRebuilt(stopped)
+
+    monkeypatch.setattr("previously.cli.catch_up", failing)
+    for command, shown in zip((["entities"], ["triage"], ["status"]), expected, strict=True):
+        assert main(command) == 0
+        captured = capsys.readouterr()
+        assert captured.out == shown
+        assert captured.err == (
+            f"the graph projection could not be caught up ({stopped}); "
+            "this command folds the log instead\n"
+        )

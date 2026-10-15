@@ -133,6 +133,25 @@ def rejected(event: EventRow) -> int | None:
     return statement.of
 
 
+def rebuilt_versions(events: Iterable[EventRow]) -> list[GraphVersionRow]:
+    """The rows of `p_graph_version` a rebuild writes from `events`, read in
+    chain order as they stand now: every version, and every rejection whose
+    `of` names a version before it, under that version's subject. An erased
+    row writes none, and so neither does a rejection of an erased version;
+    that is what the catch-up leaves behind too, since it takes out the rows
+    a rebuild would not write. `previously project --check` holds the table
+    against this."""
+    known: dict[int, GraphVersionRow] = {}
+    found: list[GraphVersionRow] = []
+    for event in events:
+        if (row := version_row(event)) is not None:
+            known[row.id] = row
+            found.append(row)
+        elif (of := rejected(event)) is not None and of in known:
+            found.append(GraphVersionRow(event.id, known[of].subject, REJECTION_ROW, None))
+    return found
+
+
 def _erased_target(event: EventRow) -> int | None:
     """The event a redaction of a whole event names. A redaction of units
     or of a blob changes no assertion: an assertion has neither, and the

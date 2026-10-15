@@ -204,7 +204,9 @@ Otherwise the client doesn't see it at all: the lines of an entity and the triag
 
 In phase 1, reading folded the whole log of assertions, with no projection table in between.
 That's the simplest design that keeps the graph a function of the log, and it has a price that grows with the number of statements.
-Since phase 2 the readers read from the projection `graph` and fold only the threads they show, while the write path and `verify` still fold the whole log ({ref}`graph-readers`).
+Since phase 2 the readers read from the projection `graph`, and fold from the log only the threads the projection names for their question, while the write path and `verify` still fold the whole log ({ref}`graph-readers`).
+The header folds the threads with an objection, `triage` and `list_triage` those where something waits, and `entities` on the command line the entities of the kind it's asked for.
+MCP `list_entities` folds every entity on every page, whatever its filters ask, because the policy decides each entity before any filter, and the placeholder of one it withholds passes every filter, so that the client never learns its kind or its state.
 The figures below are those of phase 1, the ones that decision rests on.
 
 The final review of phase 1 measured it on a graph of about one entity per two relations: organizations, posts, projects and persons, a `part_of` tree over the projects, a `post_in` for every post, and `holds` for the rest.

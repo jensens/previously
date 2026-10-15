@@ -94,6 +94,7 @@ from previously.core.canonical import KEY_PATTERN
 from previously.core.canonical import MAX_SAFE_INT
 from previously.core.clients import client_for_token
 from previously.core.errors import InvalidPayload
+from previously.core.errors import ProjectionRebuilt
 from previously.core.gaps import gaps
 from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
@@ -114,6 +115,7 @@ from previously.core.graph import sources_with_start
 from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
 from previously.core.graph_read import projected_graph
+from previously.core.graph_read import projection_stands
 from previously.core.graph_write import check_claims
 from previously.core.graph_write import decided
 from previously.core.graph_write import GraphRefused
@@ -176,6 +178,7 @@ from previously.mcp_server.render import Stated
 from previously.mcp_server.render import STATED_LINE_CHARS
 from previously.storage.errors import OperationFailed
 from previously.storage.errors import ServerUnreachable
+from previously.storage.errors import StorageError
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -212,6 +215,7 @@ if TYPE_CHECKING:
     from previously.core.policy import Policy
     from previously.core.policy import Provider
     from previously.core.policy import Rule
+    from previously.core.projection import Outcome as CaughtUp
     from previously.core.vocabulary import Vocabulary
     from previously.mcp_server.read import GraphView
     from previously.mcp_server.read import Seen
@@ -880,13 +884,16 @@ class Service[Conn]:
     labels of kinds are shown in an entity's working language, else in
     `language`.
 
-    It reads the graph from its projection only with both `projections`,
-    the store it catches the projection up with before every call, and
-    `graph`, the one it reads the projection through; without, every call
-    folds the log, as the server did before the projection existed, which
-    is the oracle the tests hold the projection against. The tools that
-    write fold the log either way: the write path checks against the tip
-    it locks ({ref}`graph-projection`).
+    It reads the graph from its projection with `projections`, the store
+    it catches the projection up with before every call, and `graph`, the
+    one it reads the projection through; one without the other is refused.
+    Without both, every call folds the log, as the server did before the
+    projection existed, which is the oracle the tests hold the projection
+    against. A call whose catch-up fails, or that finds the projection
+    rebuilt in its snapshot, folds the log as well, with one warning in the
+    server's log and nothing in its result. The tools that write fold the
+    log either way: the write path checks against the tip it locks
+    ({ref}`graph-readers`).
     """
 
     def __init__(
@@ -905,12 +912,39 @@ class Service[Conn]:
         self.locker = locker
         self.key = key
         self.language = language
+        if (graph is None) != (projections is None):
+            raise ValueError(
+                "graph and projections are the two stores of one projection: give both or neither"
+            )
         self.projected = None if graph is None or projections is None else (graph, projections)
 
-    def read_graph(self, conn: Conn) -> Graph:
-        """The graph of a call: from the projection, caught up before the
-        call opened its snapshot, or folded from the log."""
+    def caught_up(self) -> CaughtUp | None:
+        """Brings the graph projection up to the tip before a call opens its
+        snapshot. `None` without the projection, and where the catch-up
+        failed, which the server's log says once: the call then folds the
+        log, so that a rebuild by another version of the code, which a
+        rolling update runs beside this one, fails no call."""
         if self.projected is None:
+            return None
+        try:
+            return catch_up(self.log, self.projected[1], GRAPH)
+        except (ProjectionRebuilt, StorageError) as error:
+            logger.warning(
+                "the graph projection could not be caught up, so a call folds the log: %s", error
+            )
+            return None
+
+    def read_graph(self, conn: Conn, outcome: CaughtUp | None) -> Graph:
+        """The graph of a call: from the projection where it stands where
+        the call's catch-up left it, else folded from the log, with one
+        warning in the server's log where a rebuild came in between
+        ({ref}`graph-readers`)."""
+        if self.projected is None or outcome is None:
+            return read_graph(self.log, conn)
+        if not projection_stands(self.projected[0], conn, outcome):
+            logger.warning(
+                "the graph projection was rebuilt since the call caught it up, so it folds the log"
+            )
             return read_graph(self.log, conn)
         return projected_graph(self.log, self.projected[0], conn)
 
@@ -977,10 +1011,9 @@ class Service[Conn]:
         try:
             if name is None:
                 raise Refused(_NO_CLIENT)
-            if self.projected is not None:
-                # In transactions of its own, before the snapshot: what the
-                # call reads is what the log held when it began.
-                catch_up(self.log, self.projected[1], GRAPH)
+            # In transactions of its own, before the snapshot: what the call
+            # reads is what the log held when it began.
+            caught = self.caught_up()
             with self.log.snapshot() as conn:
                 policy = read_policy(self.log, conn)
                 client = policy.clients.get(name)
@@ -993,7 +1026,7 @@ class Service[Conn]:
                     "processor": policy.ids.get((PROVIDER, client.processor)),
                     "rules": [],
                 }
-                graph = self.read_graph(conn)
+                graph = self.read_graph(conn, caught)
                 pending = _FOLDED.set(
                     _Folded(graph, objections_seen(self.log, conn, policy, client, graph))
                 )
@@ -1671,9 +1704,9 @@ class Service[Conn]:
 
     def graph_now(self, conn: Conn) -> Graph:
         """The graph the running call read in `answer`, or, outside a call,
-        the one read now."""
+        which nothing in the server does, the one folded now."""
         folded = _FOLDED.get()
-        return self.read_graph(conn) if folded is None else folded.graph
+        return read_graph(self.log, conn) if folded is None else folded.graph
 
     def graph_of(self, conn: Conn, policy: Policy, client: Client) -> tuple[GraphView, Vocabulary]:
         """The graph as the client may see it, and the vocabulary, in the
