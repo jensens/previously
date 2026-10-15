@@ -181,6 +181,7 @@ It answers `ok` after one read of the graph projection's state row, or 503 when 
 It also answers 503, with a body of its own, while the graph projection isn't at the version this release declares: every graph call would fail meanwhile, since only `previously project` builds the projection ({ref}`graph-readers`), and a pod that isn't ready gets no requests.
 That's what keeps a rolling update that changes the projection's version in order: once the new release's `previously project` has run, the old pods drop out and the new ones come in.
 The probe reads the state row and doesn't catch up, so it stays one read however far the projection lags; the next call catches up.
+Each body names its cause, a database that doesn't answer, a projection not at this version, or a database that refuses the server's role, because a 503 that named the wrong one would send the operator to the wrong place.
 A switchover of the database's primary costs requests while it lasts: for the seconds in which no primary answers, the probe gets 503, and so would a tool call, because the database doesn't answer.
 After it, requests succeed again.
 A connection that died while it sat idle, whether in a switchover or a restart of the database, costs no request on top of that: the storage checks a pooled connection when it takes it from the pool, and replaces a dead one before the request uses it.

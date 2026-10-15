@@ -88,9 +88,11 @@ If the step is skipped, nothing is built behind your back, and nothing answers f
 
 When a rolling update replaces the pods of a server whose release changes the graph projection's version, run `previously project` of the new release once, before the first new pod serves, for example in an init container or a job of the upgrade step.
 
-1.  `previously project` of the new release rebuilds the graph projection at the new version.
-2.  From then on, the old pods' readiness probe on `/healthz` answers 503, and their calls fail until they're replaced, because the projection no longer stands at the version they declare.
-3.  The new pods start, find the projection at their version, and their readiness probe answers 200.
+1.  Move a scheduled `previously project` to the new release, or suspend it, first.
+    A `project` of the old release that starts after the new one ran would build the projection back to the old version; one already running stops at its next batch.
+2.  `previously project` of the new release rebuilds the graph projection at the new version.
+3.  From then on, the old pods' readiness probe on `/healthz` answers 503, and their calls fail until they're replaced, because the projection no longer stands at the version they declare.
+4.  The new pods start, find the projection at their version, and their readiness probe answers 200.
 
 The old pods don't rebuild back, so the two releases never take turns at undoing each other's build.
 Graph calls to an old pod fail for as long as it runs, so keep that window short.

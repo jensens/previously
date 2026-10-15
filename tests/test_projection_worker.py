@@ -774,7 +774,7 @@ def test_two_catch_ups_of_one_projection_take_turns(db: Engine, appended: bool) 
     def redact_catch_up() -> None:
         try:
             assert first.holding.wait(timeout=10)
-            catch_up(storage, storage, CHRONICLE, rebuild=True)
+            catch_up(storage, storage, CHRONICLE, rebuild=False)
         except BaseException as e:
             errors.append(e)
         finally:

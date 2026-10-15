@@ -1289,19 +1289,37 @@ def _payload_line(event_id: int) -> str:
     )
 
 
-def _unfinished(redaction_id: int, outstanding: str, *, unbuilt: bool) -> PreviouslyError:
-    """The error of a redaction that stands and is not carried out to its
-    end: what stands, what is outstanding, and that the same command
-    finishes it — the second call finds the target covered, writes nothing,
-    and does what is left.
+# What finishes an unfinished redaction, by what stopped it: the same
+# command again; `previously project` first, where a projection isn't built;
+# and where it stands at another version, the build of the release that is
+# to serve, since this code cannot tell whether it is the older one, and an
+# older release's `project` would build the projection back.
+_AGAIN = "again"
+_BUILD = "build"
+_RELEASE = "release"
 
-    Where a projection is not built at this code's version (`unbuilt`), the
-    same command alone would stop at it again: `previously project` builds
-    it first, and in building it takes the redaction in."""
-    if unbuilt:
+
+def _unfinished(redaction_id: int, outstanding: str, *, then: str) -> PreviouslyError:
+    """The error of a redaction that stands and is not carried out to its
+    end: what stands, what is outstanding, and what finishes it, which ends
+    in the same command — the second call finds the target covered, writes
+    nothing, and does what is left.
+
+    Where a projection is not built (`then` is `_BUILD`), the same command
+    alone would stop at it again: `previously project` builds it first, and
+    in building it takes the redaction in. Where it stands at another
+    version (`_RELEASE`), the advice is the one `ProjectionNotBuilt` gives,
+    which names the release that is to serve."""
+    if then == _BUILD:
         return PreviouslyError(
             f"the redaction is recorded as event {redaction_id}, but it is not finished: "
             f"{outstanding}; run `previously project`, then the same command again"
+        )
+    if then == _RELEASE:
+        return PreviouslyError(
+            f"the redaction is recorded as event {redaction_id}, but it is not finished: "
+            f"{outstanding}; the release that is to serve builds it with `previously project`, "
+            "then run the same command again"
         )
     return PreviouslyError(
         f"the redaction is recorded as event {redaction_id}, but it is not finished: "
@@ -1341,7 +1359,7 @@ def _delete_obsolete(result: Redacted) -> str | None:
     return outstanding
 
 
-def _catch_up_after(storage: PostgresStorage) -> tuple[str, bool] | None:
+def _catch_up_after(storage: PostgresStorage) -> tuple[str, str] | None:
     """Brings every projection up to the tip once a redaction is recorded, so
     the chronicle stops showing what was erased without waiting for the next
     `project` ({ref}`projections`).
@@ -1355,7 +1373,7 @@ def _catch_up_after(storage: PostgresStorage) -> tuple[str, bool] | None:
     It catches up and never builds: a projection not built at this code's
     version is left as it is, and named as what is outstanding, in the
     words of `ProjectionNotBuilt` without its advice, which `_unfinished`
-    gives when the second value says so. Only `previously project` builds
+    gives by the second value. Only `previously project` builds
     ({ref}`projections`), and the first `redact` after an upgrade would
     otherwise rebuild for as long as the log takes, inside a command that
     erases one thing.
@@ -1364,10 +1382,10 @@ def _catch_up_after(storage: PostgresStorage) -> tuple[str, bool] | None:
         try:
             catch_up(storage, storage, projection, rebuild=False)
         except ProjectionNotBuilt as error:
-            return error.finding, True
+            return error.finding, _BUILD if error.found is None else _RELEASE
         except (PreviouslyError, StorageError) as error:
             outstanding = f"projection {projection.name} is not caught up ({error})"
-            return outstanding, False
+            return outstanding, _AGAIN
     return None
 
 
@@ -1418,7 +1436,7 @@ def _cmd_redact(args: argparse.Namespace) -> int:
         deletion = _delete_obsolete(result)
         catching_up = _catch_up_after(storage)
         approvals = _approvals_of(storage, args)
-    outstanding, unbuilt = (None, False) if catching_up is None else catching_up
+    outstanding, then = (None, _AGAIN) if catching_up is None else catching_up
     left = [step for step in (deletion, outstanding) if step is not None]
     if left:
         # The units are erased whether or not what follows is finished, and
@@ -1426,7 +1444,7 @@ def _cmd_redact(args: argparse.Namespace) -> int:
         # the sentence of the unfinished redaction too.
         _notice_payload(result, args)
         _notice_approvals(approvals, args)
-        raise _unfinished(result.redaction_id, ", and ".join(left), unbuilt=unbuilt)
+        raise _unfinished(result.redaction_id, ", and ".join(left), then=then)
     print(_redacted_line(result))
     for event_id in result.cascaded:
         kind = "assertion" if event_id in result.cascaded_assertions else "model_call"

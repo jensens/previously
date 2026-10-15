@@ -396,7 +396,7 @@ the approval 9 still carries the words of the proposal 6; redact event 9 to eras
 ```
 `redact` refuses a redaction as a target and accepts every other action, a policy event and a `model_call` included.
 
-`redact` works in this order: it records the redaction and sets the tombstones in one transaction, deletes the blobs that no longer have to lie, and brings every projection up to the tip of the log, the way `project` does.
+`redact` works in this order: it records the redaction and sets the tombstones in one transaction, deletes the blobs that no longer have to lie, and catches every projection up to the tip of the log.
 Only then does it print the line to standard output.
 The chronicle then holds no row of what was erased, without a separate `project`.
 The catch-up prints nothing, and it never builds: a projection that has no state row, or whose state row stands at another version than the code declares, is left untouched for `project` to build ({ref}`rebuild-a-projection`).
@@ -405,11 +405,13 @@ If deleting a blob or the catch-up fails, the redaction stays recorded, nothing 
 ```text
 Error: the redaction is recorded as event 42, but it is not finished: blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 is not deleted from the store (the blob store at http://localhost:9000 is not reachable: EndpointConnectionError); run the same command again
 Error: the redaction is recorded as event 42, but it is not finished: projection chronicle is not caught up (expected events 2.. above id 1, read [3, 4]; the tip is 4); run the same command again
-Error: the redaction is recorded as event 42, but it is not finished: projection chronicle stands at version 2, and this code declares version 3; run `previously project`, then the same command again
+Error: the redaction is recorded as event 42, but it is not finished: projection chronicle is not built, and this code declares version 3; run `previously project`, then the same command again
+Error: the redaction is recorded as event 42, but it is not finished: projection chronicle stands at version 4, and this code declares version 3; the release that is to serve builds it with `previously project`, then run the same command again
 ```
 
 The text in parentheses is the error that stopped it.
-The third form names a projection the catch-up would have had to build, as `is not built` where it has no state row; the same command alone would stop there again, so `project` comes first and takes the redaction in as it builds.
+The third and fourth forms name a projection the catch-up would have had to build; the same command alone would stop there again, so `project` comes first and takes the redaction in as it builds.
+Where the projection stands at another version, the code can't tell which of the two releases is the older, so the fourth form names the release meant to serve: the `project` of an older release would build the projection back to its own version.
 For `redact units`, the notice that the payload holds the wording of an erased unit, described below, can come before that sentence.
 When several blobs are still to delete, the first form names them all, separated by a comma and a space, as `blobs <hashes> are not deleted from the store`.
 `redact` attempts the catch-up whether or not the deletion failed.
@@ -1726,6 +1728,12 @@ While the graph projection has no state row, or one at another version than this
 
 ```text
 Error: the graph projection is not built at this server's version
+```
+
+When the database refuses the server's role a privilege on the state row, as after a grant was revoked while the server ran, it answers with the status 503 and this body, and writes one `WARNING` line to the log with the database's reason:
+
+```text
+Error: the database refuses this server's role a privilege it needs
 ```
 
 The probe doesn't catch the projection up, so it stays as cheap as one read; the next call catches up whatever it lags.

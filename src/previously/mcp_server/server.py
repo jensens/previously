@@ -95,6 +95,9 @@ from previously.core.canonical import KEY_PATTERN
 from previously.core.canonical import MAX_SAFE_INT
 from previously.core.clients import client_for_token
 from previously.core.errors import InvalidPayload
+from previously.core.errors import ProjectionGap
+from previously.core.errors import ProjectionNotBuilt
+from previously.core.errors import ProjectionRebuilt
 from previously.core.gaps import gaps
 from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
@@ -136,6 +139,7 @@ from previously.core.vocabulary import read_vocabulary
 from previously.mcp_server.auth import CLIENT_STATE
 from previously.mcp_server.auth import guarded
 from previously.mcp_server.auth import NOT_BUILT
+from previously.mcp_server.auth import NOT_PERMITTED
 from previously.mcp_server.auth import NOT_READY
 from previously.mcp_server.confirm import expiry
 from previously.mcp_server.confirm import HandleRefused
@@ -181,7 +185,9 @@ from previously.mcp_server.render import sanitize
 from previously.mcp_server.render import Stated
 from previously.mcp_server.render import STATED_LINE_CHARS
 from previously.storage.errors import OperationFailed
+from previously.storage.errors import PrivilegeMissing
 from previously.storage.errors import ServerUnreachable
+from previously.storage.errors import StorageError
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -897,16 +903,13 @@ class Service[Conn]:
 
     It reads the graph from its projection with `projections`, the store
     it catches the projection up with before every call, and `graph`, the
-    one it reads the projection through; one without the other is refused.
-    Without both, every call folds the log, as the server did before the
-    projection existed, which is the oracle the tests hold the projection
-    against: `previously mcp` and `previously serve` always pass both. With
-    them, the projection is the only way a call reads the graph: a call
-    whose catch-up fails, or that finds the projection rebuilt in its
-    snapshot more often than `graph_snapshot` retries, fails as any call
-    fails on an error inside the server, with the reason in the server's
-    log ({ref}`graph-readers`). The tools that write fold the log either
-    way: the write path checks against the tip it locks.
+    one it reads the projection through. The projection is the only way a
+    call reads the graph, and there is no mode without it: a call whose
+    catch-up fails, or that finds the projection rebuilt in its snapshot
+    more often than `graph_snapshot` retries, fails as any call fails on an
+    error inside the server, with the reason in the server's log
+    ({ref}`graph-readers`). The tools that write fold the log for their
+    checks: the write path checks against the tip it locks.
     """
 
     def __init__(
@@ -917,19 +920,16 @@ class Service[Conn]:
         locker: RedactionStore[Conn] | None = None,
         key: bytes | None = None,
         language: str = "en",
-        graph: GraphStore[Conn] | None = None,
-        projections: ProjectionStore[Conn] | None = None,
+        graph: GraphStore[Conn],
+        projections: ProjectionStore[Conn],
     ) -> None:
         self.log = log
         self.stdio_client = stdio_client
         self.locker = locker
         self.key = key
         self.language = language
-        if (graph is None) != (projections is None):
-            raise ValueError(
-                "graph and projections are the two stores of one projection: give both or neither"
-            )
-        self.projected = None if graph is None or projections is None else (graph, projections)
+        self.graph = graph
+        self.projections = projections
 
     @contextmanager
     def reading(self) -> Generator[tuple[Conn, Graph]]:
@@ -937,15 +937,9 @@ class Service[Conn]:
         projection in a snapshot of `graph_snapshot`, which catches it up
         first, without building it, and catches up once more where
         `previously project` rebuilt it in between. What stops it is the
-        call's error, never a fold instead ({ref}`graph-readers`). Without
-        the projection, the fold of the log in a snapshot of its own."""
-        if self.projected is None:
-            with self.log.snapshot() as conn:
-                yield conn, read_graph(self.log, conn)
-            return
-        store, projections = self.projected
-        with graph_snapshot(self.log, projections, store) as conn:
-            yield conn, projected_graph(self.log, store, conn)
+        call's error, never a fold instead ({ref}`graph-readers`)."""
+        with graph_snapshot(self.log, self.projections, self.graph) as conn:
+            yield conn, projected_graph(self.log, self.graph, conn)
 
     def client_name(self, request: object) -> str | None:
         if self.stdio_client is not None:
@@ -1032,6 +1026,13 @@ class Service[Conn]:
             policy_ids["rules"] = list(answer.rules)
         except Refused as refused:
             answer = Answer(render_error(str(refused)), error=True)
+        except (ProjectionNotBuilt, ProjectionRebuilt, ProjectionGap, StorageError) as error:
+            # A state of the deployment or of the database, not a fault of
+            # this code: a projection not built at this release's version is
+            # the designed state of an old pod during a rolling update
+            # ({ref}`graph-readers`). One line with the error's sentence, as
+            # the readiness probe writes, and no traceback once per call.
+            logger.warning("an MCP call failed: %s", error)
         except Exception:
             logger.exception("an MCP call failed")
         finally:
@@ -1169,7 +1170,7 @@ class Service[Conn]:
         ({ref}`chronicle-of-a-bracket`). An id beyond what an event id can
         be is refused alike, before the lookup would hand it to the
         database."""
-        graph = self.graph_now(conn)
+        graph = self.graph_now()
         if (
             not 1 <= bracket <= MAX_SAFE_INT
             or bracket not in EntityTypes(graph)
@@ -1660,7 +1661,7 @@ class Service[Conn]:
             listing,
             after=after,
             language=self.language,
-            graph=self.graph_now(conn),
+            graph=self.graph_now(),
         )
 
         def cursor_for(index: int) -> str:
@@ -1704,7 +1705,7 @@ class Service[Conn]:
             client,
             after=after,
             language=self.language,
-            graph=self.graph_now(conn),
+            graph=self.graph_now(),
         )
 
         def cursor_for(index: int) -> str:
@@ -1721,17 +1722,21 @@ class Service[Conn]:
         )
         return _paged(seen, rendered)
 
-    def graph_now(self, conn: Conn) -> Graph:
-        """The graph the running call read in `answer`, or, outside a call,
-        which nothing in the server does, the one folded now."""
+    def graph_now(self) -> Graph:
+        """The graph the running call read in `answer`. Outside a call, which
+        nothing in the server does, there is none, and folding the log in its
+        place would be a second way to the graph: a programming error, raised
+        as one."""
         folded = _FOLDED.get()
-        return read_graph(self.log, conn) if folded is None else folded.graph
+        if folded is None:
+            raise RuntimeError("graph_now is asked outside a call, which has no graph")
+        return folded.graph
 
     def graph_of(self, conn: Conn, policy: Policy, client: Client) -> tuple[GraphView, Vocabulary]:
         """The graph as the client may see it, and the vocabulary, in the
         call's snapshot, for a tool that writes: folded from the log, as the
-        write path folds it, unless the call folded it already."""
-        graph = self.graph_now(conn) if self.projected is None else read_graph(self.log, conn)
+        write path folds it and checks against it."""
+        graph = read_graph(self.log, conn)
         return graph_view(self.log, conn, policy, client, graph), read_vocabulary(self.log, conn)
 
     def entity_write(
@@ -2600,8 +2605,8 @@ def build_server[Conn](
     locker: RedactionStore[Conn] | None = None,
     confirm_key: str | None = None,
     language: str = "en",
-    graph: GraphStore[Conn] | None = None,
-    projections: ProjectionStore[Conn] | None = None,
+    graph: GraphStore[Conn],
+    projections: ProjectionStore[Conn],
 ) -> MCPServer:
     """The server against `log`. With `stdio_client` every call is that
     client's; without, a call is the client the HTTP wrapper named.
@@ -2613,14 +2618,13 @@ def build_server[Conn](
     a label of a kind is shown in for an entity without a working language,
     the `PREVIOUSLY_LANGUAGE` of the command line.
 
-    With `graph` and `projections`, the stores of `log` that read and catch
-    up the graph projection, every call catches the projection up and reads
-    the graph from it; without either, every call folds the log
-    (`Service`).
+    `graph` and `projections` are the stores of `log` that read and catch
+    up the graph projection: every call catches the projection up and reads
+    the graph from it (`Service`).
 
-    With them, the server catches the projection up once before it is built,
-    without building it, and a projection it cannot catch up stops it there
-    with the error: `ProjectionNotBuilt` where `previously project` has not
+    The server catches the projection up once before it is built, without
+    building it, and a projection it cannot catch up stops it there with the
+    error: `ProjectionNotBuilt` where `previously project` has not
     built it at this code's version, which is the sentence an operator needs
     and every call would otherwise fail with one by one."""
     if not is_language_tag(language):
@@ -2634,8 +2638,7 @@ def build_server[Conn](
         graph=graph,
         projections=projections,
     )
-    if projections is not None:
-        catch_up(log, projections, GRAPH, rebuild=False)
+    catch_up(log, projections, GRAPH, rebuild=False)
     server: MCPServer = MCPServer(
         SERVER_NAME,
         version=version("previously"),
@@ -3141,8 +3144,8 @@ def build_app[Conn](
     locker: RedactionStore[Conn] | None = None,
     confirm_key: str | None = None,
     language: str = "en",
-    graph: GraphStore[Conn] | None = None,
-    projections: ProjectionStore[Conn] | None = None,
+    graph: GraphStore[Conn],
+    projections: ProjectionStore[Conn],
 ) -> Starlette:
     """The ASGI app of `previously serve`: Streamable HTTP under `/mcp`,
     answers as JSON, stateless so that both generations are served, behind the
@@ -3169,32 +3172,17 @@ def build_app[Conn](
         return None if client is None else client.name
 
     def ready() -> str | None:
-        # With the projection, its state row, one read by primary key: the
-        # server is ready only while the graph projection is at the version
-        # this code declares, which a rolling update that changes the
-        # version takes from the old pods once `previously project` of the
-        # new release has run, and gives the new ones from then on. A
-        # catch-up here would make the probe as slow as the log is new. The
-        # state row may lag behind the tip, which the next call catches up.
-        # Without the projection, the newest event's id and hash, one
-        # indexed query: the cheapest question `LogStore` has. Nothing of
-        # either leaves this function.
+        # The state row of the graph projection, one read by primary key: the
+        # server is ready only while the projection is at the version this
+        # code declares, which a rolling update that changes the version
+        # takes from the old pods once `previously project` of the new
+        # release has run, and gives the new ones from then on. A catch-up
+        # here would make the probe as slow as the log is new. The state row
+        # may lag behind the tip, which the next call catches up. Nothing of
+        # it leaves this function.
         try:
             with log.snapshot() as conn:
-                if graph is None:
-                    log.tip(conn)
-                else:
-                    state = graph.projection_state(conn, GRAPH.name)
-                    if state is None or state.version != GRAPH.version:
-                        found = "not built" if state is None else f"at version {state.version}"
-                        logger.warning(
-                            "the readiness probe found projection %s %s, and this code "
-                            "declares version %d",
-                            GRAPH.name,
-                            found,
-                            GRAPH.version,
-                        )
-                        return NOT_BUILT
+                state = graph.projection_state(conn, GRAPH.name)
         except (ServerUnreachable, OperationFailed) as error:
             # A database that does not answer is an expected state, not a
             # fault of this process: a switchover of the primary refuses
@@ -3204,9 +3192,25 @@ def build_app[Conn](
             # three or four exceptions would, once per failed check.
             logger.warning("the readiness probe found no database: %s", error)
             return NOT_READY
+        except PrivilegeMissing as error:
+            # The database answers and refuses the role, after a grant was
+            # revoked while the server ran (the start check refuses such a
+            # role): named as that, since "does not answer" would send the
+            # operator to the network.
+            logger.warning("the readiness probe was refused by the database: %s", error)
+            return NOT_PERMITTED
         except Exception:
             logger.exception("the readiness probe failed for an unexpected reason")
             return NOT_READY
+        if state is None or state.version != GRAPH.version:
+            found = "not built" if state is None else f"at version {state.version}"
+            logger.warning(
+                "the readiness probe found projection %s %s, and this code declares version %d",
+                GRAPH.name,
+                found,
+                GRAPH.version,
+            )
+            return NOT_BUILT
         return None
 
     app.add_middleware(guarded, resolve=resolve, ready=ready)

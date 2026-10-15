@@ -367,6 +367,10 @@ Three readers still fold the whole log.
 The write path checks a claim against what stands under the tip it locks, and a projection that lags inside that transaction would let the check pass on a stale state.
 `verify` holds every statement against what stood before it in the chain, which no projection keeps.
 
+One more command folds the whole log, and unlike those three it serves an answer that the projection could give: `policy gaps` on the command line and the MCP tool `policy_gaps`, whenever no rule covers a source `recollection`.
+It counts the entities and relations that stand on the operator's recollection, and the projection has no column that says what a version rests on.
+Moving it onto the projection takes such a column and a raised version, a design step of its own rather than a fix, so until that step it's a second way to the graph, named here so that the list stays honest.
+
 `previously project --check` is the counterpart of the property for a running system.
 It folds the log up to where the projection stands and names every thread whose row differs, and every row of `p_graph_version` that a rebuild wouldn't write as it stands, since a reader folds the threads it shows from those rows.
 The projection is disposable and the log is the truth, so a projection that drifted, by one of the two ways above or by a fault nobody has found yet, mustn't stay silent.

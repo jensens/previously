@@ -39,7 +39,7 @@ Earlier builds of this release let a reader that couldn't use the projection fol
 - `previously serve` and `previously mcp` refuse to start, exit code 2, with `Error: projection graph is not built, and this code declares version 1; ` followed by `` `previously project` builds it ``.
 - A server that is already running answers `/healthz` with 503 and the body `Error: the graph projection is not built at this server's version`, and writes one `WARNING` line per probe: `the readiness probe found projection graph not built, and this code declares version 1`.
   So the readiness probe keeps the new pods out of the Service until the projection stands.
-- A call that reaches such a server anyway fails with `Error: the call failed inside the server; its log says why, this result cannot`, and the log names the projection.
+- A call that reaches such a server anyway fails with `Error: the call failed inside the server; its log says why, this result cannot`, and the server's log gets one `WARNING` line without a traceback, `an MCP call failed: projection graph is not built, …`.
 - The graph listings of the command line exit 2 with the same sentence, and `previously redact` records its redaction and reports it as unfinished, with the advice to run `previously project` and then the same command again.
 
 The build reads the whole log once: milliseconds at the size of a pilot, 3.5 s at 10,000 relations and 35 s at 100,000, measured by the maintainer on 2026-10-15 at commit `22b3dec`.
@@ -74,7 +74,11 @@ They don't rebuild it back, so the two releases don't undo each other's work; th
 The new pods find the projection at their version, and their probe answers 200 from the start.
 The window of failed calls is the time the old pods stay, so a rollout that replaces them promptly keeps it short.
 
-**It stands when** after the rollout only pods of the new release run, every `/healthz` answers 200, and the log of `previously-mcp` shows no `the readiness probe found projection graph` line any more.
+**Requirement: the scheduled `previously project` runs the new image, or is suspended, before the upgrade step's `previously project` runs.**
+**Why:** with readers no longer building, the only thing that can build the projection back to the old version is a `project` of the old image that *starts* after the new one ran.
+One that is already running stops with `projection graph was rebuilt while this catch-up ran` at its next batch, but a CronJob still on the old image starts a fresh one, which rebuilds the old version, and the new pods then fail until the next `project` of the new image.
+
+**It stands when** after the rollout only pods of the new release run, the `project` CronJob runs the new image, every `/healthz` answers 200, and the log of `previously-mcp` shows no `the readiness probe found projection graph` line any more.
 
 ## Every reader catches the projection up first
 
@@ -89,7 +93,7 @@ So the role of `previously-mcp`, of the tools pod and of any job that reads the 
 A role without that access gets no answer from the graph: every call fails, and its reason in the server's log, like the error of a listing on the command line, names the missing privilege and the table, such as `the role of PREVIOUSLY_DSN lacks a privilege on database previously at <host>:<port>: permission denied for table projection_state`.
 Until this release's fix round that refusal read `database schema incomplete — previously migrate has not run yet`, and the reader folded the log behind it.
 All pods of Previously in kup6s use the one role that owns the database, as the feedback of 2026-10-12 reports, and that role holds all of it.
-**It stands when** `previously project` in the tools pod prints a `graph` line, and the log of `previously-mcp` shows no `an MCP call failed` line naming the projection once the rollout has finished.
+**It stands when** `previously project` in the tools pod prints a `graph` line, and the log of `previously-mcp` shows no `an MCP call failed:` line once the rollout has finished; while a grant is missing, `/healthz` answers 503 with `Error: the database refuses this server's role a privilege it needs`.
 
 **Recommended: run `previously project` after a bulk ingest.**
 Two catch-ups of one projection take turns at that row lock, batch by batch, and no lock timeout is set.

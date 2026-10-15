@@ -26,6 +26,15 @@ the error ({ref}`graph-readers`). `--as-of`, `verify`,
 which is no way around the projection: the projection knows only what
 stands now, a check that read it would check it against itself, and the
 write path checks under the tip it locks.
+
+One serving path still folds the whole log, and it is a second way to the
+graph, not a fallback: `policy gaps` on the command line and the MCP tool
+`policy_gaps` (`core/gaps.py`, `_recollection_gaps`), whenever no rule
+covers a source `recollection`. It counts the entities and relations that
+stand on the operator's recollection, and the projection has no column
+that says what a version rests on; moving it onto the projection takes such
+a column and a version change, a design step of its own, which the map
+carries.
 """
 
 from collections.abc import Mapping
@@ -43,7 +52,6 @@ from previously.core.graph import Graph
 from previously.core.graph import GraphThread
 from previously.core.graph import RELATION
 from previously.core.graph_write import relation_ends
-from previously.core.members import bracket_edges
 from previously.core.members import bracket_kinds
 from previously.core.members import BracketEdge
 from previously.core.members import BracketKinds
@@ -279,17 +287,17 @@ def reader_bracket_edges[Conn](
     log: LogStore[Conn], conn: Conn, graph: Graph
 ) -> tuple[tuple[BracketEdge, ...], BracketKinds]:
     """The edges `members` reads in the graph a reader reads in the
-    snapshot of `conn`, with the kinds they are read by: out of the rows of
-    the projection where `graph` is read from it, and out of the fold where
-    `graph` is one, which is the MCP server built without the projection,
-    the oracle the tests hold the projection against. A reader finds in the
-    graph it shows."""
-    vocabulary = read_vocabulary(log, conn)
-    kinds = bracket_kinds(vocabulary)
-    if isinstance(graph, ProjectedGraph):
-        projected = cast("ProjectedGraph[Conn]", graph)
-        return projected_bracket_edges(projected.index.store, conn, kinds), kinds
-    return bracket_edges(graph, vocabulary), kinds
+    snapshot of `conn`, out of the rows of the projection, with the kinds
+    they are read by. A reader reads `graph` from the projection
+    (`graph_snapshot`) and has no other graph; a fold handed in here is a
+    programming error and is refused as one, rather than answered by
+    `bracket_edges` over the fold, which would be a second way to the
+    graph."""
+    if not isinstance(graph, ProjectedGraph):
+        raise TypeError("a reader finds a bracket in the projection, and this graph is a fold")
+    projected = cast("ProjectedGraph[Conn]", graph)
+    kinds = bracket_kinds(read_vocabulary(log, conn))
+    return projected_bracket_edges(projected.index.store, conn, kinds), kinds
 
 
 def bracket_members[Conn](log: LogStore[Conn], conn: Conn, graph: Graph, bracket: int) -> Members:

@@ -65,6 +65,7 @@ from previously.core.graph import Claim
 from previously.core.graph import claim_payload
 from previously.core.graph import ENTITY
 from previously.core.graph import EntityBody
+from previously.core.graph import Graph
 from previously.core.graph import Period
 from previously.core.graph import RELATION
 from previously.core.graph import RelationBody
@@ -72,8 +73,11 @@ from previously.core.graph import RETRACTED
 from previously.core.graph import SOURCES
 from previously.core.graph import STANDING
 from previously.core.graph_write import GraphRefused
+from previously.core.graph_write import read_graph
 from previously.core.graph_write import write_claims
 from previously.core.mail import map_mail
+from previously.core.members import bracket_edges
+from previously.core.members import bracket_kinds
 from previously.core.policy import Circle
 from previously.core.policy import Inference
 from previously.core.policy import Membership
@@ -92,6 +96,7 @@ from previously.core.vocabulary import base_vocabulary
 from previously.core.vocabulary import FieldSpec
 from previously.core.vocabulary import KindSpec
 from previously.core.vocabulary import parse_file
+from previously.core.vocabulary import read_vocabulary
 from previously.mcp_server.auth import NOT_BUILT
 from previously.mcp_server.confirm import HANDLE_SECONDS
 from previously.mcp_server.confirm import seal
@@ -100,6 +105,7 @@ from previously.mcp_server.render import PAGE_CHARS
 from previously.mcp_server.render import STATED_LINE_CHARS
 from previously.mcp_server.server import build_app
 from previously.mcp_server.server import build_server
+from previously.mcp_server.server import Service
 from previously.mcp_server.server import TOOLS
 from previously.mcp_server.server import write_record
 from previously.storage.errors import OperationFailed
@@ -125,6 +131,7 @@ import logging
 import mailfiles
 import pytest
 import re
+import secrets
 
 
 if TYPE_CHECKING:
@@ -135,7 +142,8 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from previously.contract.rows import EventRow
     from previously.contract.rows import ProjectionState
-    from previously.contract.rows import Tip
+    from previously.core.members import BracketEdge
+    from previously.core.members import BracketKinds
 
 T0 = datetime(2026, 10, 11, 12, 0, 0, tzinfo=UTC)
 INTERNALDATE = datetime(2026, 10, 8, 9, 0, 0, tzinfo=UTC)
@@ -399,7 +407,9 @@ def test_a_rule_that_does_not_allow_the_chain_withholds_with_the_reason_code_rul
 def test_every_call_writes_an_access_with_the_era_and_the_ids_of_the_policy(
     world: World, mode: str
 ) -> None:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
 
     async def calls(session: Client) -> None:
         await session.call_tool("previously", {"circle": "huber"})
@@ -479,7 +489,9 @@ def test_a_call_the_sdk_refuses_before_it_runs_writes_an_access_too(
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_no_access_entry_carries_content_of_an_event(world: World, mode: str) -> None:
-    server = build_server(world.storage, stdio_client="local-harness")
+    server = build_server(
+        world.storage, stdio_client="local-harness", graph=world.storage, projections=world.storage
+    )
 
     async def calls(session: Client) -> None:
         await session.call_tool("previously", {})
@@ -513,7 +525,9 @@ def test_no_access_entry_carries_content_of_an_event(world: World, mode: str) ->
 def test_a_client_revoked_while_the_stdio_server_runs_is_refused_from_its_next_call(
     world: World, mode: str
 ) -> None:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
 
     async def calls(session: Client) -> tuple[CallToolResult, CallToolResult]:
         before = await session.call_tool("whoami", {})
@@ -564,7 +578,9 @@ def test_no_token_stands_in_the_log_or_the_server_log(
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_every_tool_answers_with_one_text_block_and_nothing_else(world: World, mode: str) -> None:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
     calls: list[tuple[str, dict[str, Any]]] = [
         ("previously", {}),
         ("previously", {"cursor": "junk"}),
@@ -844,7 +860,9 @@ def test_policy_gaps_counts_what_this_server_withheld_for_lack_of_a_rule(
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_the_resources_are_templates_and_read_like_the_tools(world: World, mode: str) -> None:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
     event = world.ids["no_message_id"]
 
     async def read(session: Client) -> tuple[list[str], int, str, str]:
@@ -870,7 +888,9 @@ def test_the_resources_are_templates_and_read_like_the_tools(world: World, mode:
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_the_prompts_ask_for_work_and_hold_no_content(world: World, mode: str) -> None:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
 
     async def get(session: Client) -> list[str]:
         prompts = [
@@ -912,7 +932,9 @@ def tool_list_digest(tools: list[dict[str, object]]) -> str:
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_the_tool_list_matches_its_checksum(world: World, mode: str) -> None:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
     listed = _session(server, mode, lambda session: session.list_tools())
     tools: list[dict[str, object]] = [
         {
@@ -977,7 +999,9 @@ def test_the_instructions_tell_a_client_how_to_read_an_approval_and_to_ask() -> 
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_exactly_the_three_answering_tools_carry_the_ask_mark(world: World, mode: str) -> None:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
     listed = _session(server, mode, lambda session: session.list_tools())
     marked = {tool.name for tool in listed.tools if (tool.meta or {}).get(ASK_MARK) is True}
     assert marked == {"write_approve", "write_reject", "write_triage_answer"}
@@ -990,7 +1014,9 @@ def test_exactly_the_three_answering_tools_carry_the_ask_mark(world: World, mode
 
 
 def _everything(world: World, mode: str) -> list[str]:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
 
     async def calls(session: Client) -> list[str]:
         results = [
@@ -1169,7 +1195,7 @@ def test_a_rotated_token_stops_working_with_the_next_request_and_the_new_one_wor
     world: World,
 ) -> None:
     # Review focus 2: `client add` with a name in force, while the app runs.
-    app = build_app(world.storage, allowed_hosts=())
+    app = build_app(world.storage, allowed_hosts=(), graph=world.storage, projections=world.storage)
     old = world.tokens["claude-code"]
 
     async def run() -> list[int]:
@@ -1232,10 +1258,50 @@ def test_a_read_resource_may_be_kept_only_by_the_client_that_asked(world: World)
     assert (result["cacheScope"], result["ttlMs"]) == ("private", 0)
 
 
+class _ProbedThrough(PostgresStorage):
+    """A real store that serves the start of the server, and once `probe` is
+    set hands the readiness probe's snapshot and state row to it: the
+    server refuses to start against a store it can't catch up, so a store
+    that fails from the start would only show that refusal."""
+
+    probe: PostgresStorage | None = None
+
+    @override
+    @contextlib.contextmanager
+    def snapshot(self) -> Generator[Connection]:
+        with super().snapshot() if self.probe is None else self.probe.snapshot() as conn:
+            yield conn
+
+    @override
+    def projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
+        if self.probe is None:
+            return super().projection_state(conn, name)
+        return self.probe.projection_state(conn, name)
+
+
+def _built(db: Engine) -> _ProbedThrough:
+    """The test database with the graph projection built on the empty log,
+    as `previously project` leaves it, so that a server starts against it."""
+    storage = _ProbedThrough(db)
+    catch_up(storage, storage, GRAPH, rebuild=True)
+    return storage
+
+
 def _get_without_token(
-    storage: PostgresStorage, method: str, path: str, *, host: str = "127.0.0.1:8765"
+    storage: PostgresStorage,
+    method: str,
+    path: str,
+    *,
+    host: str = "127.0.0.1:8765",
+    probe: PostgresStorage | None = None,
 ) -> httpx2.Response:
-    app = build_app(storage, allowed_hosts=())
+    """One request without a token to the app of `storage`, which has to be
+    a store a server starts against. With `probe`, the readiness probe reads
+    through that store once the app is built."""
+    app = build_app(storage, allowed_hosts=(), graph=storage, projections=storage)
+    if probe is not None:
+        assert isinstance(storage, _ProbedThrough)
+        storage.probe = probe
 
     async def run() -> httpx2.Response:
         async with app.router.lifespan_context(app):
@@ -1287,10 +1353,10 @@ def test_every_other_request_without_a_token_is_still_refused(
     assert _accesses(world) == []
 
 
-def test_the_readiness_probe_answers_503_when_the_database_does_not() -> None:
+def test_the_readiness_probe_answers_503_when_the_database_does_not(db: Engine) -> None:
     # A real store whose database does not listen: nothing stands in for it.
     unreachable = PostgresStorage(create_engine("postgresql+psycopg://p:p@127.0.0.1:9/none"))
-    response = _get_without_token(unreachable, "GET", "/healthz")
+    response = _get_without_token(_built(db), "GET", "/healthz", probe=unreachable)
     assert (response.status_code, response.text) == (503, "Error: the database does not answer")
 
 
@@ -1299,13 +1365,14 @@ def _probe_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
 
 
 def test_a_database_that_refuses_costs_the_probe_one_line_without_a_traceback(
-    caplog: pytest.LogCaptureFixture,
+    db: Engine, caplog: pytest.LogCaptureFixture
 ) -> None:
     # An expected outage, such as a switchover of the primary: the sentence of
     # the storage error says what a chain of tracebacks said, once per check.
     unreachable = PostgresStorage(create_engine("postgresql+psycopg://p:p@127.0.0.1:9/none"))
+    started = _built(db)
     caplog.set_level(logging.DEBUG)
-    assert _get_without_token(unreachable, "GET", "/healthz").status_code == 503
+    assert _get_without_token(started, "GET", "/healthz", probe=unreachable).status_code == 503
     (record,) = _probe_records(caplog)
     assert record.levelno == logging.WARNING
     assert record.exc_info is None
@@ -1328,19 +1395,21 @@ class _EndedByTheServer(PostgresStorage):
         self._admin = admin
 
     @override
-    def tip(self, conn: Connection) -> Tip | None:
+    def projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
         pid = conn.execute(text("SELECT pg_backend_pid()")).scalar_one()
         with self._admin.begin() as admin:
             admin.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})
-        return super().tip(conn)
+        return super().projection_state(conn, name)
 
 
 def test_a_connection_the_server_ends_costs_the_probe_one_line_as_well(
     db: Engine, caplog: pytest.LogCaptureFixture
 ) -> None:
     victim = create_engine(db.url, poolclass=NullPool)
+    started = _built(db)
     caplog.set_level(logging.DEBUG)
-    assert _get_without_token(_EndedByTheServer(victim, db), "GET", "/healthz").status_code == 503
+    ended = _EndedByTheServer(victim, db)
+    assert _get_without_token(started, "GET", "/healthz", probe=ended).status_code == 503
     (record,) = _probe_records(caplog)
     assert record.levelno == logging.WARNING
     assert record.exc_info is None
@@ -1357,11 +1426,48 @@ def test_an_unexpected_failure_of_the_probe_keeps_its_traceback(
         admin.execute(text("DROP DATABASE IF EXISTS probe_without_schema"))
         admin.execute(text("CREATE DATABASE probe_without_schema"))
     empty = PostgresStorage(create_engine(db.url.set(database="probe_without_schema")))
+    started = _built(db)
     caplog.set_level(logging.DEBUG)
-    assert _get_without_token(empty, "GET", "/healthz").status_code == 503
+    assert _get_without_token(started, "GET", "/healthz", probe=empty).status_code == 503
     (record,) = _probe_records(caplog)
     assert record.levelno == logging.ERROR
     assert record.exc_info is not None
+
+
+def test_a_role_the_database_refuses_makes_the_probe_say_so_in_one_line(
+    db: Engine, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review finding M-1 of fix round F2: a role whose grant on the state
+    row was revoked while the server ran gets the 503 with a body that
+    names the refusal, not "the database does not answer", and one WARNING
+    line with the database's reason, no traceback. Measured red by taking
+    the branch for `PrivilegeMissing` out: the body says the database does
+    not answer, and the record is an ERROR with its traceback. The control
+    is the probe of the same database through the owner's role: 200."""
+    from previously.mcp_server.auth import NOT_PERMITTED
+
+    started = _built(db)
+    name, password = f"probe_{secrets.token_hex(4)}", secrets.token_hex(16)
+    with db.begin() as c:
+        c.execute(text(f"CREATE ROLE {name} LOGIN PASSWORD '{password}'"))
+        c.execute(text(f"GRANT USAGE ON SCHEMA public TO {name}"))
+    try:
+        refused = PostgresStorage(
+            create_engine(db.url.set(username=name, password=password), poolclass=NullPool)
+        )
+        caplog.set_level(logging.DEBUG)
+        response = _get_without_token(started, "GET", "/healthz", probe=refused)
+        assert (response.status_code, response.text) == (503, NOT_PERMITTED)
+        (record,) = _probe_records(caplog)
+        assert record.levelno == logging.WARNING
+        assert record.exc_info is None
+        assert "permission denied for table projection_state" in record.getMessage()
+        started.probe = None
+        assert _get_without_token(started, "GET", "/healthz").status_code == 200
+    finally:
+        with db.begin() as c:
+            c.execute(text(f"DROP OWNED BY {name}"))
+            c.execute(text(f"DROP ROLE {name}"))
 
 
 @pytest.mark.db
@@ -1384,7 +1490,9 @@ def test_the_long_mail_has_more_than_a_page_of_text() -> None:
 def test_an_event_resource_with_an_id_that_is_no_number_is_an_error(
     world: World, mode: str
 ) -> None:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
 
     async def read(session: Client) -> list[str]:
         found: list[str] = []
@@ -2744,7 +2852,13 @@ def test_without_a_key_the_write_tools_answer_an_error_and_the_reading_tools_wor
         assert not _write(world, mode, "list_circles", {}, key=key).is_error
     assert len(_assertions(world)) == 1
     # Without a store that locks the sources the server does not write either.
-    server = build_server(world.storage, stdio_client="claude-code", confirm_key=KEY)
+    server = build_server(
+        world.storage,
+        stdio_client="claude-code",
+        confirm_key=KEY,
+        graph=world.storage,
+        projections=world.storage,
+    )
     result = _session(server, mode, lambda s: s.call_tool("write_reject", {"proposal": proposal}))
     assert _text(result) == "Error: writing is not configured on this server"
 
@@ -3425,7 +3539,13 @@ def test_the_label_of_a_kind_is_in_the_working_language_else_in_the_servers(
     assert " · entity · Post · " in heading("en", ids.treasurer)
     assert " · entity · Person · " in heading("de", grace)  # its own language is en
     with pytest.raises(ValueError, match="not a language tag"):
-        build_server(world.storage, stdio_client="claude-code", language="German")
+        build_server(
+            world.storage,
+            stdio_client="claude-code",
+            language="German",
+            graph=world.storage,
+            projections=world.storage,
+        )
 
 
 @pytest.mark.db
@@ -4191,6 +4311,30 @@ def test_an_entity_of_a_recollection_and_a_mail_is_delivered_with_the_circles_of
     assert (only.event, only.circles) == (lonely, ())
 
 
+def _fold_instead(log: PostgresStorage, store: PostgresStorage, conn: Connection) -> Graph:
+    """The oracle: the fold of the whole log, in place of the graph read
+    from the projection. The server has no mode that folds (ruling F-e of
+    the 2026-10-15 assignments plan), so a test that holds the projection
+    against the fold hands the fold in itself."""
+    del store
+    return read_graph(log, conn)
+
+
+def _edges_of_the_fold(
+    log: PostgresStorage, conn: Connection, graph: Graph
+) -> tuple[tuple[BracketEdge, ...], BracketKinds]:
+    """The oracle of the bracket edges: `bracket_edges` over the fold."""
+    vocabulary = read_vocabulary(log, conn)
+    return bracket_edges(graph, vocabulary), bracket_kinds(vocabulary)
+
+
+def _folding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every call from here on reads the fold of the log where it would read
+    the projection, and finds a bracket's edges in that fold."""
+    monkeypatch.setattr("previously.mcp_server.server.projected_graph", _fold_instead)
+    monkeypatch.setattr("previously.mcp_server.read.reader_bracket_edges", _edges_of_the_fold)
+
+
 class _CountingReads(PostgresStorage):
     """The real store, counting what a call reads of the assertions: whole
     reads of the kind, which folding the graph takes, and every assertion
@@ -4223,7 +4367,7 @@ class _CountingReads(PostgresStorage):
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_a_call_reads_no_assertion_in_full_and_of_the_graph_only_what_is_new(
-    world: World, mode: str, db: Engine
+    world: World, mode: str, db: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Replaces the test that pinned one fold of the log per call, for its
     header and its body (ruling T6-c of the 2026-10-14 assignments plan): a
@@ -4264,20 +4408,22 @@ def test_a_call_reads_no_assertion_in_full_and_of_the_graph_only_what_is_new(
     counting.folds, counting.rows = 0, []
     call("whoami", {})
     assert (counting.folds, set(counting.rows)) == (0, {new})
-    # The control: without the projection, the same call folds the log.
-    folding = build_server(counting, stdio_client="claude-code")
-    _session(folding, mode, lambda s: s.call_tool("whoami", {}))
+    # The control: with the fold handed in for the projection, the same call
+    # folds the log once.
+    _folding(monkeypatch)
+    counting.folds = 0
+    call("whoami", {})
     assert counting.folds == 1
 
 
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_the_reading_tools_answer_from_the_projection_as_from_the_fold(
-    world: World, mode: str
+    world: World, mode: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Every answer that reads the graph is the same from the projection as
-    from the fold of the log, which is what the server without the
-    projection reads, header included, for both clients: one that may not
+    from the fold of the log, which the test hands in for the projection
+    as the oracle, header included, for both clients: one that may not
     see Lea and one that may ({ref}`graph-projection`)."""
     ids = _graphed(world)
     scanned, plain = world.ids["attachments_only"], world.ids["plain"]
@@ -4318,20 +4464,22 @@ def test_the_reading_tools_answer_from_the_projection_as_from_the_fold(
         ("whoami", {}),
     ]
     for client in ("claude-code", "local-harness"):
-        projected = build_server(
+        server = build_server(
             world.storage, stdio_client=client, graph=world.storage, projections=world.storage
         )
-        folding = build_server(world.storage, stdio_client=client)
-        for name, arguments in calls:
 
-            def answer(server: Any, n: str = name, a: dict[str, Any] = arguments) -> str:
-                result = _session(server, mode, lambda s: s.call_tool(n, a))
-                assert not result.is_error, _text(result)
-                # The fence tags are drawn anew for every answer.
-                return _untagged(_text(result))
+        def answer(n: str, a: dict[str, Any], s: Any = server) -> str:
+            result = _session(s, mode, lambda session: session.call_tool(n, a))
+            assert not result.is_error, _text(result)
+            # The fence tags are drawn anew for every answer.
+            return _untagged(_text(result))
 
-            found, expected = answer(projected), answer(folding)
-            assert found == expected, (client, name, arguments)
+        found = [answer(name, arguments) for name, arguments in calls]
+        with monkeypatch.context() as patched:
+            patched.setattr("previously.mcp_server.server.projected_graph", _fold_instead)
+            expected = [answer(name, arguments) for name, arguments in calls]
+        for (name, arguments), one, other in zip(calls, found, expected, strict=True):
+            assert one == other, (client, name, arguments)
     # What the answers agree on is not nothing: the header counts what the
     # client may see, and the triage holds an objection and a question.
     triage = _text(_tool(world, mode, "list_triage"))
@@ -4372,19 +4520,19 @@ def test_over_http_a_call_reads_the_graph_from_the_projection(
     assert counting.folds == 0
 
 
-def test_one_store_of_the_projection_without_the_other_is_refused(world: World) -> None:
-    """Without both, a server would fold the log while its caller meant it
-    to read the projection, and nothing would say so."""
-    sentence = "graph and projections are the two stores of one projection: give both or neither"
-    with pytest.raises(ValueError, match=sentence):
-        build_server(world.storage, stdio_client="claude-code", graph=world.storage)
-    with pytest.raises(ValueError, match=sentence):
-        build_app(world.storage, allowed_hosts=(), projections=world.storage)
-    # The control: both, and neither.
-    build_server(
+@pytest.mark.db
+def test_the_graph_of_a_call_is_none_outside_a_call(world: World) -> None:
+    """Ruling F-e of the 2026-10-15 assignments plan, and review finding
+    M-3 of fix round F2: outside a call there is no graph, and `graph_now`
+    raises rather than fold the log, which would be a second way to the
+    graph that no call takes. Measured red by giving the fold back. The
+    control: inside a call the tools that ask for it answer."""
+    service = Service(
         world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
     )
-    build_server(world.storage, stdio_client="claude-code")
+    with pytest.raises(RuntimeError, match="outside a call"):
+        service.graph_now()
+    assert not _tool(world, "auto", "list_entities").is_error
 
 
 # What a call answers when it fails inside the server: the reason is in the
@@ -4486,7 +4634,12 @@ def test_a_call_meeting_a_projection_it_would_have_to_build_fails_and_touches_no
     the state row and both tables as they were. Every call catches up
     first, so `whoami` is among them. Measured red by letting
     `graph_snapshot` catch up with `rebuild=True`: every call answers, and
-    the rows are rebuilt."""
+    the rows are rebuilt.
+
+    The server's log gets one WARNING line with the sentence and no
+    traceback (review finding M-2 of fix round F2): it is the designed state
+    of an old pod during a rolling update, once per call. Measured red by
+    logging it with `logger.exception` again."""
     _graphed(world)
     server = build_server(
         world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
@@ -4494,17 +4647,18 @@ def test_a_call_meeting_a_projection_it_would_have_to_build_fails_and_touches_no
     with db.begin() as c:
         c.execute(text(change))
     before = _graph_rows(db)
-    caplog.set_level(logging.ERROR, logger="previously.mcp_server.server")
+    caplog.set_level(logging.WARNING, logger="previously.mcp_server.server")
     for name in _CALLS_OF_EVERY_KIND:
         caplog.clear()
         result = _session(server, mode, lambda s, n=name: s.call_tool(n, {}))
         assert result.is_error
         assert _text(result) == _FAILED_TEXT
         assert "projection" not in _text(result)
-        logged = "\n".join(
-            f"{r.getMessage()} {r.exc_info[1] if r.exc_info else ''}" for r in caplog.records
-        )
-        assert f"projection graph {found}, and this code declares version" in logged, name
+        (record,) = [r for r in caplog.records if r.name == "previously.mcp_server.server"]
+        assert (record.levelno, record.exc_info) == (logging.WARNING, None), name
+        assert record.getMessage().startswith(
+            f"an MCP call failed: projection graph {found}, and this code declares version"
+        ), name
         assert _graph_rows(db) == before
     assert _last_access(world).access.outcome == ACCESS_ERROR
 
@@ -4536,9 +4690,7 @@ def test_the_server_refuses_to_start_without_a_projection_at_its_version(
     with pytest.raises(ProjectionNotBuilt, match="`previously project`"):
         build_app(world.storage, allowed_hosts=(), graph=world.storage, projections=world.storage)
     assert _graph_rows(db) == before
-    # The control: once `project` built it, the server starts, and without
-    # the projection it starts whatever the table holds.
-    build_server(world.storage, stdio_client="claude-code")
+    # The control: once `project` built it, the server starts.
     catch_up(world.storage, world.storage, GRAPH, rebuild=True)
     build_server(
         world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
@@ -4622,7 +4774,7 @@ def test_a_call_catches_up_once_more_after_a_rebuild_and_fails_on_a_second(
         assert once.snapshots == 2
     twice = _RebuiltBeforeSnapshot(db, misses=2)
     server = build_server(twice, stdio_client="claude-code", graph=twice, projections=twice)
-    caplog.set_level(logging.ERROR, logger="previously.mcp_server.server")
+    caplog.set_level(logging.WARNING, logger="previously.mcp_server.server")
     result = _session(server, mode, lambda s: s.call_tool("whoami", {}))
     assert _text(result) == _FAILED_TEXT
     assert twice.snapshots == 2
@@ -4669,7 +4821,7 @@ def test_a_call_whose_catch_up_fails_fails_and_folds_nothing(
         [_person("Bert", scanned), _person("Clara", scanned)],
         recorded_at=T0,
     )
-    caplog.set_level(logging.ERROR, logger="previously.mcp_server.server")
+    caplog.set_level(logging.WARNING, logger="previously.mcp_server.server")
     for name, arguments in (
         ("list_entities", {}),
         ("list_entities", {"subject": ids.anna}),
@@ -5030,21 +5182,25 @@ def test_previously_within_shows_of_markus_mail_only_the_units_of_the_bracket(
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_previously_within_finds_by_the_fold_what_it_finds_by_the_projection(
-    world: World, mode: str
+    world: World, mode: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A server without the projection folds the log for every call, and
-    finds the members of a bracket by that fold: the same pages."""
+    """The members of a bracket found in the projection are those the fold
+    of the log finds, handed in by the test as the oracle: the same pages."""
     ids = _brackets(world)
-    folding = build_server(world.storage, stdio_client="claude-code")
-    for bracket in (ids.party, ids.club, ids.xz, ids.mail + 1_000):
-        arguments = {"within": bracket}
-        projected = _untagged(_text(_tool(world, mode, "previously", arguments)))
-        folded = _untagged(
-            _text(
-                _session(folding, mode, lambda s, given=arguments: s.call_tool("previously", given))
-            )
-        )
-        assert projected == folded
+    brackets = (ids.party, ids.club, ids.xz, ids.mail + 1_000)
+    pages = [
+        _untagged(_text(_tool(world, mode, "previously", {"within": bracket})))
+        for bracket in brackets
+    ]
+    with monkeypatch.context() as patched:
+        patched.setattr("previously.mcp_server.server.projected_graph", _fold_instead)
+        patched.setattr("previously.mcp_server.read.reader_bracket_edges", _edges_of_the_fold)
+        folded = [
+            _untagged(_text(_tool(world, mode, "previously", {"within": bracket})))
+            for bracket in brackets
+        ]
+    for bracket, projected, expected in zip(brackets, pages, folded, strict=True):
+        assert projected == expected
         # Only the id that names nothing is an error, so that agreeing is not
         # agreeing on a refusal.
         assert projected.startswith("Error: ") == (bracket == ids.mail + 1_000)

@@ -47,6 +47,7 @@ from previously.core.graph_read import differences
 from previously.core.graph_read import graph_snapshot
 from previously.core.graph_read import projected_graph
 from previously.core.graph_read import read_brackets
+from previously.core.graph_read import reader_bracket_edges
 from previously.core.graph_read import REBUILD_RETRIES
 from previously.core.graph_write import read_graph
 from previously.core.graph_write import write_claims
@@ -601,3 +602,26 @@ def test_a_version_change_between_catch_up_and_snapshot_is_not_caught_up_again(
     with pytest.raises(ProjectionNotBuilt, match="stands at version 7"):
         _listed(_OtherVersion(db))
     assert _OtherVersion.snapshots == 1
+
+
+@pytest.mark.db
+def test_a_reader_finds_a_brackets_edges_in_the_projection_and_refuses_a_fold(
+    db: Engine,
+) -> None:
+    """Ruling F-e of the 2026-10-15 assignments plan: a reader has one way to
+    the graph, so `reader_bracket_edges` takes the edges from the rows of the
+    projection and refuses a fold handed in, rather than walk the fold.
+    Measured red by giving the fold branch back. The control: the graph read
+    from the projection gives the edges the fold gives."""
+    storage, _ids = _history(db)
+    with graph_snapshot(storage, storage, storage) as conn:
+        projected, kinds = reader_bracket_edges(
+            storage, conn, projected_graph(storage, storage, conn)
+        )
+        folded = read_graph(storage, conn)
+        expected = bracket_edges(folded, read_vocabulary(storage, conn))
+        assert set(projected) == set(expected)
+        assert len(projected) == len(expected) > 0
+        assert kinds == bracket_kinds(read_vocabulary(storage, conn))
+        with pytest.raises(TypeError, match="this graph is a fold"):
+            reader_bracket_edges(storage, conn, folded)

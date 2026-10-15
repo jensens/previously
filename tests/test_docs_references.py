@@ -520,7 +520,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     failures to connect against the two it raises as `ServerUnreachable`,
     the failed operation against `OperationFailed` and the refused
     connection string against `InvalidDsn`, and the missing privilege against
-    `PrivilegeMissing`; the ten errors of the blob commands and of an
+    `PrivilegeMissing`; the eleven errors of the blob commands and of an
     unfinished redaction against the messages `cli.py` raises as
     `PreviouslyError` or `InvalidPayload` and `core/blob.py` raises as
     `BlobError`;
@@ -676,7 +676,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
                 f"cli.md quotes the error {error!r} and {module} raises no such message. "
                 "Either the code's wording changed, or the page's did."
             )
-    assert quoted == 10, quoted
+    assert quoted == 11, quoted
 
     # `ingest imap`: the refused address and the renamed host out of
     # `cli.py`, the errors of the
@@ -717,7 +717,8 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         *_outstanding_patterns(ROOT / "src" / "previously" / "core" / "errors.py", "finding"),
     ]
     for line in _quoted_block(page, "If deleting a blob or the catch-up fails"):
-        phrase = line.split("but it is not finished: ", 1)[1].rsplit("; run ", 1)[0]
+        rest = line.split("but it is not finished: ", 1)[1]
+        phrase = re.split(r"; (?:run |the release that is to serve )", rest)[0]
         assert any(_is_the_same_sentence(parts, phrase) for parts in outstanding), (
             f"cli.md quotes {phrase!r} as outstanding and cli.py builds no such phrase. "
             "Either the code's wording changed, or the page's did."
@@ -1260,6 +1261,7 @@ def test_the_reference_quotes_what_mcp_and_serve_say() -> None:
     and the 401 and both answers of the readiness probe against the
     constants the HTTP wrapper sends, whole."""
     from previously.mcp_server.auth import NOT_BUILT
+    from previously.mcp_server.auth import NOT_PERMITTED
     from previously.mcp_server.auth import NOT_READY
     from previously.mcp_server.auth import READY
     from previously.mcp_server.auth import REFUSAL
@@ -1278,6 +1280,9 @@ def test_the_reference_quotes_what_mcp_and_serve_say() -> None:
     assert _quoted_block(page, "and one sentence as its body") == [REFUSAL]
     assert _quoted_block(page, "with the status 503 and this body") == [NOT_READY]
     assert _quoted_block(page, "that names the version it found") == [NOT_BUILT]
+    assert _quoted_block(page, "as after a grant was revoked while the server ran") == [
+        NOT_PERMITTED
+    ]
     assert "with the status 200 and the body `" + READY + "`," in page
 
     configuration = (DOCS / "reference" / "configuration.md").read_text(encoding="utf-8")

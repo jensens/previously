@@ -91,6 +91,8 @@ if TYPE_CHECKING:
     from mailserver import MailServer
     from previously.contract.blobs import ClosableSource
     from previously.contract.blobs import StoredBlob
+    from previously.core.members import BracketEdge
+    from previously.core.members import BracketKinds
     from previously.storage.s3 import S3BlobStore
     from sqlalchemy import Connection
     from sqlalchemy import Engine
@@ -2427,12 +2429,27 @@ def _chronicle_rows(engine: Engine) -> tuple[object, ...]:
 
 @pytest.mark.db
 @pytest.mark.parametrize(
-    ("change", "found"),
+    ("change", "found", "then"),
     [
-        ("UPDATE projection_state SET version = 1 WHERE name = 'chronicle'", "stands at version 1"),
-        ("DELETE FROM projection_state WHERE name = 'chronicle'", "is not built"),
+        (
+            "UPDATE projection_state SET version = 1 WHERE name = 'chronicle'",
+            "stands at version 1",
+            "the release that is to serve builds it with `previously project`, "
+            "then run the same command again",
+        ),
+        (
+            "UPDATE projection_state SET version = 4 WHERE name = 'chronicle'",
+            "stands at version 4",
+            "the release that is to serve builds it with `previously project`, "
+            "then run the same command again",
+        ),
+        (
+            "DELETE FROM projection_state WHERE name = 'chronicle'",
+            "is not built",
+            "run `previously project`, then the same command again",
+        ),
     ],
-    ids=["other-version", "no-state-row"],
+    ids=["older-version", "newer-version", "no-state-row"],
 )
 def test_redact_does_not_rebuild_and_names_project_as_what_finishes_it(
     db: object,
@@ -2440,15 +2457,21 @@ def test_redact_does_not_rebuild_and_names_project_as_what_finishes_it(
     monkeypatch: pytest.MonkeyPatch,
     change: str,
     found: str,
+    then: str,
 ) -> None:
     """Ruling F-c of the 2026-10-15 assignments plan: a `redact` that is the
     first catch-up after an upgrade does not rebuild the chronicle, which
     would take as long as the log inside a command that erases one thing.
     The redaction stands, the chronicle is left as it was, and the sentence
-    says to run `previously project` and then the same command, because the
-    same command alone would stop at the chronicle again. Measured red by
-    letting `_catch_up_after` catch up with `rebuild=True`: exit 0, and the
-    chronicle rebuilt."""
+    says to build it and then run the same command, because the same command
+    alone would stop at the chronicle again. Where the chronicle stands at
+    another version, this code can't tell which release is the older, so
+    the advice names the release that is to serve (review finding I-1 of
+    fix round F2): run by an old release at a newer table, a plain "run
+    `previously project`" would build it back. Measured red by letting
+    `_catch_up_after` catch up with `rebuild=True` (exit 0, the chronicle
+    rebuilt), and by giving the plain advice to every `ProjectionNotBuilt`
+    (the two version cases)."""
     from sqlalchemy import text
 
     engine = _connect(db, monkeypatch)
@@ -2461,8 +2484,7 @@ def test_redact_does_not_rebuild_and_names_project_as_what_finishes_it(
 
     assert _refused(capsys, "redact", "event", "1", "--reason", "r") == (
         "the redaction is recorded as event 2, but it is not finished: "
-        f"projection chronicle {found}, and this code declares version 3; "
-        "run `previously project`, then the same command again"
+        f"projection chronicle {found}, and this code declares version 3; {then}"
     )
     assert _chronicle_rows(engine) == before
     # The control: `project` builds it and takes the redaction in, and the
@@ -7726,6 +7748,16 @@ def _fold_instead(log: PostgresStorage, store: PostgresStorage, conn: Connection
     return read_graph(log, conn)
 
 
+def _edges_of_the_fold(
+    log: PostgresStorage, conn: Connection, graph: Graph
+) -> tuple[tuple[BracketEdge, ...], BracketKinds]:
+    """The oracle of a bracket's edges: `bracket_edges` over the fold. A
+    reader finds them in the projection only and refuses a fold, so the test
+    that holds the two against each other hands this in itself."""
+    vocabulary = read_vocabulary(log, conn)
+    return bracket_edges(graph, vocabulary), bracket_kinds(vocabulary)
+
+
 @pytest.mark.db
 def test_the_listings_read_from_the_projection_are_those_the_fold_gives(
     db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
@@ -8220,6 +8252,7 @@ def test_chronicle_within_finds_from_the_projection_what_the_fold_finds(
     brackets = [ids[name] for name in ("party", "club", "xz", "anna")]
     projected = [_within(capsys, bracket) for bracket in brackets]
     monkeypatch.setattr("previously.cli.projected_graph", _fold_instead)
+    monkeypatch.setattr("previously.core.graph_read.reader_bracket_edges", _edges_of_the_fold)
     folded = [_within(capsys, bracket) for bracket in brackets]
     assert projected == folded
     assert projected == [
