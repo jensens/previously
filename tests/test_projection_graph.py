@@ -647,8 +647,8 @@ def _waiting_on_a_lock(db: Engine) -> bool:
 
 class _Holding(PostgresStorage):
     """The real store, except that a catch-up through it stops once it has
-    written the rows and the `up_to_id` of its first batch, uncommitted,
-    until `may_go_on()` is true."""
+    written the rows and the `up_to_id` of each of its batches, uncommitted,
+    until `may_go_on()` is true; `holding` is set at the first."""
 
     def __init__(self, engine: Engine, may_go_on: Callable[[], bool]) -> None:
         super().__init__(engine)
@@ -657,7 +657,7 @@ class _Holding(PostgresStorage):
 
     def set_projection_state(self, conn: Connection, state: ProjectionState) -> None:
         super().set_projection_state(conn, state)
-        if state.up_to_id > 0 and not self.holding.is_set():
+        if state.up_to_id > 0:
             self.holding.set()
             deadline = time.monotonic() + 10
             while not self._may_go_on():
@@ -671,9 +671,16 @@ def test_two_catch_ups_at_once_write_every_row_once_and_end_where_the_fold_does(
 ) -> None:
     """Two readers catch up at the same moment, as two MCP calls or a call
     and the scheduled `project` would, over six events in batches of two.
-    The first holds its first batch uncommitted until the second waits at
-    the state row; then they take turns, and the second takes batches of its
-    own, starting where the first committed. Each, when it returns, finds
+    The first holds every batch uncommitted until the second waits at the
+    state row or has returned. So each commit of the first hands the lock to
+    a second that already waits for it, and PostgreSQL gives a row lock to
+    the transaction that waited first: the second takes at least the batch
+    after the first's last hold, starting where the first committed, and
+    the turns follow by construction rather than by the scheduler. Holding
+    only the first batch, as this test did before, left the two to race for
+    the lock of the second batch, since the second's first wait is in the
+    short transaction that checks the version, and under load the first
+    could take all six events. Each, when it returns, finds
     the tables where the fold of the whole log is, so neither ended on half
     a state; no row is written twice — the primary key of `p_graph_version`
     would refuse the second — and a rebuild gives the same tables.
