@@ -3355,10 +3355,6 @@ def _field_text(value: FieldValue) -> str:
     return str(value)
 
 
-def _period_text(period: Period | None) -> str:
-    return _NO_VALUE if period is None else _field_text(period)
-
-
 def _period_cell(period: Period | None) -> str:
     return "-" if period is None else _field_text(period)
 
@@ -3598,23 +3594,14 @@ def _cmd_relations(args: argparse.Namespace) -> int:
     return 0
 
 
-def _claim_fields(claim: Claim) -> list[tuple[str, str]]:
-    """What a claim says, as the names `claim_changes` uses, so that the
-    first version of a history and the changes after it read alike."""
-    body = claim.body
-    fields = [("type", body.type)]
-    if isinstance(body, EntityBody):
-        fields.append(("language", _NO_VALUE if body.language is None else body.language))
-    else:
-        start = body.start
-        # An event start as `claim_changes` spells it, so that the first
-        # version and the change lines after it name the start alike.
-        fields.append(("from", str(start) if isinstance(start, int) else _sources_text((start,))))
-        if body.candidates is not None:
-            fields.append(("to", "candidates " + ", ".join(str(item) for item in body.candidates)))
-        else:
-            fields.append(("to", str(body.to)))
-        fields.append(("period", _period_text(body.period)))
+def _entity_fields(body: EntityBody) -> list[tuple[str, str]]:
+    """What an entity version says, as the names `claim_changes` uses, so
+    that the first version of a history and the changes after it read
+    alike."""
+    fields = [
+        ("type", body.type),
+        ("language", _NO_VALUE if body.language is None else body.language),
+    ]
     fields += [(f"fields.{name}", _field_text(body.fields[name])) for name in sorted(body.fields)]
     fields.append(("state", body.state))
     return fields
@@ -3728,9 +3715,11 @@ def _entity_history_lines(
             f"reason\t{escape_field(_NO_VALUE if claim.reason is None else claim.reason)}",
         ]
         if position == 0:
+            # `_show_entity` hands over only a thread of kind entity, and
+            # every version of a thread is of the thread's kind.
             lines += [
                 f"set\t{escape_field(name)}\t{escape_field(text)}"
-                for name, text in _claim_fields(claim)
+                for name, text in _entity_fields(cast("EntityBody", claim.body))
             ]
         else:
             lines += _claim_change_lines("change", thread.versions[position - 1].claim, claim)
