@@ -27,7 +27,7 @@ Gebaut und abgenommen, auf `main`:
 | Einheit 4 | MCP-Lesezugang: Clients als Prinzipale mit Token und Verarbeitungskette (`client`); die Zusage um Betreiber, Training, Unterverarbeiter und Herkunft des Modells erweitert, die Regel um die vier passenden Einschränkungen; `previously mcp` (stdio) und `previously serve` (HTTP, beide Generationen, Bereitschaft über `GET /healthz` ohne Token); fünf Werkzeuge, zwei Ressourcen-Vorlagen, zwei Prompts, jeder Inhalt nur nach `decide` mit der Kette des Clients; das Zugriffsprotokoll als `mcp_access` und `previously access`; `policy gaps` zählt, was MCP zurückhielt; die Seiten `mcp-interface.md`, `mcp-tools.md` und die Anleitung `connect-claude-code-and-vibe.md`; der Handoff `handoffs/2026-10-11-kup6s-mcp.md` | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, beide eingefroren am 2026-10-11 | PR #12, `ffa28fb`; veröffentlicht als `v0.1.0a3` am 2026-10-11; Bedingung 9 erledigt am 2026-10-11, nach Entscheidung des Betreuers auf den Lauf von kup6s (RG), ohne Vibe und ohne die drei Kreise |
 | Einheit 5 | Feststellungen: Verpflichtung und Entscheidung mit Quellen (`core/assertion.py`, `core/assertions.py`), Vorschläge, Freigabe und Ablehnung, Lesen durch Falten des Logs, die Kommandos dazu, fünf MCP-Werkzeuge; die Antworten in einem Aufruf (PR #20) | `specs/2026-10-12-pilot-feststellungen.md`, eingefroren am 2026-10-12 | PR #17, `4735e3f`; veröffentlicht als `v0.1.0a5`; die Abnahme nach F §14 lief am 2026-10-13; `v0.1.0a6` mit PR #20 |
 | Zuordnungen, Phase 1 | Das Vokabular als Handlung `vocabulary` mit Grundvokabular (`core/vocabulary.py`), Entitäten und Beziehungen als Feststellungen (`core/graph.py`, `core/graph_write.py`), die Freigabeklassen (`core/classes.py`), die Kommandos dazu, fünf MCP-Werkzeuge | `specs/2026-10-14-zuordnungen.md` (lebendig) | PR #24, `cce8b4b`; veröffentlicht als `v0.1.0a7`; der Lauf mit Vellenfeld nach Z §17 Punkt 1 lief am 2026-10-14 in kup6s (die vier Befunde sind geschlossen, `14de3d3`) |
-| Zuordnungen, Phase 2 | Die Zuordnung von Events und Einheiten an Klammern: die Art `concerns` im Grundvokabular (`from = ["event"]`, `to = ["*"]`), ein Event am Anfang ist Quelle, `members` (die Menge einer Klammer, das Genauere ersetzt das Allgemeine); die Projektion `graph` (Migration `0006_graph`, `p_graph_version`, `p_graph_thread`), von Lesern beim Lesen nachgezogen, mit Rückfall auf das Falten des Logs; `project --check`; `chronicle --within N` und MCP `previously(within=N)`, über MCP zählt eine Kante nur, wo der Client sie sieht; die Seiten und `handoffs/2026-10-15-kup6s-graph-phase-2.md` | `specs/2026-10-14-zuordnungen.md` (lebendig), Plan `plans/2026-10-15-zuordnungen-phase-2.md` | gebaut auf dem Zweig `worktree-zuordnungen-2`, noch nicht gemerged; Endprüfung, PR, Release und Handoff stehen aus |
+| Zuordnungen, Phase 2 | Die Zuordnung von Events und Einheiten an Klammern: die Art `concerns` im Grundvokabular (`from = ["event"]`, `to = ["*"]`), ein Event am Anfang ist Quelle, `members` (die Menge einer Klammer, das Genauere ersetzt das Allgemeine); die Projektion `graph` (Migration `0006_graph`, `p_graph_version`, `p_graph_thread`), von Lesern beim Lesen nachgezogen, mit Rückfall auf das Falten des Logs; `project --check`; `chronicle --within N` und MCP `previously(within=N)`, über MCP zählt eine Kante nur, wo der Client sie sieht; die Seiten und `handoffs/2026-10-15-kup6s-graph-phase-2.md` | `specs/2026-10-14-zuordnungen.md` (lebendig), Plan `plans/2026-10-15-zuordnungen-phase-2.md` | gebaut auf dem Zweig `worktree-zuordnungen-2`, noch nicht gemerged; Endprüfung und Messung am 2026-10-15 gelaufen, die Fixwelle danach; PR, Release und Handoff stehen aus |
 
 Mit Stufe 1c ist Teilprojekt 1 gebaut und abgeschlossen, wie die Architektur
 es in §12.1 zuschneidet: Log, Projektionen, Blobs. Die Auslieferung und die
@@ -136,6 +136,14 @@ nichts frei. Ausführungsprotokoll: `sdd/2026-10-15-zuordnungen-phase-2/`
 (kommt mit der Endprüfung ins Repository). Die Seiten stehen
 (`explanation/graph.md`, `explanation/projections.md`,
 `how-to/assign-mails-and-read-a-bracket.md`, die Referenz), der Handoff liegt bei.
+Die Endprüfung am 2026-10-15 fand keinen Weg, auf dem `within` Inhalt
+freigibt oder eine Kante verrät, und zwei wichtige Befunde (ein `ProjectionGap`
+legte jeden Leser und jeden MCP-Aufruf lahm; vier Ruling-Zitate ohne Plan),
+beide in der Fixwelle geschlossen. Die Messung bei 100 000 Beziehungen steht in
+`explanation/graph.md`: Kopf, `whoami`, Triage, Nachzug und `chronicle
+--within` tragen; volle Listen, `list_entities`, `within` über eine große
+Klammer über MCP, das Schreiben und `verify` tragen nicht (Punkte unten unter
+*Zuordnungen*).
 
 Nicht gebaut: die Suche, Kreise im Graphen
 und am Gate (Phase 3), Verpflichtungen im Schema (Phase 4), KI-Schicht, jeder
@@ -145,7 +153,8 @@ Konnektor außer dem für IMAP.
 
 Zuerst Phase 2 der Zuordnungen zu Ende bringen: die Endprüfung über den Zweig
 `worktree-zuordnungen-2` mit Messung auf einer festen Kopie (10 000 und 100 000
-Beziehungen), eine Fixwelle, der PR, das Release nach `v0.1.0a7`, der Handoff
+Beziehungen) und ihre Fixwelle sind gelaufen; es folgen die Nachprüfung, der PR, das Release nach
+`v0.1.0a7`, der Handoff
 `handoffs/2026-10-15-kup6s-graph-phase-2.md` (erst nach grünem `manifest`) und
 die Abnahme von Phase 2 nach Z §17 Punkt 2. Danach der Pilot, wie unten.
 
@@ -334,7 +343,9 @@ Einstellungen und der Feststellungen
 (`handoffs/2026-10-13-kup6s-feedback-a6.md`), ebenso, **Z** der Spec der
 Zuordnungen (`specs/2026-10-14-zuordnungen.md`) mit Abschnitt, **P-Z1** das
 Ausführungsprotokoll seiner Phase 1 (`sdd/2026-10-14-zuordnungen-phase-1/`)
-mit dem Ruling oder der Aufgabe.
+mit dem Ruling oder der Aufgabe, **P-Z2** das seiner Phase 2
+(`sdd/2026-10-15-zuordnungen-phase-2/`) ebenso; „Endprüfung“ mit einem Kürzel
+wie `M-3` meint dort den Bericht der Endprüfung.
 
 ### Einwurf-Vertrag (`contract`, Teilprojekt 2)
 
@@ -500,33 +511,9 @@ das mit der Endprüfung ins Repository kommt):
   bei 100 000 in 135 s, ein Lauf auf festem Stand von `9967268` (P-Z1,
   Ruling T4-c). Als täglicher Job bleibt das tragbar; wächst der Graph weit
   darüber, wird die Prüfung auf Zyklen in `verify` inkrementell, spätestens
-  mit Phase 2.
-- **Jeder MCP-Aufruf faltet den ganzen Graphen für die Zahl im Kopf.** (Seit
-  Phase 2 gemildert: der Kopf liest `p_graph_thread` und faltet nur Fäden mit
-  Einwand, siehe die Punkte unten zum Schreibweg und zu `list_entities`; die
-  Messung von Phase 1 bleibt als Beleg.) Um die
-  anhängigen Einwände zu zählen, faltet `Service.answer` vor jedem Werkzeug
-  den Graphen und fragt die Policy nach den Quellen jedes Einwands, auch bei
-  `whoami` und den Werkzeugen der Einheit 5, die den Graphen sonst nie lesen.
-  Gemessen von der Endprüfung am 2026-10-14, Median aus drei Läufen, bei
-  10 000 Beziehungen und 5 000 Entitäten: `whoami` 0,52 s, `list_entities`
-  1,72 s, `read_graph` 0,47 s, `previously entities` 0,53 s, ein Schreiben
-  0,47 s, `verify` 2,77 s; bei 2 000 Beziehungen `whoami` 0,10 s,
-  `list_entities` 0,28 s, `verify` 0,62 s. Bis 10 000 wächst es linear. Bei
-  100 000 Beziehungen und 50 000 Entitäten, auf festem Stand von `9967268`
-  (i7-11370H): `read_graph` 7,35 s (Median aus drei), in Einzelläufen
-  `whoami` 7,69 s, `list_entities` 23,7 s, mit 20 Einwänden 7,33 s und
-  24,2 s; aus dem ersten Lauf `entities` 7,59 s, `relations --at` 7,50 s,
-  ein Schreiben 7,34 s — sechzehnmal so lang für zehnmal so viel. Bei
-  10 000 tragen Listen, Schreiben und Kopf noch, `list_entities` liegt mit
-  1,7 s schon über einer Sekunde; bei 100 000 trägt keins davon. Phase 1 nimmt die Kosten
-  hin (Ruling F-c): ein Zwischenspeicher, der am Tip hängt, verfällt mit dem
-  Zugriffseintrag jedes Aufrufs, und beim Piloten mit einigen hundert
-  Aussagen sind es Millisekunden. **Phase 2 braucht eine Projektion oder eine
-  inkrementelle Faltung, bevor die Daten wachsen** (Planentscheidung 14,
-  Z §3.4; gebaut in Phase 2, die Leser lesen die Projektion); `explanation/graph.md` trägt die Zahlen. Die Messungen der
-  Aufgabe 6 (`whoami` bei 1 000 Entitäten ohne Beziehungen 53 ms, bei 5 000
-  153 ms) stehen dort daneben.
+  mit Phase 2. Phase 2 hat daran nichts geändert: gemessen am 2026-10-15 auf
+  `22b3dec` (i7-11370H, Median aus drei, mit Mails und `concerns`) 3,57 s bei
+  10 000 und 130 s bei 100 000 Beziehungen.
 - **`verify` hält vom Vokabular und von den Freigabeklassen nur die Form
   fest.** Der Schreibweg weist beim Vokabular eine Art ab, die eine Art nennt,
   die nicht steht (auch einen `ref` auf eine Beziehungsart), das Stilllegen
@@ -574,15 +561,6 @@ das mit der Endprüfung ins Repository kommt):
   Zweig `worktree-rueckmeldung-a7` bleibt der Platzhalter einer verborgenen,
   widerrufenen Entität unter jedem Filter stehen, mit Absicht (Option A des
   Betreuers).
-- ~~**Ein Ereignis als Beginn einer Beziehung, was Phase 2 ändern muss.**~~
-  Erledigt in Phase 2 (Aufgaben 1 und 2, `5f791e6`, `fbdd05e`, `a6d358a`).
-  Der alte Wortlaut: Die
-  Form (`RelationBody.start: int | Source`) nimmt es schon an,
-  `conformance_problem` weist es in Phase 1 mit einem Satz ab, und `reaches`,
-  `closes_cycle`, `relation_ends` und `relation_visible` überspringen es.
-  Phase 2 ändert: die Abweisung und den `int`-Cast in `_ends_conformance`,
-  `EntityTypes` und die Enden, und `relation_visible`, das für jeden
-  Source-Beginn `False` gibt (P-Z1, Endprüfung).
 - **Das Vokabular kann sich zwischen Vorschau und Schreiben von `vocabulary
   apply FILE` ändern.** `_cmd_vocabulary_apply` zeigt die Unterschiede aus
   einer Transaktion, `apply_vocabulary` rechnet sie unter dem Tip neu und
@@ -593,6 +571,10 @@ das mit der Endprüfung ins Repository kommt):
 - **`cli.py` teilen.** 4 274 Zeilen zur Endprüfung; die Befehle des Graphen
   stehen in einem Block (etwa Zeilen 2 995–3 950) und könnten ohne
   Verhaltensänderung `previously/cli_graph.py` werden (P-Z1, Endprüfung).
+  Nach Phase 2 sind es 4 483 Zeilen, und `mcp_server/server.py` wuchs von
+  3 062 auf 3 245; `cli.py` ist das Modul, das jede Aufgabe berührt. Vor
+  Phase 3, die `in_circle` dazubringt, nach Familien teilen: Leser des
+  Graphen, Schreiber, Betrieb (P-Z2, Endprüfung M-4).
 - **Zurückgestellte Kleinigkeiten, die Erinnerung verdienen:**
   - Aufgabe 1: Eine Art, die eine eingebaute nennt, lässt sich stilllegen,
     ohne dass die Prüfung der Verweise greift — `person` stilllegen, während
@@ -622,44 +604,91 @@ das mit der Endprüfung ins Repository kommt):
 - **Der Schreibweg faltet noch den ganzen Log.** Er prüft unter dem Tip, und
   die Projektion hinkt in der Transaktion eines Schreibvorgangs nach; ebenso
   `verify`, `--as-of` und `project --check`. Gemessen in Phase 1: 7 s je
-  Schreibvorgang bei 100 000 Beziehungen. Für den Piloten tragbar; eine
+  Schreibvorgang bei 100 000 Beziehungen; in Phase 2 (2026-10-15, `22b3dec`)
+  `write_claims` mit einer Beziehung 0,54 s bei 10 000 und 6,94 s bei 100 000,
+  `project --check` 1,02 s und 10,6 s. Für den Piloten tragbar; eine
   Aufgabe, bevor der Graph wächst (Planentscheidungen 5 und 7).
 - **Jeder Nachzug der Projektion `graph` liest alle `approval_class`-Handlungen.**
   Die Projektion braucht die Klassen, um einen Faden neu zu falten, und liest
-  sie bei jedem Batch, der etwas berührt (Aufgabe 3, ungemessen).
+  sie bei jedem Batch, der etwas berührt (Aufgabe 3). Gemessen am 2026-10-15:
+  ein Nachzug nach einem Schreiben 0,040 s bei 100 000 Beziehungen, ohne
+  Klassen im Log; mit vielen Klassen ungemessen.
 - **MCP `list_entities` faltet jede Entität einer Seite einzeln aus dem Log.**
   Die Richtlinie entscheidet jede Entität vor jedem Filter, und der Platzhalter
   einer zurückgehaltenen Entität besteht jeden Filter; ein Filter nach `types`
   in SQL ließe ihn aus und bräche Option A (Aufgabe 4, M-4, bewusst nicht
-  gebaut). Kostet ein Lesen je Entität.
-- **Die Kosten von `seen_members` und `_last_member` sind ungemessen.**
-  `seen_members` wächst mit den verborgenen entscheidenden Kanten (eine Klammer
-  mit nur verborgenen Mitgliedern antwortet etwas langsamer als eine leere,
-  derselbe Zeitunterschied wie beim nächsten Punkt), `_last_member` liest die
-  Payloads aller Mitglieds-Events je Aufruf (Aufgabe 5; die Endprüfung misst).
-- **`ProjectionGap` aus einem Nachzug fängt der Rückfall der Leser nicht.**
-  `ProjectionRebuilt` und jeder `StorageError` fallen auf das Falten zurück, ein
-  `ProjectionGap` noch nicht (Aufgabe 4, Endprüfungswelle).
+  gebaut). Kostet ein Lesen je Entität: gemessen am 2026-10-15 auf `22b3dec`
+  0,69 s bei 10 000 und 4,97 s bei 100 000 Beziehungen (in Phase 1 23,7 s);
+  über einer Sekunde trägt es nicht.
+- **MCP `within` über eine große Klammer kostet mit der Klammer, nicht mit der
+  Seite.** Gemessen am 2026-10-15 auf `22b3dec` (i7-11370H, Median aus drei):
+  `previously(within=…)` über eine der drei großen Klammern 1,75 s bei 10 000 und
+  17,5 s bei 100 000 Beziehungen, über eine leere 0,025 s und 0,135 s, obwohl
+  jedes Mal nur eine Seite zurückkommt. `seen_members` entscheidet die
+  Sichtbarkeit jeder entscheidenden Kante, und `_last_member` liest die Payload
+  jedes Mitglieds-Events je Aufruf; eine Projektion von `(event_id,
+  occurred_at)`, die `p_chronicle` schon hat, ersetzte das zweite. Auf der
+  Kommandozeile trägt `chronicle --within` (0,143 s), sie geht die Kanten ohne
+  Policy ab (P-Z2, Aufgabe 5; Endprüfung, Messung).
 - **Zeitunterschied zwischen verborgener und fehlender Klammer.** Beide
   antworten mit demselben Satz, aber eine verborgene Klammer geht erst durch die
   Sichtbarkeitsprüfung; ein Client könnte den Unterschied messen. Die Probe ist
   grob, gibt keinen Inhalt frei und ist von der Art, die die Schreibwerkzeuge schon hinnehmen (Aufgabe 5, Review ⚠️ 4).
-- **Zurückgestellte Kleinigkeiten aus Phase 2:**
-  - Aufgabe 1: Kein Test für eine zurückgezogene Entität als Ziel `*`.
-  - Aufgabe 2: Der Zweig für einen Ereignis-Beginn in `cli.py`
-    `_claim_fields` hat keinen Aufrufer (nur Entitäten-Historien erreichen
-    ihn); toter Code, in der Endprüfungswelle zu entfernen.
-  - Aufgabe 3: Der Test der gleichzeitigen Nachzüge nimmt an, dass die Leser
-    die Sperre abwechseln; nichts erzwingt es. Eine mögliche Flocke
-    (`test_two_catch_ups_at_once…`), deterministisch zu machen.
-  - Aufgabe 4: Die Rückfalltests der Kommandozeile decken `entities`, `triage`
-    und `status`, nicht `relations`, `show` und `classes` (derselbe Helfer);
-    die Warnung trägt `str(error)`, bei `ServerUnreachable` mit Datenbank,
-    Host und Port, nie mit Passwort.
 - **Eine Rolling-Update-Lücke ohne Lösung.** Zwei Versionen nebeneinander
   bauen die Projektion einander um, jeder Aufruf fällt auf das Falten zurück
   (richtig, langsamer). Der Handoff sagt es: das Update zu Ende führen, dann
   `previously project`.
+- **`relations --at` und `entities` nutzen die Projektion nur zur Hälfte.**
+  Die Projektion gibt die Kennungen, aber jeder gelistete Faden wird aus dem Log
+  gefaltet, weil die Leser zeigen, was im Log steht (Ruling T4-a der Phase 2).
+  Gemessen am 2026-10-15 auf `22b3dec`: `relations --at 2019-03-01` 0,69 s bei
+  10 000 und 6,78 s bei 100 000 Beziehungen, `entities` 0,30 s und 3,51 s, je
+  mit jeder Zeile auf der Ausgabe. Eine volle Liste über 100 000 trägt nicht;
+  ein Filter oder eine Seite davor wäre die Antwort (P-Z2, Endprüfung, Messung).
+- **Der Rückfall auf das Falten und die Prüfung einer Klammer stehen zweimal.**
+  `cli.py` `_caught_up`, `_reader_graph` und `_graph_warning` gegen
+  `server.py` `caught_up` und `read_graph`; `cli.py` `_bracket_selection` gegen
+  `server.py` `bracket` (dieselbe Prüfung `1 <= N <= MAX_SAFE_INT` und `N in
+  EntityTypes(graph)`). Der Befund I-1 der Endprüfung musste deshalb zweimal
+  behoben werden. Ein kleines `projection_graph_or_none` in
+  `core/graph_read.py` könnte „steht, sonst `None`“ tragen; das Tupel der
+  Ausnahmen kann nicht nach `core`, `StorageError` steht in `storage`
+  (P-Z2, Endprüfung M-3).
+- **Ein Leser liest die Klassen zum Schnappschuss, die Zeilen zum Nachzug.**
+  `core/graph_read.py` liest `read_classes(log, conn)` über den ganzen Log, die
+  Zeilen (`level`, `pending`) sind unter den Klassen bei `up_to_id` gefaltet.
+  Ein Klassen-Event zwischen Nachzug und Schnappschuss, etwa ein `demote`,
+  kann einen Faden öffnen, den `graph_waiting` nicht auswählt; er fehlt für
+  diesen einen Aufruf in `list_triage`, `status` und im Kopf, der nächste
+  findet ihn. Keine Freigabe, eine Klasse entscheidet keine Sichtbarkeit.
+  Genau würde es mit `class_states(log, conn, up_to)`, aber `classes list`
+  nimmt `by_name` aus `read_classes` über den ganzen Log; `hit_rates` braucht
+  dann Sorgfalt (P-Z2, Endprüfung M-5).
+- **`policy gaps` faltet bei jedem Aufruf den ganzen Log**, auf der
+  Kommandozeile und über MCP (`policy_gaps`, `core/gaps.py` `read_graph`). Es
+  ist der eine Leser des Graphen, den die Projektion nicht erreicht hat, und
+  kostet über MCP, was Phase 1 kostete, solange für `recollection` eine Regel
+  fehlt. Planentscheidung 10 nennt ihn nicht, ein Verstoß ist es also nicht.
+  Gebraucht würde `graph.winners(...)` über die Fäden einer Erinnerung, mit
+  einem Index oder einem Merkmal an der Zeile (P-Z2, Endprüfung M-6).
+- **Nach einer Tilgung von Einheiten sagt nichts, dass der Rest neu
+  zuzuordnen ist.** Eine Zuordnung der ganzen Mail (`units: null`) fällt mit
+  jeder Einheit, die danach getilgt wird (Ruling T2-b der Phase 2): wird
+  Einheit 3 der Mail 1 getilgt, fällt die Zuordnung an XZ, und die Einheiten 1
+  und 2 verlassen die Chronik von XZ, obwohl sie stehen. `redact` meldet
+  `cascaded: assertion N`, aber keinen Hinweis „den Rest neu zuordnen“. Bewusst
+  auf der sicheren Seite; offen, ob ein Satz in einer Anleitung oder in der
+  Ausgabe von `redact` genügt (P-Z2, Endprüfung ⚠️ 4).
+- **Die Zeilensperre von `projection_state` hat kein Zeitlimit.** Jeder
+  Leser der Kommandozeile und jeder MCP-Aufruf zieht die Projektion nach und
+  nimmt dabei die Zeile `FOR UPDATE`; kein `lock_timeout` steht in `src`. Der
+  erste Aufruf nach einer großen Aufnahme oder nach einem Upgrade, das
+  `GRAPH.version` hebt, macht den ganzen Nachzug im Aufruf (der erste Bau
+  dauert bei 100 000 Beziehungen 34,6 s), und jeder gleichzeitige Aufruf wartet
+  so lange an der Sperre. Der Handoff sagt, nach einem Upgrade und nach einer
+  großen Aufnahme `previously project` laufen zu lassen; ob ein Leser
+  stattdessen nach einer Frist auf das Falten zurückfallen soll, ist offen
+  (P-Z2, Endprüfung ⚠️ 2).
 - **Phasen 3 und 4 selbst**, im Spec ausgearbeitet und nicht gebaut (Phase 2,
   die Zuordnung von Events und Einheiten mit `chronicle --within` und `within`
   über MCP, ist gebaut, der Parameter heißt `within` und nicht `in`): Kreise im Graphen, die das Gate liest, mit
@@ -1602,6 +1631,47 @@ auf `assertions.md` unter *What the pilot leaves open*.
   Nachtrag).
 
 ## Erledigt, seit es auf einer Liste stand
+
+- ~~Ein Ereignis als Beginn einer Beziehung, was Phase 2 ändern muss~~
+  (P-Z1, Endprüfung) — geschlossen mit Phase 2 der Zuordnungen, PR #26
+  (Aufgaben 1 und 2): das Vokabular nimmt `event` in `from` und `*` in `to`,
+  `conformance_problem` weist ein Event am Anfang nicht mehr ab, und die Faltung,
+  `relations()`, `reaches`, der Schreibweg, `verify`, die Kommandozeile und MCP
+  kennen einen Anfang als `Source`; der Anfang steht unter den Quellen, so
+  dass die Kaskade einer Tilgung die Zuordnung mitnimmt.
+- ~~`ProjectionGap` aus einem Nachzug fängt der Rückfall der Leser nicht~~
+  (P-Z2, Aufgabe 4; Endprüfung I-1) — geschlossen in der Fixwelle der
+  Endprüfung, PR #26: beide Leser fangen jeden `PreviouslyError` des Nachzugs
+  neben `StorageError` und falten den Log; vorher legte ein Spalt jeden Leser
+  der Kommandozeile und jeden MCP-Aufruf lahm, `whoami` und `get_event`
+  eingeschlossen. Je ein Test über eine Ablage mit Spalt, gemessen rot mit dem
+  alten Tupel.
+- ~~Jeder MCP-Aufruf faltet den ganzen Graphen für die Zahl im Kopf~~ (P-Z1,
+  Endprüfung, Planentscheidung 14) — geschlossen mit Phase 2, PR #26: der Kopf
+  liest `p_graph_thread` und faltet nur Fäden mit Einwand. Gemessen am
+  2026-10-15 auf `22b3dec` (i7-11370H, Median aus drei) `whoami` 0,012 s bei
+  10 000 und 0,019 s bei 100 000 Beziehungen, in Phase 1 7,69 s; `list_triage`
+  0,033 s. `list_entities` bleibt mit 4,97 s offen, als eigener Punkt unter
+  *Zuordnungen*.
+- ~~Zurückgestellte Kleinigkeiten aus Phase 2~~ (P-Z2) — in der Fixwelle der
+  Endprüfung, PR #26:
+  1. Aufgabe 1, kein Test für eine zurückgezogene Entität als Ziel `*`:
+     geschlossen ohne Test (M-7). `_ends_conformance` prüft das Dasein vor dem
+     Kürzel `*`, `EntityTypes` gibt für eine zurückgezogene Entität keinen
+     Eintrag, und der Test der unbekannten Kennung wird rot, wenn die Prüfung
+     fällt; ein zweiter läse dieselbe Zeile.
+  2. Aufgabe 2, toter Zweig in `_claim_fields`: der ganze Zweig für Beziehungen
+     war unerreichbar, nicht nur die Zeile für einen Ereignis-Beginn; er ist
+     weg, `_entity_fields` nimmt ein `EntityBody` (M-2).
+  3. Aufgabe 3, der Test der gleichzeitigen Nachzüge: er hält jetzt jeden Batch,
+     bis der andere an der Sperre wartet oder fertig ist, so dass der Wechsel aus
+     der Bauart folgt; zwanzig Läufe hintereinander grün, die zwei Mutationen
+     (`FOR UPDATE` heraus, Lesen ohne Sperre) rot (M-1).
+  4. Aufgabe 4, Rückfalltests und `str(error)`: geschlossen ohne Änderung. Ein
+     Helfer trägt alle Leser, `chronicle --within` hat einen eigenen Test; die
+     Warnung nennt bei `OperationFailed` und `ServerUnreachable` Ort und
+     Meldung des Servers, nie ein Passwort, und geht nur auf die
+     Standardfehlerausgabe oder ins Log des Servers.
 
 - ~~Die vier Befunde aus dem Lauf der Anleitung `keep-a-club-and-its-offices.md`
   in kup6s~~ (R7, Abnahme von Phase 1 nach Z §17 Punkt 1, 2026-10-14;
