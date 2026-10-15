@@ -81,6 +81,7 @@ import time
 if TYPE_CHECKING:
     from collections.abc import Callable
     from previously.contract.rows import ProjectionState
+    from previously.core.projection.worker import Outcome
     from sqlalchemy import Connection
 
 
@@ -542,6 +543,64 @@ def test_an_approval_of_a_proposal_erased_unread_stands_as_the_fold_has_it(db: E
 
 
 @pytest.mark.db
+def test_an_erased_rejection_lets_its_proposal_wait_again(db: Engine) -> None:
+    """`redact event` on a rejection: the fold no longer counts it, so the
+    objection it rejected waits for the operator again, and its row leaves
+    `p_graph_version`, as a rebuild would not write it. Measured red with the
+    erasure of a rejection row touching only the rejection as a subject and
+    not the thread it names: the thread kept `pending` 0."""
+    storage = _setup(db)
+    (anna,) = _write(storage, entity("person", "Anna"))
+    (objected,) = _write(
+        storage,
+        entity("person", "Anna H", author=MODEL, responsibility=OPEN, confidence=90, subject=anna),
+    )
+    rejection = _reject(storage, objected)
+    _project(storage)
+    before = _row(storage, anna)
+    assert before is not None
+    assert (before.pending, before.objections) == (0, 0)
+    redact_event(storage, storage, rejection, reason="rejected by mistake", recorded_at=T0)
+    _project(storage)
+    after = _row(storage, anna)
+    assert after is not None
+    assert (after.winner_id, after.pending, after.objections) == (anna, 1, 1)
+    assert _rows(storage) == _folded(storage)
+    versions = [row[0] for row in _snapshot(db)[0]]
+    assert rejection not in versions
+    assert versions == [anna, objected]
+
+
+@pytest.mark.db
+def test_an_objection_against_an_erased_direct_version_still_waits(db: Engine) -> None:
+    """The operator writes a second direct version, the model objects to it
+    (the write path sets `contests` to it), and the second version is erased
+    and its row pruned. The objection contests an erased version, which the
+    fold lets stand as a proposal; a later version folds the thread again in
+    a batch where the erased version is no subject touched. Measured red
+    with the refold reading only the erased rows `approves` names, not those
+    `contests` names: the objection was dropped and `pending` was 1."""
+    storage = _setup(db)
+    (anna,) = _write(storage, entity("person", "Anna"))
+    (second,) = _write(storage, entity("person", "Anna Huber", subject=anna))
+    objection = entity(
+        "person", "Anna H", author=MODEL, responsibility=OPEN, confidence=90,
+        source=Source(2, None), subject=anna,
+    )  # fmt: skip
+    (objected,) = _write(storage, objection)
+    redact_event(storage, storage, second, reason="wrong", recorded_at=T0)
+    _project(storage)
+    assert second not in [row[0] for row in _snapshot(db)[0]]
+    _write(storage, replace(objection, body=replace(objection.body, fields={"name": "Anna M"})))
+    _project(storage)
+    row = _row(storage, anna)
+    assert row is not None
+    assert (row.winner_id, row.pending, row.objections) == (anna, 2, 1)
+    assert objected in [version[0] for version in _snapshot(db)[0]]
+    assert _rows(storage) == _folded(storage)
+
+
+@pytest.mark.db
 def test_incremental_equals_rebuilt_for_both_tables(db: Engine) -> None:
     """The rows of `p_graph_version` a rebuild would not write are taken out
     when their thread is folded again: an erased version, and the rejection
@@ -602,38 +661,49 @@ def test_two_catch_ups_at_once_write_every_row_once_and_end_where_the_fold_does(
     db: Engine,
 ) -> None:
     """Two readers catch up at the same moment, as two MCP calls or a call
-    and the scheduled `project` would: the first holds its first batch
-    uncommitted, the second waits at the state row, then starts where the
-    first committed. Neither sees half a batch, no row is written twice —
-    the primary key of `p_graph_version` would refuse the second — and the
-    tables end where the fold does. Measured red with
-    `lock_projection_state` reading the row without locking it: the second
-    catch-up read the batch the first held and failed on the primary key.
-    Taking out only `FOR UPDATE` leaves it green, because the placeholder
-    insert of `lock_projection_state` waits on the row the first holds."""
+    and the scheduled `project` would, over six events in batches of two.
+    The first holds its first batch uncommitted until the second waits at
+    the state row; then they take turns, and the second takes batches of its
+    own, starting where the first committed. Each, when it returns, finds
+    the tables where the fold of the whole log is, so neither ended on half
+    a state; no row is written twice — the primary key of `p_graph_version`
+    would refuse the second — and a rebuild gives the same tables.
+
+    Measured red with `lock_projection_state` reading the row without
+    locking it, and with only its `FOR UPDATE` taken out: both times a
+    catch-up read a batch the other had taken and failed on the primary key.
+    With one batch, as this test ran before, the second variant stayed
+    green: the second catch-up then waited at the placeholder insert of
+    `lock_projection_state`, as `pg_stat_activity` showed."""
     storage = _setup(db)
     (project,) = _write(storage, entity("project", "XZ"))
     _project(storage)
-    guessed, _other = _write(
-        storage,
-        entity("person", "Bert", author=MODEL, responsibility=OPEN, confidence=90),
-        relation("concerns", Source(1, None), project),
+    (guessed,) = _write(
+        storage, entity("person", "Bert", author=MODEL, responsibility=OPEN, confidence=90)
     )
+    _write(storage, relation("concerns", Source(1, None), project))
+    _write(storage, relation("concerns", Source(2, (1,)), project))
     _reject(storage, guessed)
+    (anna,) = _write(storage, entity("person", "Anna"))
+    _write(storage, entity("person", "Anna H", subject=anna))
     second_done = threading.Event()
     first = _Holding(db, lambda: second_done.is_set() or _waiting_on_a_lock(db))
     errors: list[BaseException] = []
+    outcomes: dict[str, Outcome] = {}
+    seen: dict[str, bool] = {}
 
     def run_first() -> None:
         try:
-            catch_up(first, first, GRAPH, batch_size=3)
+            outcomes["first"] = catch_up(first, first, GRAPH, batch_size=2)
+            seen["first"] = _rows(storage) == _folded(storage)
         except BaseException as error:
             errors.append(error)
 
     def run_second() -> None:
         try:
             assert first.holding.wait(timeout=10)
-            catch_up(storage, storage, GRAPH, batch_size=3)
+            outcomes["second"] = catch_up(storage, storage, GRAPH, batch_size=2)
+            seen["second"] = _rows(storage) == _folded(storage)
         except BaseException as error:
             errors.append(error)
         finally:
@@ -647,6 +717,10 @@ def test_two_catch_ups_at_once_write_every_row_once_and_end_where_the_fold_does(
         assert not thread.is_alive(), "a catch-up is hanging"
 
     assert errors == []
+    assert seen == {"first": True, "second": True}
+    assert outcomes["first"].events + outcomes["second"].events == 6
+    assert outcomes["first"].events >= 2
+    assert outcomes["second"].events >= 2
     assert _rows(storage) == _folded(storage)
     incremental = _snapshot(db)
     assert _rebuilt(storage, db) == incremental
@@ -955,7 +1029,11 @@ def _run(history: _History, step: _Step) -> None:
             of = _pick(history.proposals, pick)
             found = None if of is None else history.claim_of(of)
             if of is not None and found is not None:
-                _reject(storage, of, sources=found[1].sources, at=history.at())
+                # Among the versions, so that an erasure can pick it: then
+                # the proposal it rejected waits again.
+                history.versions.append(
+                    _reject(storage, of, sources=found[1].sources, at=history.at())
+                )
         case _EraseVersion() | _EraseMail() | _EraseClass():
             _erase(history, step)
         case _Class(which=which, revoked=revoked, demote=demote):
@@ -990,10 +1068,14 @@ def test_property_the_projection_stands_where_the_fold_does(
     event marking nothing, with a rejection marking nothing, with an erased
     action marking nothing, with the refold leaving out the subject itself,
     and with `_stale` returning nothing. With the refold leaving out the
-    erased rows a version names it stayed green: that history needs an
-    erasure before the first read and a second batch on the same thread,
-    and `test_an_approval_of_a_proposal_erased_unread_stands_as_the_fold_has_it`
-    is the test that goes red for it.
+    erased rows a version names it stayed green, for `approves` and for
+    `contests` alike: those histories need an erasure the projection reads
+    before a later batch on the same thread, and
+    `test_an_approval_of_a_proposal_erased_unread_stands_as_the_fold_has_it`
+    and `test_an_objection_against_an_erased_direct_version_still_waits` are
+    the tests that go red for them. With an erased rejection touching only
+    itself it went red, since rejections are among the versions a history
+    erases.
     """
     with db.begin() as c:
         c.execute(text(truncate_statement))

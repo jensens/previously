@@ -42,6 +42,12 @@ def upgrade() -> None:
         ),
     )
     op.create_index("p_graph_version_subject_idx", "p_graph_version", ["subject"])
+    op.create_index(
+        "p_graph_version_under_idx",
+        "p_graph_version",
+        ["under"],
+        postgresql_where=sa.text("under IS NOT NULL"),
+    )
     op.create_table(
         "p_graph_thread",
         sa.Column(
@@ -78,6 +84,7 @@ def downgrade() -> None:
     op.drop_index("p_graph_thread_to_entity_idx", table_name="p_graph_thread")
     op.drop_index("p_graph_thread_kind_type_idx", table_name="p_graph_thread")
     op.drop_table("p_graph_thread")
+    op.drop_index("p_graph_version_under_idx", table_name="p_graph_version")
     op.drop_index("p_graph_version_subject_idx", table_name="p_graph_version")
     op.drop_table("p_graph_version")
     op.execute(sa.text("DELETE FROM projection_state WHERE name = 'graph'"))

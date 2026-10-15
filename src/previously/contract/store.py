@@ -13,9 +13,13 @@ the repository in bash or fish:
 The files are every module of `core` that names `LogStore`, twelve that day
 with `core/assertions.py`, and fifteen on 2026-10-14, when `core/vocabulary.py`,
 `core/classes.py` and `core/graph_write.py` joined them and the count stayed
-fifteen; sixteen on 2026-10-15, when `core/projection/graph.py` joined them,
-reading the log through `events_by_id` and `actions`, and the count stayed
-fifteen again; it is not copied from the method list of the implementation.
+fifteen; it is not copied from the method list of the implementation. The
+modules are counted as source files, `grep -rl LogStore src/previously/core
+--include='*.py' | wc -l`, and stayed fifteen on 2026-10-15: the
+three projections read the log through `LogReader` below and do not name
+`LogStore`. In the first version of the graph projection all three named
+it, which took the count of modules to eighteen while this sentence said
+sixteen.
 Where `__pycache__` directories exist, `grep -rl` lists their compiled files
 as well, and the first `grep` takes no name out of them, so the count stays
 the same. The docstring is raw so that the text in this file is the command, backslashes as
@@ -41,7 +45,7 @@ call does not read every access entry the calls before it wrote
 `core.assertions` reads the source events of every entry a list looks at in
 one query since 2026-10-12, where `read` took one query per event
 ({ref}`assertions-folded`).
-The protocol declares sixteen: `observations` came on 2026-10-11 with the MCP
+The protocol declares sixteen, counted on 2026-10-15: `observations` came on 2026-10-11 with the MCP
 server, and `core` does not call it: `mcp_server/read.py` does, to read the
 chronicle of a circle from the log (decision 3 of the 2026-10-11 MCP read
 access plan). `grep -ohE 'log\.[a-z_]*\(' src/previously/mcp_server/*.py`
@@ -53,6 +57,10 @@ true by then. Typing `core` against this protocol instead of against
 `PostgresStorage` removes the edge `core -> storage.postgres`, and with it
 the two named exemptions in `.importlinter` and the test that guarded them
 ({ref}`module-boundaries`).
+
+`LogReader` declares two of the sixteen, `events_by_id` and `actions`: what a
+projection may read of the log while it catches up, so that its write step
+holds no handle that appends ({ref}`graph-projection`).
 
 `Conn` is the connection type. Only `storage` knows what it is; `core` passes
 it back to the store it came from and never looks inside.
@@ -129,6 +137,20 @@ class LogStore[Conn](Protocol):
         after: tuple[datetime, int] | None,
         limit: int,
     ) -> Iterator[EventRow]: ...
+
+
+class LogReader[Conn](Protocol):
+    """What a projection may read of the log while it catches up, and
+    nothing more: rows by id, and the actions of one name.
+
+    A protocol of its own, so that a projection holds no handle that can
+    append to the log. `LogStore` and `PostgresStorage` satisfy it
+    structurally, so `catch_up` passes the log it reads from, and the write
+    step of a projection sees only these two reads ({ref}`graph-projection`).
+    """
+
+    def events_by_id(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, EventRow]: ...
+    def actions(self, conn: Conn, action: str) -> Iterator[EventRow]: ...
 
 
 class RedactionStore[Conn](Protocol):

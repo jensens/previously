@@ -516,6 +516,34 @@ def test_the_declared_columns_match_the_migrated_database(db: Engine) -> None:
 
 
 @pytest.mark.db
+def test_a_declared_partial_index_is_partial_in_the_database(db: Engine) -> None:
+    """Whether an index is partial is, like `NULLS NOT DISTINCT`, a property
+    a name cannot carry, so the name check above stays green when the
+    migration drops the `WHERE`. This holds it for every declared index, in
+    both directions: `p_graph_version_under_idx` is the one partial index
+    today. Measured red on 2026-10-15 with `postgresql_where` taken out of
+    `0006_graph`; every other index is the control."""
+    declared = {
+        index.name: index.dialect_options["postgresql"]["where"] is not None
+        for table in metadata.tables.values()
+        for index in table.indexes
+    }
+    with db.connect() as c:
+        rows = c.execute(
+            text("""
+                SELECT c.relname, i.indpred IS NOT NULL
+                FROM pg_index i
+                JOIN pg_class c ON c.oid = i.indexrelid
+                JOIN pg_namespace n ON n.oid = c.relnamespace
+                WHERE n.nspname = 'public'
+            """)
+        ).all()
+    present = {name: partial for name, partial in rows if name in declared}
+    assert present == declared
+    assert [name for name, partial in declared.items() if partial] == ["p_graph_version_under_idx"]
+
+
+@pytest.mark.db
 def test_the_projection_tables_exist(db: Engine) -> None:
     """Stage 1b added three tables ({ref}`projections`), and `0006_graph` two
     more for the graph; the migrations have to create all five, the metadata

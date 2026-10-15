@@ -122,7 +122,7 @@ class GraphVersionRow:
     the one it names, or its own id for a first version; a rejection's is the
     subject of the version it rejects. `under` is the approval class a
     version names, and `None` for a rejection and for a version under none.
-    Ids and vocabulary words, nothing a source said ({ref}`projections`).
+    Ids and vocabulary words, nothing a source said ({ref}`graph-projection`).
     """
 
     id: int
@@ -140,8 +140,10 @@ class GraphThreadRow:
     `start_entity` for a start at an entity, `start_event` and `start_units`
     for a start at an event, `None` for all of its units — and its period,
     and the counts the header and the triage list read. No field, no name,
-    no content: what a reader shows, it reads from the log by `winner_id`
-    ({ref}`projections`).
+    no content; the period's dates are the one thing a claim asserts that
+    stands here, and they leave with their version, since an erasure folds
+    the thread again. What a reader shows, it reads from the log by
+    `winner_id` ({ref}`graph-projection`).
     """
 
     subject: int

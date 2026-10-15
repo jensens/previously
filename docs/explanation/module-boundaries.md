@@ -422,8 +422,10 @@ A second protocol has existed since stage 1b, `ProjectionStore[Conn]`, for the p
 A projection store empties, inserts and updates, because a projection is derivable and disposable by design ({ref}`projections`).
 One protocol covering both would blur exactly the line that separates them: a projection carries no truth of its own, and a type that offers "append to the log" and "truncate the table" through the same interface stops saying so.
 The graph keeps the two apart where it needs both.
-It folds a thread again from its versions in the log, so that its tables hold no content, and its write step takes the log as a `LogStore` beside the projection store, both in one transaction.
-The step reads the log and writes the projection, and neither protocol grows a method of the other: the chronicle and the statistics get the same two parameters and leave the log unread.
+It folds a thread again from its versions in the log, so that its tables hold no content, and its write step takes the log beside the projection store, both in one transaction.
+It takes the log as a `LogReader[Conn]`, a protocol of two methods, `events_by_id` and `actions`, which `LogStore` and `PostgresStorage` satisfy as they stand.
+A `LogStore` would have handed every projection `insert_event` inside the catch-up's transaction, and a projection has no business appending to the log.
+So the step reads the log and writes the projection, and neither protocol grows a method of the other: the chronicle and the statistics get the same two parameters and leave the log unread.
 
 Stage 1c added a third, `RedactionStore[Conn]`, with three methods: `lock_event`, `erase_payload` and `erase_units`.
 An erasure changes rows of the log, which is the one thing `LogStore` promises never to do, and the protocol of its own keeps that promise a statement about a type.

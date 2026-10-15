@@ -54,7 +54,7 @@ if TYPE_CHECKING:
     from collections.abc import Mapping
     from collections.abc import Sequence
     from previously.contract.rows import EventRow
-    from previously.contract.store import LogStore
+    from previously.contract.store import LogReader
     from previously.contract.store import ProjectionStore
     from previously.core.graph import ClassState
     from previously.core.graph import GraphThread
@@ -177,7 +177,7 @@ def marks(batch: Batch) -> Marks:
     return found
 
 
-def _classes[Conn](log: LogStore[Conn], conn: Conn, up_to: int) -> Mapping[int, ClassState]:
+def _classes[Conn](log: LogReader[Conn], conn: Conn, up_to: int) -> Mapping[int, ClassState]:
     """The class states as of event `up_to`, as `read_classes` reads them
     for the whole log: a batch is folded at its own end, and a class event
     a later batch holds marks the threads it changes when that batch comes."""
@@ -207,7 +207,7 @@ def _named(payload: Mapping[str, object]) -> set[int]:
 
 
 def _rows[Conn](
-    log: LogStore[Conn], conn: Conn, batch: Batch, wanted: Iterable[int]
+    log: LogReader[Conn], conn: Conn, batch: Batch, wanted: Iterable[int]
 ) -> dict[int, EventRow]:
     """The rows of `wanted`, out of the batch where it holds them and in one
     query for the rest, none when the batch holds them all."""
@@ -246,7 +246,7 @@ class GraphProjection:
     version: int = 1
 
     def write[Conn](
-        self, store: ProjectionStore[Conn], log: LogStore[Conn], conn: Conn, batch: Batch
+        self, store: ProjectionStore[Conn], log: LogReader[Conn], conn: Conn, batch: Batch
     ) -> None:
         found = marks(batch)
         known = {row.id: row for row in found.versions}
@@ -285,7 +285,7 @@ class GraphProjection:
     def _refold[Conn](
         self,
         store: ProjectionStore[Conn],
-        log: LogStore[Conn],
+        log: LogReader[Conn],
         conn: Conn,
         batch: Batch,
         subjects: Sequence[int],

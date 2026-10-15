@@ -919,9 +919,8 @@ class PostgresStorage:
         return found
 
     def class_subjects(self, conn: Connection, under_ids: Sequence[int]) -> set[int]:
-        """The subjects of the versions under any of `under_ids`. No index
-        serves `under`: a class event is rare, and the table is read once for
-        it."""
+        """The subjects of the versions under any of `under_ids`, through the
+        partial index on `under`."""
         if not under_ids:
             return set()
         return set(

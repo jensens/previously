@@ -135,7 +135,7 @@ refusing to downgrade below 0003_hash_version_2: the log holds events in a hash 
 
 Either refusal leaves the database at the revision the `alembic downgrade` started from.
 
-Three more tables hold projections derived from the tables above.
+Five more tables hold projections derived from the tables above.
 {ref}`projections` explains why they carry no foreign keys onto one another.
 
 ## `projection_state`
@@ -218,12 +218,13 @@ A rejection has a row only while the version it rejects has one, and only when t
 | `p_graph_version_id_fkey` | `id` | Foreign key to `event.id`. |
 | `p_graph_version_kind_check` | `kind` | `kind IN ('entity','relation','rejection')`. |
 | `p_graph_version_subject_idx` | `subject` | Not unique; no constraint. |
+| `p_graph_version_under_idx` | `under`, where `under IS NOT NULL` | Not unique; no constraint. |
 
 ## `p_graph_thread`
 
 One row for each entity and each relation whose versions have a winner: what the fold of its versions makes of it under the approval classes in force.
 A thread whose every version is erased, rejected, or answered has no row.
-No column holds content: the text columns hold words of the vocabulary and of the fold.
+No column holds content: the text columns hold words of the vocabulary and of the fold, and `period_start` and `period_end` hold the dates of the winning version, which a refold removes once that version is erased.
 
 | Column | Type | Accepts NULL | Meaning |
 |---|---|---|---|

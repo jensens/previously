@@ -274,8 +274,10 @@ p_source_stats = Table(
 # so that a reader does not fold the whole log to count a header. Two tables
 # and one name, `graph`; both are emptied together on a rebuild.
 #
-# No column holds content. Ids, counts and vocabulary words: the kind and
-# type of a thread, its level and its state. What a reader shows of a
+# No column holds content. Ids, counts and vocabulary words — the kind and
+# type of a thread, its level and its state — and one thing the winner
+# asserts: the dates of a relation's period. Those leave with their version,
+# because an erasure folds the thread again. What a reader shows of a
 # version — its name, its fields, its sources — it reads from the log by id,
 # so an erasure holds without the projection having content to delete.
 
@@ -293,6 +295,13 @@ p_graph_version = Table(
     CheckConstraint("kind IN ('entity','relation','rejection')", name="p_graph_version_kind_check"),
 )
 Index("p_graph_version_subject_idx", p_graph_version.c.subject)
+# What a class event refolds: the versions under any event of its name. Most
+# versions stand under no class, so the index holds only those that do.
+Index(
+    "p_graph_version_under_idx",
+    p_graph_version.c.under,
+    postgresql_where=p_graph_version.c.under.isnot(None),
+)
 
 # One row per thread with a winner; a thread whose every version is erased or
 # rejected has none.
@@ -305,7 +314,7 @@ p_graph_thread = Table(
     Column("winner_id", BigInteger, nullable=False),
     Column("level", Text, nullable=False),
     Column("state", Text, nullable=False),
-    # The ends carry no foreign key either, for the reason `subject` above
+    # The ends carry no foreign key, for the reason `p_graph_version.subject`
     # gives: the write path refuses an end that is no entity, a version
     # written around it is a finding of `verify`, not a failed catch-up.
     Column("start_entity", BigInteger),

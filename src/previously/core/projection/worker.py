@@ -19,6 +19,7 @@ from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
+    from previously.contract.store import LogReader
     from previously.contract.store import LogStore
     from previously.contract.store import ProjectionStore
 
@@ -50,10 +51,10 @@ class Projection(Protocol):
     `write` writes through `store` and may read the log through `log`, both
     in the transaction of `conn`: the graph folds a thread again from its
     versions in the log, so that its tables need to hold no content
-    ({ref}`projections`). The other two read only the batch. Two parameters
-    for one store, the way `catch_up` takes two, and the log stays
-    read-only to a projection, since `LogStore` holds no method that
-    changes it."""
+    ({ref}`graph-projection`). The other two read only the batch. `log` is a
+    `LogReader`, which reads rows by id and actions by name and has no
+    method that appends, so a projection cannot write to the log through
+    it; `catch_up` passes its `LogStore`, which satisfies that protocol."""
 
     @property
     def name(self) -> str: ...
@@ -62,7 +63,7 @@ class Projection(Protocol):
     def version(self) -> int: ...
 
     def write[Conn](
-        self, store: ProjectionStore[Conn], log: LogStore[Conn], conn: Conn, batch: Batch
+        self, store: ProjectionStore[Conn], log: LogReader[Conn], conn: Conn, batch: Batch
     ) -> None: ...
 
 

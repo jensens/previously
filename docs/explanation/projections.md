@@ -295,7 +295,8 @@ It keeps two tables under one name.
 `p_graph_version` says which versions and which rejections belong to which thread.
 `p_graph_thread` holds, for each thread that has a winner, what the winner is: its kind, type, level and state, its ends, its period, and the counts of pending versions and objections.
 Neither table holds content.
-No name, no field and no source is in them, only ids, counts and words of the vocabulary.
+No name, no field and no source is in them: ids, counts and words of the vocabulary, and the dates of a relation's period, the one thing a claim asserts that stands here.
+Those dates leave with their version when it's erased, because the erasure folds its thread again.
 A reader that shows a version reads it from the log by its id, and that's what lets an erasure hold here without this projection deleting any content: what an erasure takes is gone from the log, and the projection never had it.
 The chronicle had to learn to delete rows when erasure came; the graph never holds a row worth deleting for its content.
 
