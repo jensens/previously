@@ -345,9 +345,12 @@ The rows alone would answer more cheaply, but they hold no content, and a listin
 The ends of the relations come along in the same go, and a thread nobody asked about yet is folded when a line names it, so no question of a reader ever meets a thread the projection left out.
 
 The chronicle of a bracket asks the rows alone.
-An assignment or a hierarchy edge is no more than its kind, its two ends and the level of its winner, and `p_graph_thread` holds all four, so finding what belongs to a bracket folds no thread and reads nothing of the log but the vocabulary ({ref}`chronicle-of-a-bracket`).
+An assignment or a hierarchy edge is no more than its kind, its two ends and the level of its winner, and `p_graph_thread` holds all four, so finding what belongs to a bracket for the operator folds no thread and reads nothing of the log but the vocabulary ({ref}`chronicle-of-a-bracket`).
 On the command line the selection then goes into the query of `p_chronicle`, before its limit.
-Over MCP the chronicle reads the log, as it always has, and keeps the events of the bracket as it reads.
+Over MCP an edge counts only where the client sees it, and deciding that reads the edge's sources.
+So the server walks every edge first, which finds every event that can belong, and decides the client's view only for the edges the result can turn on: the parts below the bracket, and the assignments of the events that walk found, those of a unit of its own to another bracket among them.
+Taking edges away shrinks the walk, and adds a unit only where it takes away the assignment that excluded it, so no other edge can change the answer.
+The chronicle then reads the log, as it always has, keeps the events of the bracket as it reads, and stops at the last of them.
 
 The header of every MCP result is where this matters most.
 It counts the threads with `objections > 0`, folds only those, and asks the policy only about them, so it folds no thread and asks the policy nothing while no objection waits.

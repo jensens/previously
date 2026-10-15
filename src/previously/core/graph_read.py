@@ -37,6 +37,7 @@ from previously.core.graph_write import relation_ends
 from previously.core.members import bracket_edges
 from previously.core.members import bracket_kinds
 from previously.core.members import BracketEdge
+from previously.core.members import BracketKinds
 from previously.core.members import members
 from previously.core.projection.graph import class_states
 from previously.core.projection.graph import fold_threads
@@ -227,18 +228,15 @@ def projected_graph[Conn](
     return ProjectedGraph(threads, classes, GraphIndex(store, conn))
 
 
-def read_brackets[Conn](
-    log: LogStore[Conn], store: GraphStore[Conn], conn: Conn, bracket: int
-) -> Members:
-    """`members` of `bracket`, over the edges the projection holds: the
-    relations of the kinds `bracket_kinds` names under the vocabulary in
-    force, as `bracket_edges` takes them from a fold. A row holds the ends
-    and the level of its winner, which is all an edge is, so nothing is
-    read from the log but the vocabulary. The caller has caught the
-    projection up before it opened the snapshot."""
-    kinds = bracket_kinds(read_vocabulary(log, conn))
+def projected_bracket_edges[Conn](
+    store: GraphStore[Conn], conn: Conn, kinds: BracketKinds
+) -> tuple[BracketEdge, ...]:
+    """The edges `members` reads, out of the rows of the projection: the
+    relations of the kinds of `kinds`, as `bracket_edges` takes them from a
+    fold. A row holds the ends and the level of its winner, which is all an
+    edge is, so nothing is read from the log."""
     rows = store.graph_relations(conn, types=sorted(kinds.hierarchy | kinds.assignments))
-    edges = [
+    return tuple(
         BracketEdge(
             row.subject,
             row.type,
@@ -251,21 +249,40 @@ def read_brackets[Conn](
             row.level,
         )
         for row in rows
-    ]
-    return members(edges, bracket, kinds)
+    )
+
+
+def read_brackets[Conn](
+    log: LogStore[Conn], store: GraphStore[Conn], conn: Conn, bracket: int
+) -> Members:
+    """`members` of `bracket`, over the edges the projection holds, under
+    the vocabulary in force, which is all it reads of the log. The caller
+    has caught the projection up before it opened the snapshot."""
+    kinds = bracket_kinds(read_vocabulary(log, conn))
+    return members(projected_bracket_edges(store, conn, kinds), bracket, kinds)
+
+
+def reader_bracket_edges[Conn](
+    log: LogStore[Conn], conn: Conn, graph: Graph
+) -> tuple[tuple[BracketEdge, ...], BracketKinds]:
+    """The edges `members` reads in the graph a reader reads in the
+    snapshot of `conn`, with the kinds they are read by: out of the rows of
+    the projection where `graph` is read from it, and out of the fold where
+    the reader folded the log instead, because the projection didn't stand
+    where its catch-up left it. A reader finds in the graph it shows."""
+    vocabulary = read_vocabulary(log, conn)
+    kinds = bracket_kinds(vocabulary)
+    if isinstance(graph, ProjectedGraph):
+        projected = cast("ProjectedGraph[Conn]", graph)
+        return projected_bracket_edges(projected.index.store, conn, kinds), kinds
+    return bracket_edges(graph, vocabulary), kinds
 
 
 def bracket_members[Conn](log: LogStore[Conn], conn: Conn, graph: Graph, bracket: int) -> Members:
-    """`members` of `bracket` in the graph a reader reads in the snapshot of
-    `conn`: over the rows of the projection where `graph` is read from it
-    (`read_brackets`), and over the edges of the fold where the reader
-    folded the log instead, because the projection didn't stand where its
-    catch-up left it. A reader finds the members in the graph it shows."""
-    if isinstance(graph, ProjectedGraph):
-        projected = cast("ProjectedGraph[Conn]", graph)
-        return read_brackets(log, projected.index.store, conn, bracket)
-    vocabulary = read_vocabulary(log, conn)
-    return members(bracket_edges(graph, vocabulary), bracket, bracket_kinds(vocabulary))
+    """`members` of `bracket` over every edge of the graph a reader reads
+    (`reader_bracket_edges`): what the operator finds."""
+    edges, kinds = reader_bracket_edges(log, conn, graph)
+    return members(edges, bracket, kinds)
 
 
 def _cell(value: object) -> str:

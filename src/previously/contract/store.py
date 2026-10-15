@@ -52,14 +52,16 @@ The protocol declares sixteen, counted on 2026-10-15: `observations` came on 202
 server, and `core` does not call it: `mcp_server/read.py` does, to read the
 chronicle of a circle from the log (decision 3 of the 2026-10-11 MCP read
 access plan). `grep -ohE 'log\.[a-z_]*\(' src/previously/mcp_server/*.py`
-names the eight the server calls, `observations` among them, counted on
-2026-10-14 and again on 2026-10-15, when the server began to read the graph
-projection through `GraphStore` below; the eighth is `read_by_kind`, with which `mcp_server/read.py`
-reads the rejections of a version of an entity or a relation. The sentence
-said six until 2026-10-12 and seven until 2026-10-14, each a count no longer
-true by then. Typing `core` against this protocol instead of against
-`PostgresStorage` removes the edge `core -> storage.postgres`, and with it
-the two named exemptions in `.importlinter` and the test that guarded them
+names the nine the server calls, `observations` among them, counted on
+2026-10-15 in the fix round of the chronicle of a bracket; the eighth is
+`read_by_kind`, with which `mcp_server/read.py` reads the rejections of a
+version of an entity or a relation, and the ninth `events_by_id`, with which
+it finds where the chronicle of a bracket meets the bracket's last event.
+The sentence said six until 2026-10-12, seven until 2026-10-14 and eight
+until that fix round, each a count no longer true by then. Typing `core`
+against this protocol instead of against `PostgresStorage` removes the
+edge `core -> storage.postgres`, and with it the two named exemptions in
+`.importlinter` and the test that guarded them
 ({ref}`module-boundaries`).
 
 `LogReader` declares two of the sixteen, `events_by_id` and `actions`: what a

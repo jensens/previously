@@ -132,6 +132,38 @@ class Members:
         return seq in units
 
 
+def deciding_edges(
+    edges: Iterable[BracketEdge], found: Members, kinds: BracketKinds
+) -> tuple[BracketEdge, ...]:
+    """The edges on which what belongs to a bracket can turn when some of
+    `edges` are taken away, given `found`, the members of that bracket over
+    all of them.
+
+    Taking edges away shrinks the walk down the hierarchy and the
+    assignments into it, and it can add a unit only by taking away the
+    assignment of the unit's own that excluded it, of an event whose whole
+    is assigned into the walk. So what remains is decided by the hierarchy
+    edges into `found.brackets` and by the assignments that start at an
+    event of `found.events`, and `members` over any part of `edges` gives
+    what it gives over the same part of these. A reader that has to decide
+    for each edge whether to count it decides it for these alone."""
+    candidates = found.events.keys()
+    return tuple(
+        edge
+        for edge in edges
+        if (
+            edge.type in kinds.hierarchy
+            and not isinstance(edge.start, Source)
+            and edge.to in found.brackets
+        )
+        or (
+            edge.type in kinds.assignments
+            and isinstance(edge.start, Source)
+            and edge.start.event in candidates
+        )
+    )
+
+
 def chronicle_selection(found: Members) -> ChronicleSelection:
     """The units of the chronicle that `found` holds, in the form a query
     takes them: `ChronicleSelection` selects exactly the `(event_id, seq)`

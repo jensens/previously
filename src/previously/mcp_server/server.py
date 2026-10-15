@@ -114,7 +114,6 @@ from previously.core.graph import SOURCES
 from previously.core.graph import sources_with_start
 from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
-from previously.core.graph_read import bracket_members
 from previously.core.graph_read import projected_graph
 from previously.core.graph_read import projection_stands
 from previously.core.graph_write import check_claims
@@ -162,6 +161,7 @@ from previously.mcp_server.read import MAX_IDS
 from previously.mcp_server.read import objections_seen
 from previously.mcp_server.read import resume_point
 from previously.mcp_server.read import rule_ids
+from previously.mcp_server.read import seen_members
 from previously.mcp_server.read import source_verdict
 from previously.mcp_server.read import statement_lines
 from previously.mcp_server.read import thread_hidden
@@ -290,9 +290,9 @@ _CHRONICLE: Final = (
     "inside a fence of foreign content. The filters combine: circle (a member of the "
     "circle is involved), source, since, until, and within (what belongs to an entity "
     "or to an entity that is part of it: the events assigned to it, each with only the "
-    "units that belong). An event the processing policy "
-    "keeps from this client stands as a placeholder with the reason, with within as "
-    "without. A page stays "
+    "units that belong, found only through the assignments and parts this client may "
+    "see). An event the processing policy keeps from this client stands as a placeholder "
+    "with the reason, and within leaves it out. A page stays "
     f"under {PAGE_CHARS:,} characters, and its footer names the cursor of the next page. An "
     "event is cited as previously://event/<id>, a unit as "
     "previously://event/<id>#unit-<n>."
@@ -1173,7 +1173,8 @@ class Service[Conn]:
         return _paged(seen, rendered)
 
     def bracket(self, conn: Conn, policy: Policy, client: Client, bracket: int) -> Members:
-        """What belongs to `bracket`, in the graph of the call.
+        """What belongs to `bracket` in the graph of the call, as the client
+        finds it over the edges it may see (`seen_members`).
 
         A bracket the client may not see is refused in the words of one
         that doesn't exist: an empty page would tell the client that an
@@ -1188,7 +1189,7 @@ class Service[Conn]:
             or not graph_view(self.log, conn, policy, client, graph, (bracket,)).seen(bracket)
         ):
             raise Refused(f"within {bracket} is not an entity that stands")
-        return bracket_members(self.log, conn, graph, bracket)
+        return seen_members(self.log, conn, policy, client, graph, bracket)
 
     def event_page(
         self, conn: Conn, policy: Policy, client: Client, ids: Sequence[int], from_unit: int | None

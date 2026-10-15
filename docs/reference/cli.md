@@ -893,10 +893,11 @@ A `--limit` below 1 is refused the same way, before anything is read.
 `--within` prints the lines of the units that belong to the bracket, with the same fields, in the same order and under the same `--since`, `--until` and `--limit`.
 A unit belongs when an assignment points at the bracket or at an entity below it, through any relation kind with the behavior `transitive`, such as `part_of`.
 An assignment of a unit of its own replaces the assignment of its event for that unit, unless it's an open proposal ({ref}`chronicle-of-a-bracket`).
+Every edge counts, whoever may see it; over MCP, only those the client sees do.
 Assignments and hierarchy edges count at every level and whatever their period.
 `--limit` counts only the units of the bracket, so a unit outside it takes no place.
 A bracket that nothing belongs to prints nothing and returns 0.
-An id that isn't an entity that stands, such as a relation, an event or a retracted entity, is refused before anything is read:
+An id that isn't an entity that stands, such as a relation, an event or a retracted entity, is refused before the chronicle is read, after the catch-up of the graph projection:
 
 ```text
 Error: --within 999 is not an entity that stands

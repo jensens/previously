@@ -885,7 +885,7 @@ def test_the_prompts_ask_for_work_and_hold_no_content(world: World, mode: str) -
 # The SHA-256 of the tool list as clients see it: name, description, input
 # schema and `_meta` of every tool, sorted by name, as canonical JSON. A change to any of
 # them is a change of the interface, made deliberately and released.
-TOOLS_SHA256 = "56be7eefe6910b3eef50c74d80f7543ac1364bfac0316cc5d1d5abfe4d26cbec"
+TOOLS_SHA256 = "bb1cde8cebeb3592d48a7289795433beac4dcbb7a08433e9106c2f710da91f9e"
 
 
 def tool_list_digest(tools: list[dict[str, object]]) -> str:
@@ -4819,33 +4819,240 @@ def test_previously_within_finds_by_the_fold_what_it_finds_by_the_projection(
 
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
-def test_previously_within_shows_a_withheld_mail_as_the_placeholder_it_is_without(
+def test_previously_within_leaves_out_a_mail_the_client_may_not_see(
     world: World, mode: str
 ) -> None:
-    """Review Focus 3 of the 2026-10-15 assignments plan: within finds, it
-    releases nothing. A mail of the circle `team`, which has no rule, is
-    assigned to the summer party: `claude-code` gets its placeholder with
-    within as without, and `local-harness`, which processes locally, its
-    content."""
+    """Case (a) of the review of task 5 and ruling T5-c of the 2026-10-15
+    assignments plan: an assignment starts at its mail, which is among its
+    sources, so a client that may not see the mail doesn't see the
+    assignment either, and under within the mail is not there at all, not
+    even as a placeholder, while the whole chronicle shows its placeholder
+    as before. A mail of the circle `team`, which has no rule, is assigned to
+    the summer party; `local-harness`, which processes locally, finds it."""
     ids = _brackets(world)
     hidden = _take_in(world.storage, _team_mail(1))
     _assign(world, hidden, None, ids.party)
-    placeholder = re.compile(rf"^\[withheld: previously://event/{hidden} — .*$", re.MULTILINE)
+    uri = f"previously://event/{hidden}"
 
     within = _text(_tool(world, mode, "previously", {"within": ids.party}))
-    (withheld,) = _last_access(world).access.withheld
+    access = _last_access(world).access
     without = _text(_tool(world, mode, "previously"))
 
-    assert "All 412 checks passed." not in within
-    found = placeholder.search(within)
-    assert found is not None
-    assert found.group(0) in without
+    assert uri not in within
+    assert access.withheld == ()
     assert _units_shown(within) == {ids.mail: [4]}
-    assert withheld.event == hidden
-    # The control: the client that may see the mail sees it under within.
+    assert f"[withheld: {uri} — " in without
+    # The control: the client that may see the mail finds it under within.
     local = _text(_tool(world, mode, "previously", {"within": ids.party}, client="local-harness"))
     assert "All 412 checks passed." in local
-    assert placeholder.search(local) is None
+    assert _units_shown(local) == {ids.mail: [4], hidden: [1, 2]}
+
+
+def _hidden_project(world: World, name: str) -> int:
+    """A project of the operator stated on the plain mail, which
+    `claude-code` may not see and `local-harness` may."""
+    (project,) = write_claims(
+        world.storage, world.storage, [_project(name, world.ids["plain"])], recorded_at=T0
+    ).ids
+    return project
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_does_not_walk_through_an_entity_the_client_may_not_see(
+    world: World, mode: str
+) -> None:
+    """Case (b): a mail the client sees is assigned to a project it may not
+    see, which is part of the summer party. The hidden project stops the
+    walk, so the mail is not in the summer party's chronicle for
+    `claude-code`; `local-harness` sees the project and finds the mail."""
+    ids = _brackets(world)
+    child = _hidden_project(world, "Catering")
+    _relate(world, child, ids.party, kind="part_of")
+    mail = _take_in(world.storage, _markus_mail(1, "office@example.org"))
+    _assign(world, mail, None, child)
+
+    within = _units_shown(_text(_tool(world, mode, "previously", {"within": ids.party})))
+    local = _units_shown(
+        _text(_tool(world, mode, "previously", {"within": ids.party}, client="local-harness"))
+    )
+
+    assert within == {ids.mail: [4]}
+    assert local == {ids.mail: [4], mail: [1, 2, 3, 4]}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_does_not_walk_along_a_part_of_the_client_may_not_see(
+    world: World, mode: str
+) -> None:
+    """Case (c): both ends of the `part_of` are visible, but it rests on the
+    plain mail, which `claude-code` may not see. The mail assigned to the
+    child is in the child's chronicle and not, through the hidden edge, in
+    the summer party's; `local-harness` finds it in both."""
+    ids = _brackets(world)
+    (child,) = write_claims(
+        world.storage,
+        world.storage,
+        [_project("Catering", world.ids["attachments_only"])],
+        recorded_at=T0,
+    ).ids
+    _relate(world, child, ids.party, kind="part_of", source="plain")
+    mail = _take_in(world.storage, _markus_mail(1, "office@example.org"))
+    _assign(world, mail, None, child)
+
+    def shown(bracket: int, client: str) -> dict[int, list[int]]:
+        page = _tool(world, mode, "previously", {"within": bracket}, client=client)
+        return _units_shown(_text(page))
+
+    assert shown(ids.party, "claude-code") == {ids.mail: [4]}
+    assert shown(child, "claude-code") == {mail: [1, 2, 3, 4]}
+    assert shown(ids.party, "local-harness") == {ids.mail: [4], mail: [1, 2, 3, 4]}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_counts_no_hidden_assignment_of_a_unit_of_its_own(
+    world: World, mode: str
+) -> None:
+    """Case (d): a mail the client sees is assigned whole to XZ, and its
+    unit 4 on its own to a project the client may not see. A gap at unit 4
+    would tell the client that the unit is assigned somewhere it can't
+    see, so the hidden edge doesn't count, and `claude-code` gets unit 4
+    under XZ, one more unit than the operator: none it doesn't see without
+    within. `local-harness` sees the edge and gets XZ's chronicle as the
+    command line prints it, without unit 4."""
+    ids = _brackets(world)
+    hidden = _hidden_project(world, "Elsewhere")
+    mail = _take_in(world.storage, _markus_mail(1, "office@example.org"))
+    _assign(world, mail, None, ids.xz)
+    _assign(world, mail, (4,), hidden)
+
+    def shown(client: str) -> list[int]:
+        page = _tool(world, mode, "previously", {"within": ids.xz}, client=client)
+        return _units_shown(_text(page))[mail]
+
+    assert shown("claude-code") == [1, 2, 3, 4]
+    assert shown("local-harness") == [1, 2, 3]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_leaves_out_a_mail_with_no_unit_of_the_bracket_left(
+    world: World, mode: str
+) -> None:
+    """A mail assigned whole to XZ whose every unit is assigned on its own
+    to the summer party belongs to XZ by none of them: it is not shown
+    under XZ, not even as a heading with an empty fence."""
+    ids = _brackets(world)
+    mail = _take_in(world.storage, _markus_mail(1, "office@example.org"))
+    _assign(world, mail, None, ids.xz)
+    _assign(world, mail, (1, 2, 3, 4), ids.party)
+
+    xz = _text(_tool(world, mode, "previously", {"within": ids.xz}))
+    access = _last_access(world).access
+
+    assert f"previously://event/{mail} " not in xz
+    assert [entry.event for entry in access.delivered] == [ids.mail]
+    # The control: the summer party has it whole.
+    party = _units_shown(_text(_tool(world, mode, "previously", {"within": ids.party})))
+    assert party[mail] == [1, 2, 3, 4]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_refuses_a_cursor_carried_to_a_client_that_may_not_see_the_bracket(
+    world: World, mode: str
+) -> None:
+    """⚠️ 6 of the review of task 5: the bracket is checked on every call,
+    before the cursor is read, so a cursor of Lea's chronicle that
+    `local-harness` got is refused for `claude-code` as an id that names no
+    entity."""
+    ids = _brackets(world)
+    lea = ids.graphed.lea
+    for number in range(5):
+        _assign(world, _take_in(world.storage, _long_mail(number, 10, 150)), None, lea)
+    page = _text(_tool(world, mode, "previously", {"within": lea}, client="local-harness"))
+    found = re.search(r"call again with cursor=(\S+)$", page)
+    assert found is not None
+    arguments = {"within": lea, "cursor": found.group(1)}
+
+    carried = _tool(world, mode, "previously", arguments)
+    assert carried.is_error
+    assert _text(carried) == f"Error: within {lea} is not an entity that stands"
+    # The control: the client the cursor was made for goes on with it.
+    rest = _tool(world, mode, "previously", arguments, client="local-harness")
+    assert not rest.is_error
+    assert _shown_ids(_text(rest))
+
+
+class _CountingScans(PostgresStorage):
+    """The real store, counting the batches of observations a call reads."""
+
+    def __init__(self, engine: Engine) -> None:
+        super().__init__(engine)
+        self.scans = 0
+
+    @override
+    def observations(
+        self,
+        conn: Connection,
+        *,
+        since: datetime | None,
+        until: datetime | None,
+        source: str | None,
+        after: tuple[datetime, int] | None,
+        limit: int,
+    ) -> Iterator[EventRow]:
+        self.scans += 1
+        return super().observations(
+            conn, since=since, until=until, source=source, after=after, limit=limit
+        )
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_reads_the_log_only_up_to_the_last_event_of_the_bracket(
+    world: World, mode: str, db: Engine
+) -> None:
+    """M-1 of the review of task 5: a bracket nothing belongs to reads no
+    observation at all, and one whose only mail lies before 450 others reads
+    one batch of 200 rather than every batch to the end of the log."""
+    ids = _brackets(world)
+    empty = _hidden_project(world, "Leer")
+    late = _hidden_project(world, "Spät")
+    later = append(
+        world.storage,
+        [
+            RawEvent(
+                source="chat",
+                external_id=f"later-{number}",
+                occurred_at=datetime(2026, 10, 9, tzinfo=UTC) + timedelta(minutes=number),
+                evidence=Evidence.VERBATIM,
+                units=(RawUnit(1, f"Later {number}."),),
+                payload={},
+            )
+            for number in range(450)
+        ],
+        recorded_at=T0,
+    )
+    _assign(world, later[-1], None, late)
+    counting = _CountingScans(db)
+    server = build_server(
+        counting, stdio_client="local-harness", graph=counting, projections=counting
+    )
+
+    def scans(bracket: int) -> int:
+        counting.scans = 0
+        result = _session(server, mode, lambda s: s.call_tool("previously", {"within": bracket}))
+        assert not result.is_error, _text(result)
+        return counting.scans
+
+    assert scans(empty) == 0
+    assert scans(ids.party) == 1
+    # The control: a bracket whose mail is the last of the log reads every
+    # batch up to it.
+    assert scans(late) == 3
 
 
 @pytest.mark.db

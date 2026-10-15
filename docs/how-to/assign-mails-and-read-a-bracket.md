@@ -107,7 +107,7 @@ previously chronicle --within 13
 ```
 
 `--since`, `--until` and `--limit` narrow it as they narrow the whole chronicle.
-An id that isn't an entity that stands is refused, and nothing is read:
+An id that isn't an entity that stands is refused, and the chronicle isn't read:
 
 ```shell
 previously chronicle --within 99
@@ -117,7 +117,7 @@ previously chronicle --within 99
 Error: --within 99 is not an entity that stands
 ```
 
-An MCP client reads the same chronicle with the tool `previously` and its argument `within`, within what the processing policy lets it see; see {ref}`mcp-tools`.
+An MCP client reads the chronicle of a bracket with the tool `previously` and its argument `within`, through the assignments and the parts it may see, and within what the processing policy lets it see; see {ref}`mcp-tools`.
 
 ## Correct an assignment
 

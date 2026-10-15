@@ -37,6 +37,7 @@ from previously.core.members import bracket_edges
 from previously.core.members import bracket_kinds
 from previously.core.members import BracketEdge
 from previously.core.members import BracketKinds
+from previously.core.members import deciding_edges
 from previously.core.members import members
 from previously.core.vocabulary import base_vocabulary
 from previously.core.vocabulary import built_in_kinds
@@ -463,3 +464,61 @@ def test_the_property_meets_a_unit_whose_own_assignment_replaces_its_events() ->
 
     assert (found.holds(101, 1), found.holds(101, 2)) == (True, False)
     assert replace(found, excluded={}).holds(101, 2)
+
+
+# --- the edges a reader decides for ---------------------------------------------------
+
+
+@settings(deadline=None, max_examples=400)
+@given(
+    parts=PARTS,
+    assignments=ASSIGNMENTS,
+    noise=NOISE,
+    bracket=st.integers(min_value=1, max_value=7),
+    kept=st.lists(st.booleans(), min_size=24, max_size=24),
+)
+def test_members_over_any_part_of_the_edges_turn_only_on_the_deciding_ones(
+    parts: list[tuple[int, int]],
+    assignments: Assigned,
+    noise: list[tuple[str, int | Source, int]],
+    bracket: int,
+    kept: list[bool],
+) -> None:
+    """Ruling T5-c of the 2026-10-15 assignments plan: a reader that counts
+    only the edges a client may see decides that for the edges
+    `deciding_edges` names, and finds what it would find deciding it for
+    every edge. `kept` says which edges the client sees."""
+    edges = [
+        *(part(n, whole_of, whole) for n, (whole_of, whole) in enumerate(parts)),
+        *(assign(100 + n, start, to, level) for n, (start, to, level) in enumerate(assignments)),
+        *(
+            BracketEdge(200 + n, kind, start, to, DIRECT)
+            for n, (kind, start, to) in enumerate(noise)
+        ),
+    ]
+    seen = {edge.subject for edge, keep in zip(edges, kept, strict=False) if keep}
+    found = members(edges, bracket, KINDS)
+    deciding = deciding_edges(edges, found, KINDS)
+
+    everywhere = members([edge for edge in edges if edge.subject in seen], bracket, KINDS)
+    decided = members([edge for edge in deciding if edge.subject in seen], bracket, KINDS)
+    assert (decided.brackets, dict(decided.events), dict(decided.excluded)) == (
+        everywhere.brackets,
+        dict(everywhere.events),
+        dict(everywhere.excluded),
+    )
+
+
+def test_an_excluding_edge_out_of_the_walk_is_among_the_deciding_ones() -> None:
+    """Channel 3 of the review of task 5: the whole of event 101 belongs to
+    bracket 1, and its unit 2 has its own assignment to bracket 9, outside
+    the walk. That edge decides whether unit 2 belongs, so it is among the
+    deciding edges; an edge of an event nothing assigns to the walk is not."""
+    whole = assign(1, Source(101, None), 1)
+    elsewhere = assign(2, Source(101, (2,)), 9)
+    unrelated = assign(3, Source(102, None), 9)
+    found = members([whole, elsewhere, unrelated], 1, KINDS)
+
+    assert deciding_edges([whole, elsewhere, unrelated], found, KINDS) == (whole, elsewhere)
+    assert not found.holds(101, 2)
+    assert members([whole], 1, KINDS).holds(101, 2)

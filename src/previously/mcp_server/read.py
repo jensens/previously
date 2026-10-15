@@ -60,12 +60,15 @@ from previously.core.graph import RelationBody
 from previously.core.graph import RETRACTED
 from previously.core.graph import TRANSITIVE
 from previously.core.graph import value_text
+from previously.core.graph_read import reader_bracket_edges
 from previously.core.graph_write import claim_decisions
 from previously.core.graph_write import claim_sources
 from previously.core.graph_write import read_claim_events
 from previously.core.graph_write import relation_ends
 from previously.core.graph_write import relation_visible
 from previously.core.hashing import iso_utc
+from previously.core.members import deciding_edges
+from previously.core.members import members
 from previously.core.policy import LOCAL_ONLY
 from previously.core.policy import RULE
 from previously.core.vocabulary import display_label
@@ -387,13 +390,20 @@ def chronicle[Conn](
     `decide` counts it, own identities left out; an erased event has no
     participants any more and drops out of a circle filter.
 
-    `within` keeps the events of which anything belongs to a bracket, and
-    of each shown event the units that do. It selects and releases nothing
-    ({ref}`chronicle-of-a-bracket`): the policy decides every event it keeps
-    as it decides without it, so an event withheld from the client stands
-    as the same placeholder, and a unit shown is one the client sees
-    without `within` too.
+    `within` keeps the events of which anything belongs to a bracket, as
+    the client finds it (`seen_members`), and of each shown event the units
+    that do; an event left with no unit to show is left out. It selects and
+    releases nothing ({ref}`chronicle-of-a-bracket`): the policy decides
+    every event it keeps as it decides without it, so a unit shown is one
+    the client sees without `within` too. The scan ends at the last event
+    of the bracket rather than at the end of the log, and reads nothing
+    for a bracket nothing belongs to.
     """
+    last: tuple[datetime, int] | None = None
+    if within is not None:
+        last = _last_member(log, conn, within)
+        if last is None or (after is not None and after >= last):
+            return Seen(())
     reads: list[Read] = []
     size = 0
     position = after
@@ -404,29 +414,83 @@ def chronicle[Conn](
             )
         )
         keys = log.source_keys(conn, [row.id for row in rows])
-        pending: list[_Pending] = []
-        for row in rows:
-            if circle is not None and (
-                row.payload is None or circle not in circles_of(policy, _identities(row.payload))
-            ):
-                continue
-            if within is not None and row.id not in within.events:
-                continue
-            pending.append(_decided(policy, client, row, keys.get(row.id)))
+        pending = [
+            _decided(policy, client, row, keys.get(row.id))
+            for row in rows
+            if _filtered_in(policy, row, circle, within)
+        ]
         shown_ids = [item.row.id for item in pending if item.read is None]
         units = log.units_by_event(conn, shown_ids)
         for item in pending:
+            read = _read_of(item, units.get(item.row.id, []), within)
+            if read is None:
+                continue
             if size > PAGE_CHARS:
                 return Seen(tuple(reads), more=True)
-            event_units = units.get(item.row.id, [])
-            if within is not None:
-                event_units = [u for u in event_units if within.holds(item.row.id, u.seq)]
-            read = item.read or _shown(item, event_units, full=False, from_unit=None)
             reads.append(read)
             size += _weight(read)
         if len(rows) < BATCH:
             return Seen(tuple(reads), more=False)
         position = (rows[-1].occurred_at, rows[-1].id)
+        if last is not None and position >= last:
+            return Seen(tuple(reads), more=False)
+
+
+def _filtered_in(policy: Policy, row: EventRow, circle: str | None, within: Members | None) -> bool:
+    """Whether the filters `circle` and `within` keep `row`, before the
+    policy decides it."""
+    if circle is not None and (
+        row.payload is None or circle not in circles_of(policy, _identities(row.payload))
+    ):
+        return False
+    return within is None or row.id in within.events
+
+
+def _read_of(item: _Pending, units: Sequence[UnitRow], within: Members | None) -> Read | None:
+    """The read of a decided event: its placeholder, or the event with the
+    units `within` keeps; `None` for one shown with no unit left to show
+    under `within`, which the bracket's chronicle leaves out."""
+    if item.read is not None:
+        return item.read
+    if within is not None:
+        units = [unit for unit in units if within.holds(item.row.id, unit.seq)]
+        if all(unit.content is None for unit in units):
+            return None
+    return _shown(item, units, full=False, from_unit=None)
+
+
+def _last_member[Conn](
+    log: LogStore[Conn], conn: Conn, within: Members
+) -> tuple[datetime, int] | None:
+    """Where the chronicle meets the last event of a bracket, as
+    `(occurred_at, id)`, or `None` when no observation belongs to it: one
+    read of the events of the bracket, so that a page of a bracket whose
+    events lie early in the log doesn't read the rest of it."""
+    rows = log.events_by_id(conn, sorted(within.events))
+    found = [(row.occurred_at, row.id) for row in rows.values() if row.kind == "observation"]
+    return max(found, default=None)
+
+
+def seen_members[Conn](
+    log: LogStore[Conn], conn: Conn, policy: Policy, client: Client, graph: Graph, bracket: int
+) -> Members:
+    """What belongs to `bracket` as `client` finds it: over the edges it may
+    see, an assignment or a hierarchy edge counting only where
+    `relation_visible` lets it through ({ref}`chronicle-of-a-bracket`). A
+    hidden link stops the walk, an assignment of a mail the client may not
+    see doesn't count, and neither does a hidden assignment of a unit of
+    its own, which then doesn't take the unit from its mail's bracket.
+
+    The edges are first walked all, which gives every event that can belong;
+    visibility is then decided only for the edges `deciding_edges` names,
+    the ones the result can turn on, so a call reads the sources of the
+    bracket's edges and not those of every assignment there is."""
+    edges, kinds = reader_bracket_edges(log, conn, graph)
+    deciding = deciding_edges(edges, members(edges, bracket, kinds), kinds)
+    if not deciding:
+        return members((), bracket, kinds)
+    view = graph_view(log, conn, policy, client, graph, [edge.subject for edge in deciding])
+    return members([edge for edge in deciding if view.seen(edge.subject)], bracket, kinds)
 
 
 def resume_point[Conn](

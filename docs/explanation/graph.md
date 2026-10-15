@@ -218,14 +218,20 @@ Periods play no part.
 A chronicle is about content, and a structure that ended still held what it held.
 
 The chronicle of a bracket is a filter, never a key.
-The command line is the operator's tool and shows every unit that belongs.
-Over MCP, the processing policy decides every event that the filter keeps, just as it decides without the filter, so an event withheld from the client stands as the same placeholder with `within` and without it, and no unit appears that the client wouldn't see in the whole chronicle.
+Over MCP, the processing policy decides every event that the filter keeps, just as it decides without the filter, so no unit appears that the client wouldn't see in the whole chronicle.
 That matters for the order of the work: finding happens after the gate has had its say, so an assignment can't open anything, and in this phase it can only find.
+
+Finding mustn't tell a client what the rest of the server keeps from it, either, and the edges the walk follows are relations like any other.
+So over MCP an edge counts only where the client sees it, by the same rule that decides whether a relation appears on an entity's page or in the triage.
+An assignment starts at its mail, and the mail is among its sources, so a client that may not see a mail doesn't see its assignments: under `within` the mail isn't there at all, not even as a placeholder, while the whole chronicle shows its placeholder as before.
+A part or a `part_of` that the client may not see stops the walk, so a mail that belongs to the bracket only through it isn't found.
 A bracket that the client may not see is refused with the sentence of one that doesn't exist, since an empty page would tell the client that an entity stands under the id.
 
-What the filter doesn't hide is the assignment itself.
-A placeholder in the chronicle of a bracket tells the client that something withheld belongs there, as a placeholder under the filter `circle` tells that somebody of the circle takes part.
-And the walk down the hierarchy and along the assignments doesn't ask whether the client may see each edge, so a client can learn that an event it sees belongs to a bracket it sees through an entity or a relation it may not see, without learning which.
+The command line is the operator's tool and walks every edge, so a client can find less than the operator.
+In one case it finds one unit more.
+A mail the client sees can be assigned whole to the bracket, while one of its units has an assignment of its own to a bracket the client may not see.
+For the operator, the more specific assignment takes that unit out of the chronicle; for the client, that assignment doesn't count, because the gap it leaves would tell the client that the unit is assigned somewhere it can't see.
+The client then gets the unit under the bracket, which releases nothing: it's a unit of a mail the client sees without `within` too.
 
 (graph-cost)=
 

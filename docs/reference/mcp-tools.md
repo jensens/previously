@@ -261,8 +261,12 @@ The chronicle: the observations in the order of `occurred_at`, then `id`, that m
 The title is `chronicle`, followed by each filter given as `· NAME VALUE`, such as `chronicle · within 12`.
 Each event is shown with its heading and all its units, or as a placeholder.
 With `within`, a shown event carries only the units that belong to the bracket, and the access entry names those.
-A unit belongs to the bracket as it does for `previously chronicle --within` ({ref}`cli-reference`).
-The policy decides every event as it does without `within`, so an event it keeps from the client stands as the same placeholder.
+A unit belongs to the bracket as it does for `previously chronicle --within` ({ref}`cli-reference`), with one difference: an assignment or a hierarchy edge counts only where the client sees it, as a relation on the page of an entity does ({ref}`chronicle-of-a-bracket`).
+So an event the client may not see isn't shown under `within`, not even as a placeholder, a part or a `part_of` the client may not see stops the walk, and an assignment of a unit of its own that the client may not see doesn't take the unit from its event's bracket.
+The client can find less than the operator, and in that last case one more unit of an event it sees.
+An event left with no unit of the bracket isn't shown.
+The policy decides every event that `within` keeps as it does without `within`.
+When an event is cut at the end of a page, the note's `get_event` call serves every unit from the next one on, of the bracket or not.
 A bracket the client may not see is refused with the sentence of an id that names no entity, and so are an id of an event, a relation or a retracted entity, and an id below 1 or beyond 2^53 − 1.
 A cursor carries the id of the last item the page consumed, the filters and the number of the page it opens, encoded as base64url without padding; it isn't sealed, and grants nothing, because every call decides again.
 A cursor carries `within` as text, such as `"12"`, and the access entry as the number the call gave.
