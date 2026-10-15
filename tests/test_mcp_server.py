@@ -122,6 +122,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable
     from collections.abc import Callable
     from collections.abc import Iterator
+    from collections.abc import Sequence
     from previously.contract.rows import EventRow
     from previously.contract.rows import Tip
 
@@ -263,7 +264,9 @@ def _tool(
     *,
     client: str = "claude-code",
 ) -> CallToolResult:
-    server = build_server(world.storage, stdio_client=client)
+    server = build_server(
+        world.storage, stdio_client=client, graph=world.storage, projections=world.storage
+    )
     return _session(server, mode, lambda session: session.call_tool(name, arguments or {}))
 
 
@@ -2188,7 +2191,14 @@ _HANDLE = re.compile(r"^handle: (\S+)$", re.MULTILINE)
 
 
 def _writer(world: World, *, client: str = "claude-code", key: str | None = KEY) -> Any:
-    return build_server(world.storage, stdio_client=client, locker=world.storage, confirm_key=key)
+    return build_server(
+        world.storage,
+        stdio_client=client,
+        locker=world.storage,
+        confirm_key=key,
+        graph=world.storage,
+        projections=world.storage,
+    )
 
 
 def _write(
@@ -4152,13 +4162,15 @@ def test_an_entity_of_a_recollection_and_a_mail_is_delivered_with_the_circles_of
     assert (only.event, only.circles) == (lonely, ())
 
 
-class _CountingFolds(PostgresStorage):
-    """The real store, counting the reads of every assertion, which is what
-    folding the graph costs."""
+class _CountingReads(PostgresStorage):
+    """The real store, counting what a call reads of the assertions: whole
+    reads of the kind, which folding the graph takes, and every assertion
+    row read by id or in a batch of the catch-up."""
 
     def __init__(self, engine: Engine) -> None:
         super().__init__(engine)
         self.folds = 0
+        self.rows: list[int] = []
 
     @override
     def read_by_kind(self, conn: Connection, kind: str) -> Iterator[EventRow]:
@@ -4166,17 +4178,42 @@ class _CountingFolds(PostgresStorage):
             self.folds += 1
         return super().read_by_kind(conn, kind)
 
+    @override
+    def read(self, conn: Connection, from_id: int, limit: int) -> Iterator[EventRow]:
+        found = list(super().read(conn, from_id, limit))
+        self.rows.extend(row.id for row in found if row.kind == "assertion")
+        return iter(found)
+
+    @override
+    def events_by_id(self, conn: Connection, event_ids: Sequence[int]) -> dict[int, EventRow]:
+        found = super().events_by_id(conn, event_ids)
+        self.rows.extend(sorted(i for i, row in found.items() if row.kind == "assertion"))
+        return found
+
 
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
-def test_a_call_folds_the_graph_once_for_its_header_and_its_body(
+def test_a_call_reads_no_assertion_in_full_and_of_the_graph_only_what_is_new(
     world: World, mode: str, db: Engine
 ) -> None:
-    """Ruling T6-c of the 2026-10-14 assignments plan: the header's count
-    and the list share one fold."""
+    """Replaces the test that pinned one fold of the log per call, for its
+    header and its body (ruling T6-c of the 2026-10-14 assignments plan): a
+    call reads the graph from its projection and reads no assertion in full,
+    whatever it does. With nothing new but the access entry of the call
+    before and no objection waiting, it reads no assertion at all; with a
+    version written since, it reads that one, as the catch-up folds its
+    thread, and nothing else ({ref}`graph-projection`)."""
     ids = _graphed(world)
-    counting = _CountingFolds(db)
-    server = build_server(counting, stdio_client="claude-code")
+    counting = _CountingReads(db)
+    server = build_server(
+        counting, stdio_client="claude-code", graph=counting, projections=counting
+    )
+
+    def call(name: str, arguments: dict[str, Any]) -> None:
+        result = _session(server, mode, lambda s: s.call_tool(name, arguments))
+        assert not result.is_error, _text(result)
+
+    call("whoami", {})  # builds the projection
     for name, arguments in (
         ("list_entities", {}),
         ("list_entities", {"subject": ids.anna}),
@@ -4184,9 +4221,121 @@ def test_a_call_folds_the_graph_once_for_its_header_and_its_body(
         ("whoami", {}),
     ):
         counting.folds = 0
-        result = _session(server, mode, lambda s, n=name, a=arguments: s.call_tool(n, a))
-        assert not result.is_error, _text(result)
-        assert counting.folds == 1, name
+        call(name, arguments)
+        assert counting.folds == 0, name
+    counting.rows = []
+    call("whoami", {})
+    assert counting.rows == []
+    (new,) = write_claims(
+        world.storage,
+        world.storage,
+        [_person("Bert", world.ids["attachments_only"])],
+        recorded_at=T0,
+    ).ids
+    counting.folds, counting.rows = 0, []
+    call("whoami", {})
+    assert (counting.folds, set(counting.rows)) == (0, {new})
+    # The control: without the projection, the same call folds the log.
+    folding = build_server(counting, stdio_client="claude-code")
+    _session(folding, mode, lambda s: s.call_tool("whoami", {}))
+    assert counting.folds == 1
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_reading_tools_answer_from_the_projection_as_from_the_fold(
+    world: World, mode: str
+) -> None:
+    """Every answer that reads the graph is the same from the projection as
+    from the fold of the log, which is what the server without the
+    projection reads, header included, for both clients: one that may not
+    see Lea and one that may ({ref}`graph-projection`)."""
+    ids = _graphed(world)
+    scanned, plain = world.ids["attachments_only"], world.ids["plain"]
+    # A relation that rests on another mail than its ends: the view reads
+    # that mail when the page of Anna names the relation, not before.
+    _relate(world, ids.anna, ids.secretary, source="html_only")
+    set_class(world.storage, PERSON_CLASS, statement="people", recorded_at=T0)
+    _confirmed(
+        world,
+        mode,
+        "write_entity",
+        {
+            "items": [
+                _entity_item("Anna M", scanned, subject=ids.anna),
+                _entity_item("Dora", scanned, confidence=40),
+                _entity_item("Clara", scanned, confidence=100),
+            ]
+        },
+    )
+    _confirmed(
+        world,
+        mode,
+        "write_relation",
+        {"items": [_question_item(ids.anna, [ids.treasurer, ids.secretary], scanned)]},
+    )
+    hidden = {"items": [_entity_item("Lea M", plain, subject=ids.lea)]}
+    _confirmed(world, mode, "write_entity", hidden, client="local-harness")
+    calls: list[tuple[str, dict[str, Any]]] = [
+        ("list_entities", {}),
+        ("list_entities", {"proposals": True}),
+        ("list_entities", {"types": ["post"]}),
+        ("list_entities", {"state": "retracted"}),
+        ("list_entities", {"subject": ids.anna}),
+        ("list_entities", {"subject": ids.anna, "history": True}),
+        ("list_entities", {"subject": ids.lea}),
+        ("list_entities", {"subject": ids.holds}),
+        ("list_triage", {}),
+        ("whoami", {}),
+    ]
+    for client in ("claude-code", "local-harness"):
+        projected = build_server(
+            world.storage, stdio_client=client, graph=world.storage, projections=world.storage
+        )
+        folding = build_server(world.storage, stdio_client=client)
+        for name, arguments in calls:
+
+            def answer(server: Any, n: str = name, a: dict[str, Any] = arguments) -> str:
+                result = _session(server, mode, lambda s: s.call_tool(n, a))
+                assert not result.is_error, _text(result)
+                # The fence tags are drawn anew for every answer.
+                return _untagged(_text(result))
+
+            found, expected = answer(projected), answer(folding)
+            assert found == expected, (client, name, arguments)
+    # What the answers agree on is not nothing: the header counts what the
+    # client may see, and the triage holds an objection and a question.
+    triage = _text(_tool(world, mode, "list_triage"))
+    assert triage.splitlines()[0] == "previously · list_triage · 1 objection pending · page 1"
+    assert "· objection ·" in triage
+    assert "· question ·" in triage
+    assert _header(_tool(world, mode, "whoami", client="local-harness")) == (
+        "previously · whoami · 2 objections pending"
+    )
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_call_catches_the_projection_up_before_it_reads(world: World, mode: str) -> None:
+    """A version written past the server, through `core`, with nobody
+    running `previously project`, is in the next answer and its header."""
+    ids = _graphed(world)
+    assert "Bert" not in _text(_tool(world, mode, "list_entities"))
+    scanned = world.ids["attachments_only"]
+    objection = replace(
+        _person("Anna B", scanned),
+        author=model_author("claude-code"),
+        responsibility=OPEN,
+        subject=ids.anna,
+        contests=ids.anna,
+        confidence=40,
+    )
+    write_claims(
+        world.storage, world.storage, [_person("Bert", scanned), objection], recorded_at=T0
+    )
+    page = _text(_tool(world, mode, "list_entities"))
+    assert "field name: Bert" in page
+    assert page.splitlines()[0] == "previously · list_entities · 1 objection pending · page 1"
 
 
 @pytest.mark.db

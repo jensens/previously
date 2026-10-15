@@ -437,6 +437,11 @@ A watermark isn't part of the log, which can't rebuild it, and it isn't a projec
 `set_watermark` runs in the caller's transaction, so that the run can write the watermark after the batch it covers and never before; {ref}`connectors` says why that order is the whole point.
 The connector itself is a protocol in `contract` as well, `Connector`, with a name and one method, `fetch`; it isn't a store, and `core` asks it for bytes and nothing else.
 
+The second phase of the assignments added a fifth, `GraphStore[Conn]`, for what a reader asks of the graph projection: its rows, by kind, by end, by day, and those where something waits or is objected to ({ref}`graph-readers`).
+It holds reads only.
+A reader catches the projection up through `ProjectionStore` first, in transactions of its own, and reads through `GraphStore` in its snapshot, so the code that answers a listing holds no handle that empties or fills a table.
+The command line passes `PostgresStorage` under both, as it does to `catch_up`, and the MCP server takes the two as two parameters, beside `log` and `locker`.
+
 The honest version of the old arrangement deserves saying plainly.
 The exemptions weren't a compromise anybody was proud of.
 They were the cost of typing `core` against a concrete store, they were visible in every gate log as a number, and the number was there so the cost stayed countable until it was paid off.

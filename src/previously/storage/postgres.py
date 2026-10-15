@@ -56,7 +56,9 @@ from sqlalchemy import Engine
 from sqlalchemy import func
 from sqlalchemy import insert
 from sqlalchemy import null
+from sqlalchemy import or_
 from sqlalchemy import Row
+from sqlalchemy import Select
 from sqlalchemy import select
 from sqlalchemy import tuple_
 from sqlalchemy import update
@@ -80,6 +82,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from collections.abc import Sequence
     from contextlib import AbstractContextManager
+    from datetime import date
     from datetime import datetime
     from sqlalchemy import Table
 
@@ -1017,14 +1020,10 @@ class PostgresStorage:
             )
         )
 
-    # --- Reads for the command line, outside the protocols -------------------
-    # Like `units`: only `cli` and the tests call these. The protocols hold
-    # what `core` needs, and `core` reads a projection back only to catch it
-    # up, as the graph reads its versions to fold a thread again.
+    # --- GraphStore -----------------------------------------------------------
 
-    def read_graph_threads(self, conn: Connection) -> list[GraphThreadRow]:
-        """Every row of `p_graph_thread`, by subject: what the tests hold
-        against the fold."""
+    @staticmethod
+    def _graph_thread_rows(conn: Connection, query: Select[Any]) -> list[GraphThreadRow]:
         return [
             GraphThreadRow(
                 subject=row.subject,
@@ -1044,8 +1043,75 @@ class PostgresStorage:
                 objections=row.objections,
                 question=row.question,
             )
-            for row in conn.execute(select(p_graph_thread).order_by(p_graph_thread.c.subject))
+            for row in conn.execute(query.order_by(p_graph_thread.c.subject))
         ]
+
+    def read_graph_threads(
+        self, conn: Connection, *, kind: str | None = None, types: Sequence[str] | None = None
+    ) -> list[GraphThreadRow]:
+        """The rows of `p_graph_thread`, by subject: every one, or of `kind`,
+        and of `types` where given, through the index on kind and type."""
+        query = select(p_graph_thread)
+        if kind is not None:
+            query = query.where(p_graph_thread.c.kind == kind)
+        if types is not None:
+            query = query.where(p_graph_thread.c.type.in_(types))
+        return self._graph_thread_rows(conn, query)
+
+    def graph_relations(
+        self,
+        conn: Connection,
+        *,
+        at: date | None = None,
+        types: Sequence[str] | None = None,
+        start: int | None = None,
+        to: int | None = None,
+        touching: int | None = None,
+    ) -> list[GraphThreadRow]:
+        """The rows of the relations that stand and point at an entity, as
+        `Graph.relations` takes them, narrowed by its arguments. A period
+        holds on a day between its ends, both included, and an open end
+        holds on every day on its side."""
+        thread = p_graph_thread.c
+        query = select(p_graph_thread).where(
+            thread.kind == "relation", thread.state == "standing", thread.to_entity.isnot(None)
+        )
+        if types is not None:
+            query = query.where(thread.type.in_(types))
+        if start is not None:
+            query = query.where(thread.start_entity == start)
+        if to is not None:
+            query = query.where(thread.to_entity == to)
+        if touching is not None:
+            query = query.where(or_(thread.start_entity == touching, thread.to_entity == touching))
+        if at is not None:
+            query = query.where(
+                or_(thread.period_start.is_(None), thread.period_start <= at),
+                or_(thread.period_end.is_(None), thread.period_end >= at),
+            )
+        return self._graph_thread_rows(conn, query)
+
+    def graph_waiting(self, conn: Connection) -> list[GraphThreadRow]:
+        """The rows with a pending version or a winner at level `open`."""
+        thread = p_graph_thread.c
+        query = select(p_graph_thread).where(or_(thread.pending > 0, thread.level == "open"))
+        return self._graph_thread_rows(conn, query)
+
+    def graph_objected(self, conn: Connection) -> list[GraphThreadRow]:
+        """The rows with an objection pending: the header of every MCP
+        result counts them."""
+        query = select(p_graph_thread).where(p_graph_thread.c.objections > 0)
+        return self._graph_thread_rows(conn, query)
+
+    def graph_subjects(self, conn: Connection) -> list[int]:
+        return list(
+            conn.execute(
+                select(p_graph_version.c.subject).distinct().order_by(p_graph_version.c.subject)
+            ).scalars()
+        )
+
+    # --- Reads for the command line, outside the protocols -------------------
+    # Like `units`: only `cli` and the tests call these.
 
     def tip_and_bookmark(self, conn: Connection, name: str) -> TipAndBookmark:
         """Both numbers out of **one** statement, for the lag of one projection.

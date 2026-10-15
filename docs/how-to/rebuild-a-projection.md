@@ -28,6 +28,18 @@ previously project
 `previously project` prints one line per projection, and each line names the path that run took.
 See {ref}`cli-reference` for the four outcomes and their exact wording.
 
+## Check the graph projection against the log
+
+Run `previously project` with `--check`.
+
+```shell
+previously project --check
+```
+
+It catches up as `previously project` does, then folds the log and prints one line per thread whose row in `p_graph_thread` differs from the fold, beginning with `graph` and the thread's id.
+It returns 0 when no line was printed and 1 otherwise; see {ref}`cli-project-check` for the wording.
+If it reports a thread, force a rebuild of the projection `graph` as the next sections describe, and run the check again.
+
 ## Force a rebuild after a change to the derivation
 
 Raise the projection's version in the code whenever you change how its rows are derived.
@@ -44,6 +56,7 @@ It empties that projection's tables and builds them again from the log.
 The line for the projection you raised begins with `rebuilt:`, names the version it moved from and to, and ends with the number of events projected and the new `up_to_id`.
 The lines for the projections you left alone report `up to date`.
 If `previously redact` runs before `previously project` does, it catches the projections up itself, and prints the same `rebuilt:` line on standard error.
+A listing of the graph and every MCP call catch the graph projection up as well, without a line, so run `previously project` right after you deploy a release that raised `GraphProjection.version`; otherwise the first of them waits for the whole rebuild.
 
 A raised version rebuilds the rows and leaves the table's columns and indexes as they are.
 If your change needs a column that isn't there yet, write a migration for it as well; see {ref}`add-a-migration`.

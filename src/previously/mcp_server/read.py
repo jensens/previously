@@ -37,10 +37,12 @@ from previously.core.assertion import REJECTION_NOTE
 from previously.core.assertions import ASSERTION
 from previously.core.assertions import assertion_decisions
 from previously.core.assertions import erased_assertion
+from previously.core.assertions import read_events
 from previously.core.assertions import read_source_events
 from previously.core.assertions import read_threads
 from previously.core.assertions import rejections_of
 from previously.core.assertions import source_identities
+from previously.core.assertions import SourceEvents
 from previously.core.assertions import thread_circles
 from previously.core.canonical import MAX_SAFE_INT
 from previously.core.chain import read_references
@@ -95,7 +97,6 @@ if TYPE_CHECKING:
     from previously.core.assertion import Statement
     from previously.core.assertion import Thread
     from previously.core.assertion import Version
-    from previously.core.assertions import SourceEvents
     from previously.core.graph import Claim
     from previously.core.graph import ClassState
     from previously.core.graph import Graph
@@ -872,21 +873,47 @@ class GraphView:
     any client. An end that names something other than an entity, which
     only a forged payload does, is not seen, and gets no placeholder.
 
-    The verdicts are taken once per thread and kept for the call.
+    The verdicts are taken once per thread and kept for the call. The
+    source events of a thread are those read with the view, and with `more`
+    those of a thread asked about later are read when it is: a graph read
+    from its projection folds the end of a relation, or an entity a `ref`
+    names, only when a line names it. Without `more`, a thread whose events
+    were not read is refused as `SourceEvents.named` refuses it.
     """
 
-    def __init__(self, policy: Policy, client: Client, graph: Graph, events: SourceEvents) -> None:
+    def __init__(
+        self,
+        policy: Policy,
+        client: Client,
+        graph: Graph,
+        events: SourceEvents,
+        more: Callable[[Iterable[int]], SourceEvents] | None = None,
+    ) -> None:
         self.policy = policy
         self.client = client
         self.graph = graph
         self._events = events
+        self._more = more
         self._verdicts: dict[int, ThreadVerdict] = {}
+
+    def _read(self, thread: GraphThread) -> None:
+        """Reads the source events of `thread` the view has not read yet."""
+        wanted = {s.event for version in thread.versions for s in version.claim.sources}
+        missing = wanted - self._events.read
+        if missing and self._more is not None:
+            more, known = self._more(missing), self._events
+            self._events = SourceEvents(
+                known.read | more.read,
+                {**known.identities, **more.identities},
+                {**known.sources, **more.sources},
+            )
 
     def verdict(self, subject: int) -> ThreadVerdict:
         found = self._verdicts.get(subject)
         if found is not None:
             return found
         thread = self.graph.threads[subject]
+        self._read(thread)
         identities, sources = claim_sources(self._events, thread)
         recollection = any(v.claim.evidence == RECOLLECTION for v in thread.versions)
         own = claim_decisions(
@@ -964,7 +991,8 @@ def graph_view[Conn](
 ) -> GraphView:
     """The view of `graph` for `client`, with the source events of the
     threads `subjects` names, of every entity those name as an end, or of
-    every thread with `None`, read in two queries."""
+    every thread with `None`, read in two queries; those of a thread asked
+    about later are read when it is."""
     if subjects is None:
         threads = list(graph.threads.values())
     else:
@@ -974,7 +1002,13 @@ def graph_view[Conn](
                 end for end in relation_ends(graph.threads[subject]) if end in graph.threads
             )
         threads = [graph.threads[s] for s in sorted(wanted)]
-    return GraphView(policy, client, graph, read_claim_events(log, conn, threads))
+    return GraphView(
+        policy,
+        client,
+        graph,
+        read_claim_events(log, conn, threads),
+        lambda events: read_events(log, conn, events),
+    )
 
 
 def objections_seen[Conn](
@@ -984,8 +1018,9 @@ def objections_seen[Conn](
     or a relation it sees, for the header of every result
     ({ref}`mcp-tools`). One the client may not see is not counted, so that
     the header tells nothing of what the policy keeps from it. `graph` is
-    the one the call folded, which the body reads as well."""
-    waiting = {s: t for s, t in graph.threads.items() if t.objections(graph.classes)}
+    the one the call reads, the body as well; read from the projection, it
+    folds only the threads with an objection, and none when none waits."""
+    waiting = graph.objected()
     if not waiting:
         return 0
     view = graph_view(log, conn, policy, client, graph, waiting)
@@ -1174,7 +1209,7 @@ def _relation_lines(
     period and its level where it is not direct."""
     lines: list[str] = []
     classes = view.graph.classes
-    relations = view.graph.relations()
+    relations = view.graph.relations(touching=subject)
     for relation_id in sorted(relations):
         relation = relations[relation_id]
         body = cast("RelationBody", relation.claim.body)
@@ -1290,9 +1325,9 @@ def entities[Conn](
     the call folded.
     """
     vocabulary = read_vocabulary(log, conn)
-    view = graph_view(log, conn, policy, client, graph)
     if listing.subject is not None:
         subject = listing.subject
+        view = graph_view(log, conn, policy, client, graph, (subject,))
         uri = event_uri(subject)
         thread = graph.threads.get(subject)
         if thread is None and erased_assertion(log, conn, subject):
@@ -1305,15 +1340,14 @@ def entities[Conn](
             missing = ErrorMark(uri, "no entity stands under this id")
             return Seen((Read(missing, None, event=subject),))
         return Seen((cast("Read", _entity_entry(view, vocabulary, thread, listing, language)),))
+    standing = graph.winners(ENTITY)
+    view = graph_view(log, conn, policy, client, graph, standing)
     reads: list[Read] = []
     size = 0
-    for subject in sorted(graph.threads):
-        thread = graph.threads[subject]
-        if (after is not None and subject <= after) or thread.kind != ENTITY:
+    for subject in sorted(standing):
+        if after is not None and subject <= after:
             continue
-        if thread.winner(graph.classes) is None:
-            continue
-        read = _entity_entry(view, vocabulary, thread, listing, language)
+        read = _entity_entry(view, vocabulary, graph.threads[subject], listing, language)
         if read is None:
             continue
         if size > PAGE_CHARS:
@@ -1342,7 +1376,7 @@ def waiting_versions(graph: Graph) -> dict[str, list[tuple[GraphThread, GraphVer
         section: [] for section in (OBJECTION, QUESTION, PROPOSAL)
     }
     classes = graph.classes
-    for thread in graph.threads.values():
+    for thread in graph.waiting().values():
         winner = thread.winner(classes)
         waiting = list(thread.pending(classes))
         if winner is not None and level_of(winner, classes) == OPEN:
@@ -1412,9 +1446,11 @@ def triage[Conn](
     an entity the client may not see, and went when it was answered, would
     tell what the header leaves out. `graph` is the one the call folded."""
     vocabulary = read_vocabulary(log, conn)
-    view = graph_view(log, conn, policy, client, graph)
+    waiting = waiting_versions(graph)
+    subjects = {thread.subject for pairs in waiting.values() for thread, _version in pairs}
+    view = graph_view(log, conn, policy, client, graph, subjects)
     found: list[tuple[str, int, Callable[[], Read]]] = []
-    for section, pairs in waiting_versions(graph).items():
+    for section, pairs in waiting.items():
         for thread, version in pairs:
             if view.verdict(thread.subject).shown:
                 found.append(

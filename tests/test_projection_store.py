@@ -24,6 +24,7 @@ import pytest
 
 
 if TYPE_CHECKING:
+    from previously.contract.store import GraphStore
     from previously.contract.store import LogReader
     from previously.contract.store import LogStore
     from previously.contract.store import ProjectionStore
@@ -217,3 +218,16 @@ def test_postgres_storage_satisfies_the_redaction_protocol() -> None:
     storage = PostgresStorage(create_engine("postgresql+psycopg://x:y@localhost/z"))
     eraser: RedactionStore[Connection] = storage
     assert isinstance(eraser, PostgresStorage)
+
+
+def test_postgres_storage_satisfies_the_read_protocol_of_the_graph() -> None:
+    """`GraphStore` is what a reader asks of the graph projection
+    ({ref}`graph-projection`): pyright proves at the assignment that
+    `PostgresStorage` answers it, as in the tests above. Measured red with
+    a method of `GraphStore` renamed."""
+    from sqlalchemy import Connection
+    from sqlalchemy import create_engine
+
+    storage = PostgresStorage(create_engine("postgresql+psycopg://x:y@localhost/z"))
+    reader: GraphStore[Connection] = storage
+    assert isinstance(reader, PostgresStorage)

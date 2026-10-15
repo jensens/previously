@@ -39,6 +39,7 @@ from previously.core.assertion import REJECTION
 from previously.core.assertion import Source
 from previously.core.classes import ClassFold
 from previously.core.graph import fold_graph
+from previously.core.graph import Graph
 from previously.core.graph import GRAPH_KINDS
 from previously.core.graph import level_of
 from previously.core.graph import parse_claim
@@ -177,10 +178,12 @@ def marks(batch: Batch) -> Marks:
     return found
 
 
-def _classes[Conn](log: LogReader[Conn], conn: Conn, up_to: int) -> Mapping[int, ClassState]:
+def class_states[Conn](log: LogReader[Conn], conn: Conn, up_to: int) -> Mapping[int, ClassState]:
     """The class states as of event `up_to`, as `read_classes` reads them
     for the whole log: a batch is folded at its own end, and a class event
-    a later batch holds marks the threads it changes when that batch comes."""
+    a later batch holds marks the threads it changes when that batch comes.
+    `previously project --check` folds the log at the projection's
+    `up_to_id` under them."""
     folded = ClassFold()
     for row in log.actions(conn, APPROVAL_CLASS):
         if row.id <= up_to:
@@ -207,15 +210,68 @@ def _named(payload: Mapping[str, object]) -> set[int]:
 
 
 def _rows[Conn](
-    log: LogReader[Conn], conn: Conn, batch: Batch, wanted: Iterable[int]
+    log: LogReader[Conn], conn: Conn, known: Mapping[int, EventRow], wanted: Iterable[int]
 ) -> dict[int, EventRow]:
-    """The rows of `wanted`, out of the batch where it holds them and in one
-    query for the rest, none when the batch holds them all."""
-    in_batch = {event.id: event for event in batch.events}
+    """The rows of `wanted`, out of `known` where it holds them and in one
+    query for the rest, none when `known` holds them all."""
     ids = set(wanted)
-    found = {event_id: in_batch[event_id] for event_id in ids if event_id in in_batch}
+    found = {event_id: known[event_id] for event_id in ids if event_id in known}
     missing = sorted(ids - found.keys())
     return found | log.events_by_id(conn, missing)
+
+
+def _known(batch: Batch) -> dict[int, EventRow]:
+    return {event.id: event for event in batch.events}
+
+
+def _folded[Conn](
+    log: LogReader[Conn],
+    conn: Conn,
+    subjects: Sequence[int],
+    ids: Mapping[int, Sequence[int]],
+    classes: Mapping[int, ClassState],
+    known: Mapping[int, EventRow],
+) -> tuple[Graph, dict[int, EventRow]]:
+    """`fold_threads`, and the rows it read."""
+    rows = _rows(log, conn, known, [*subjects, *(i for found in ids.values() for i in found)])
+    named = {
+        other for row in rows.values() if row.payload is not None for other in _named(row.payload)
+    }
+    # Outside its thread, the fold reads a row only for whether it is
+    # erased; the rest of what a version names is in its own thread.
+    rows |= {
+        event_id: row
+        for event_id, row in _rows(log, conn, known, named - rows.keys()).items()
+        if row.payload is None
+    }
+    graph = fold_graph(
+        (
+            (row.id, row.recorded_at, row.payload)
+            for row in sorted(rows.values(), key=lambda row: row.id)
+            if row.kind == _ASSERTION
+        ),
+        classes,
+    )
+    return graph, rows
+
+
+def fold_threads[Conn](
+    log: LogReader[Conn],
+    conn: Conn,
+    subjects: Sequence[int],
+    ids: Mapping[int, Sequence[int]],
+    classes: Mapping[int, ClassState],
+) -> Graph:
+    """The threads of `subjects` folded again from what the log holds now,
+    under `classes`: from the rows `ids` names for each, which
+    `p_graph_version` holds, the subject itself, and the rows their
+    versions approve or contest where those are erased. A thread is the
+    same as in `fold_graph` over the whole log, since nothing outside these
+    rows changes what the fold makes of it; the catch-up folds a touched
+    thread this way, and a reader each thread it shows. The graph holds the
+    threads of `subjects` that have a version, and none other."""
+    graph, _rows_read = _folded(log, conn, subjects, ids, classes, {})
+    return Graph({s: graph.threads[s] for s in subjects if s in graph.threads}, classes)
 
 
 def _stale(ids: Sequence[int], rows: Mapping[int, EventRow]) -> list[int]:
@@ -272,9 +328,9 @@ class GraphProjection:
         if not (touched or found.classes):
             return
 
-        classes = _classes(log, conn, batch.events[-1].id)
+        classes = class_states(log, conn, batch.events[-1].id)
         under = _same_name(classes, found.classes)
-        if any(row.kind == _ACTION for row in _rows(log, conn, batch, unknown).values()):
+        if any(row.kind == _ACTION for row in _rows(log, conn, _known(batch), unknown).values()):
             # An erased action may have been a class event, and its name is
             # gone with its payload: every thread under any class is folded
             # again. An erasure of an action is rare, and refolding is safe.
@@ -294,28 +350,7 @@ class GraphProjection:
         """Folds the threads of `subjects` again from what the log holds now,
         and writes what each stands at, or takes its row where none wins."""
         ids = store.graph_version_ids(conn, subjects)
-        rows = _rows(log, conn, batch, [*subjects, *(i for found in ids.values() for i in found)])
-        named = {
-            other
-            for row in rows.values()
-            if row.payload is not None
-            for other in _named(row.payload)
-        }
-        # Outside its thread, the fold reads a row only for whether it is
-        # erased; the rest of what a version names is in its own thread.
-        rows |= {
-            event_id: row
-            for event_id, row in _rows(log, conn, batch, named - rows.keys()).items()
-            if row.payload is None
-        }
-        graph = fold_graph(
-            (
-                (row.id, row.recorded_at, row.payload)
-                for row in sorted(rows.values(), key=lambda row: row.id)
-                if row.kind == _ASSERTION
-            ),
-            classes,
-        )
+        graph, rows = _folded(log, conn, subjects, ids, classes, _known(batch))
         standing: list[GraphThreadRow] = []
         gone: list[int] = []
         for subject in subjects:

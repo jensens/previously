@@ -31,6 +31,7 @@ and a statement's text may come from a mail whose erasure the log has to
 survive.
 """
 
+from collections.abc import Collection
 from collections.abc import Iterable
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -888,14 +889,28 @@ class GraphThread:
 
 @dataclass(frozen=True)
 class Graph:
+    """The threads of the entities and relations, and the approval classes
+    they are read under.
+
+    The methods are the questions a reader asks of the whole graph. Here
+    each walks every thread. A graph read from its projection
+    (`core.graph_read`) answers them from the projection's tables, folds
+    only the threads they name, and runs the same method on those, so that
+    both give the same answer ({ref}`graph-projection`).
+    """
+
     threads: Mapping[int, GraphThread]
     classes: Mapping[int, ClassState]
 
-    def _winners(self, kind: str) -> dict[int, GraphVersion]:
+    def winners(
+        self, kind: str, *, types: Collection[str] | None = None
+    ) -> dict[int, GraphVersion]:
+        """The winner of each thread of `kind` that has one, by id; with
+        `types`, of the threads whose winner is of one of them."""
         winners: dict[int, GraphVersion] = {}
         for subject, thread in self.threads.items():
             winner = thread.winner(self.classes) if thread.kind == kind else None
-            if winner is not None:
+            if winner is not None and (types is None or winner.claim.body.type in types):
                 winners[subject] = winner
         return winners
 
@@ -903,11 +918,27 @@ class Graph:
         """The winner of each entity, by id, unless it is retracted."""
         return {
             subject: version
-            for subject, version in self._winners(ENTITY).items()
+            for subject, version in self.winners(ENTITY).items()
             if version.claim.body.state != RETRACTED
         }
 
-    def relations(self, *, at: date | None = None) -> Mapping[int, GraphVersion]:
+    def entity_kinds(self) -> dict[int, str]:
+        """The kind of every entity that has a winner, a retracted one
+        included, by id: what a version is held against when the vocabulary
+        is asked whether it still fits."""
+        return {
+            subject: version.claim.body.type for subject, version in self.winners(ENTITY).items()
+        }
+
+    def relations(
+        self,
+        *,
+        at: date | None = None,
+        types: Collection[str] | None = None,
+        start: int | None = None,
+        to: int | None = None,
+        touching: int | None = None,
+    ) -> Mapping[int, GraphVersion]:
         """The winner of each relation, by id, if it stands, points at an
         entity, and, with `at`, its period holds on that day. A question is
         no relation yet, and a relation without a period holds on every day.
@@ -915,16 +946,50 @@ class Graph:
         Winners of every level are here, open proposals included. The cycle
         check of a direct or transitive write does not see open edges (see
         `reaches`), so these relations may hold a cycle that runs through an
-        open one: a walk over them needs a visited set."""
+        open one: a walk over them needs a visited set.
+
+        The other arguments narrow the answer: `types` to relations of those
+        kinds, `start` and `to` to those that start at or point at that
+        entity, `touching` to those with that entity at either end. An
+        entity id matches no start at an event."""
         found: dict[int, GraphVersion] = {}
-        for subject, version in self._winners(RELATION).items():
+        for subject, version in self.winners(RELATION, types=types).items():
             body = cast("RelationBody", version.claim.body)
             if body.state != STANDING or body.to is None:
                 continue
             if at is not None and body.period is not None and not body.period.holds(at):
                 continue
+            if (start is not None and body.start != start) or (to is not None and body.to != to):
+                continue
+            if touching is not None and touching not in (body.start, body.to):
+                continue
             found[subject] = version
         return found
+
+    def waiting(self) -> Mapping[int, GraphThread]:
+        """The threads in which something waits for the operator: a pending
+        version, or a winner that stands as a proposal."""
+        found: dict[int, GraphThread] = {}
+        for subject, thread in self.threads.items():
+            winner = thread.winner(self.classes)
+            proposed = winner is not None and level_of(winner, self.classes) == OPEN
+            if proposed or thread.pending(self.classes):
+                found[subject] = thread
+        return found
+
+    def objected(self) -> Mapping[int, GraphThread]:
+        """The threads with an objection pending to what the operator
+        stands for."""
+        return {s: t for s, t in self.threads.items() if t.objections(self.classes)}
+
+    def under(self, class_ids: Collection[int]) -> Mapping[int, GraphThread]:
+        """The threads with a version that names one of `class_ids` as the
+        approval class it stands under."""
+        return {
+            subject: thread
+            for subject, thread in self.threads.items()
+            if any(version.claim.under in class_ids for version in thread.versions)
+        }
 
     def reaches(
         self,

@@ -113,6 +113,7 @@ from previously.core.graph import SOURCES
 from previously.core.graph import sources_with_start
 from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
+from previously.core.graph_read import projected_graph
 from previously.core.graph_write import check_claims
 from previously.core.graph_write import decided
 from previously.core.graph_write import GraphRefused
@@ -123,6 +124,8 @@ from previously.core.policy import CIRCLE
 from previously.core.policy import CLIENT
 from previously.core.policy import PROVIDER
 from previously.core.policy import read_policy
+from previously.core.projection import catch_up
+from previously.core.projection import GRAPH
 from previously.core.vocabulary import DATE
 from previously.core.vocabulary import GATE_TYPES
 from previously.core.vocabulary import is_language_tag
@@ -199,7 +202,9 @@ if TYPE_CHECKING:
     from mcp.server.context import CallNext
     from mcp.server.context import HandlerResult
     from mcp.server.context import ServerRequestContext
+    from previously.contract.store import GraphStore
     from previously.contract.store import LogStore
+    from previously.contract.store import ProjectionStore
     from previously.contract.store import RedactionStore
     from previously.core.graph import FieldValue
     from previously.core.graph_write import Decided
@@ -772,18 +777,20 @@ _CALL: ContextVar[_Mark | None] = ContextVar("previously_mcp_call", default=None
 
 @dataclass(frozen=True)
 class _Folded:
-    """The graph the running call folded, once, in its snapshot, and the
+    """The graph the running call reads, once, in its snapshot, and the
     objections pending in it that the call's client may see."""
 
     graph: Graph
     objections: int
 
 
-# What `Service.answer` folds for the running call, before the call's own
-# work: the header of every result the call renders names the objections
-# from here, a written one after the snapshot too ({ref}`mcp-tools`), and a
-# tool that reads the graph takes this one rather than folding the log a
-# second time (ruling T6-c of the 2026-10-14 assignments plan).
+# What `Service.answer` reads of the graph for the running call, before the
+# call's own work: the header of every result the call renders names the
+# objections from here, a written one after the snapshot too
+# ({ref}`mcp-tools`), and a tool that reads the graph takes this one rather
+# than reading it a second time (ruling T6-c of the 2026-10-14 assignments
+# plan). Read from the projection, the header folds no thread until an
+# objection waits ({ref}`graph-projection`).
 # A context variable rather than an argument through every body: the fold
 # belongs to the call and not to any one tool, and a call runs in one context
 # from its fold to its last line.
@@ -872,6 +879,14 @@ class Service[Conn]:
     while a statement is written, and a `key` to seal handles with. The
     labels of kinds are shown in an entity's working language, else in
     `language`.
+
+    It reads the graph from its projection only with both `projections`,
+    the store it catches the projection up with before every call, and
+    `graph`, the one it reads the projection through; without, every call
+    folds the log, as the server did before the projection existed, which
+    is the oracle the tests hold the projection against. The tools that
+    write fold the log either way: the write path checks against the tip
+    it locks ({ref}`graph-projection`).
     """
 
     def __init__(
@@ -882,12 +897,22 @@ class Service[Conn]:
         locker: RedactionStore[Conn] | None = None,
         key: bytes | None = None,
         language: str = "en",
+        graph: GraphStore[Conn] | None = None,
+        projections: ProjectionStore[Conn] | None = None,
     ) -> None:
         self.log = log
         self.stdio_client = stdio_client
         self.locker = locker
         self.key = key
         self.language = language
+        self.projected = None if graph is None or projections is None else (graph, projections)
+
+    def read_graph(self, conn: Conn) -> Graph:
+        """The graph of a call: from the projection, caught up before the
+        call opened its snapshot, or folded from the log."""
+        if self.projected is None:
+            return read_graph(self.log, conn)
+        return projected_graph(self.log, self.projected[0], conn)
 
     def client_name(self, request: object) -> str | None:
         if self.stdio_client is not None:
@@ -952,6 +977,10 @@ class Service[Conn]:
         try:
             if name is None:
                 raise Refused(_NO_CLIENT)
+            if self.projected is not None:
+                # In transactions of its own, before the snapshot: what the
+                # call reads is what the log held when it began.
+                catch_up(self.log, self.projected[1], GRAPH)
             with self.log.snapshot() as conn:
                 policy = read_policy(self.log, conn)
                 client = policy.clients.get(name)
@@ -964,7 +993,7 @@ class Service[Conn]:
                     "processor": policy.ids.get((PROVIDER, client.processor)),
                     "rules": [],
                 }
-                graph = read_graph(self.log, conn)
+                graph = self.read_graph(conn)
                 pending = _FOLDED.set(
                     _Folded(graph, objections_seen(self.log, conn, policy, client, graph))
                 )
@@ -1641,15 +1670,16 @@ class Service[Conn]:
         return _paged(seen, rendered)
 
     def graph_now(self, conn: Conn) -> Graph:
-        """The graph the running call folded in `answer`, or, outside a
-        call, the one folded now."""
+        """The graph the running call read in `answer`, or, outside a call,
+        the one read now."""
         folded = _FOLDED.get()
-        return read_graph(self.log, conn) if folded is None else folded.graph
+        return self.read_graph(conn) if folded is None else folded.graph
 
     def graph_of(self, conn: Conn, policy: Policy, client: Client) -> tuple[GraphView, Vocabulary]:
         """The graph as the client may see it, and the vocabulary, in the
-        call's snapshot."""
-        graph = self.graph_now(conn)
+        call's snapshot, for a tool that writes: folded from the log, as the
+        write path folds it, unless the call folded it already."""
+        graph = self.graph_now(conn) if self.projected is None else read_graph(self.log, conn)
         return graph_view(self.log, conn, policy, client, graph), read_vocabulary(self.log, conn)
 
     def entity_write(
@@ -2518,6 +2548,8 @@ def build_server[Conn](
     locker: RedactionStore[Conn] | None = None,
     confirm_key: str | None = None,
     language: str = "en",
+    graph: GraphStore[Conn] | None = None,
+    projections: ProjectionStore[Conn] | None = None,
 ) -> MCPServer:
     """The server against `log`. With `stdio_client` every call is that
     client's; without, a call is the client the HTTP wrapper named.
@@ -2527,11 +2559,22 @@ def build_server[Conn](
     a key shorter than 32 characters, they answer that writing is not
     configured, and the reading tools work as before. `language` is the one
     a label of a kind is shown in for an entity without a working language,
-    the `PREVIOUSLY_LANGUAGE` of the command line."""
+    the `PREVIOUSLY_LANGUAGE` of the command line.
+
+    With `graph` and `projections`, the stores of `log` that read and catch
+    up the graph projection, every call catches the projection up and reads
+    the graph from it; without either, every call folds the log
+    (`Service`)."""
     if not is_language_tag(language):
         raise ValueError("the language is not a language tag such as en or pt-BR")
     service = Service(
-        log, stdio_client=stdio_client, locker=locker, key=key_of(confirm_key), language=language
+        log,
+        stdio_client=stdio_client,
+        locker=locker,
+        key=key_of(confirm_key),
+        language=language,
+        graph=graph,
+        projections=projections,
     )
     server: MCPServer = MCPServer(
         SERVER_NAME,
@@ -3033,13 +3076,21 @@ def build_app[Conn](
     locker: RedactionStore[Conn] | None = None,
     confirm_key: str | None = None,
     language: str = "en",
+    graph: GraphStore[Conn] | None = None,
+    projections: ProjectionStore[Conn] | None = None,
 ) -> Starlette:
     """The ASGI app of `previously serve`: Streamable HTTP under `/mcp`,
     answers as JSON, stateless so that both generations are served, behind the
-    token check. `locker`, `confirm_key` and `language` are those of
-    `build_server`."""
+    token check. `locker`, `confirm_key`, `language`, `graph` and
+    `projections` are those of `build_server`."""
     server = build_server(
-        log, stdio_client=None, locker=locker, confirm_key=confirm_key, language=language
+        log,
+        stdio_client=None,
+        locker=locker,
+        confirm_key=confirm_key,
+        language=language,
+        graph=graph,
+        projections=projections,
     )
     app = server.streamable_http_app(
         stateless_http=True,
@@ -3082,11 +3133,19 @@ def run_stdio[Conn](
     *,
     locker: RedactionStore[Conn],
     confirm_key: str | None,
+    graph: GraphStore[Conn],
+    projections: ProjectionStore[Conn],
     language: str = "en",
 ) -> None:
     """Serves MCP over stdin and stdout for `client` until stdin closes."""
     server = build_server(
-        log, stdio_client=client, locker=locker, confirm_key=confirm_key, language=language
+        log,
+        stdio_client=client,
+        locker=locker,
+        confirm_key=confirm_key,
+        language=language,
+        graph=graph,
+        projections=projections,
     )
     asyncio.run(server.run_stdio_async())
 
@@ -3099,6 +3158,8 @@ def run_http[Conn](
     allowed_hosts: Sequence[str],
     locker: RedactionStore[Conn],
     confirm_key: str | None,
+    graph: GraphStore[Conn],
+    projections: ProjectionStore[Conn],
     language: str = "en",
 ) -> None:
     """Serves the app of `build_app` with uvicorn until it is stopped."""
@@ -3108,5 +3169,7 @@ def run_http[Conn](
         locker=locker,
         confirm_key=confirm_key,
         language=language,
+        graph=graph,
+        projections=projections,
     )
     uvicorn.run(app, host=host, port=port, log_level="warning")

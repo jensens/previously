@@ -62,7 +62,7 @@ Error: database schema incomplete — `previously migrate` has not run yet
 | `anchor` | The anchor line was printed, or the log is empty. | The chain has at least one finding. | Storage raised an error. |
 | `show` | The event was printed. | No event exists at the given `event_id`. | The input was invalid, or storage raised an error. |
 | `blob` | The blob was written to the file. | No event names the blob, or the blob is erased. | The input was invalid, a blob setting is missing or invalid, the blob is missing from the store, can't be opened or doesn't match its address, the file can't be written, or storage or the blob store raised an error. |
-| `project` | Every projection stands at the tip of the log. | Not used. | Storage raised an error, the worker found a gap in the log, or a catch-up at another version rebuilt a projection while this one ran. |
+| `project` | Every projection stands at the tip of the log, and with `--check` every row of the graph projection agrees with the fold. | With `--check`, a row of the graph projection differs from the fold. | Storage raised an error, the worker found a gap in the log, or a catch-up at another version rebuilt a projection while this one ran. |
 | `chronicle` | The chronicle was printed, even when the window holds no row. | Not used. | The input was invalid, or storage raised an error. |
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
 | `policy` | The statement was written, `show` printed the policy, or `gaps` printed what fell back, even when nothing did. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the statement was refused, or storage raised an error. |
@@ -793,8 +793,15 @@ On every error, the temporary file is gone and an existing `--output` is unchang
 
 ## `project`
 
+```text
+previously project [--check]
+```
+
 Brings every projection up to the tip of the log.
-It takes no arguments.
+
+| Option | Description |
+|---|---|
+| `--check` | After the catch-up, folds the log and holds every row of `p_graph_thread` against the fold. |
 
 `project` prints one line per projection: `chronicle` first, `source-stats` second, and `graph` third.
 Each line holds the projection's name padded to 15 characters, a space, and the outcome of the run.
@@ -823,6 +830,32 @@ The second means that the state row was deleted while this catch-up ran, as {ref
 A catch-up rebuilds whenever the version it finds differs from its own, in either direction, so the next `project` of this release rebuilds the table back to its own version, and a `project` of the other release rebuilds it back again.
 Inside `redact`, the same sentence stands in parentheses in the sentence of an unfinished redaction, whose advice to run the same command again holds once only one release runs against the database.
 {ref}`rebuild-a-projection` says what to do.
+
+(cli-project-check)=
+
+### `--check`
+
+`--check` folds the assertions of the log up to the `up_to_id` of the graph projection, under the approval classes as of that event, and compares each thread with its row in `p_graph_thread` ({ref}`graph-projection`).
+It writes nothing beyond the catch-up.
+After the lines of the catch-up, it prints one line per thread that differs, ordered by subject, as three tab-separated fields: `graph`, the subject, and what differs.
+
+| What differs | Condition |
+|---|---|
+| `COLUMN PROJECTED instead of FOLDED`, separated by `, ` | The row and the fold disagree in these columns. |
+| `no row instead of winner ID` | The fold has a winner and the projection has no row. |
+| `winner ID instead of no row` | The projection has a row and the fold has no winner. |
+
+A value without one reads `-`, a list reads its items separated by commas, and a flag reads `true` or `false`:
+
+```text
+graph	17	objections 2 instead of 0
+graph	18	no row instead of winner 18
+graph	20	level open instead of direct, pending 4 instead of 0
+```
+
+`project --check` exits 0 when every row agrees and 1 when a line was printed.
+A row stays wrong until a rebuild writes it again, as {ref}`rebuild-a-projection` describes.
+An erasure that commits between the catch-up and the comparison can show up as a difference that the next run no longer reports.
 
 ## `chronicle`
 
@@ -1398,6 +1431,10 @@ Listings show the label that the vocabulary gives a kind, in the working languag
 A label that exists only in another language stands in the first language in alphabetical order, followed by its tag, such as `Kreis (de)`.
 A version that today's vocabulary wouldn't take carries `(does not fit the vocabulary)`, and a transitive version whose approval class was revoked carries `(class revoked)`.
 Both are marks and change nothing in the log.
+
+`entities`, `relations` without `--as-of`, `entity ID`, `triage`, `status`, `classes list` and `classes sample` bring the graph projection up to the tip of the log first, without a line of output, and then read the graph from it ({ref}`graph-projection`).
+What they show of an entity or a relation comes from the log.
+`relations --as-of` folds the log up to that moment instead, and so do the commands that write.
 
 ### `entity`
 

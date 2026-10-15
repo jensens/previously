@@ -101,6 +101,8 @@ from previously.core.graph import SOURCES
 from previously.core.graph import sources_with_start
 from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
+from previously.core.graph_read import check_graph
+from previously.core.graph_read import projected_graph
 from previously.core.graph_write import check_claims
 from previously.core.graph_write import decided
 from previously.core.graph_write import read_graph
@@ -126,6 +128,7 @@ from previously.core.policy import set_policy
 from previously.core.policy import to_payload
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
+from previously.core.projection import GRAPH
 from previously.core.projection import Outcome
 from previously.core.projection import PROJECTIONS
 from previously.core.projection import SOURCE_STATS
@@ -1457,7 +1460,15 @@ def _notice_approvals(approvals: Sequence[int], args: argparse.Namespace) -> Non
         )
 
 
-def _cmd_project(_args: argparse.Namespace) -> int:
+def _project_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="then fold the log and report every thread the graph projection holds otherwise",
+    )
+
+
+def _cmd_project(args: argparse.Namespace) -> int:
     # `PROJECTIONS` fixes the order, so two runs print their lines the same way
     # round. `catch_up` gets the same object twice because `PostgresStorage` is
     # both the log it reads and the projection store it writes.
@@ -1465,7 +1476,18 @@ def _cmd_project(_args: argparse.Namespace) -> int:
         for projection in PROJECTIONS:
             outcome = catch_up(storage, storage, projection)
             print(f"{outcome.name:<15} {_describe(outcome)}")
-    return 0
+        if not args.check:
+            return 0
+        # The projection is disposable and the log is the truth, so a thread
+        # the projection holds otherwise must not stay silent: the check
+        # folds the log up to where the projection stands and holds every
+        # row against it ({ref}`graph-projection`). It writes nothing.
+        with storage.snapshot() as conn:
+            state = storage.projection_state(conn, GRAPH.name)
+            found = check_graph(storage, storage, conn, 0 if state is None else state.up_to_id)
+    for subject, what in found:
+        print(f"graph\t{subject}\t{what}")
+    return 1 if found else 0
 
 
 def _chronicle_arguments(parser: argparse.ArgumentParser) -> None:
@@ -3307,18 +3329,6 @@ def _name_of(claim: Claim) -> str:
     return _NO_VALUE if value is None else _field_text(value)
 
 
-def _kinds_of(graph: Graph) -> dict[int, str]:
-    """The kind of every entity that has a winner, a retracted one included:
-    what a version is held against when the vocabulary is asked whether it
-    still fits."""
-    kinds: dict[int, str] = {}
-    for subject, thread in graph.threads.items():
-        winner = thread.winner(graph.classes)
-        if thread.kind == ENTITY and winner is not None:
-            kinds[subject] = winner.claim.body.type
-    return kinds
-
-
 def _end_text(graph: Graph, entity: int) -> str:
     """An end of a relation: its id and name, or what became of it. A
     relation whose end is gone stays in the list and says so."""
@@ -3426,30 +3436,42 @@ def _entity_line(
     )
 
 
+def _caught_up(storage: PostgresStorage) -> None:
+    """Brings the graph projection up to the tip of the log before a reader
+    opens its snapshot ({ref}`graph-projection`); nothing new costs one
+    query. Silent, as the MCP server's catch-up is: a reader's output is
+    what it reads. A build from scratch, the first or after an upgrade that
+    changed the projection's version, takes as long as the log is, which is
+    why the upgrade runs `project`, whose line names it."""
+    catch_up(storage, storage, GRAPH)
+
+
 def _cmd_entities(args: argparse.Namespace) -> int:
     default = _language()
-    with _storage() as storage, storage.snapshot() as conn:
-        graph = read_graph(storage, conn)
-        vocabulary = read_vocabulary(storage, conn)
-    kinds = _kinds_of(graph)
-    for subject in sorted(graph.threads):
-        thread = graph.threads[subject]
-        winner = thread.winner(graph.classes)
-        if thread.kind != ENTITY or winner is None:
-            continue
-        body = winner.claim.body
-        proposed = level_of(winner, graph.classes) == OPEN
-        listed = (
-            (proposed or bool(thread.pending(graph.classes))) if args.proposals else not proposed
-        )
-        # A retracted entity is out of the list unless asked for by name, or
-        # unless what stands of it is a proposal.
-        gone = body.state == RETRACTED and args.state != RETRACTED and not args.proposals
-        kept = (args.type is None or body.type == args.type) and (
-            args.state is None or body.state == args.state
-        )
-        if listed and kept and not gone:
-            print(_entity_line(graph, vocabulary, kinds, thread, winner, default))
+    with _storage() as storage:
+        _caught_up(storage)
+        with storage.snapshot() as conn:
+            graph = projected_graph(storage, storage, conn)
+            vocabulary = read_vocabulary(storage, conn)
+            kinds = graph.entity_kinds()
+            found = graph.winners(ENTITY, types=None if args.type is None else (args.type,))
+            for subject in sorted(found):
+                thread, winner = graph.threads[subject], found[subject]
+                body = winner.claim.body
+                proposed = level_of(winner, graph.classes) == OPEN
+                listed = (
+                    (proposed or bool(thread.pending(graph.classes)))
+                    if args.proposals
+                    else not proposed
+                )
+                # A retracted entity is out of the list unless asked for by
+                # name, or unless what stands of it is a proposal.
+                gone = body.state == RETRACTED and args.state != RETRACTED and not args.proposals
+                kept = (args.type is None or body.type == args.type) and (
+                    args.state is None or body.state == args.state
+                )
+                if listed and kept and not gone:
+                    print(_entity_line(graph, vocabulary, kinds, thread, winner, default))
     return 0
 
 
@@ -3481,22 +3503,30 @@ def _cmd_relations(args: argparse.Namespace) -> int:
     default = _language()
     at = _parse_day("--at", args.at) if args.at is not None else None
     as_of = parse_moment(args.as_of) if args.as_of is not None else None
-    with _storage() as storage, storage.snapshot() as conn:
-        graph = read_graph(storage, conn, as_of=as_of)
-        vocabulary = read_vocabulary(storage, conn)
-    kinds = _kinds_of(graph)
-    found = graph.relations(at=at)
-    for subject in sorted(found):
-        winner = found[subject]
-        body = cast("RelationBody", winner.claim.body)
-        kept = (
-            (args.type is None or body.type == args.type)
-            and (args.start is None or body.start == args.start)
-            and (args.to is None or body.to == args.to)
-            and level_of(winner, graph.classes) != OPEN
-        )
-        if kept:
-            print(_relation_line(graph, vocabulary, kinds, graph.threads[subject], winner, default))
+    with _storage() as storage:
+        # The projection knows only what stands now; a past moment folds the
+        # log up to it, which is rare and may be slow.
+        if as_of is None:
+            _caught_up(storage)
+        with storage.snapshot() as conn:
+            graph = (
+                projected_graph(storage, storage, conn)
+                if as_of is None
+                else read_graph(storage, conn, as_of=as_of)
+            )
+            vocabulary = read_vocabulary(storage, conn)
+            kinds = graph.entity_kinds()
+            found = graph.relations(
+                at=at,
+                types=None if args.type is None else (args.type,),
+                start=args.start,
+                to=args.to,
+            )
+            for subject in sorted(found):
+                winner = found[subject]
+                if level_of(winner, graph.classes) != OPEN:
+                    thread = graph.threads[subject]
+                    print(_relation_line(graph, vocabulary, kinds, thread, winner, default))
     return 0
 
 
@@ -3565,7 +3595,7 @@ def _entity_lines(
         f"versions\t{len(thread.versions)}",
         f"proposals\t{len(thread.pending(graph.classes))}",
     ]
-    relations = graph.relations()
+    relations = graph.relations(touching=thread.subject)
     for subject in sorted(relations):
         relation = relations[subject]
         related = cast("RelationBody", relation.claim.body)
@@ -3642,22 +3672,24 @@ def _entity_history_lines(
 def _show_entity(args: argparse.Namespace) -> int:
     default = _language()
     subject = int(args.what)
-    with _storage() as storage, storage.snapshot() as conn:
-        graph = read_graph(storage, conn)
-        vocabulary = read_vocabulary(storage, conn)
-        thread = graph.threads.get(subject)
-        if thread is None and erased_assertion(storage, conn, subject):
-            print(f"assertion {subject} is erased", file=sys.stderr)
-            return 1
-    winner = None if thread is None else thread.winner(graph.classes)
-    if thread is None or thread.kind != ENTITY or (winner is None and not args.history):
-        print(f"no entity stands under event {subject}", file=sys.stderr)
-        return 1
-    kinds = _kinds_of(graph)
-    if args.history or winner is None:
-        lines = _entity_history_lines(graph, vocabulary, kinds, thread)
-    else:
-        lines = _entity_lines(graph, vocabulary, kinds, thread, winner, default)
+    with _storage() as storage:
+        _caught_up(storage)
+        with storage.snapshot() as conn:
+            graph = projected_graph(storage, storage, conn)
+            vocabulary = read_vocabulary(storage, conn)
+            thread = graph.threads.get(subject)
+            if thread is None and erased_assertion(storage, conn, subject):
+                print(f"assertion {subject} is erased", file=sys.stderr)
+                return 1
+            winner = None if thread is None else thread.winner(graph.classes)
+            if thread is None or thread.kind != ENTITY or (winner is None and not args.history):
+                print(f"no entity stands under event {subject}", file=sys.stderr)
+                return 1
+            kinds = graph.entity_kinds()
+            if args.history or winner is None:
+                lines = _entity_history_lines(graph, vocabulary, kinds, thread)
+            else:
+                lines = _entity_lines(graph, vocabulary, kinds, thread, winner, default)
     for line in lines:
         print(line)
     return 0
@@ -3698,7 +3730,7 @@ def _waiting(graph: Graph) -> dict[str, list[GraphVersion]]:
     proposal. A version is in one of the three, and a proposal that stands
     as the winner of its thread counts as one."""
     found: dict[str, list[GraphVersion]] = {kind: [] for kind in _TRIAGE_KINDS}
-    for thread in graph.threads.values():
+    for thread in graph.waiting().values():
         winner = thread.winner(graph.classes)
         waiting = list(thread.pending(graph.classes))
         if winner is not None and level_of(winner, graph.classes) == OPEN:
@@ -3720,32 +3752,35 @@ def _waiting(graph: Graph) -> dict[str, list[GraphVersion]]:
 def _cmd_triage(args: argparse.Namespace) -> int:
     del args
     default = _language()
-    with _storage() as storage, storage.snapshot() as conn:
-        graph = read_graph(storage, conn)
-        vocabulary = read_vocabulary(storage, conn)
-    for kind, versions in _waiting(graph).items():
-        for version in versions:
-            claim = version.claim
-            declares = ENTITY_KIND if isinstance(claim.body, EntityBody) else RELATION_KIND
-            print(
-                "\t".join(
-                    (
-                        kind,
-                        str(version.id),
-                        _kind_label(vocabulary, declares, claim, default),
-                        _claim_label(graph, claim),
-                        escape_field(claim.author),
+    with _storage() as storage:
+        _caught_up(storage)
+        with storage.snapshot() as conn:
+            graph = projected_graph(storage, storage, conn)
+            vocabulary = read_vocabulary(storage, conn)
+            for kind, versions in _waiting(graph).items():
+                for version in versions:
+                    claim = version.claim
+                    declares = ENTITY_KIND if isinstance(claim.body, EntityBody) else RELATION_KIND
+                    print(
+                        "\t".join(
+                            (
+                                kind,
+                                str(version.id),
+                                _kind_label(vocabulary, declares, claim, default),
+                                _claim_label(graph, claim),
+                                escape_field(claim.author),
+                            )
+                        )
                     )
-                )
-            )
     return 0
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
     del args
-    with _storage() as storage, storage.snapshot() as conn:
-        graph = read_graph(storage, conn)
-    waiting = _waiting(graph)
+    with _storage() as storage:
+        _caught_up(storage)
+        with storage.snapshot() as conn:
+            waiting = _waiting(projected_graph(storage, storage, conn))
     for kind in _TRIAGE_KINDS:
         print(f"{kind}s\t{len(waiting[kind])}")
     return 0
@@ -3847,9 +3882,14 @@ def _cmd_classes_set(args: argparse.Namespace) -> int:
 
 def _cmd_classes_list(args: argparse.Namespace) -> int:
     del args
-    with _storage() as storage, storage.snapshot() as conn:
-        classes = read_classes(storage, conn)
-        rates = {rate.name: rate for rate in hit_rates(read_graph(storage, conn), classes)}
+    with _storage() as storage:
+        # A hit rate counts the versions under a class, and the projection
+        # says which threads hold one: only those are folded.
+        _caught_up(storage)
+        with storage.snapshot() as conn:
+            classes = read_classes(storage, conn)
+            graph = projected_graph(storage, storage, conn)
+            rates = {rate.name: rate for rate in hit_rates(graph, classes)}
     for name in sorted(classes.by_name):
         item, event_id = classes.by_name[name]
         rate = rates[name]
@@ -3878,30 +3918,32 @@ def _cmd_classes_sample(args: argparse.Namespace) -> int:
     if args.count < 1:
         raise PreviouslyError(f"--count must be at least 1, got {args.count}")
     default = _language()
-    with _storage() as storage, storage.snapshot() as conn:
-        classes = read_classes(storage, conn)
-        graph = read_graph(storage, conn)
-        vocabulary = read_vocabulary(storage, conn)
-    current = classes.by_name.get(args.name)
-    if current is None:
-        raise PreviouslyError(f"no approval class is named {args.name}")
-    for version in sample(graph, current[1], args.count, random.SystemRandom()):
-        claim = version.claim
-        declares = ENTITY_KIND if isinstance(claim.body, EntityBody) else RELATION_KIND
-        subject = claim.subject if claim.subject is not None else version.id
-        print(
-            "\t".join(
-                (
-                    str(version.id),
-                    str(subject),
-                    declares,
-                    _kind_label(vocabulary, declares, claim, default),
-                    _claim_label(graph, claim),
-                    str(claim.confidence),
-                    escape_field(claim.author),
+    with _storage() as storage:
+        _caught_up(storage)
+        with storage.snapshot() as conn:
+            classes = read_classes(storage, conn)
+            graph = projected_graph(storage, storage, conn)
+            vocabulary = read_vocabulary(storage, conn)
+            current = classes.by_name.get(args.name)
+            if current is None:
+                raise PreviouslyError(f"no approval class is named {args.name}")
+            for version in sample(graph, current[1], args.count, random.SystemRandom()):
+                claim = version.claim
+                declares = ENTITY_KIND if isinstance(claim.body, EntityBody) else RELATION_KIND
+                subject = claim.subject if claim.subject is not None else version.id
+                print(
+                    "\t".join(
+                        (
+                            str(version.id),
+                            str(subject),
+                            declares,
+                            _kind_label(vocabulary, declares, claim, default),
+                            _claim_label(graph, claim),
+                            str(claim.confidence),
+                            escape_field(claim.author),
+                        )
+                    )
                 )
-            )
-        )
     return 0
 
 
@@ -4180,6 +4222,8 @@ def _cmd_mcp(_args: argparse.Namespace) -> int:
             storage,
             name,
             locker=storage,
+            graph=storage,
+            projections=storage,
             confirm_key=os.environ.get(KEY_VARIABLE),
             language=language,
         )
@@ -4225,6 +4269,8 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
             port=port,
             allowed_hosts=allowed,
             locker=storage,
+            graph=storage,
+            projections=storage,
             confirm_key=os.environ.get(KEY_VARIABLE),
             language=language,
         )
@@ -4254,7 +4300,12 @@ COMMANDS: tuple[Command, ...] = (
     Command("anchor", "print the tip of an intact chain as an anchor line", _cmd_anchor),
     Command("show", "show one event with its units", _cmd_show, _show_arguments),
     Command("blob", "fetch a stored blob into a file", _cmd_blob_get, _blob_arguments),
-    Command("project", "bring the projections up to the tip of the log", _cmd_project),
+    Command(
+        "project",
+        "bring the projections up to the tip of the log",
+        _cmd_project,
+        _project_arguments,
+    ),
     Command("chronicle", "print the chronicle in time order", _cmd_chronicle, _chronicle_arguments),
     Command("stats", "print the per-source statistics", _cmd_stats),
     Command("policy", "set and show the processing policy", _cmd_policy, _policy_arguments),

@@ -40,6 +40,7 @@ from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
 from previously.core.graph import ENTITY
 from previously.core.graph import EntityBody
+from previously.core.graph import Graph
 from previously.core.graph import RELATION
 from previously.core.graph import RelationBody
 from previously.core.graph import SOURCES
@@ -7638,3 +7639,157 @@ def test_an_assignment_is_retracted_and_a_models_question_about_one_is_answered(
     ]
     assert dict(_standing(db))[answer]["approves"] == question
     assert verify(storage) == []
+
+
+# --- the readers read the graph from its projection -------------------------------
+
+
+def _listed_history(storage: PostgresStorage, capsys: pytest.CaptureFixture[str]) -> dict[str, int]:
+    """Vellenfeld and Markus's mail, and one of every kind of thread the
+    listings tell apart: a retracted organization, a relation with a
+    period, a class and a person standing under it, a proposal, an
+    objection and a question."""
+    ids = _markus(capsys)
+    ids["vellenfeld"] = _written(
+        capsys, "entity", "organization", "--name", _VELLENFELD, "--source", "2"
+    )
+    ids["anna"] = _written(capsys, "entity", "person", "--name", "Anna", "--source", "1")
+    ids["involved"] = _written(
+        capsys,
+        *("relate", "involved_in", "--from", str(ids["anna"]), "--to", str(ids["xz"])),
+        *("--from-date", "2026-01-01", "--source", "1"),
+    )
+    _written(capsys, "entity", "organization", "--subject", str(ids["vellenfeld"]), "--retract")
+    ids["class"] = _written(
+        capsys,
+        *("classes", "add", "maier", "--author", "model:claude-code", "--assertion", "entity"),
+        *("--type", "person", "--threshold", "80", "--statement", "names from mails"),
+    )
+    ids["through"] = _model_person(storage, "Clara", confidence=90)
+    ids["proposal"] = _model_person(storage, "Dora", confidence=40)
+    ids["objection"] = _model_person(storage, "Anna Maier", subject=ids["anna"], confidence=40)
+    asking = RelationBody(
+        "concerns", Source(1, (1,)), None, (ids["xz"], ids["party"]), None, {}, "standing"
+    )
+    (ids["question"],) = _model_writes(storage, _model_claim(RELATION, asking))
+    return ids
+
+
+def _fold_instead(log: PostgresStorage, store: PostgresStorage, conn: Connection) -> Graph:
+    """What the readers read before the projection: the fold of the log."""
+    del store
+    return read_graph(log, conn)
+
+
+@pytest.mark.db
+def test_the_listings_read_from_the_projection_are_those_the_fold_gives(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every listing of the graph shows from the projection what it showed
+    when it folded the log ({ref}`graph-projection`). The oracle is the
+    fold: the same commands with the reader swapped back."""
+    storage = _graph_log(db, monkeypatch, capsys)
+    ids = _listed_history(storage, capsys)
+    commands = [
+        ["entities"],
+        ["entities", "--proposals"],
+        ["entities", "--state", "retracted"],
+        ["entities", "--type", "person"],
+        ["relations"],
+        ["relations", "--type", "concerns"],
+        ["relations", "--at", "2025-12-31"],
+        ["relations", "--to", str(ids["xz"])],
+        ["relations", "--from", str(ids["party"])],
+        ["entity", str(ids["xz"])],
+        ["entity", str(ids["anna"])],
+        ["entity", str(ids["anna"]), "--history"],
+        ["entity", str(ids["vellenfeld"])],
+        ["triage"],
+        ["status"],
+        ["classes", "list"],
+        ["classes", "sample", "maier", "--count", "50"],
+    ]
+    projected = [_run(capsys, *command) for command in commands]
+    monkeypatch.setattr("previously.cli.projected_graph", _fold_instead)
+    folded = [_run(capsys, *command) for command in commands]
+    assert projected == folded
+    # Every listing has something to show, so that agreeing is not
+    # agreeing on nothing.
+    assert all(projected)
+    assert _lines(projected[-4]) == [
+        ["objection", str(ids["objection"]), "Person", "Anna Maier", "model:claude-code"],
+        [
+            *("question", str(ids["question"]), "concerns"),
+            f"event 1 #1 -> ? ({ids['xz']} XZ, {ids['party']} Sommerfest)",
+            "model:claude-code",
+        ],
+        ["proposal", str(ids["proposal"]), "Person", "Dora", "model:claude-code"],
+    ]
+    assert _lines(projected[-3]) == [["objections", "1"], ["questions", "1"], ["proposals", "1"]]
+    assert projected[-1].startswith(f"{ids['through']}\t")
+
+
+@pytest.mark.db
+def test_a_listing_catches_the_projection_up_before_it_reads(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing but the listing itself catches up here: the writes go
+    through `core`, past the command line, and nobody runs `project`."""
+    storage = _graph_log(db, monkeypatch, capsys)
+    assert _run(capsys, "status") == "objections\t0\nquestions\t0\nproposals\t0\n"
+    assert _run(capsys, "entities") == ""
+    first = _model_person(storage, "Dora", confidence=40)
+    assert _run(capsys, "status") == "objections\t0\nquestions\t0\nproposals\t1\n"
+    assert _lines(_run(capsys, "entities", "--proposals")) == [
+        [str(first), "proposed active", "Person", "Dora", "1 version", "0 proposals"]
+    ]
+    assert _lines(_run(capsys, "triage"))[0][:2] == ["proposal", str(first)]
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.db
+def test_project_check_is_clean_after_a_history_and_names_each_row_falsified_by_hand(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--check` holds every row of `p_graph_thread` against the fold of the
+    log and writes nothing beyond the catch-up: a row changed by hand is
+    named on every run, until a rebuild writes it again."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    storage = _graph_log(db, monkeypatch, capsys)
+    ids = _listed_history(storage, capsys)
+    redact_event(storage, storage, ids["proposal"], reason="wrong", recorded_at=_ASSERT_AT)
+    clean = _run(capsys, "project", "--check")
+    assert [line.split()[0] for line in clean.splitlines()] == [
+        "chronicle",
+        "source-stats",
+        "graph",
+    ]
+    assert isinstance(db, Engine)
+    with db.begin() as c:
+        c.execute(
+            text("UPDATE p_graph_thread SET objections = 2 WHERE subject = :s"), {"s": ids["xz"]}
+        )
+        c.execute(text("DELETE FROM p_graph_thread WHERE subject = :s"), {"s": ids["club"]})
+        c.execute(
+            text("UPDATE p_graph_thread SET level = 'open', pending = 4 WHERE subject = :s"),
+            {"s": ids["mail"]},
+        )
+    falsified = [
+        f"graph\t{ids['xz']}\tobjections 2 instead of 0",
+        f"graph\t{ids['club']}\tno row instead of winner {ids['club']}",
+        f"graph\t{ids['mail']}\tlevel open instead of direct, pending 4 instead of 0",
+    ]
+    for _run_again in (1, 2):
+        out = _run(capsys, "project", "--check", code=1)
+        assert out.splitlines()[3:] == falsified
+        assert capsys.readouterr().err == ""
+    # The control: without `--check`, `project` says nothing of it.
+    assert len(_run(capsys, "project").splitlines()) == 3
+    with storage.begin() as conn:
+        storage.truncate_projection(conn, "graph")
+        conn.execute(text("DELETE FROM projection_state WHERE name = 'graph'"))
+    rebuilt = _run(capsys, "project", "--check")
+    assert rebuilt.splitlines()[2].startswith("graph           built:")
+    assert len(rebuilt.splitlines()) == 3

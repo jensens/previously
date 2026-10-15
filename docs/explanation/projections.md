@@ -323,7 +323,36 @@ After that, both tables are what reading the log now gives, whichever batches th
 What the projection doesn't follow is what the write path never writes.
 A version written around it that approves or contests a version of another thread counts in the fold once that other version is erased, and the erasure doesn't touch the thread that names it.
 A payload set to `NULL` by hand, without a redaction, is a tombstone without an order, which `verify` reports, and nothing tells the projection to look again.
-In both cases the log stays right and the projection can lag behind it; a rebuild brings it back.
+In both cases the log stays right and the projection can lag behind it; `previously project --check` names the threads, and a rebuild brings them back.
 
 Two readers that catch up at once take turns at the state row of `projection_state`, as every projection does.
 The second starts where the first committed, so neither sees half a batch and no row is written twice; `test_two_catch_ups_at_once_write_every_row_once_and_end_where_the_fold_does` holds that, and the primary key of `p_graph_version` would refuse a second row for one version if it didn't.
+
+(graph-readers)=
+
+### How a reader reads it
+
+A reader of the graph doesn't wait for anybody to run `previously project`.
+Every listing of the command line and every MCP call first catches the projection up, in transactions of its own, and then reads in a snapshot of its own.
+When nothing is new, the catch-up costs one query.
+An MCP call always finds one thing new, the access entry of the call before it, and that batch touches no thread, so it ends before it reads any approval class.
+
+The projection then says which threads a question concerns, and the log says what they hold.
+Asked for the entities, the relations that touch an entity, what waits, or what's objected to, the reader takes the subjects from `p_graph_thread`, folds those threads again from their rows in the log, and asks the same question of the threads it folded, with the same code the whole fold answers it with.
+A thread folded that way is the one the whole fold gives, which is the argument the catch-up rests on as well.
+So a listing shows what it showed when it folded the log, and it still reads every name, field and version from the log, where an erasure has already taken what it took.
+The rows alone would answer more cheaply, but they hold no content, and a listing that showed what the rows hold would need the content in them.
+The ends of the relations come along in the same go, and a thread nobody asked about yet is folded when a line names it, so no question of a reader ever meets a thread the projection left out.
+
+The header of every MCP result is where this matters most.
+It counts the threads with `objections > 0`, folds only those, and asks the policy only about them, so it folds no thread and asks the policy nothing while no objection waits.
+`test_a_call_reads_no_assertion_in_full_and_of_the_graph_only_what_is_new` holds that a call reads no assertion in full, none at all when nothing waits and nothing is new, and only the new version when one was written.
+
+Three readers still fold the whole log.
+`relations --as-of` asks for a past moment, and the projection knows only what stands now; that question is rare and may be slow.
+The write path checks a claim against what stands under the tip it locks, and a projection that lags inside that transaction would let the check pass on a stale state.
+`verify` holds every statement against what stood before it in the chain, which no projection keeps.
+
+`previously project --check` is the counterpart of the property for a running system.
+It folds the log up to where the projection stands and names every thread whose row differs.
+The projection is disposable and the log is the truth, so a projection that drifted, by one of the two ways above or by a fault nobody has found yet, mustn't stay silent.

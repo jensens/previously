@@ -46,15 +46,21 @@ from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
 from previously.core.graph import ENTITY
 from previously.core.graph import EntityBody
+from previously.core.graph import Graph
 from previously.core.graph import Period
 from previously.core.graph import RELATION
 from previously.core.graph import RelationBody
 from previously.core.graph import SOURCES
 from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
+from previously.core.graph_read import projected_graph
+from previously.core.graph_read import read_brackets
 from previously.core.graph_write import GraphRefused
 from previously.core.graph_write import read_graph
 from previously.core.graph_write import write_claims
+from previously.core.members import bracket_edges
+from previously.core.members import bracket_kinds
+from previously.core.members import members
 from previously.core.projection import GRAPH
 from previously.core.projection import PROJECTIONS
 from previously.core.projection.graph import summary
@@ -64,6 +70,7 @@ from previously.core.redact import redact_units
 from previously.core.vocabulary import apply_vocabulary
 from previously.core.vocabulary import base_vocabulary
 from previously.core.vocabulary import parse_file
+from previously.core.vocabulary import read_vocabulary
 from previously.storage.postgres import PostgresStorage
 from previously.storage.schema import p_graph_thread
 from previously.storage.schema import p_graph_version
@@ -80,6 +87,7 @@ import time
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from collections.abc import Sequence
     from previously.contract.rows import ProjectionState
     from previously.core.projection.worker import Outcome
     from sqlalchemy import Connection
@@ -914,6 +922,38 @@ class _History:
         return None
 
 
+def _answers(graph: Graph, subjects: Sequence[int]) -> tuple[object, ...]:
+    """What the readers ask of a graph, each question for every thread
+    where it takes one."""
+    return (
+        graph.winners(ENTITY),
+        graph.winners(RELATION),
+        graph.entity_kinds(),
+        dict(graph.relations()),
+        {subject: dict(graph.relations(touching=subject)) for subject in subjects},
+        dict(graph.waiting()),
+        dict(graph.objected()),
+        dict(graph.under(graph.classes)),
+        {subject: graph.threads.get(subject) for subject in subjects},
+    )
+
+
+def _readers_agree(storage: PostgresStorage) -> None:
+    """The graph a reader reads from the projection answers as the fold of
+    the whole log does, and the members of every entity read off the rows
+    are those of the fold's edges ({ref}`graph-projection`)."""
+    with storage.snapshot() as conn:
+        folded = read_graph(storage, conn)
+        projected = projected_graph(storage, storage, conn)
+        subjects = sorted(folded.threads)
+        assert _answers(projected, subjects) == _answers(folded, subjects)
+        vocabulary = read_vocabulary(storage, conn)
+        edges, kinds = bracket_edges(folded, vocabulary), bracket_kinds(vocabulary)
+        for subject in folded.winners(ENTITY):
+            expected = members(edges, subject, kinds)
+            assert read_brackets(storage, storage, conn, subject) == expected
+
+
 def _pick(items: list[int], pick: int) -> int | None:
     return items[pick % len(items)] if items else None
 
@@ -1044,6 +1084,7 @@ def _run(history: _History, step: _Step) -> None:
         case _CatchUp(batch_size=batch_size):
             _project(storage, batch_size=batch_size)
             assert _rows(storage) == _folded(storage)
+            _readers_agree(storage)
 
 
 @pytest.mark.db
@@ -1059,7 +1100,9 @@ def test_property_the_projection_stands_where_the_fold_does(
     size, every row of `p_graph_thread` is what `fold_graph` over the whole
     log makes of its thread under the classes in force, and a thread without
     a winner has no row; at the end, a rebuild writes both tables as the
-    incremental path left them.
+    incremental path left them. After every catch-up, too, the graph a
+    reader reads from the projection answers every question as the fold
+    does, and the members of every entity are those of the fold's edges.
 
     A step the write path or an erasure refuses writes nothing, and the
     history goes on: what the projection meets is only ever what the log

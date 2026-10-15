@@ -202,8 +202,10 @@ Otherwise the client doesn't see it at all: the lines of an entity and the triag
 
 ## What it costs
 
-Reading folds the whole log of assertions, with no projection table in between.
+In phase 1, reading folded the whole log of assertions, with no projection table in between.
 That's the simplest design that keeps the graph a function of the log, and it has a price that grows with the number of statements.
+Since phase 2 the readers read from the projection `graph` and fold only the threads they show, while the write path and `verify` still fold the whole log ({ref}`graph-readers`).
+The figures below are those of phase 1, the ones that decision rests on.
 
 The final review of phase 1 measured it on a graph of about one entity per two relations: organizations, posts, projects and persons, a `part_of` tree over the projects, a `post_in` for every post, and `holds` for the rest.
 Each figure is the median of three runs, measured on 2026-10-14.
@@ -222,15 +224,15 @@ At 100,000 relations and 50,000 entities, on the same day and machine, folding t
 Single runs gave the rest: MCP `whoami` 7.69 s, MCP `list_entities` 23.7 s, `previously entities` 7.59 s, `previously relations --at` 7.50 s, writing one relation 7.34 s, and `verify` of the whole log 135 s.
 With 20 objections pending, `whoami` took 7.33 s and `list_entities` 24.2 s, so the count itself costs little next to the fold.
 
-Every MCP call pays for the fold, `whoami` included, and so do the tools that have nothing to do with the graph.
-The first line of every result counts the objections pending, and to count them the server does two things once per call: it folds the whole graph, and `objections_seen` reads the source events of every objection and asks the processing policy about them.
-Between 2,000 and 10,000 relations the cost grew in line with the graph, so a call costs about half a second at 10,000 relations whatever it asks for.
+In phase 1 every MCP call paid for the fold, `whoami` included, and so did the tools that have nothing to do with the graph.
+The first line of every result counts the objections pending, and to count them the server did two things once per call: it folded the whole graph, and `objections_seen` read the source events of every objection and asked the processing policy about them.
+Between 2,000 and 10,000 relations the cost grew in line with the graph, so a call cost about half a second at 10,000 relations whatever it asks for.
 Between 10,000 and 100,000 it grew faster than the graph: the fold took about sixteen times as long for ten times the relations.
-A cache keyed on the tip of the chain would not help, since every call writes its own access entry and moves the tip.
-At 10,000 relations the lists, a write and the header still carry, though `list_entities` at 1.7 s is already above a second.
-At 100,000 none of them carry: every call of every tool waits more than seven seconds.
-Phase 1 accepts that cost: a graph of a few hundred statements, which is where a pilot starts, costs milliseconds.
-Phase 2 needs a projection or an incremental fold before the data grows past the pilot, and these figures are what that decision rests on.
+A cache keyed on the tip of the chain wouldn't have helped, since every call writes its own access entry and moves the tip.
+At 10,000 relations the lists, a write and the header still carried, though `list_entities` at 1.7 s was already above a second.
+At 100,000 none of them carried: every call of every tool waited more than seven seconds.
+Phase 1 accepted that cost: a graph of a few hundred statements, which is where a pilot starts, costs milliseconds.
+Phase 2 built the projection `graph` before the data grows past the pilot, and the readers read from it; a write still folds the whole log, and still costs what the table says.
 
 `verify` grows faster than the graph where the edges are of an acyclic kind.
 The final review measured it over `part_of` edges alone, medians of three runs on 2026-10-14, with no finding in any run:
