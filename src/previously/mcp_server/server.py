@@ -51,6 +51,7 @@ The header of every result counts the objections pending that the client may
 see, counted once per call in its snapshot ({ref}`mcp-tools`).
 """
 
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from dataclasses import replace
@@ -94,6 +95,9 @@ from previously.core.canonical import KEY_PATTERN
 from previously.core.canonical import MAX_SAFE_INT
 from previously.core.clients import client_for_token
 from previously.core.errors import InvalidPayload
+from previously.core.errors import ProjectionGap
+from previously.core.errors import ProjectionNotBuilt
+from previously.core.errors import ProjectionRebuilt
 from previously.core.gaps import gaps
 from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
@@ -110,10 +114,14 @@ from previously.core.graph import Period
 from previously.core.graph import RELATION
 from previously.core.graph import RelationBody
 from previously.core.graph import SOURCES
+from previously.core.graph import sources_with_start
 from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
+from previously.core.graph_read import graph_snapshot
+from previously.core.graph_read import projected_graph
 from previously.core.graph_write import check_claims
 from previously.core.graph_write import decided
+from previously.core.graph_write import EntityTypes
 from previously.core.graph_write import GraphRefused
 from previously.core.graph_write import read_graph
 from previously.core.graph_write import starts_thread
@@ -122,12 +130,17 @@ from previously.core.policy import CIRCLE
 from previously.core.policy import CLIENT
 from previously.core.policy import PROVIDER
 from previously.core.policy import read_policy
+from previously.core.projection import catch_up
+from previously.core.projection import GRAPH
 from previously.core.vocabulary import DATE
 from previously.core.vocabulary import GATE_TYPES
 from previously.core.vocabulary import is_language_tag
 from previously.core.vocabulary import read_vocabulary
 from previously.mcp_server.auth import CLIENT_STATE
 from previously.mcp_server.auth import guarded
+from previously.mcp_server.auth import NOT_BUILT
+from previously.mcp_server.auth import NOT_PERMITTED
+from previously.mcp_server.auth import NOT_READY
 from previously.mcp_server.confirm import expiry
 from previously.mcp_server.confirm import HandleRefused
 from previously.mcp_server.confirm import key_of
@@ -154,6 +167,7 @@ from previously.mcp_server.read import MAX_IDS
 from previously.mcp_server.read import objections_seen
 from previously.mcp_server.read import resume_point
 from previously.mcp_server.read import rule_ids
+from previously.mcp_server.read import seen_members
 from previously.mcp_server.read import source_verdict
 from previously.mcp_server.read import statement_lines
 from previously.mcp_server.read import thread_hidden
@@ -171,7 +185,9 @@ from previously.mcp_server.render import sanitize
 from previously.mcp_server.render import Stated
 from previously.mcp_server.render import STATED_LINE_CHARS
 from previously.storage.errors import OperationFailed
+from previously.storage.errors import PrivilegeMissing
 from previously.storage.errors import ServerUnreachable
+from previously.storage.errors import StorageError
 from pydantic import BaseModel
 from pydantic import ConfigDict
 from pydantic import Field
@@ -192,16 +208,20 @@ import uvicorn
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from collections.abc import Generator
     from collections.abc import Mapping
     from collections.abc import Sequence
     from mcp.server.caching import CacheableMethod
     from mcp.server.context import CallNext
     from mcp.server.context import HandlerResult
     from mcp.server.context import ServerRequestContext
+    from previously.contract.store import GraphStore
     from previously.contract.store import LogStore
+    from previously.contract.store import ProjectionStore
     from previously.contract.store import RedactionStore
     from previously.core.graph import FieldValue
     from previously.core.graph_write import Decided
+    from previously.core.members import Members
     from previously.core.policy import Client
     from previously.core.policy import Policy
     from previously.core.policy import Provider
@@ -275,8 +295,11 @@ _CHRONICLE: Final = (
     "The chronicle: the observations (mails and other sources) in time order, "
     "each with a heading (URI, time, source, sender → recipients) and all its units "
     "inside a fence of foreign content. The filters combine: circle (a member of the "
-    "circle is involved), source, since and until. An event the processing policy "
-    "keeps from this client stands as a placeholder with the reason. A page stays "
+    "circle is involved), source, since, until, and within (what belongs to an entity "
+    "or to an entity that is part of it: the events assigned to it, each with only the "
+    "units that belong, found only through the assignments and parts this client may "
+    "see). An event the processing policy keeps from this client stands as a placeholder "
+    "with the reason, and within leaves it out. A page stays "
     f"under {PAGE_CHARS:,} characters, and its footer names the cursor of the next page. An "
     "event is cited as previously://event/<id>, a unit as "
     "previously://event/<id>#unit-<n>."
@@ -406,7 +429,9 @@ _WRITE_ENTITY: Final = (
 _WRITE_RELATION: Final = (
     f"States 1 to {MAX_STATEMENTS} relations from one entity to another, each of a kind "
     "the vocabulary declares, between entities this client can see, and resting on "
-    "observations it can see. Where it is unclear which entity a relation points at, "
+    "observations it can see. A kind that starts at an event, such as concerns, assigns "
+    "an observation or some of its units to an entity: from names the event, which is "
+    "one of the sources. Where it is unclear which entity a relation points at, "
     "it names 2 to 5 candidates in place of to, and asks the operator a question "
     "instead of guessing; a question is always a proposal. The confidence, the "
     "level, an objection, subject and the two calls are those of write_entity."
@@ -427,6 +452,10 @@ _SOURCE = Field(description="a source, such as email")
 _SINCE = Field(description=f"from this time on, inclusive: {_MOMENT_HELP}")
 _UNTIL = Field(description=f"before this time, exclusive: {_MOMENT_HELP}")
 _CURSOR = Field(description="the cursor from the footer of the previous page")
+_WITHIN = Field(
+    description="the id of an entity, as list_entities gives it: only what belongs to it "
+    "or to an entity that is part of it"
+)
 _IDS = Field(description=f"1 to {MAX_IDS} event ids")
 _OBLIGATION_STATE = Field(description="only this state: open, fulfilled or cancelled")
 _DECISION_STATE = Field(description="only this state: valid or revoked")
@@ -564,14 +593,45 @@ class EntityItem(BaseModel):
     ] = None
 
 
+class EventStartItem(BaseModel):
+    """An event, or units of it, as the start of an assignment such as
+    concerns."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    event: Annotated[int, Field(description="the id of an observation this client can see")]
+    units: Annotated[
+        list[int] | None,
+        Field(description="the units of it that it concerns, ascending; left out for all of it"),
+    ] = None
+
+
 class RelationItem(BaseModel):
-    """A relation as write_relation takes it: to an entity, or to candidates."""
+    """A relation as write_relation takes it: from an entity or an event, to
+    an entity, or to candidates."""
 
     model_config = ConfigDict(extra="forbid")
 
     type: Annotated[str, Field(description="the kind of relation, as the vocabulary declares it")]
-    start: Annotated[int, Field(alias="from", description="the id of the entity it starts at")]
-    sources: Annotated[list[SourceItem], Field(description="the events it rests on, at least one")]
+    start: Annotated[
+        int | EventStartItem,
+        Field(
+            alias="from",
+            description=(
+                "the id of the entity it starts at, or for a kind that starts at an event, "
+                "such as concerns, the event with the units it concerns"
+            ),
+        ),
+    ]
+    sources: Annotated[
+        list[SourceItem],
+        Field(
+            description=(
+                "the events it rests on, at least one; an event it starts at is one of them, "
+                "and is added where no source names it"
+            )
+        ),
+    ]
     confidence: Annotated[int, Field(description=_CONFIDENCE_HELP)]
     to: Annotated[
         int | None, Field(description="the id of the entity it points at; or give candidates")
@@ -738,18 +798,20 @@ _CALL: ContextVar[_Mark | None] = ContextVar("previously_mcp_call", default=None
 
 @dataclass(frozen=True)
 class _Folded:
-    """The graph the running call folded, once, in its snapshot, and the
+    """The graph the running call reads, once, in its snapshot, and the
     objections pending in it that the call's client may see."""
 
     graph: Graph
     objections: int
 
 
-# What `Service.answer` folds for the running call, before the call's own
-# work: the header of every result the call renders names the objections
-# from here, a written one after the snapshot too ({ref}`mcp-tools`), and a
-# tool that reads the graph takes this one rather than folding the log a
-# second time (ruling T6-c of the 2026-10-14 assignments plan).
+# What `Service.answer` reads of the graph for the running call, before the
+# call's own work: the header of every result the call renders names the
+# objections from here, a written one after the snapshot too
+# ({ref}`mcp-tools`), and a tool that reads the graph takes this one rather
+# than reading it a second time (ruling T6-c of the 2026-10-14 assignments
+# plan). Read from the projection, the header folds no thread until an
+# objection waits ({ref}`graph-projection`).
 # A context variable rather than an argument through every body: the fold
 # belongs to the call and not to any one tool, and a call runs in one context
 # from its fold to its last line.
@@ -838,6 +900,16 @@ class Service[Conn]:
     while a statement is written, and a `key` to seal handles with. The
     labels of kinds are shown in an entity's working language, else in
     `language`.
+
+    It reads the graph from its projection with `projections`, the store
+    it catches the projection up with before every call, and `graph`, the
+    one it reads the projection through. The projection is the only way a
+    call reads the graph, and there is no mode without it: a call whose
+    catch-up fails, or that finds the projection rebuilt in its snapshot
+    more often than `graph_snapshot` retries, fails as any call fails on an
+    error inside the server, with the reason in the server's log
+    ({ref}`graph-readers`). The tools that write fold the log for their
+    checks: the write path checks against the tip it locks.
     """
 
     def __init__(
@@ -848,12 +920,26 @@ class Service[Conn]:
         locker: RedactionStore[Conn] | None = None,
         key: bytes | None = None,
         language: str = "en",
+        graph: GraphStore[Conn],
+        projections: ProjectionStore[Conn],
     ) -> None:
         self.log = log
         self.stdio_client = stdio_client
         self.locker = locker
         self.key = key
         self.language = language
+        self.graph = graph
+        self.projections = projections
+
+    @contextmanager
+    def reading(self) -> Generator[tuple[Conn, Graph]]:
+        """The snapshot of a call and the graph it reads there: from the
+        projection in a snapshot of `graph_snapshot`, which catches it up
+        first, without building it, and catches up once more where
+        `previously project` rebuilt it in between. What stops it is the
+        call's error, never a fold instead ({ref}`graph-readers`)."""
+        with graph_snapshot(self.log, self.projections, self.graph) as conn:
+            yield conn, projected_graph(self.log, self.graph, conn)
 
     def client_name(self, request: object) -> str | None:
         if self.stdio_client is not None:
@@ -918,7 +1004,9 @@ class Service[Conn]:
         try:
             if name is None:
                 raise Refused(_NO_CLIENT)
-            with self.log.snapshot() as conn:
+            # The catch-up runs in transactions of its own, before the
+            # snapshot: what the call reads is what the log held when it began.
+            with self.reading() as (conn, graph):
                 policy = read_policy(self.log, conn)
                 client = policy.clients.get(name)
                 if client is None:
@@ -930,7 +1018,6 @@ class Service[Conn]:
                     "processor": policy.ids.get((PROVIDER, client.processor)),
                     "rules": [],
                 }
-                graph = read_graph(self.log, conn)
                 pending = _FOLDED.set(
                     _Folded(graph, objections_seen(self.log, conn, policy, client, graph))
                 )
@@ -939,6 +1026,13 @@ class Service[Conn]:
             policy_ids["rules"] = list(answer.rules)
         except Refused as refused:
             answer = Answer(render_error(str(refused)), error=True)
+        except (ProjectionNotBuilt, ProjectionRebuilt, ProjectionGap, StorageError) as error:
+            # A state of the deployment or of the database, not a fault of
+            # this code: a projection not built at this release's version is
+            # the designed state of an old pod during a rolling update
+            # ({ref}`graph-readers`). One line with the error's sentence, as
+            # the readiness probe writes, and no traceback once per call.
+            logger.warning("an MCP call failed: %s", error)
         except Exception:
             logger.exception("an MCP call failed")
         finally:
@@ -1024,6 +1118,8 @@ class Service[Conn]:
         circle = filters.get("circle")
         if circle is not None and circle not in policy.circles:
             raise Refused(f"no circle {circle} exists; list_circles names the circles")
+        within = filters.get("within")
+        found = None if within is None else self.bracket(conn, policy, client, int(within))
         since = moment(filters.get("since"), "since")
         until = moment(filters.get("until"), "until")
         after: tuple[datetime, int] | None = None
@@ -1047,6 +1143,7 @@ class Service[Conn]:
             since=since,
             until=until,
             after=after,
+            within=found,
         )
 
         def cursor_for(index: int) -> str:
@@ -1062,6 +1159,25 @@ class Service[Conn]:
             objections=_pending(),
         )
         return _paged(seen, rendered)
+
+    def bracket(self, conn: Conn, policy: Policy, client: Client, bracket: int) -> Members:
+        """What belongs to `bracket` in the graph of the call, as the client
+        finds it over the edges it may see (`seen_members`).
+
+        A bracket the client may not see is refused in the words of one
+        that doesn't exist: an empty page would tell the client that an
+        entity it may not see stands under the id
+        ({ref}`chronicle-of-a-bracket`). An id beyond what an event id can
+        be is refused alike, before the lookup would hand it to the
+        database."""
+        graph = self.graph_now()
+        if (
+            not 1 <= bracket <= MAX_SAFE_INT
+            or bracket not in EntityTypes(graph)
+            or not graph_view(self.log, conn, policy, client, graph, (bracket,)).seen(bracket)
+        ):
+            raise Refused(f"within {bracket} is not an entity that stands")
+        return seen_members(self.log, conn, policy, client, graph, bracket)
 
     def event_page(
         self, conn: Conn, policy: Policy, client: Client, ids: Sequence[int], from_unit: int | None
@@ -1545,7 +1661,7 @@ class Service[Conn]:
             listing,
             after=after,
             language=self.language,
-            graph=self.graph_now(conn),
+            graph=self.graph_now(),
         )
 
         def cursor_for(index: int) -> str:
@@ -1589,7 +1705,7 @@ class Service[Conn]:
             client,
             after=after,
             language=self.language,
-            graph=self.graph_now(conn),
+            graph=self.graph_now(),
         )
 
         def cursor_for(index: int) -> str:
@@ -1606,16 +1722,21 @@ class Service[Conn]:
         )
         return _paged(seen, rendered)
 
-    def graph_now(self, conn: Conn) -> Graph:
-        """The graph the running call folded in `answer`, or, outside a
-        call, the one folded now."""
+    def graph_now(self) -> Graph:
+        """The graph the running call read in `answer`. Outside a call, which
+        nothing in the server does, there is none, and folding the log in its
+        place would be a second way to the graph: a programming error, raised
+        as one."""
         folded = _FOLDED.get()
-        return read_graph(self.log, conn) if folded is None else folded.graph
+        if folded is None:
+            raise RuntimeError("graph_now is asked outside a call, which has no graph")
+        return folded.graph
 
     def graph_of(self, conn: Conn, policy: Policy, client: Client) -> tuple[GraphView, Vocabulary]:
         """The graph as the client may see it, and the vocabulary, in the
-        call's snapshot."""
-        graph = self.graph_now(conn)
+        call's snapshot, for a tool that writes: folded from the log, as the
+        write path folds it and checks against it."""
+        graph = read_graph(self.log, conn)
         return graph_view(self.log, conn, policy, client, graph), read_vocabulary(self.log, conn)
 
     def entity_write(
@@ -2210,9 +2331,17 @@ def _relation_claim(number: int, item: RelationItem, client: str, vocabulary: Vo
         if item.candidates is None
         else tuple(_event_id(number, candidate) for candidate in item.candidates)
     )
+    given = item.start
+    start = (
+        _event_id(number, given)
+        if isinstance(given, int)
+        else Source(
+            _event_id(number, given.event), None if given.units is None else tuple(given.units)
+        )
+    )
     body = RelationBody(
         item.type,
-        _event_id(number, item.start),
+        start,
         _optional_id(number, item.to),
         candidates,
         None if item.period is None else _period_of(number, item.period),
@@ -2224,7 +2353,10 @@ def _relation_claim(number: int, item: RelationItem, client: str, vocabulary: Vo
         model_author(client),
         OPEN,
         SOURCES,
-        _sources_of(number, item.sources),
+        # The start of an assignment is among its sources; left out, it is
+        # added, so that the policy decides over the mail and an erasure of
+        # the mail takes the assignment along.
+        sources_with_start(start, _sources_of(number, item.sources)),
         item.reason,
         None,
         _optional_id(number, item.subject),
@@ -2393,7 +2525,12 @@ def write_record(name: str, arguments: Mapping[str, object]) -> dict[str, object
                     events.update(_event_ids([cast("dict[str, object]", source).get("event")]))
             candidates = entry.get("candidates")
             named = cast("list[object]", candidates) if isinstance(candidates, list) else []
-            ends.update(_event_ids([entry.get("from"), entry.get("to"), *named]))
+            start = entry.get("from")
+            if isinstance(start, dict):
+                # An event an assignment starts at is one of its sources.
+                events.update(_event_ids([cast("dict[str, object]", start).get("event")]))
+                start = None
+            ends.update(_event_ids([start, entry.get("to"), *named]))
         record: dict[str, object] = {
             "statements": len(listed),
             "sources": sorted(events),
@@ -2468,6 +2605,8 @@ def build_server[Conn](
     locker: RedactionStore[Conn] | None = None,
     confirm_key: str | None = None,
     language: str = "en",
+    graph: GraphStore[Conn],
+    projections: ProjectionStore[Conn],
 ) -> MCPServer:
     """The server against `log`. With `stdio_client` every call is that
     client's; without, a call is the client the HTTP wrapper named.
@@ -2477,12 +2616,29 @@ def build_server[Conn](
     a key shorter than 32 characters, they answer that writing is not
     configured, and the reading tools work as before. `language` is the one
     a label of a kind is shown in for an entity without a working language,
-    the `PREVIOUSLY_LANGUAGE` of the command line."""
+    the `PREVIOUSLY_LANGUAGE` of the command line.
+
+    `graph` and `projections` are the stores of `log` that read and catch
+    up the graph projection: every call catches the projection up and reads
+    the graph from it (`Service`).
+
+    The server catches the projection up once before it is built, without
+    building it, and a projection it cannot catch up stops it there with the
+    error: `ProjectionNotBuilt` where `previously project` has not
+    built it at this code's version, which is the sentence an operator needs
+    and every call would otherwise fail with one by one."""
     if not is_language_tag(language):
         raise ValueError("the language is not a language tag such as en or pt-BR")
     service = Service(
-        log, stdio_client=stdio_client, locker=locker, key=key_of(confirm_key), language=language
+        log,
+        stdio_client=stdio_client,
+        locker=locker,
+        key=key_of(confirm_key),
+        language=language,
+        graph=graph,
+        projections=projections,
     )
+    catch_up(log, projections, GRAPH, rebuild=False)
     server: MCPServer = MCPServer(
         SERVER_NAME,
         version=version("previously"),
@@ -2530,12 +2686,17 @@ def _tools[Conn](server: MCPServer, service: Service[Conn]) -> None:
         source: Annotated[str | None, _SOURCE] = None,
         since: Annotated[str | None, _SINCE] = None,
         until: Annotated[str | None, _UNTIL] = None,
+        within: Annotated[int | None, _WITHIN] = None,
         cursor: Annotated[str | None, _CURSOR] = None,
     ) -> CallToolResult:
+        # The filters are text, as a cursor carries them; the access entry
+        # keeps `within` as the number the client gave.
+        bracket = None if within is None else str(within)
         filters = cast(
-            "dict[str, str]", _given(circle=circle, source=source, since=since, until=until)
+            "dict[str, str]",
+            _given(circle=circle, source=source, since=since, until=until, within=bracket),
         )
-        call = ("tool", "previously", _given(**filters, cursor=cursor))
+        call = ("tool", "previously", _given(**{**filters, "within": within}, cursor=cursor))
         return _ok(
             service.answer(
                 ctx.request_context.request,
@@ -2983,13 +3144,21 @@ def build_app[Conn](
     locker: RedactionStore[Conn] | None = None,
     confirm_key: str | None = None,
     language: str = "en",
+    graph: GraphStore[Conn],
+    projections: ProjectionStore[Conn],
 ) -> Starlette:
     """The ASGI app of `previously serve`: Streamable HTTP under `/mcp`,
     answers as JSON, stateless so that both generations are served, behind the
-    token check. `locker`, `confirm_key` and `language` are those of
-    `build_server`."""
+    token check. `locker`, `confirm_key`, `language`, `graph` and
+    `projections` are those of `build_server`."""
     server = build_server(
-        log, stdio_client=None, locker=locker, confirm_key=confirm_key, language=language
+        log,
+        stdio_client=None,
+        locker=locker,
+        confirm_key=confirm_key,
+        language=language,
+        graph=graph,
+        projections=projections,
     )
     app = server.streamable_http_app(
         stateless_http=True,
@@ -3002,12 +3171,18 @@ def build_app[Conn](
             client = client_for_token(read_policy(log, conn), token)
         return None if client is None else client.name
 
-    def ready() -> bool:
-        # The newest event's id and hash, one indexed query: the cheapest
-        # question `LogStore` has, and nothing of it leaves this function.
+    def ready() -> str | None:
+        # The state row of the graph projection, one read by primary key: the
+        # server is ready only while the projection is at the version this
+        # code declares, which a rolling update that changes the version
+        # takes from the old pods once `previously project` of the new
+        # release has run, and gives the new ones from then on. A catch-up
+        # here would make the probe as slow as the log is new. The state row
+        # may lag behind the tip, which the next call catches up. Nothing of
+        # it leaves this function.
         try:
             with log.snapshot() as conn:
-                log.tip(conn)
+                state = graph.projection_state(conn, GRAPH.name)
         except (ServerUnreachable, OperationFailed) as error:
             # A database that does not answer is an expected state, not a
             # fault of this process: a switchover of the primary refuses
@@ -3016,11 +3191,27 @@ def build_app[Conn](
             # The storage error's sentence says what a traceback chain of
             # three or four exceptions would, once per failed check.
             logger.warning("the readiness probe found no database: %s", error)
-            return False
+            return NOT_READY
+        except PrivilegeMissing as error:
+            # The database answers and refuses the role, after a grant was
+            # revoked while the server ran (the start check refuses such a
+            # role): named as that, since "does not answer" would send the
+            # operator to the network.
+            logger.warning("the readiness probe was refused by the database: %s", error)
+            return NOT_PERMITTED
         except Exception:
             logger.exception("the readiness probe failed for an unexpected reason")
-            return False
-        return True
+            return NOT_READY
+        if state is None or state.version != GRAPH.version:
+            found = "not built" if state is None else f"at version {state.version}"
+            logger.warning(
+                "the readiness probe found projection %s %s, and this code declares version %d",
+                GRAPH.name,
+                found,
+                GRAPH.version,
+            )
+            return NOT_BUILT
+        return None
 
     app.add_middleware(guarded, resolve=resolve, ready=ready)
     return app
@@ -3032,11 +3223,19 @@ def run_stdio[Conn](
     *,
     locker: RedactionStore[Conn],
     confirm_key: str | None,
+    graph: GraphStore[Conn],
+    projections: ProjectionStore[Conn],
     language: str = "en",
 ) -> None:
     """Serves MCP over stdin and stdout for `client` until stdin closes."""
     server = build_server(
-        log, stdio_client=client, locker=locker, confirm_key=confirm_key, language=language
+        log,
+        stdio_client=client,
+        locker=locker,
+        confirm_key=confirm_key,
+        language=language,
+        graph=graph,
+        projections=projections,
     )
     asyncio.run(server.run_stdio_async())
 
@@ -3049,14 +3248,23 @@ def run_http[Conn](
     allowed_hosts: Sequence[str],
     locker: RedactionStore[Conn],
     confirm_key: str | None,
+    graph: GraphStore[Conn],
+    projections: ProjectionStore[Conn],
     language: str = "en",
+    announce: Callable[[], None] | None = None,
 ) -> None:
-    """Serves the app of `build_app` with uvicorn until it is stopped."""
+    """Serves the app of `build_app` with uvicorn until it is stopped.
+    `announce` is called once the app is built, before it listens: a server
+    that refuses to start has announced nothing."""
     app = build_app(
         log,
         allowed_hosts=allowed_hosts,
         locker=locker,
         confirm_key=confirm_key,
         language=language,
+        graph=graph,
+        projections=projections,
     )
+    if announce is not None:
+        announce()
     uvicorn.run(app, host=host, port=port, log_level="warning")

@@ -326,6 +326,9 @@ def test_the_command_line_names_the_calls_it_cascaded(
     storage = _setup(db)
     call = _call(storage, 1, units=(1,))
     monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
+    # `previously project` builds the projections; `redact` only catches up.
+    assert main(["project"]) == 0
+    capsys.readouterr()
 
     assert main(["redact", "event", "1", "--reason", "wrong"]) == 0
 
@@ -660,6 +663,9 @@ def test_the_command_line_names_the_assertions_it_cascaded(
     call = _call(storage, 1, units=(1,))
     (owed,) = _assert(storage, _owed(Source(1, None)))
     monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
+    # `previously project` builds the projections; `redact` only catches up.
+    assert main(["project"]) == 0
+    capsys.readouterr()
 
     assert main(["redact", "event", "1", "--reason", "wrong"]) == 0
 
@@ -991,4 +997,80 @@ def test_an_approval_of_an_entity_stands_when_its_proposal_is_erased_on_its_own(
     with storage.begin() as conn:
         graph = read_graph(storage, conn)
     assert graph.entities()[proposed].id == approved
+    assert verify(storage) == []
+
+
+# --- assignments: a relation that starts at an event ------------------------------
+#
+# Review Focus 1 of the 2026-10-15 assignments plan, phase 2: an assignment
+# must not outlive its mail. Its start is among its sources, so the cascade
+# finds it by them and decides by `stands_on_erased`, as for any assertion.
+
+
+def _assigned(storage: PostgresStorage, *starts: Source) -> tuple[int, ...]:
+    """A project on mail 2, then one assignment of each start to it, each
+    resting on its start. Returns the ids of the assignments."""
+    project = EntityBody("project", None, {"name": "XZ"}, ACTIVE)
+    (xz,) = write_claims(
+        storage, storage, [_claim(ENTITY, project, Source(2, None))], recorded_at=NOW
+    ).ids
+    claims = [
+        _claim(RELATION, RelationBody("concerns", start, xz, None, None, {}, STANDING), start)
+        for start in starts
+    ]
+    return write_claims(storage, storage, claims, recorded_at=NOW).ids
+
+
+def _relations(storage: PostgresStorage) -> list[int]:
+    with storage.begin() as conn:
+        return sorted(read_graph(storage, conn).relations())
+
+
+@pytest.mark.db
+def test_erasing_the_mail_takes_every_assignment_of_it_along(db: Engine) -> None:
+    storage = _three_events(db)
+    apply_vocabulary(storage, parse_file(base_vocabulary()), recorded_at=NOW)
+    whole, unit = _assigned(storage, Source(1, None), Source(1, (2,)))
+
+    erased = redact_event(storage, storage, 1, reason="wrong", recorded_at=LATER)
+
+    assert erased.cascaded_assertions == (whole, unit)
+    assert _relations(storage) == []
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_erasing_a_unit_takes_the_assignment_that_cites_it_and_leaves_the_others(
+    db: Engine,
+) -> None:
+    """An assignment of other units of the same mail stands."""
+    storage = _three_events(db)
+    apply_vocabulary(storage, parse_file(base_vocabulary()), recorded_at=NOW)
+    third, first_two = _assigned(storage, Source(1, (3,)), Source(1, (1, 2)))
+
+    erased = redact_units(storage, storage, 1, [3], reason="wrong", recorded_at=LATER)
+
+    assert erased.cascaded_assertions == (third,)
+    assert _relations(storage) == [first_two]
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_an_assignment_of_the_whole_mail_goes_with_a_unit_erased_after_it(db: Engine) -> None:
+    """It rests on every unit of the mail, so a unit erased after it takes
+    it along, as `stands_on_erased` has it for any assertion that cites a
+    whole event. One written after the erasure rests on what stood then, and
+    stands."""
+    storage = _three_events(db)
+    apply_vocabulary(storage, parse_file(base_vocabulary()), recorded_at=NOW)
+    (whole,) = _assigned(storage, Source(1, None))
+
+    erased = redact_units(storage, storage, 1, [3], reason="wrong", recorded_at=LATER)
+
+    assert erased.cascaded_assertions == (whole,)
+    assert _relations(storage) == []
+    (later,) = _assigned(storage, Source(1, None))
+    again = redact_units(storage, storage, 1, [3], reason="wrong", recorded_at=LATER)
+    assert again.cascaded_assertions == ()
+    assert _relations(storage) == [later]
     assert verify(storage) == []

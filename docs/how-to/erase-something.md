@@ -204,6 +204,8 @@ already redacted by event 5
 
 The second run writes no second redaction, and finishes what the first left undone.
 If the sentence names a projection that `was rebuilt while this catch-up ran`, follow {ref}`rebuild-a-projection` first.
+If it says to run `previously project` first, the projection isn't built: run `previously project`, then the same `redact` command.
+If it names the release meant to serve, the projection stands at another version than your release declares: run `previously project` of the release that serves, which may not be the one you ran `redact` with, then the same `redact` command with that release.
 See {ref}`cli-reference` for every refusal and error of `redact`.
 
 ## What the erasure doesn't reach

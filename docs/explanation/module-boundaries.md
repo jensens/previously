@@ -421,6 +421,11 @@ A second protocol has existed since stage 1b, `ProjectionStore[Conn]`, for the p
 `LogStore` is append-only—write once, read in chain order, never change.
 A projection store empties, inserts and updates, because a projection is derivable and disposable by design ({ref}`projections`).
 One protocol covering both would blur exactly the line that separates them: a projection carries no truth of its own, and a type that offers "append to the log" and "truncate the table" through the same interface stops saying so.
+The graph keeps the two apart where it needs both.
+It folds a thread again from its versions in the log, so that its tables hold no content beyond the period dates of a relation, and its write step takes the log beside the projection store, both in one transaction.
+It takes the log as a `LogReader[Conn]`, a protocol of two methods, `events_by_id` and `actions`, which `LogStore` and `PostgresStorage` satisfy as they stand.
+A `LogStore` would have handed every projection `insert_event` inside the catch-up's transaction, and a projection has no business appending to the log.
+So the step reads the log and writes the projection, and neither protocol grows a method of the other: the chronicle and the statistics get the same two parameters and leave the log unread.
 
 Stage 1c added a third, `RedactionStore[Conn]`, with three methods: `lock_event`, `erase_payload` and `erase_units`.
 An erasure changes rows of the log, which is the one thing `LogStore` promises never to do, and the protocol of its own keeps that promise a statement about a type.
@@ -431,6 +436,11 @@ The first connector added a fourth, `WatermarkStore[Conn]`, with two methods: `w
 A watermark isn't part of the log, which can't rebuild it, and it isn't a projection either, so it belongs to neither of the protocols above, and nothing typed against `LogStore` can move one.
 `set_watermark` runs in the caller's transaction, so that the run can write the watermark after the batch it covers and never before; {ref}`connectors` says why that order is the whole point.
 The connector itself is a protocol in `contract` as well, `Connector`, with a name and one method, `fetch`; it isn't a store, and `core` asks it for bytes and nothing else.
+
+The second phase of the assignments added a fifth, `GraphStore[Conn]`, for what a reader asks of the graph projection: its rows, by kind, by end, by day, and those where something waits or is objected to ({ref}`graph-readers`).
+It holds reads only.
+A reader catches the projection up through `ProjectionStore` first, in transactions of its own, and reads through `GraphStore` in its snapshot, so the code that answers a listing holds no handle that empties or fills a table.
+The command line passes `PostgresStorage` under both, as it does to `catch_up`, and the MCP server takes the two as two parameters, beside `log` and `locker`.
 
 The honest version of the old arrangement deserves saying plainly.
 The exemptions weren't a compromise anybody was proud of.

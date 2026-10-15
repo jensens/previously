@@ -36,6 +36,7 @@ from previously.contract.types import ChannelIdentity
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.contract.types import RawUnit
+from previously.core.access import ACCESS_ERROR
 from previously.core.access import AccessRow
 from previously.core.access import read_access
 from previously.core.append import append
@@ -58,11 +59,13 @@ from previously.core.classes import ApprovalClass
 from previously.core.classes import set_class
 from previously.core.clients import add_client
 from previously.core.clients import revoke_client
+from previously.core.errors import ProjectionNotBuilt
 from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
 from previously.core.graph import claim_payload
 from previously.core.graph import ENTITY
 from previously.core.graph import EntityBody
+from previously.core.graph import Graph
 from previously.core.graph import Period
 from previously.core.graph import RELATION
 from previously.core.graph import RelationBody
@@ -70,8 +73,11 @@ from previously.core.graph import RETRACTED
 from previously.core.graph import SOURCES
 from previously.core.graph import STANDING
 from previously.core.graph_write import GraphRefused
+from previously.core.graph_write import read_graph
 from previously.core.graph_write import write_claims
 from previously.core.mail import map_mail
+from previously.core.members import bracket_edges
+from previously.core.members import bracket_kinds
 from previously.core.policy import Circle
 from previously.core.policy import Inference
 from previously.core.policy import Membership
@@ -80,6 +86,9 @@ from previously.core.policy import Provider
 from previously.core.policy import read_policy
 from previously.core.policy import Rule
 from previously.core.policy import set_policy
+from previously.core.projection import catch_up
+from previously.core.projection import GRAPH
+from previously.core.projection import PROJECTIONS
 from previously.core.redact import redact_event
 from previously.core.verify import verify
 from previously.core.vocabulary import apply_vocabulary
@@ -87,6 +96,8 @@ from previously.core.vocabulary import base_vocabulary
 from previously.core.vocabulary import FieldSpec
 from previously.core.vocabulary import KindSpec
 from previously.core.vocabulary import parse_file
+from previously.core.vocabulary import read_vocabulary
+from previously.mcp_server.auth import NOT_BUILT
 from previously.mcp_server.confirm import HANDLE_SECONDS
 from previously.mcp_server.confirm import seal
 from previously.mcp_server.read import event_hidden
@@ -94,8 +105,10 @@ from previously.mcp_server.render import PAGE_CHARS
 from previously.mcp_server.render import STATED_LINE_CHARS
 from previously.mcp_server.server import build_app
 from previously.mcp_server.server import build_server
+from previously.mcp_server.server import Service
 from previously.mcp_server.server import TOOLS
 from previously.mcp_server.server import write_record
+from previously.storage.errors import OperationFailed
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import Connection
 from sqlalchemy import create_engine
@@ -104,11 +117,13 @@ from sqlalchemy import text
 from sqlalchemy.pool import NullPool
 from typing import Any
 from typing import cast
+from typing import Final
 from typing import override
 from typing import TYPE_CHECKING
 
 import anyio
 import base64
+import contextlib
 import hashlib
 import httpx2
 import json
@@ -116,14 +131,19 @@ import logging
 import mailfiles
 import pytest
 import re
+import secrets
 
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
     from collections.abc import Callable
+    from collections.abc import Generator
     from collections.abc import Iterator
+    from collections.abc import Sequence
     from previously.contract.rows import EventRow
-    from previously.contract.rows import Tip
+    from previously.contract.rows import ProjectionState
+    from previously.core.members import BracketEdge
+    from previously.core.members import BracketKinds
 
 T0 = datetime(2026, 10, 11, 12, 0, 0, tzinfo=UTC)
 INTERNALDATE = datetime(2026, 10, 8, 9, 0, 0, tzinfo=UTC)
@@ -234,6 +254,10 @@ def _world(db: Engine) -> World:
         )
     }
     redact_event(storage, storage, ids["date_unreadable"], reason="test", recorded_at=T0)
+    # What `previously project` does in the upgrade step, before the server
+    # serves: the server catches up, and only `project` builds.
+    for projection in PROJECTIONS:
+        catch_up(storage, storage, projection, rebuild=True)
     with storage.begin() as conn:
         policy_event = next(iter(storage.read_by_kind(conn, "action"))).id
     return World(storage, tokens, ids, policy_event)
@@ -263,7 +287,9 @@ def _tool(
     *,
     client: str = "claude-code",
 ) -> CallToolResult:
-    server = build_server(world.storage, stdio_client=client)
+    server = build_server(
+        world.storage, stdio_client=client, graph=world.storage, projections=world.storage
+    )
     return _session(server, mode, lambda session: session.call_tool(name, arguments or {}))
 
 
@@ -381,7 +407,9 @@ def test_a_rule_that_does_not_allow_the_chain_withholds_with_the_reason_code_rul
 def test_every_call_writes_an_access_with_the_era_and_the_ids_of_the_policy(
     world: World, mode: str
 ) -> None:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
 
     async def calls(session: Client) -> None:
         await session.call_tool("previously", {"circle": "huber"})
@@ -461,7 +489,9 @@ def test_a_call_the_sdk_refuses_before_it_runs_writes_an_access_too(
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_no_access_entry_carries_content_of_an_event(world: World, mode: str) -> None:
-    server = build_server(world.storage, stdio_client="local-harness")
+    server = build_server(
+        world.storage, stdio_client="local-harness", graph=world.storage, projections=world.storage
+    )
 
     async def calls(session: Client) -> None:
         await session.call_tool("previously", {})
@@ -495,7 +525,9 @@ def test_no_access_entry_carries_content_of_an_event(world: World, mode: str) ->
 def test_a_client_revoked_while_the_stdio_server_runs_is_refused_from_its_next_call(
     world: World, mode: str
 ) -> None:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
 
     async def calls(session: Client) -> tuple[CallToolResult, CallToolResult]:
         before = await session.call_tool("whoami", {})
@@ -546,7 +578,9 @@ def test_no_token_stands_in_the_log_or_the_server_log(
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_every_tool_answers_with_one_text_block_and_nothing_else(world: World, mode: str) -> None:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
     calls: list[tuple[str, dict[str, Any]]] = [
         ("previously", {}),
         ("previously", {"cursor": "junk"}),
@@ -826,7 +860,9 @@ def test_policy_gaps_counts_what_this_server_withheld_for_lack_of_a_rule(
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_the_resources_are_templates_and_read_like_the_tools(world: World, mode: str) -> None:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
     event = world.ids["no_message_id"]
 
     async def read(session: Client) -> tuple[list[str], int, str, str]:
@@ -852,7 +888,9 @@ def test_the_resources_are_templates_and_read_like_the_tools(world: World, mode:
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_the_prompts_ask_for_work_and_hold_no_content(world: World, mode: str) -> None:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
 
     async def get(session: Client) -> list[str]:
         prompts = [
@@ -878,7 +916,7 @@ def test_the_prompts_ask_for_work_and_hold_no_content(world: World, mode: str) -
 # The SHA-256 of the tool list as clients see it: name, description, input
 # schema and `_meta` of every tool, sorted by name, as canonical JSON. A change to any of
 # them is a change of the interface, made deliberately and released.
-TOOLS_SHA256 = "0a0ca0650508cca9a840054366695bec023fbee6cd6f4e251caeedf00f67b366"
+TOOLS_SHA256 = "bb1cde8cebeb3592d48a7289795433beac4dcbb7a08433e9106c2f710da91f9e"
 
 
 def tool_list_digest(tools: list[dict[str, object]]) -> str:
@@ -894,7 +932,9 @@ def tool_list_digest(tools: list[dict[str, object]]) -> str:
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_the_tool_list_matches_its_checksum(world: World, mode: str) -> None:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
     listed = _session(server, mode, lambda session: session.list_tools())
     tools: list[dict[str, object]] = [
         {
@@ -959,7 +999,9 @@ def test_the_instructions_tell_a_client_how_to_read_an_approval_and_to_ask() -> 
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
 def test_exactly_the_three_answering_tools_carry_the_ask_mark(world: World, mode: str) -> None:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
     listed = _session(server, mode, lambda session: session.list_tools())
     marked = {tool.name for tool in listed.tools if (tool.meta or {}).get(ASK_MARK) is True}
     assert marked == {"write_approve", "write_reject", "write_triage_answer"}
@@ -972,7 +1014,9 @@ def test_exactly_the_three_answering_tools_carry_the_ask_mark(world: World, mode
 
 
 def _everything(world: World, mode: str) -> list[str]:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
 
     async def calls(session: Client) -> list[str]:
         results = [
@@ -1020,9 +1064,16 @@ def _http[T](
     *,
     allowed_hosts: tuple[str, ...] = (),
     confirm_key: str | None = None,
+    storage: PostgresStorage | None = None,
 ) -> T:
+    store = world.storage if storage is None else storage
     app = build_app(
-        world.storage, allowed_hosts=allowed_hosts, locker=world.storage, confirm_key=confirm_key
+        store,
+        allowed_hosts=allowed_hosts,
+        locker=store,
+        confirm_key=confirm_key,
+        graph=store,
+        projections=store,
     )
 
     async def run() -> T:
@@ -1044,13 +1095,14 @@ def _over_http(
     arguments: dict[str, Any],
     *,
     confirm_key: str | None = None,
+    storage: PostgresStorage | None = None,
 ) -> CallToolResult:
     async def use(http: httpx2.AsyncClient) -> CallToolResult:
         http.headers["Authorization"] = f"Bearer {token}"
         async with Client(streamable_http_client(URL, http_client=http), mode=mode) as session:
             return await session.call_tool(name, arguments)
 
-    return _http(world, use, confirm_key=confirm_key)
+    return _http(world, use, confirm_key=confirm_key, storage=storage)
 
 
 _INITIALIZE = {
@@ -1143,7 +1195,7 @@ def test_a_rotated_token_stops_working_with_the_next_request_and_the_new_one_wor
     world: World,
 ) -> None:
     # Review focus 2: `client add` with a name in force, while the app runs.
-    app = build_app(world.storage, allowed_hosts=())
+    app = build_app(world.storage, allowed_hosts=(), graph=world.storage, projections=world.storage)
     old = world.tokens["claude-code"]
 
     async def run() -> list[int]:
@@ -1206,10 +1258,50 @@ def test_a_read_resource_may_be_kept_only_by_the_client_that_asked(world: World)
     assert (result["cacheScope"], result["ttlMs"]) == ("private", 0)
 
 
+class _ProbedThrough(PostgresStorage):
+    """A real store that serves the start of the server, and once `probe` is
+    set hands the readiness probe's snapshot and state row to it: the
+    server refuses to start against a store it can't catch up, so a store
+    that fails from the start would only show that refusal."""
+
+    probe: PostgresStorage | None = None
+
+    @override
+    @contextlib.contextmanager
+    def snapshot(self) -> Generator[Connection]:
+        with super().snapshot() if self.probe is None else self.probe.snapshot() as conn:
+            yield conn
+
+    @override
+    def projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
+        if self.probe is None:
+            return super().projection_state(conn, name)
+        return self.probe.projection_state(conn, name)
+
+
+def _built(db: Engine) -> _ProbedThrough:
+    """The test database with the graph projection built on the empty log,
+    as `previously project` leaves it, so that a server starts against it."""
+    storage = _ProbedThrough(db)
+    catch_up(storage, storage, GRAPH, rebuild=True)
+    return storage
+
+
 def _get_without_token(
-    storage: PostgresStorage, method: str, path: str, *, host: str = "127.0.0.1:8765"
+    storage: PostgresStorage,
+    method: str,
+    path: str,
+    *,
+    host: str = "127.0.0.1:8765",
+    probe: PostgresStorage | None = None,
 ) -> httpx2.Response:
-    app = build_app(storage, allowed_hosts=())
+    """One request without a token to the app of `storage`, which has to be
+    a store a server starts against. With `probe`, the readiness probe reads
+    through that store once the app is built."""
+    app = build_app(storage, allowed_hosts=(), graph=storage, projections=storage)
+    if probe is not None:
+        assert isinstance(storage, _ProbedThrough)
+        storage.probe = probe
 
     async def run() -> httpx2.Response:
         async with app.router.lifespan_context(app):
@@ -1261,10 +1353,10 @@ def test_every_other_request_without_a_token_is_still_refused(
     assert _accesses(world) == []
 
 
-def test_the_readiness_probe_answers_503_when_the_database_does_not() -> None:
+def test_the_readiness_probe_answers_503_when_the_database_does_not(db: Engine) -> None:
     # A real store whose database does not listen: nothing stands in for it.
     unreachable = PostgresStorage(create_engine("postgresql+psycopg://p:p@127.0.0.1:9/none"))
-    response = _get_without_token(unreachable, "GET", "/healthz")
+    response = _get_without_token(_built(db), "GET", "/healthz", probe=unreachable)
     assert (response.status_code, response.text) == (503, "Error: the database does not answer")
 
 
@@ -1273,13 +1365,14 @@ def _probe_records(caplog: pytest.LogCaptureFixture) -> list[logging.LogRecord]:
 
 
 def test_a_database_that_refuses_costs_the_probe_one_line_without_a_traceback(
-    caplog: pytest.LogCaptureFixture,
+    db: Engine, caplog: pytest.LogCaptureFixture
 ) -> None:
     # An expected outage, such as a switchover of the primary: the sentence of
     # the storage error says what a chain of tracebacks said, once per check.
     unreachable = PostgresStorage(create_engine("postgresql+psycopg://p:p@127.0.0.1:9/none"))
+    started = _built(db)
     caplog.set_level(logging.DEBUG)
-    assert _get_without_token(unreachable, "GET", "/healthz").status_code == 503
+    assert _get_without_token(started, "GET", "/healthz", probe=unreachable).status_code == 503
     (record,) = _probe_records(caplog)
     assert record.levelno == logging.WARNING
     assert record.exc_info is None
@@ -1302,19 +1395,21 @@ class _EndedByTheServer(PostgresStorage):
         self._admin = admin
 
     @override
-    def tip(self, conn: Connection) -> Tip | None:
+    def projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
         pid = conn.execute(text("SELECT pg_backend_pid()")).scalar_one()
         with self._admin.begin() as admin:
             admin.execute(text("SELECT pg_terminate_backend(:pid)"), {"pid": pid})
-        return super().tip(conn)
+        return super().projection_state(conn, name)
 
 
 def test_a_connection_the_server_ends_costs_the_probe_one_line_as_well(
     db: Engine, caplog: pytest.LogCaptureFixture
 ) -> None:
     victim = create_engine(db.url, poolclass=NullPool)
+    started = _built(db)
     caplog.set_level(logging.DEBUG)
-    assert _get_without_token(_EndedByTheServer(victim, db), "GET", "/healthz").status_code == 503
+    ended = _EndedByTheServer(victim, db)
+    assert _get_without_token(started, "GET", "/healthz", probe=ended).status_code == 503
     (record,) = _probe_records(caplog)
     assert record.levelno == logging.WARNING
     assert record.exc_info is None
@@ -1331,11 +1426,48 @@ def test_an_unexpected_failure_of_the_probe_keeps_its_traceback(
         admin.execute(text("DROP DATABASE IF EXISTS probe_without_schema"))
         admin.execute(text("CREATE DATABASE probe_without_schema"))
     empty = PostgresStorage(create_engine(db.url.set(database="probe_without_schema")))
+    started = _built(db)
     caplog.set_level(logging.DEBUG)
-    assert _get_without_token(empty, "GET", "/healthz").status_code == 503
+    assert _get_without_token(started, "GET", "/healthz", probe=empty).status_code == 503
     (record,) = _probe_records(caplog)
     assert record.levelno == logging.ERROR
     assert record.exc_info is not None
+
+
+def test_a_role_the_database_refuses_makes_the_probe_say_so_in_one_line(
+    db: Engine, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Review finding M-1 of fix round F2: a role whose grant on the state
+    row was revoked while the server ran gets the 503 with a body that
+    names the refusal, not "the database does not answer", and one WARNING
+    line with the database's reason, no traceback. Measured red by taking
+    the branch for `PrivilegeMissing` out: the body says the database does
+    not answer, and the record is an ERROR with its traceback. The control
+    is the probe of the same database through the owner's role: 200."""
+    from previously.mcp_server.auth import NOT_PERMITTED
+
+    started = _built(db)
+    name, password = f"probe_{secrets.token_hex(4)}", secrets.token_hex(16)
+    with db.begin() as c:
+        c.execute(text(f"CREATE ROLE {name} LOGIN PASSWORD '{password}'"))
+        c.execute(text(f"GRANT USAGE ON SCHEMA public TO {name}"))
+    try:
+        refused = PostgresStorage(
+            create_engine(db.url.set(username=name, password=password), poolclass=NullPool)
+        )
+        caplog.set_level(logging.DEBUG)
+        response = _get_without_token(started, "GET", "/healthz", probe=refused)
+        assert (response.status_code, response.text) == (503, NOT_PERMITTED)
+        (record,) = _probe_records(caplog)
+        assert record.levelno == logging.WARNING
+        assert record.exc_info is None
+        assert "permission denied for table projection_state" in record.getMessage()
+        started.probe = None
+        assert _get_without_token(started, "GET", "/healthz").status_code == 200
+    finally:
+        with db.begin() as c:
+            c.execute(text(f"DROP OWNED BY {name}"))
+            c.execute(text(f"DROP ROLE {name}"))
 
 
 @pytest.mark.db
@@ -1358,7 +1490,9 @@ def test_the_long_mail_has_more_than_a_page_of_text() -> None:
 def test_an_event_resource_with_an_id_that_is_no_number_is_an_error(
     world: World, mode: str
 ) -> None:
-    server = build_server(world.storage, stdio_client="claude-code")
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
 
     async def read(session: Client) -> list[str]:
         found: list[str] = []
@@ -2188,7 +2322,14 @@ _HANDLE = re.compile(r"^handle: (\S+)$", re.MULTILINE)
 
 
 def _writer(world: World, *, client: str = "claude-code", key: str | None = KEY) -> Any:
-    return build_server(world.storage, stdio_client=client, locker=world.storage, confirm_key=key)
+    return build_server(
+        world.storage,
+        stdio_client=client,
+        locker=world.storage,
+        confirm_key=key,
+        graph=world.storage,
+        projections=world.storage,
+    )
 
 
 def _write(
@@ -2711,7 +2852,13 @@ def test_without_a_key_the_write_tools_answer_an_error_and_the_reading_tools_wor
         assert not _write(world, mode, "list_circles", {}, key=key).is_error
     assert len(_assertions(world)) == 1
     # Without a store that locks the sources the server does not write either.
-    server = build_server(world.storage, stdio_client="claude-code", confirm_key=KEY)
+    server = build_server(
+        world.storage,
+        stdio_client="claude-code",
+        confirm_key=KEY,
+        graph=world.storage,
+        projections=world.storage,
+    )
     result = _session(server, mode, lambda s: s.call_tool("write_reject", {"proposal": proposal}))
     assert _text(result) == "Error: writing is not configured on this server"
 
@@ -3376,7 +3523,13 @@ def test_the_label_of_a_kind_is_in_the_working_language_else_in_the_servers(
     (grace,) = write_claims(world.storage, world.storage, [english], recorded_at=T0).ids
 
     def heading(language: str, subject: int) -> str:
-        server = build_server(world.storage, stdio_client="claude-code", language=language)
+        server = build_server(
+            world.storage,
+            stdio_client="claude-code",
+            language=language,
+            graph=world.storage,
+            projections=world.storage,
+        )
         result = _session(
             server, mode, lambda s: s.call_tool("list_entities", {"subject": subject})
         )
@@ -3386,7 +3539,13 @@ def test_the_label_of_a_kind_is_in_the_working_language_else_in_the_servers(
     assert " · entity · Post · " in heading("en", ids.treasurer)
     assert " · entity · Person · " in heading("de", grace)  # its own language is en
     with pytest.raises(ValueError, match="not a language tag"):
-        build_server(world.storage, stdio_client="claude-code", language="German")
+        build_server(
+            world.storage,
+            stdio_client="claude-code",
+            language="German",
+            graph=world.storage,
+            projections=world.storage,
+        )
 
 
 @pytest.mark.db
@@ -4152,13 +4311,39 @@ def test_an_entity_of_a_recollection_and_a_mail_is_delivered_with_the_circles_of
     assert (only.event, only.circles) == (lonely, ())
 
 
-class _CountingFolds(PostgresStorage):
-    """The real store, counting the reads of every assertion, which is what
-    folding the graph costs."""
+def _fold_instead(log: PostgresStorage, store: PostgresStorage, conn: Connection) -> Graph:
+    """The oracle: the fold of the whole log, in place of the graph read
+    from the projection. The server has no mode that folds (ruling F-e of
+    the 2026-10-15 assignments plan), so a test that holds the projection
+    against the fold hands the fold in itself."""
+    del store
+    return read_graph(log, conn)
+
+
+def _edges_of_the_fold(
+    log: PostgresStorage, conn: Connection, graph: Graph
+) -> tuple[tuple[BracketEdge, ...], BracketKinds]:
+    """The oracle of the bracket edges: `bracket_edges` over the fold."""
+    vocabulary = read_vocabulary(log, conn)
+    return bracket_edges(graph, vocabulary), bracket_kinds(vocabulary)
+
+
+def _folding(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Every call from here on reads the fold of the log where it would read
+    the projection, and finds a bracket's edges in that fold."""
+    monkeypatch.setattr("previously.mcp_server.server.projected_graph", _fold_instead)
+    monkeypatch.setattr("previously.mcp_server.read.reader_bracket_edges", _edges_of_the_fold)
+
+
+class _CountingReads(PostgresStorage):
+    """The real store, counting what a call reads of the assertions: whole
+    reads of the kind, which folding the graph takes, and every assertion
+    row read by id or in a batch of the catch-up."""
 
     def __init__(self, engine: Engine) -> None:
         super().__init__(engine)
         self.folds = 0
+        self.rows: list[int] = []
 
     @override
     def read_by_kind(self, conn: Connection, kind: str) -> Iterator[EventRow]:
@@ -4166,17 +4351,42 @@ class _CountingFolds(PostgresStorage):
             self.folds += 1
         return super().read_by_kind(conn, kind)
 
+    @override
+    def read(self, conn: Connection, from_id: int, limit: int) -> Iterator[EventRow]:
+        found = list(super().read(conn, from_id, limit))
+        self.rows.extend(row.id for row in found if row.kind == "assertion")
+        return iter(found)
+
+    @override
+    def events_by_id(self, conn: Connection, event_ids: Sequence[int]) -> dict[int, EventRow]:
+        found = super().events_by_id(conn, event_ids)
+        self.rows.extend(sorted(i for i, row in found.items() if row.kind == "assertion"))
+        return found
+
 
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
-def test_a_call_folds_the_graph_once_for_its_header_and_its_body(
-    world: World, mode: str, db: Engine
+def test_a_call_reads_no_assertion_in_full_and_of_the_graph_only_what_is_new(
+    world: World, mode: str, db: Engine, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Ruling T6-c of the 2026-10-14 assignments plan: the header's count
-    and the list share one fold."""
+    """Replaces the test that pinned one fold of the log per call, for its
+    header and its body (ruling T6-c of the 2026-10-14 assignments plan): a
+    call reads the graph from its projection and reads no assertion in full,
+    whatever it does. With nothing new but the access entry of the call
+    before and no objection waiting, it reads no assertion at all; with a
+    version written since, it reads that one, as the catch-up folds its
+    thread, and nothing else ({ref}`graph-projection`)."""
     ids = _graphed(world)
-    counting = _CountingFolds(db)
-    server = build_server(counting, stdio_client="claude-code")
+    counting = _CountingReads(db)
+    server = build_server(
+        counting, stdio_client="claude-code", graph=counting, projections=counting
+    )
+
+    def call(name: str, arguments: dict[str, Any]) -> None:
+        result = _session(server, mode, lambda s: s.call_tool(name, arguments))
+        assert not result.is_error, _text(result)
+
+    call("whoami", {})  # builds the projection
     for name, arguments in (
         ("list_entities", {}),
         ("list_entities", {"subject": ids.anna}),
@@ -4184,9 +4394,468 @@ def test_a_call_folds_the_graph_once_for_its_header_and_its_body(
         ("whoami", {}),
     ):
         counting.folds = 0
-        result = _session(server, mode, lambda s, n=name, a=arguments: s.call_tool(n, a))
+        call(name, arguments)
+        assert counting.folds == 0, name
+    counting.rows = []
+    call("whoami", {})
+    assert counting.rows == []
+    (new,) = write_claims(
+        world.storage,
+        world.storage,
+        [_person("Bert", world.ids["attachments_only"])],
+        recorded_at=T0,
+    ).ids
+    counting.folds, counting.rows = 0, []
+    call("whoami", {})
+    assert (counting.folds, set(counting.rows)) == (0, {new})
+    # The control: with the fold handed in for the projection, the same call
+    # folds the log once.
+    _folding(monkeypatch)
+    counting.folds = 0
+    call("whoami", {})
+    assert counting.folds == 1
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_the_reading_tools_answer_from_the_projection_as_from_the_fold(
+    world: World, mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every answer that reads the graph is the same from the projection as
+    from the fold of the log, which the test hands in for the projection
+    as the oracle, header included, for both clients: one that may not
+    see Lea and one that may ({ref}`graph-projection`)."""
+    ids = _graphed(world)
+    scanned, plain = world.ids["attachments_only"], world.ids["plain"]
+    # A relation that rests on another mail than its ends: the view reads
+    # that mail when the page of Anna names the relation, not before.
+    _relate(world, ids.anna, ids.secretary, source="html_only")
+    set_class(world.storage, PERSON_CLASS, statement="people", recorded_at=T0)
+    _confirmed(
+        world,
+        mode,
+        "write_entity",
+        {
+            "items": [
+                _entity_item("Anna M", scanned, subject=ids.anna),
+                _entity_item("Dora", scanned, confidence=40),
+                _entity_item("Clara", scanned, confidence=100),
+            ]
+        },
+    )
+    _confirmed(
+        world,
+        mode,
+        "write_relation",
+        {"items": [_question_item(ids.anna, [ids.treasurer, ids.secretary], scanned)]},
+    )
+    hidden = {"items": [_entity_item("Lea M", plain, subject=ids.lea)]}
+    _confirmed(world, mode, "write_entity", hidden, client="local-harness")
+    calls: list[tuple[str, dict[str, Any]]] = [
+        ("list_entities", {}),
+        ("list_entities", {"proposals": True}),
+        ("list_entities", {"types": ["post"]}),
+        ("list_entities", {"state": "retracted"}),
+        ("list_entities", {"subject": ids.anna}),
+        ("list_entities", {"subject": ids.anna, "history": True}),
+        ("list_entities", {"subject": ids.lea}),
+        ("list_entities", {"subject": ids.holds}),
+        ("list_triage", {}),
+        ("whoami", {}),
+    ]
+    for client in ("claude-code", "local-harness"):
+        server = build_server(
+            world.storage, stdio_client=client, graph=world.storage, projections=world.storage
+        )
+
+        def answer(n: str, a: dict[str, Any], s: Any = server) -> str:
+            result = _session(s, mode, lambda session: session.call_tool(n, a))
+            assert not result.is_error, _text(result)
+            # The fence tags are drawn anew for every answer.
+            return _untagged(_text(result))
+
+        found = [answer(name, arguments) for name, arguments in calls]
+        with monkeypatch.context() as patched:
+            patched.setattr("previously.mcp_server.server.projected_graph", _fold_instead)
+            expected = [answer(name, arguments) for name, arguments in calls]
+        for (name, arguments), one, other in zip(calls, found, expected, strict=True):
+            assert one == other, (client, name, arguments)
+    # What the answers agree on is not nothing: the header counts what the
+    # client may see, and the triage holds an objection and a question.
+    triage = _text(_tool(world, mode, "list_triage"))
+    assert triage.splitlines()[0] == "previously · list_triage · 1 objection pending · page 1"
+    assert "· objection ·" in triage
+    assert "· question ·" in triage
+    assert _header(_tool(world, mode, "whoami", client="local-harness")) == (
+        "previously · whoami · 2 objections pending"
+    )
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_over_http_a_call_reads_the_graph_from_the_projection(
+    world: World, mode: str, db: Engine
+) -> None:
+    """`serve` passes the projection through `build_app`: over HTTP a call
+    catches up, reads no assertion in full, and its header and its list hold
+    what was written past the server."""
+    ids = _graphed(world)
+    scanned = world.ids["attachments_only"]
+    objection = replace(
+        _person("Anna B", scanned),
+        author=model_author("claude-code"),
+        responsibility=OPEN,
+        subject=ids.anna,
+        contests=ids.anna,
+        confidence=40,
+    )
+    write_claims(world.storage, world.storage, [objection], recorded_at=T0)
+    counting = _CountingReads(db)
+    token = world.tokens["claude-code"]
+    listed = _over_http(world, token, mode, "list_entities", {}, storage=counting)
+    assert _text(listed).splitlines()[0] == (
+        "previously · list_entities · 1 objection pending · page 1"
+    )
+    assert "field name: Anna\n" in _text(listed)
+    assert counting.folds == 0
+
+
+@pytest.mark.db
+def test_the_graph_of_a_call_is_none_outside_a_call(world: World) -> None:
+    """Ruling F-e of the 2026-10-15 assignments plan, and review finding
+    M-3 of fix round F2: outside a call there is no graph, and `graph_now`
+    raises rather than fold the log, which would be a second way to the
+    graph that no call takes. Measured red by giving the fold back. The
+    control: inside a call the tools that ask for it answer."""
+    service = Service(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
+    with pytest.raises(RuntimeError, match="outside a call"):
+        service.graph_now()
+    assert not _tool(world, "auto", "list_entities").is_error
+
+
+# What a call answers when it fails inside the server: the reason is in the
+# server's log, never in the result.
+_FAILED_TEXT = "Error: the call failed inside the server; its log says why, this result cannot"
+
+
+def _graph_rows(db: Engine) -> tuple[object, ...]:
+    """Everything of the graph projection: its state row and both tables."""
+    with db.begin() as c:
+        return (
+            c.execute(text("SELECT * FROM projection_state WHERE name = 'graph'")).all(),
+            c.execute(text("SELECT * FROM p_graph_thread ORDER BY subject")).all(),
+            c.execute(text("SELECT * FROM p_graph_version ORDER BY id")).all(),
+        )
+
+
+class _RebuiltBeforeSnapshot(PostgresStorage):
+    """The real store, where `previously project` empties the graph
+    projection at its own version between a call's catch-up and its
+    snapshot, as after an operator deleted the state row: before each of the
+    first `misses` snapshots, its state row goes back to `up_to_id` 0 and
+    its tables are emptied. Every snapshot after those finds it as it is."""
+
+    def __init__(self, engine: Engine, misses: int) -> None:
+        super().__init__(engine)
+        self.misses = misses
+        self.snapshots = 0
+
+    @override
+    @contextlib.contextmanager
+    def snapshot(self) -> Generator[Connection]:
+        self.snapshots += 1
+        if self.snapshots <= self.misses:
+            with self.begin() as conn:
+                conn.execute(text("UPDATE projection_state SET up_to_id = 0 WHERE name = 'graph'"))
+                conn.execute(text("DELETE FROM p_graph_thread"))
+                conn.execute(text("DELETE FROM p_graph_version"))
+        with super().snapshot() as conn:
+            yield conn
+
+
+class _Armed(PostgresStorage):
+    """The real store, until `armed` is set: then it fails as its subclass
+    says. The server catches up once while it is built, so a store that
+    failed from the start would only show that it refuses to start."""
+
+    armed = False
+
+
+class _CatchUpFails(_Armed):
+    """The real store, whose graph catch-up fails with a storage error."""
+
+    @override
+    def lock_projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
+        if self.armed:
+            raise OperationFailed("the database ended the connection")
+        return super().lock_projection_state(conn, name)
+
+
+class _GapAboveTheProjection(_Armed):
+    """The real store, whose log has a gap where a catch-up reads: a read of
+    more than one event leaves out the first one asked for, so `catch_up`
+    refuses with `ProjectionGap`. A read of one event finds it."""
+
+    @override
+    def read(self, conn: Connection, from_id: int, limit: int) -> Iterator[EventRow]:
+        found = super().read(conn, from_id, limit)
+        if not self.armed or limit == 1:
+            return found
+        return (row for row in found if row.id != from_id)
+
+
+_CALLS_OF_EVERY_KIND: Final = ("list_entities", "list_triage", "whoami")
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize(
+    ("change", "found"),
+    [
+        ("DELETE FROM projection_state WHERE name = 'graph'", "is not built"),
+        ("UPDATE projection_state SET version = 7 WHERE name = 'graph'", "stands at version 7"),
+    ],
+    ids=["no-state-row", "other-version"],
+)
+def test_a_call_meeting_a_projection_it_would_have_to_build_fails_and_touches_nothing(
+    world: World,
+    mode: str,
+    db: Engine,
+    change: str,
+    found: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Ruling F-c of the 2026-10-15 assignments plan: only `previously
+    project` builds. A call of a running server that meets no state row, or
+    one at another version, as an old pod does once the new release's
+    `project` has run, fails, says why in the server's log only, and leaves
+    the state row and both tables as they were. Every call catches up
+    first, so `whoami` is among them. Measured red by letting
+    `graph_snapshot` catch up with `rebuild=True`: every call answers, and
+    the rows are rebuilt.
+
+    The server's log gets one WARNING line with the sentence and no
+    traceback (review finding M-2 of fix round F2): it is the designed state
+    of an old pod during a rolling update, once per call. Measured red by
+    logging it with `logger.exception` again."""
+    _graphed(world)
+    server = build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
+    with db.begin() as c:
+        c.execute(text(change))
+    before = _graph_rows(db)
+    caplog.set_level(logging.WARNING, logger="previously.mcp_server.server")
+    for name in _CALLS_OF_EVERY_KIND:
+        caplog.clear()
+        result = _session(server, mode, lambda s, n=name: s.call_tool(n, {}))
+        assert result.is_error
+        assert _text(result) == _FAILED_TEXT
+        assert "projection" not in _text(result)
+        (record,) = [r for r in caplog.records if r.name == "previously.mcp_server.server"]
+        assert (record.levelno, record.exc_info) == (logging.WARNING, None), name
+        assert record.getMessage().startswith(
+            f"an MCP call failed: projection graph {found}, and this code declares version"
+        ), name
+        assert _graph_rows(db) == before
+    assert _last_access(world).access.outcome == ACCESS_ERROR
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("change", ["DELETE", "UPDATE"])
+def test_the_server_refuses_to_start_without_a_projection_at_its_version(
+    world: World, db: Engine, change: str
+) -> None:
+    """The server catches the projection up once before it serves, without
+    building it: a projection `previously project` has not built at this
+    code's version stops it with the sentence an operator needs, for stdio
+    and HTTP alike, and builds nothing. Measured red by removing that
+    catch-up from `build_server`: it builds a server."""
+    statement = {
+        "DELETE": "DELETE FROM projection_state WHERE name = 'graph'",
+        "UPDATE": "UPDATE projection_state SET version = 7 WHERE name = 'graph'",
+    }[change]
+    with db.begin() as c:
+        c.execute(text(statement))
+    before = _graph_rows(db)
+    with pytest.raises(ProjectionNotBuilt, match="`previously project`"):
+        build_server(
+            world.storage,
+            stdio_client="claude-code",
+            graph=world.storage,
+            projections=world.storage,
+        )
+    with pytest.raises(ProjectionNotBuilt, match="`previously project`"):
+        build_app(world.storage, allowed_hosts=(), graph=world.storage, projections=world.storage)
+    assert _graph_rows(db) == before
+    # The control: once `project` built it, the server starts.
+    catch_up(world.storage, world.storage, GRAPH, rebuild=True)
+    build_server(
+        world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
+    )
+
+
+def _ready(storage: PostgresStorage) -> int:
+    """The status of the readiness probe of a server built with the
+    projection."""
+    app = build_app(storage, allowed_hosts=(), graph=storage, projections=storage)
+
+    async def run() -> int:
+        async with app.router.lifespan_context(app):
+            transport = httpx2.ASGITransport(app=app)
+            async with httpx2.AsyncClient(transport=transport, base_url="http://127.0.0.1") as http:
+                return (await http.get("/healthz")).status_code
+
+    return anyio.run(run)
+
+
+@pytest.mark.db
+def test_the_readiness_probe_is_not_ready_while_the_projection_is_at_another_version(
+    world: World, db: Engine, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A rolling update that changes the projection's version: once the new
+    release's `previously project` ran, an old pod's probe says not ready,
+    and so does a pod whose projection was never built. The probe reads the
+    state row and does not catch up. Measured red by letting the probe read
+    the tip alone: 200 throughout."""
+    _graphed(world)
+    assert _ready(world.storage) == 200
+    for statement in (
+        "UPDATE projection_state SET version = 7 WHERE name = 'graph'",
+        "DELETE FROM projection_state WHERE name = 'graph'",
+    ):
+        # The app is built first; the version changes under it.
+        app = build_app(
+            world.storage, allowed_hosts=(), graph=world.storage, projections=world.storage
+        )
+        with db.begin() as c:
+            c.execute(text(statement))
+        before = _graph_rows(db)
+
+        async def run(a: Any = app) -> tuple[int, str]:
+            async with a.router.lifespan_context(a):
+                transport = httpx2.ASGITransport(app=a)
+                async with httpx2.AsyncClient(
+                    transport=transport, base_url="http://127.0.0.1"
+                ) as http:
+                    response = await http.get("/healthz")
+                    return response.status_code, response.text
+
+        caplog.clear()
+        with caplog.at_level(logging.WARNING, logger="previously.mcp_server.server"):
+            assert anyio.run(run) == (503, NOT_BUILT)
+        assert "the readiness probe found projection graph" in caplog.text
+        assert _graph_rows(db) == before
+        catch_up(world.storage, world.storage, GRAPH, rebuild=True)
+        # The control: at this code's version again, ready.
+        assert _ready(world.storage) == 200
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_call_catches_up_once_more_after_a_rebuild_and_fails_on_a_second(
+    world: World, mode: str, db: Engine, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A `previously project` that empties the projection at its own version
+    between a call's catch-up and its snapshot costs one more catch-up, and
+    the call answers as it would have; a second one in a row fails the
+    call, though a third try would read. Measured red with
+    `REBUILD_RETRIES` at 0 (the first half) and at 2 (the second)."""
+    _graphed(world)
+    expected = {name: _untagged(_text(_tool(world, mode, name))) for name in _CALLS_OF_EVERY_KIND}
+    for name in _CALLS_OF_EVERY_KIND:
+        once = _RebuiltBeforeSnapshot(db, misses=1)
+        server = build_server(once, stdio_client="claude-code", graph=once, projections=once)
+        result = _session(server, mode, lambda s, n=name: s.call_tool(n, {}))
         assert not result.is_error, _text(result)
-        assert counting.folds == 1, name
+        assert _untagged(_text(result)) == expected[name]
+        assert once.snapshots == 2
+    twice = _RebuiltBeforeSnapshot(db, misses=2)
+    server = build_server(twice, stdio_client="claude-code", graph=twice, projections=twice)
+    caplog.set_level(logging.WARNING, logger="previously.mcp_server.server")
+    result = _session(server, mode, lambda s: s.call_tool("whoami", {}))
+    assert _text(result) == _FAILED_TEXT
+    assert twice.snapshots == 2
+    assert "on each of 2 tries" in caplog.text
+    # The control: the same store, past its misses, answers.
+    result = _session(server, mode, lambda s: s.call_tool("whoami", {}))
+    assert not result.is_error
+    assert twice.snapshots == 3
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+@pytest.mark.parametrize(
+    ("store", "cause"),
+    [
+        (_CatchUpFails, "the database ended the connection"),
+        (_GapAboveTheProjection, "expected events"),
+    ],
+    ids=["failed", "gap"],
+)
+def test_a_call_whose_catch_up_fails_fails_and_folds_nothing(
+    world: World,
+    mode: str,
+    db: Engine,
+    store: type[_Armed],
+    cause: str,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """A gap in the log above where the projection stands is damage, and a
+    database that refuses the catch-up is a fault: either fails the call,
+    with the reason in the server's log, rather than answer from a fold of
+    the log over it ({ref}`graph-readers`). `get_event` reads no graph and
+    fails all the same, because every call catches up first."""
+    ids = _graphed(world)
+    scanned = world.ids["attachments_only"]
+    hit = store(db)
+    server = build_server(hit, stdio_client="claude-code", graph=hit, projections=hit)
+    hit.armed = True
+    # Two events past the projection, so that a gap has room to stand
+    # between them: with only the tip new, there is none.
+    write_claims(
+        world.storage,
+        world.storage,
+        [_person("Bert", scanned), _person("Clara", scanned)],
+        recorded_at=T0,
+    )
+    caplog.set_level(logging.WARNING, logger="previously.mcp_server.server")
+    for name, arguments in (
+        ("list_entities", {}),
+        ("list_entities", {"subject": ids.anna}),
+        ("whoami", {}),
+        ("get_event", {"ids": [scanned]}),
+    ):
+        caplog.clear()
+        result = _session(server, mode, lambda s, n=name, a=arguments: s.call_tool(n, a))
+        assert _text(result) == _FAILED_TEXT, name
+        assert cause in caplog.text, name
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_call_catches_the_projection_up_before_it_reads(world: World, mode: str) -> None:
+    """A version written past the server, through `core`, with nobody
+    running `previously project`, is in the next answer and its header."""
+    ids = _graphed(world)
+    assert "Bert" not in _text(_tool(world, mode, "list_entities"))
+    scanned = world.ids["attachments_only"]
+    objection = replace(
+        _person("Anna B", scanned),
+        author=model_author("claude-code"),
+        responsibility=OPEN,
+        subject=ids.anna,
+        contests=ids.anna,
+        confidence=40,
+    )
+    write_claims(
+        world.storage, world.storage, [_person("Bert", scanned), objection], recorded_at=T0
+    )
+    page = _text(_tool(world, mode, "list_entities"))
+    assert "field name: Bert" in page
+    assert page.splitlines()[0] == "previously · list_entities · 1 objection pending · page 1"
 
 
 @pytest.mark.db
@@ -4224,3 +4893,649 @@ def test_a_relation_is_shown_by_the_one_rule_of_core(world: World, mode: str) ->
     assert f"relation previously://event/{row.id}:" not in page
     # The control: Anna's relation to an entity is shown.
     assert f"relation previously://event/{ids.holds}:" in page
+
+
+# --- assignments: write_relation from an event (the 2026-10-15 assignments plan,
+# phase 2) -------------------------------------------------------------------------
+
+
+def _assigned_world(world: World) -> tuple[int, int]:
+    """The world of `_graphed`, with two projects of the operator on the
+    scanned mail, which `claude-code` sees."""
+    _graphed(world)
+    scanned = world.ids["attachments_only"]
+    xz, party = write_claims(
+        world.storage,
+        world.storage,
+        [_project("XZ", scanned), _project("Sommerfest", scanned)],
+        recorded_at=T0,
+    ).ids
+    return xz, party
+
+
+def _assignment_item(start: dict[str, Any], **fields: Any) -> dict[str, Any]:
+    return {"type": "concerns", "from": start, "sources": [], "confidence": 60, **fields}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_write_relation_assigns_a_mail_and_adds_it_as_a_source(world: World, mode: str) -> None:
+    xz, _party = _assigned_world(world)
+    scanned = world.ids["attachments_only"]
+    item = _assignment_item({"event": scanned, "units": [1]}, to=xz)
+
+    preview, written = _confirmed(world, mode, "write_relation", {"items": [item]})
+
+    (assigned, payload) = _graph_payloads(world)[-1]
+    assert payload["from"] == {"event": scanned, "units": [1]}
+    assert payload["sources"] == [{"event": scanned, "units": [1]}]
+    assert payload["responsibility"] == OPEN
+    assert (f"from: previously://event/{scanned}#unit-1\nto: entity {xz} XZ\n") in _untagged(
+        _text(preview)
+    )
+    assert _text(written).endswith(f"assertion {assigned} · open")
+    assert _last_access(world).access.arguments == {
+        "statements": 1,
+        "sources": [scanned],
+        "confirm": True,
+        "ends": [xz],
+        "written": [assigned],
+    }
+    whole = _assignment_item({"event": scanned}, to=xz, sources=[{"event": scanned}])
+    _confirmed(world, mode, "write_relation", {"items": [whole]})
+    assert _graph_payloads(world)[-1][1]["sources"] == [{"event": scanned, "units": None}]
+    assert verify(world.storage) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_assignment_of_a_mail_the_client_may_not_see_is_refused_as_one_that_is_missing(
+    world: World, mode: str
+) -> None:
+    """The start is a source, and a source the client may not use is refused
+    with one sentence for a hidden event and a missing one."""
+    xz, _party = _assigned_world(world)
+    count = len(_assertions(world))
+    answers = [
+        _text(
+            _write(
+                world,
+                mode,
+                "write_relation",
+                {"items": [_assignment_item({"event": event}, to=xz)]},
+            )
+        ).replace(str(event), "ID")
+        for event in (world.ids["plain"], 999_999)
+    ]
+    assert answers == ["Error: event ID is not one this client can use as a source"] * 2
+    assert len(_assertions(world)) == count
+    # The control: the client that may see the plain mail is shown the preview.
+    local = _write(
+        world,
+        mode,
+        "write_relation",
+        {"items": [_assignment_item({"event": world.ids["plain"]}, to=xz)]},
+        client="local-harness",
+    )
+    assert not local.is_error, _text(local)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_source_that_names_fewer_units_of_the_start_is_refused_and_not_merged(
+    world: World, mode: str
+) -> None:
+    xz, _party = _assigned_world(world)
+    scanned = world.ids["attachments_only"]
+    item = _assignment_item(
+        {"event": scanned, "units": [1, 2]}, to=xz, sources=[{"event": scanned, "units": [1]}]
+    )
+
+    refused = _write(world, mode, "write_relation", {"items": [item]})
+
+    assert _text(refused) == (
+        "Error: a statement has no valid form: "
+        "the event a relation starts at must be among its sources"
+    )
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_a_model_asks_which_bracket_a_mail_concerns_and_takes_an_assignment_back(
+    world: World, mode: str
+) -> None:
+    xz, party = _assigned_world(world)
+    scanned = world.ids["attachments_only"]
+    asking = _assignment_item({"event": scanned}, candidates=[xz, party])
+    _confirmed(world, mode, "write_relation", {"items": [asking]})
+    (question, _payload) = _graph_payloads(world)[-1]
+    triage = _untagged(_text(_tool(world, mode, "list_triage")))
+    assert (
+        f"### previously://event/{question} · question · relation · concerns · proposed · "
+        "by model:claude-code · new relation\n<<<customer-content TAG>>>\n"
+        "type: concerns\n"
+        f"from: previously://event/{scanned}\n"
+        f"to one of: entity {xz} XZ, entity {party} Sommerfest\n"
+    ) in triage
+
+    _confirmed(
+        world, mode, "write_relation", {"items": [_assignment_item({"event": scanned}, to=xz)]}
+    )
+    (assigned, _payload) = _graph_payloads(world)[-1]
+    retraction = _assignment_item({"event": scanned}, to=xz, subject=assigned, state="retracted")
+    _confirmed(world, mode, "write_relation", {"items": [retraction]})
+    (_retracted, payload) = _graph_payloads(world)[-1]
+    assert (payload["subject"], payload["state"]) == (assigned, "retracted")
+    assert verify(world.storage) == []
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_an_assignment_of_a_mail_the_client_may_not_see_is_not_shown_to_it(
+    world: World, mode: str
+) -> None:
+    """The policy decides an assignment over the mail it is about: the
+    proposal of `local-harness` about the plain mail waits in its triage and
+    not in that of `claude-code`, which may see the project but not the
+    mail."""
+    xz, _party = _assigned_world(world)
+    plain = world.ids["plain"]
+    item = _assignment_item({"event": plain}, to=xz)
+    _confirmed(world, mode, "write_relation", {"items": [item]}, client="local-harness")
+    (assigned, _payload) = _graph_payloads(world)[-1]
+
+    hidden = _text(_tool(world, mode, "list_triage"))
+    shown = _text(_tool(world, mode, "list_triage", client="local-harness"))
+
+    assert f"previously://event/{assigned} " not in hidden
+    assert f"previously://event/{assigned} " in shown
+
+
+# --- the chronicle of a bracket: previously with within (the 2026-10-15
+# assignments plan, phase 2) --------------------------------------------------------
+
+_CATERER = "Ach übrigens, der Caterer hat zugesagt."
+
+
+def _markus_mail(number: int, to: str) -> bytes:
+    """Markus's mail from his firm's address, about the project XZ, with an
+    afterthought about the summer party of the club in its last paragraph:
+    unit 1 is the subject, units 2 and 3 are about XZ, and unit 4 is the
+    afterthought. To `office@`, which has a rule, `claude-code` sees it."""
+    return "\r\n".join(
+        [
+            "From: Markus <markus@firma.example>",
+            f"To: {to}",
+            "Subject: Projekt XZ",
+            f"Date: Wed, 07 Oct 2026 10:{number:02d}:00 +0000",
+            f"Message-ID: <markus-{number}@firma.example>",
+            "Content-Type: text/plain; charset=utf-8",
+            "",
+            "Der Entwurf für XZ liegt bei.",
+            "",
+            "Die Abnahme von XZ ist am Freitag.",
+            "",
+            _CATERER,
+            "",
+        ]
+    ).encode()
+
+
+@dataclass(frozen=True)
+class Brackets:
+    """The brackets of Markus's mail, the mail, and the entities of
+    `_graphed`."""
+
+    xz: int
+    club: int
+    party: int
+    mail: int
+    graphed: Graphed
+
+
+def _assign(world: World, event: int, units: tuple[int, ...] | None, to: int) -> int:
+    """The operator assigns `event`, or those of its units, to `to`."""
+    start = Source(event, units)
+    claim = Claim(
+        RELATION,
+        OPERATOR,
+        DIRECT,
+        SOURCES,
+        (start,),
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        RelationBody("concerns", start, to, None, None, {}, STANDING),
+    )
+    (assigned,) = write_claims(world.storage, world.storage, [claim], recorded_at=T0).ids
+    return assigned
+
+
+def _brackets(world: World) -> Brackets:
+    """The world of `_graphed`, and Markus's mail assigned: the whole of it
+    to the project XZ, its afterthought to the summer party, and the summer
+    party part of the club, all by the operator, on the scanned mail."""
+    graphed = _graphed(world)
+    scanned = world.ids["attachments_only"]
+    club_claim = replace(
+        _project("Verein", scanned),
+        body=EntityBody("organization", None, {"name": "Verein"}, ACTIVE),
+    )
+    xz, club, party = write_claims(
+        world.storage,
+        world.storage,
+        [_project("XZ", scanned), club_claim, _project("Sommerfest", scanned)],
+        recorded_at=T0,
+    ).ids
+    _relate(world, party, club, kind="part_of")
+    mail = _take_in(world.storage, _markus_mail(0, "office@example.org"))
+    _assign(world, mail, None, xz)
+    _assign(world, mail, (4,), party)
+    return Brackets(xz, club, party, mail, graphed)
+
+
+def _units_shown(page: str) -> dict[int, list[int]]:
+    """The units each shown event of a page shows, by event."""
+    found: dict[int, list[int]] = {}
+    for part in re.split(r"(?=^### previously://event/)", page, flags=re.MULTILINE):
+        heading = _EVENT_HEADING.match(part)
+        if heading is not None:
+            found[int(heading.group(1))] = [int(seq) for seq in _UNIT.findall(part)]
+    return found
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_shows_of_markus_mail_only_the_units_of_the_bracket(
+    world: World, mode: str
+) -> None:
+    """Point 2 of the acceptance of the 2026-10-14 assignments
+    specification, over MCP: the summer party holds the afterthought, so
+    does the club one level up, and the project the rest of the mail."""
+    ids = _brackets(world)
+
+    party = _text(_tool(world, mode, "previously", {"within": ids.party}))
+    assert party.splitlines()[0] == f"previously · chronicle · within {ids.party} · page 1"
+    assert _units_shown(party) == {ids.mail: [4]}
+    assert _CATERER in party
+    assert "Die Abnahme von XZ" not in party
+    access = _last_access(world).access
+    assert access.arguments == {"within": ids.party}
+    assert [(entry.event, entry.units) for entry in access.delivered] == [(ids.mail, (4,))]
+
+    assert _units_shown(_text(_tool(world, mode, "previously", {"within": ids.club}))) == {
+        ids.mail: [4]
+    }
+    xz = _text(_tool(world, mode, "previously", {"within": ids.xz}))
+    assert _units_shown(xz) == {ids.mail: [1, 2, 3]}
+    assert _CATERER not in xz
+    # The control: without within the mail is shown whole, beside the others.
+    whole = _units_shown(_text(_tool(world, mode, "previously")))
+    assert whole[ids.mail] == [1, 2, 3, 4]
+    assert len(whole) > 1
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_finds_by_the_fold_what_it_finds_by_the_projection(
+    world: World, mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The members of a bracket found in the projection are those the fold
+    of the log finds, handed in by the test as the oracle: the same pages."""
+    ids = _brackets(world)
+    brackets = (ids.party, ids.club, ids.xz, ids.mail + 1_000)
+    pages = [
+        _untagged(_text(_tool(world, mode, "previously", {"within": bracket})))
+        for bracket in brackets
+    ]
+    with monkeypatch.context() as patched:
+        patched.setattr("previously.mcp_server.server.projected_graph", _fold_instead)
+        patched.setattr("previously.mcp_server.read.reader_bracket_edges", _edges_of_the_fold)
+        folded = [
+            _untagged(_text(_tool(world, mode, "previously", {"within": bracket})))
+            for bracket in brackets
+        ]
+    for bracket, projected, expected in zip(brackets, pages, folded, strict=True):
+        assert projected == expected
+        # Only the id that names nothing is an error, so that agreeing is not
+        # agreeing on a refusal.
+        assert projected.startswith("Error: ") == (bracket == ids.mail + 1_000)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_leaves_out_a_mail_the_client_may_not_see(
+    world: World, mode: str
+) -> None:
+    """Case (a) of the review of task 5 and ruling T5-c of the 2026-10-15
+    assignments plan: an assignment starts at its mail, which is among its
+    sources, so a client that may not see the mail doesn't see the
+    assignment either, and under within the mail is not there at all, not
+    even as a placeholder, while the whole chronicle shows its placeholder
+    as before. A mail of the circle `team`, which has no rule, is assigned to
+    the summer party; `local-harness`, which processes locally, finds it."""
+    ids = _brackets(world)
+    hidden = _take_in(world.storage, _team_mail(1))
+    _assign(world, hidden, None, ids.party)
+    uri = f"previously://event/{hidden}"
+
+    within = _text(_tool(world, mode, "previously", {"within": ids.party}))
+    access = _last_access(world).access
+    without = _text(_tool(world, mode, "previously"))
+
+    assert uri not in within
+    assert access.withheld == ()
+    assert _units_shown(within) == {ids.mail: [4]}
+    assert f"[withheld: {uri} — " in without
+    # The control: the client that may see the mail finds it under within.
+    local = _text(_tool(world, mode, "previously", {"within": ids.party}, client="local-harness"))
+    assert "All 412 checks passed." in local
+    assert _units_shown(local) == {ids.mail: [4], hidden: [1, 2]}
+
+
+def _hidden_project(world: World, name: str) -> int:
+    """A project of the operator stated on the plain mail, which
+    `claude-code` may not see and `local-harness` may."""
+    (project,) = write_claims(
+        world.storage, world.storage, [_project(name, world.ids["plain"])], recorded_at=T0
+    ).ids
+    return project
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_does_not_walk_through_an_entity_the_client_may_not_see(
+    world: World, mode: str
+) -> None:
+    """Case (b): a mail the client sees is assigned to a project it may not
+    see, which is part of the summer party. The hidden project stops the
+    walk, so the mail is not in the summer party's chronicle for
+    `claude-code`; `local-harness` sees the project and finds the mail."""
+    ids = _brackets(world)
+    child = _hidden_project(world, "Catering")
+    _relate(world, child, ids.party, kind="part_of")
+    mail = _take_in(world.storage, _markus_mail(1, "office@example.org"))
+    _assign(world, mail, None, child)
+
+    within = _units_shown(_text(_tool(world, mode, "previously", {"within": ids.party})))
+    local = _units_shown(
+        _text(_tool(world, mode, "previously", {"within": ids.party}, client="local-harness"))
+    )
+
+    assert within == {ids.mail: [4]}
+    assert local == {ids.mail: [4], mail: [1, 2, 3, 4]}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_does_not_walk_along_a_part_of_the_client_may_not_see(
+    world: World, mode: str
+) -> None:
+    """Case (c): both ends of the `part_of` are visible, but it rests on the
+    plain mail, which `claude-code` may not see. The mail assigned to the
+    child is in the child's chronicle and not, through the hidden edge, in
+    the summer party's; `local-harness` finds it in both."""
+    ids = _brackets(world)
+    (child,) = write_claims(
+        world.storage,
+        world.storage,
+        [_project("Catering", world.ids["attachments_only"])],
+        recorded_at=T0,
+    ).ids
+    _relate(world, child, ids.party, kind="part_of", source="plain")
+    mail = _take_in(world.storage, _markus_mail(1, "office@example.org"))
+    _assign(world, mail, None, child)
+
+    def shown(bracket: int, client: str) -> dict[int, list[int]]:
+        page = _tool(world, mode, "previously", {"within": bracket}, client=client)
+        return _units_shown(_text(page))
+
+    assert shown(ids.party, "claude-code") == {ids.mail: [4]}
+    assert shown(child, "claude-code") == {mail: [1, 2, 3, 4]}
+    assert shown(ids.party, "local-harness") == {ids.mail: [4], mail: [1, 2, 3, 4]}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_counts_no_hidden_assignment_of_a_unit_of_its_own(
+    world: World, mode: str
+) -> None:
+    """Case (d): a mail the client sees is assigned whole to XZ, and its
+    unit 4 on its own to a project the client may not see. A gap at unit 4
+    would tell the client that the unit is assigned somewhere it can't
+    see, so the hidden edge doesn't count, and `claude-code` gets unit 4
+    under XZ, one more unit than the operator: none it doesn't see without
+    within. `local-harness` sees the edge and gets XZ's chronicle as the
+    command line prints it, without unit 4."""
+    ids = _brackets(world)
+    hidden = _hidden_project(world, "Elsewhere")
+    mail = _take_in(world.storage, _markus_mail(1, "office@example.org"))
+    _assign(world, mail, None, ids.xz)
+    _assign(world, mail, (4,), hidden)
+
+    def shown(client: str) -> list[int]:
+        page = _tool(world, mode, "previously", {"within": ids.xz}, client=client)
+        return _units_shown(_text(page))[mail]
+
+    assert shown("claude-code") == [1, 2, 3, 4]
+    assert shown("local-harness") == [1, 2, 3]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_leaves_out_a_mail_with_no_unit_of_the_bracket_left(
+    world: World, mode: str
+) -> None:
+    """A mail assigned whole to XZ whose every unit is assigned on its own
+    to the summer party belongs to XZ by none of them: it is not shown
+    under XZ, not even as a heading with an empty fence."""
+    ids = _brackets(world)
+    mail = _take_in(world.storage, _markus_mail(1, "office@example.org"))
+    _assign(world, mail, None, ids.xz)
+    _assign(world, mail, (1, 2, 3, 4), ids.party)
+
+    xz = _text(_tool(world, mode, "previously", {"within": ids.xz}))
+    access = _last_access(world).access
+
+    assert f"previously://event/{mail} " not in xz
+    assert [entry.event for entry in access.delivered] == [ids.mail]
+    # The control: the summer party has it whole.
+    party = _units_shown(_text(_tool(world, mode, "previously", {"within": ids.party})))
+    assert party[mail] == [1, 2, 3, 4]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_refuses_a_cursor_carried_to_a_client_that_may_not_see_the_bracket(
+    world: World, mode: str
+) -> None:
+    """⚠️ 6 of the review of task 5: the bracket is checked on every call,
+    before the cursor is read, so a cursor of Lea's chronicle that
+    `local-harness` got is refused for `claude-code` as an id that names no
+    entity."""
+    ids = _brackets(world)
+    lea = ids.graphed.lea
+    for number in range(5):
+        _assign(world, _take_in(world.storage, _long_mail(number, 10, 150)), None, lea)
+    page = _text(_tool(world, mode, "previously", {"within": lea}, client="local-harness"))
+    found = re.search(r"call again with cursor=(\S+)$", page)
+    assert found is not None
+    arguments = {"within": lea, "cursor": found.group(1)}
+
+    carried = _tool(world, mode, "previously", arguments)
+    assert carried.is_error
+    assert _text(carried) == f"Error: within {lea} is not an entity that stands"
+    # The control: the client the cursor was made for goes on with it.
+    rest = _tool(world, mode, "previously", arguments, client="local-harness")
+    assert not rest.is_error
+    assert _shown_ids(_text(rest))
+
+
+class _CountingScans(PostgresStorage):
+    """The real store, counting the batches of observations a call reads."""
+
+    def __init__(self, engine: Engine) -> None:
+        super().__init__(engine)
+        self.scans = 0
+
+    @override
+    def observations(
+        self,
+        conn: Connection,
+        *,
+        since: datetime | None,
+        until: datetime | None,
+        source: str | None,
+        after: tuple[datetime, int] | None,
+        limit: int,
+    ) -> Iterator[EventRow]:
+        self.scans += 1
+        return super().observations(
+            conn, since=since, until=until, source=source, after=after, limit=limit
+        )
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_reads_the_log_only_up_to_the_last_event_of_the_bracket(
+    world: World, mode: str, db: Engine
+) -> None:
+    """M-1 of the review of task 5: a bracket nothing belongs to reads no
+    observation at all, and one whose only mail lies before 450 others reads
+    one batch of 200 rather than every batch to the end of the log."""
+    ids = _brackets(world)
+    empty = _hidden_project(world, "Leer")
+    late = _hidden_project(world, "Spät")
+    later = append(
+        world.storage,
+        [
+            RawEvent(
+                source="chat",
+                external_id=f"later-{number}",
+                occurred_at=datetime(2026, 10, 9, tzinfo=UTC) + timedelta(minutes=number),
+                evidence=Evidence.VERBATIM,
+                units=(RawUnit(1, f"Later {number}."),),
+                payload={},
+            )
+            for number in range(450)
+        ],
+        recorded_at=T0,
+    )
+    _assign(world, later[-1], None, late)
+    counting = _CountingScans(db)
+    server = build_server(
+        counting, stdio_client="local-harness", graph=counting, projections=counting
+    )
+
+    def scans(bracket: int) -> int:
+        counting.scans = 0
+        result = _session(server, mode, lambda s: s.call_tool("previously", {"within": bracket}))
+        assert not result.is_error, _text(result)
+        return counting.scans
+
+    assert scans(empty) == 0
+    assert scans(ids.party) == 1
+    # The control: a bracket whose mail is the last of the log reads every
+    # batch up to it.
+    assert scans(late) == 3
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_shows_no_unit_the_client_does_not_see_without_it(
+    world: World, mode: str
+) -> None:
+    """Review Focus 3: for every client and every bracket, what a page with
+    within delivers is among what the page without delivers, unit by unit,
+    and what it withholds is withheld there too."""
+    ids = _brackets(world)
+    hidden = _take_in(world.storage, _team_mail(1))
+    _assign(world, hidden, None, ids.party)
+    _assign(world, world.ids["plain"], (1,), ids.xz)
+    _assign(world, world.ids["html_blockquote"], None, ids.club)
+    for client in ("claude-code", "local-harness"):
+        _tool(world, mode, "previously", client=client)
+        everything = _accesses(world)[-1].access
+        assert everything.outcome == "ok"
+        units = {(entry.event, seq) for entry in everything.delivered for seq in entry.units}
+        withheld = {entry.event for entry in everything.withheld}
+        for bracket in (ids.party, ids.club, ids.xz):
+            _tool(world, mode, "previously", {"within": bracket}, client=client)
+            selected = _accesses(world)[-1].access
+            assert selected.outcome == "ok"
+            assert selected.delivered or selected.withheld
+            assert {(e.event, seq) for e in selected.delivered for seq in e.units} <= units
+            assert {entry.event for entry in selected.withheld} <= withheld
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_a_bracket_the_client_may_not_see_is_refused_as_a_missing_one(
+    world: World, mode: str
+) -> None:
+    """Review Focus 3: Lea stands on the plain mail, which `claude-code` may
+    not see. An empty page would tell it that she exists; the refusal of an
+    id that names no entity tells it nothing."""
+    ids = _brackets(world)
+    graphed = ids.graphed
+    answers = [
+        _tool(world, mode, "previously", {"within": bracket})
+        for bracket in (graphed.lea, 999_999, graphed.holds, ids.mail, 0)
+    ]
+    assert all(answer.is_error for answer in answers)
+    texts = {
+        _text(answer).replace(str(bracket), "ID")
+        for answer, bracket in zip(
+            answers, (graphed.lea, 999_999, graphed.holds, ids.mail, 0), strict=True
+        )
+    }
+    assert texts == {"Error: within ID is not an entity that stands"}
+    assert _accesses(world)[-1].access.arguments == {"within": 0}
+    # The control: the client that may see Lea gets her chronicle, empty.
+    local = _tool(world, mode, "previously", {"within": graphed.lea}, client="local-harness")
+    assert not local.is_error
+    assert _units_shown(_text(local)) == {}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_previously_within_carries_within_in_its_cursor_from_page_to_page(
+    world: World, mode: str
+) -> None:
+    ids = _brackets(world)
+    members: list[int] = []
+    for number in range(5):
+        member = _take_in(world.storage, _long_mail(number * 2, 10, 150))
+        _assign(world, member, None, ids.xz)
+        members.append(member)
+        _take_in(world.storage, _long_mail(number * 2 + 1, 10, 150))
+    seen: list[int] = []
+    cursor: str | None = None
+    pages = 0
+    while True:
+        arguments: dict[str, Any] = {"within": ids.xz}
+        if cursor is not None:
+            arguments["cursor"] = cursor
+        page = _text(_tool(world, mode, "previously", arguments))
+        pages += 1
+        assert page.startswith(f"previously · chronicle · within {ids.xz} · page {pages}")
+        seen.extend(int(found) for found in _ITEM.findall(page))
+        found = re.search(r"call again with cursor=(\S+)$", page)
+        if found is None:
+            break
+        cursor = found.group(1)
+        assert json.loads(_decoded(found.group(1)))["filters"] == {"within": str(ids.xz)}
+    assert pages >= 2
+    assert seen == [*members, ids.mail]
+    assert cursor is not None
+    # A cursor of within, given without it, is refused like any other of
+    # other filters.
+    refused = _tool(world, mode, "previously", {"cursor": cursor})
+    assert _text(refused) == (
+        "Error: cursor is not valid for these filters; call again without a cursor for the "
+        "first page"
+    )

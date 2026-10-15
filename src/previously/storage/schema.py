@@ -3,9 +3,12 @@
 # SPDX-License-Identifier: AGPL-3.0-or-later
 """The tables as SQLAlchemy Core. No ORM (architecture §10.1, frozen design record)."""
 
+from sqlalchemy import ARRAY
 from sqlalchemy import BigInteger
+from sqlalchemy import Boolean
 from sqlalchemy import CheckConstraint
 from sqlalchemy import Column
+from sqlalchemy import Date
 from sqlalchemy import ForeignKey
 from sqlalchemy import Index
 from sqlalchemy import Integer
@@ -266,3 +269,67 @@ p_source_stats = Table(
     Column("last_seen", TIMESTAMP(timezone=True), nullable=False),
     Column("last_event_id", BigInteger, ForeignKey("event.id"), nullable=False),
 )
+
+# The graph ({ref}`projections`): what each entity and relation stands at,
+# so that a reader does not fold the whole log to count a header. Two tables
+# and one name, `graph`; both are emptied together on a rebuild.
+#
+# No column holds content. Ids, counts and vocabulary words — the kind and
+# type of a thread, its level and its state — and one thing the winner
+# asserts: the dates of a relation's period. Those leave with their version,
+# because an erasure folds the thread again. What a reader shows of a
+# version — its name, its fields, its sources — it reads from the log by id,
+# so an erasure holds without the projection having content to delete.
+
+# Every version of an entity or a relation, and every rejection of one, by the
+# thread it belongs to: what a catch-up reads back to fold one thread again.
+p_graph_version = Table(
+    "p_graph_version",
+    metadata,
+    Column("id", BigInteger, ForeignKey("event.id"), primary_key=True, autoincrement=False),
+    # No foreign key: a version may name a subject that does not exist, which
+    # the fold drops and `verify` reports, and the catch-up must not fail on it.
+    Column("subject", BigInteger, nullable=False),
+    Column("kind", Text, nullable=False),
+    Column("under", BigInteger),
+    CheckConstraint("kind IN ('entity','relation','rejection')", name="p_graph_version_kind_check"),
+)
+Index("p_graph_version_subject_idx", p_graph_version.c.subject)
+# What a class event refolds: the versions under any event of its name. Most
+# versions stand under no class, so the index holds only those that do.
+Index(
+    "p_graph_version_under_idx",
+    p_graph_version.c.under,
+    postgresql_where=p_graph_version.c.under.isnot(None),
+)
+
+# One row per thread with a winner; a thread whose every version is erased or
+# rejected has none.
+p_graph_thread = Table(
+    "p_graph_thread",
+    metadata,
+    Column("subject", BigInteger, ForeignKey("event.id"), primary_key=True, autoincrement=False),
+    Column("kind", Text, nullable=False),
+    Column("type", Text, nullable=False),
+    Column("winner_id", BigInteger, nullable=False),
+    Column("level", Text, nullable=False),
+    Column("state", Text, nullable=False),
+    # The ends carry no foreign key, for the reason `p_graph_version.subject`
+    # gives: the write path refuses an end that is no entity, a version
+    # written around it is a finding of `verify`, not a failed catch-up.
+    Column("start_entity", BigInteger),
+    Column("start_event", BigInteger),
+    # NULL with `start_event` set: the relation starts at all of its units.
+    Column("start_units", ARRAY(Integer)),
+    Column("to_entity", BigInteger),
+    Column("candidates", ARRAY(BigInteger)),
+    Column("period_start", Date),
+    Column("period_end", Date),
+    Column("pending", Integer, nullable=False),
+    Column("objections", Integer, nullable=False),
+    Column("question", Boolean, nullable=False),
+    CheckConstraint("kind IN ('entity','relation')", name="p_graph_thread_kind_check"),
+)
+Index("p_graph_thread_kind_type_idx", p_graph_thread.c.kind, p_graph_thread.c.type)
+Index("p_graph_thread_to_entity_idx", p_graph_thread.c.to_entity)
+Index("p_graph_thread_start_event_idx", p_graph_thread.c.start_event)

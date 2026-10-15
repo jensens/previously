@@ -21,8 +21,8 @@ writes no access entry: without a client in force there is no principal to
 write it for.
 
 One request passes without a token: `GET /healthz`, the readiness probe of a
-deployment, matched by its exact path. It runs a trivial query and answers
-with a constant body, 200 or 503; it reaches no MCP, shows no data and writes
+deployment, matched by its exact path. It reads the state row of the graph
+projection and answers with a constant body, 200 or 503; it reaches no MCP, shows no data and writes
 no access entry, so it has no principal to name. A probe with a token would
 need a client of its own, and a client can read whatever its processor may
 see ({ref}`mcp-token`).
@@ -46,6 +46,12 @@ REFUSAL: Final = "Error: a valid bearer token is required"
 HEALTH_PATH: Final = "/healthz"
 READY: Final = "ok"
 NOT_READY: Final = "Error: the database does not answer"
+# The other cause of a 503, worded apart so that the probe doesn't send an
+# operator to the database when it answers: the graph projection stands at
+# another version than this code declares, or is not built.
+NOT_BUILT: Final = "Error: the graph projection is not built at this server's version"
+# A third: the database answers and refuses this server's role a privilege.
+NOT_PERMITTED: Final = "Error: the database refuses this server's role a privilege it needs"
 _SCHEME: Final = "bearer"
 
 
@@ -93,13 +99,14 @@ def _is_health(scope: Scope) -> bool:
 
 
 def guarded(
-    app: ASGIApp, *, resolve: Callable[[str], str | None], ready: Callable[[], bool]
+    app: ASGIApp, *, resolve: Callable[[str], str | None], ready: Callable[[], str | None]
 ) -> ASGIApp:
     """`app` behind the token check: `resolve` turns a token into the name of
     the client in force, or `None`, and is asked on every request, on a
     worker thread, since it reads the policy from the database. `ready` says
-    whether the database answers, for the readiness probe, on a worker thread
-    too."""
+    whether the server can serve, for the readiness probe, on a worker thread
+    too: `None` when it can, else the body of the 503, `NOT_READY`,
+    `NOT_BUILT` or `NOT_PERMITTED`."""
 
     async def wrapper(scope: Scope, receive: Receive, send: Send) -> None:
         if scope["type"] == "lifespan":
@@ -109,10 +116,11 @@ def guarded(
             # No websocket route exists, and nothing unauthenticated passes.
             return
         if _is_health(scope):
-            if await asyncio.to_thread(ready):
+            refusal = await asyncio.to_thread(ready)
+            if refusal is None:
                 await _answer(send, 200, READY)
             else:
-                await _answer(send, 503, NOT_READY)
+                await _answer(send, 503, refusal)
             return
         token = bearer_token(scope)
         name = None if token is None else await asyncio.to_thread(resolve, token)

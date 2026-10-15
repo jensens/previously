@@ -62,18 +62,30 @@ docker run --rm --network previously-blobs -e PREVIOUSLY_DSN \
 On a new database, it prints the revision the database came from and the one it's at now:
 
 ```text
-migrated: (empty) -> 0005_watermark
+migrated: (empty) -> 0006_graph
 ```
 
 Run it again, and it reports that nothing had to run:
 
 ```text
-up to date: 0005_watermark
+up to date: 0006_graph
 ```
 
 Don't rely on the other commands to notice a schema that's behind: `migrate` is the only command that compares revisions.
 Any other command fails only where it touches a table or a column the schema lacks, and runs where it touches none.
 An image older than the database refuses to migrate it; {ref}`cli-reference` gives both messages.
+
+## Build the projections next
+
+Run `project` right after `migrate`, before anything reads the graph or serves MCP: on a new database, on the first image with the migration `0006_graph`, and on every image whose release notes say that a projection's version changed.
+
+```shell
+docker run --rm --network previously-blobs -e PREVIOUSLY_DSN \
+    ghcr.io/jensens/previously:0.1.0a1 project
+```
+
+It's the only command that builds a projection.
+Until it has, the listings of the graph exit 2 with a sentence that names `previously project`, `mcp` and `serve` refuse to start, and `redact` leaves its redaction unfinished; see {ref}`rebuild-a-projection`.
 
 ## Run a command
 

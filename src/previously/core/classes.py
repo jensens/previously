@@ -519,7 +519,9 @@ def hit_rates(graph: Graph, classes: Classes) -> tuple[HitRate, ...]:
     """
     counts = {name: [0, 0, 0] for name in classes.by_name}
     name_of = {event_id: name for name, (_item, event_id) in classes.by_name.items()}
-    for thread in graph.threads.values():
+    # Only a version under a class counts, so only the threads with one are
+    # walked: a graph read from its projection folds only those.
+    for thread in graph.under(graph.classes).values():
         for index, version in enumerate(thread.versions):
             newest = _under(graph, version)
             if newest is None or newest not in name_of:
@@ -547,7 +549,7 @@ def sample(graph: Graph, class_id: int, count: int, rng: random.Random) -> tuple
     found = sorted(
         (
             version
-            for thread in graph.threads.values()
+            for thread in graph.under(graph.classes).values()
             for version in thread.versions
             if _under(graph, version) == class_id
         ),

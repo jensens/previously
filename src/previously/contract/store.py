@@ -13,7 +13,16 @@ the repository in bash or fish:
 The files are every module of `core` that names `LogStore`, twelve that day
 with `core/assertions.py`, and fifteen on 2026-10-14, when `core/vocabulary.py`,
 `core/classes.py` and `core/graph_write.py` joined them and the count stayed
-fifteen; it is not copied from the method list of the implementation.
+fifteen; it is not copied from the method list of the implementation. The
+modules are counted as source files, `grep -rl LogStore src/previously/core
+--include='*.py' | wc -l`, and stayed fifteen on 2026-10-15: the
+three projections read the log through `LogReader` below and do not name
+`LogStore`. In the first version of the graph projection all three named
+it, which took the count of modules to eighteen while this sentence said
+sixteen. `core/graph_read.py`, the reader of the graph projection, took it
+to sixteen later that day, measured with the same command, and the methods
+stayed fifteen: it calls `read_by_kind` and `events_by_id`, which others
+called already.
 Where `__pycache__` directories exist, `grep -rl` lists their compiled files
 as well, and the first `grep` takes no name out of them, so the count stays
 the same. The docstring is raw so that the text in this file is the command, backslashes as
@@ -39,18 +48,25 @@ call does not read every access entry the calls before it wrote
 `core.assertions` reads the source events of every entry a list looks at in
 one query since 2026-10-12, where `read` took one query per event
 ({ref}`assertions-folded`).
-The protocol declares sixteen: `observations` came on 2026-10-11 with the MCP
+The protocol declares sixteen, counted on 2026-10-15: `observations` came on 2026-10-11 with the MCP
 server, and `core` does not call it: `mcp_server/read.py` does, to read the
 chronicle of a circle from the log (decision 3 of the 2026-10-11 MCP read
 access plan). `grep -ohE 'log\.[a-z_]*\(' src/previously/mcp_server/*.py`
-names the eight the server calls, `observations` among them, counted on
-2026-10-14; the eighth is `read_by_kind`, with which `mcp_server/read.py`
-reads the rejections of a version of an entity or a relation. The sentence
-said six until 2026-10-12 and seven until 2026-10-14, each a count no longer
-true by then. Typing `core` against this protocol instead of against
-`PostgresStorage` removes the edge `core -> storage.postgres`, and with it
-the two named exemptions in `.importlinter` and the test that guarded them
+names the nine the server calls, `observations` among them, counted on
+2026-10-15 in the fix round of the chronicle of a bracket; the eighth is
+`read_by_kind`, with which `mcp_server/read.py` reads the rejections of a
+version of an entity or a relation, and the ninth `events_by_id`, with which
+it finds where the chronicle of a bracket meets the bracket's last event.
+The sentence said six until 2026-10-12, seven until 2026-10-14 and eight
+until that fix round, each a count no longer true by then. Typing `core`
+against this protocol instead of against `PostgresStorage` removes the
+edge `core -> storage.postgres`, and with it the two named exemptions in
+`.importlinter` and the test that guarded them
 ({ref}`module-boundaries`).
+
+`LogReader` declares two of the sixteen, `events_by_id` and `actions`: what a
+projection may read of the log while it catches up, so that its write step
+holds no handle that appends ({ref}`graph-projection`).
 
 `Conn` is the connection type. Only `storage` knows what it is; `core` passes
 it back to the store it came from and never looks inside.
@@ -75,9 +91,12 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from collections.abc import Sequence
     from contextlib import AbstractContextManager
+    from datetime import date
     from datetime import datetime
     from previously.contract.rows import ChronicleRow
     from previously.contract.rows import EventRow
+    from previously.contract.rows import GraphThreadRow
+    from previously.contract.rows import GraphVersionRow
     from previously.contract.rows import ProjectionState
     from previously.contract.rows import SourceStatsRow
     from previously.contract.rows import Tip
@@ -127,6 +146,20 @@ class LogStore[Conn](Protocol):
     ) -> Iterator[EventRow]: ...
 
 
+class LogReader[Conn](Protocol):
+    """What a projection may read of the log while it catches up, and
+    nothing more: rows by id, and the actions of one name.
+
+    A protocol of its own, so that a projection holds no handle that can
+    append to the log. `LogStore` and `PostgresStorage` satisfy it
+    structurally, so `catch_up` passes the log it reads from, and the write
+    step of a projection sees only these two reads ({ref}`graph-projection`).
+    """
+
+    def events_by_id(self, conn: Conn, event_ids: Sequence[int]) -> dict[int, EventRow]: ...
+    def actions(self, conn: Conn, action: str) -> Iterator[EventRow]: ...
+
+
 class RedactionStore[Conn](Protocol):
     """What an erasure may change in the log, and nothing more ({ref}`erasure`).
 
@@ -164,7 +197,8 @@ class ProjectionStore[Conn](Protocol):
     same way, and returns `None`: a second transaction asking meanwhile
     waits until the first ends and then finds the row the first committed.
     Version 0 is no version a projection declares, so a placeholder that
-    were ever committed as it is would only make the next catch-up rebuild.
+    were ever committed as it is would only make the next `previously
+    project` rebuild, and every other catch-up stop until it has.
 
     `delete_chronicle` takes the chronicle rows of one event: those of the
     named units, or with `None` every row of the event; an empty sequence is
@@ -178,6 +212,19 @@ class ProjectionStore[Conn](Protocol):
     (`ON CONFLICT DO UPDATE SET …`) the correctness of the incremental step
     would sit in `storage`, and the claim "derivation without SQL" would be
     false.
+
+    The graph projection keeps two tables under one name, and
+    `truncate_projection("graph")` empties both. `insert_graph_versions`
+    writes rows of `p_graph_version`, `graph_versions` reads those of the
+    given ids, `graph_version_ids` the ids of every row of the given
+    subjects, and `class_subjects` the subjects of the versions under any of
+    the given approval class events; `delete_graph_versions` takes the rows
+    of the given ids. `upsert_graph_threads` writes rows of `p_graph_thread`
+    as given, replacing what stood under their subjects, and
+    `delete_graph_threads` takes the rows of the given subjects. Which
+    threads to fold again and what they stand at is decided in
+    `core.projection.graph`, for the reason `upsert_source_stats` gives. An
+    empty sequence is no statement for any of them.
     """
 
     def begin(self) -> AbstractContextManager[Conn]: ...
@@ -188,6 +235,67 @@ class ProjectionStore[Conn](Protocol):
     def delete_chronicle(self, conn: Conn, event_id: int, seqs: Sequence[int] | None) -> None: ...
     def source_stats(self, conn: Conn, sources: Sequence[str]) -> dict[str, SourceStatsRow]: ...
     def upsert_source_stats(self, conn: Conn, rows: Sequence[SourceStatsRow]) -> None: ...
+    def insert_graph_versions(self, conn: Conn, rows: Sequence[GraphVersionRow]) -> None: ...
+    def graph_versions(self, conn: Conn, ids: Sequence[int]) -> dict[int, GraphVersionRow]: ...
+    def graph_version_ids(self, conn: Conn, subjects: Sequence[int]) -> dict[int, list[int]]: ...
+    def class_subjects(self, conn: Conn, under_ids: Sequence[int]) -> set[int]: ...
+    def delete_graph_versions(self, conn: Conn, ids: Sequence[int]) -> None: ...
+    def upsert_graph_threads(self, conn: Conn, rows: Sequence[GraphThreadRow]) -> None: ...
+    def delete_graph_threads(self, conn: Conn, subjects: Sequence[int]) -> None: ...
+
+
+class GraphStore[Conn](Protocol):
+    """What a reader asks of the graph projection, and nothing more: its
+    rows, never a write ({ref}`graph-projection`).
+
+    A protocol of its own beside `ProjectionStore`, so that a reader of the
+    graph holds no handle that can empty or fill a projection. A reader
+    catches the projection up with `catch_up` first, which takes a
+    `ProjectionStore`, and then reads in a snapshot of its own through this
+    one; `PostgresStorage` satisfies both, and the command line passes it
+    twice, as it does to `catch_up`.
+
+    `read_graph_threads` gives the rows of `p_graph_thread` by subject: every
+    one, or with `kind` those of one kind, and with `types` those whose
+    winner is of one of them. `graph_relations` gives the rows of the
+    relations that stand and point at an entity, as `Graph.relations` reads
+    them, narrowed as its arguments are: by kind, by an entity at the start,
+    at the end or at either, and with `at` to those whose period holds on
+    that day. `graph_waiting` gives the rows with a pending version or a
+    winner at level `open`, `graph_objected` those with an objection. The
+    rows say which threads a reader shows; what it shows, it reads from the
+    log by id. `graph_version_ids` and `class_subjects` are those of
+    `ProjectionStore`, which a reader needs to fold a thread again from the
+    log, and `graph_subjects` gives the subject of every row of
+    `p_graph_version`, for a reader that walks every thread.
+    `read_graph_versions` gives every row of `p_graph_version` by id, which
+    `previously project --check` holds against what a rebuild would write.
+    `projection_state` reads the state row of a projection without locking
+    it: a reader holds it against the outcome of its catch-up, and catches
+    up again where the projection no longer stands there, and the readiness
+    probe of the MCP server holds its version against the code's.
+    """
+
+    def read_graph_threads(
+        self, conn: Conn, *, kind: str | None = None, types: Sequence[str] | None = None
+    ) -> list[GraphThreadRow]: ...
+    def graph_relations(
+        self,
+        conn: Conn,
+        *,
+        at: date | None = None,
+        types: Sequence[str] | None = None,
+        start: int | None = None,
+        to: int | None = None,
+        touching: int | None = None,
+    ) -> list[GraphThreadRow]: ...
+    def graph_waiting(self, conn: Conn) -> list[GraphThreadRow]: ...
+    def graph_objected(self, conn: Conn) -> list[GraphThreadRow]: ...
+    def graph_version_ids(self, conn: Conn, subjects: Sequence[int]) -> dict[int, list[int]]: ...
+    def class_subjects(self, conn: Conn, under_ids: Sequence[int]) -> set[int]: ...
+    def graph_subjects(self, conn: Conn) -> list[int]: ...
+    def read_graph_versions(self, conn: Conn) -> list[GraphVersionRow]: ...
+    def projection_state(self, conn: Conn, name: str) -> ProjectionState | None: ...
 
 
 class WatermarkStore[Conn](Protocol):

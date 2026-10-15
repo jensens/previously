@@ -69,6 +69,7 @@ from previously.core.graph import GraphVersion
 from previously.core.graph import level_of
 from previously.core.graph import parse_claim
 from previously.core.graph import RelationBody
+from previously.core.graph import rests_on
 from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
 from previously.core.graph_write import closes_cycle
@@ -868,7 +869,9 @@ class _Assertions:
                 Finding(row.id, "assertion names a source that does not stand before it")
             )
         else:
-            self._standing.append((row.id, claim.sources))
+            # The event a relation starts at with its own units, which a
+            # source citing the whole event covers without naming them.
+            self._standing.append((row.id, rests_on(claim)))
         reason = self.claims.claim_reason(row, claim)
         if reason is not None:
             findings.append(Finding(row.id, reason))

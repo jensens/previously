@@ -84,6 +84,7 @@ from previously.core.graph import level_of
 from previously.core.graph import parse_claim
 from previously.core.graph import RECOLLECTION
 from previously.core.graph import RelationBody
+from previously.core.graph import rests_on
 from previously.core.graph import RETRACTED
 from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
@@ -271,6 +272,8 @@ def closes_cycle(graph: Graph, claim: Claim, vocabulary: Vocabulary, *, level: s
     if not isinstance(body, RelationBody) or body.state != STANDING or body.to is None:
         return False
     if isinstance(body.start, Source):
+        # An assignment is no edge between entities, and `Graph.reaches`
+        # walks none: it can close no cycle.
         return False
     spec = vocabulary.kind(RELATION_KIND, body.type)
     if spec is None or ACYCLIC not in spec.behaviors:
@@ -478,7 +481,7 @@ def _checked[Conn](
     """The checks the write path runs under its locks and `check_claims`
     runs without, and the claims at their levels with their payloads."""
     try:
-        check_sources(log, conn, rows, [s for claim in claims for s in claim.sources])
+        check_sources(log, conn, rows, [s for claim in claims for s in rests_on(claim)])
     except AssertionRefused as error:
         # The sentence of obligations, under the one class a caller of this
         # write path catches.
@@ -547,7 +550,7 @@ def check_claims[Conn](
     """
     iso_utc(recorded_at)  # fail early if naive
     _check_batch(claims)
-    events = sorted({source.event for claim in claims for source in claim.sources})
+    events = sorted({source.event for claim in claims for source in rests_on(claim)})
     rows = read_sources(log, conn, events)
     tip = log.tip(conn)
     top = 0 if tip is None else tip.id
@@ -617,7 +620,7 @@ def write_claims[Conn](
     if expect is not None and len(expect) != len(claims):
         raise ValueError("expect gives one decision per claim")
     handle = claims[0].handle
-    events = sorted({source.event for claim in claims for source in claim.sources})
+    events = sorted({source.event for claim in claims for source in rests_on(claim)})
 
     def once(conn: Conn) -> Written:
         # The locks first and the tip after them, as in core/assertions.py.
@@ -764,13 +767,14 @@ def relation_visible(
     that entity, or to `None` for one whose every version is erased: of
     that one nothing is left to show, and it withholds nothing, as
     `get_event` names an erased event to any client. An id `ends` lacks is
-    not seen. A question names its candidates as ends. A relation one of
-    whose versions starts at an event is no relation between entities, and
-    phase 1 shows none."""
-    if any(
-        not isinstance(v.claim.body, RelationBody) or isinstance(v.claim.body.start, Source)
-        for v in thread.versions
-    ):
+    not seen. A question names its candidates as ends.
+
+    A relation that starts at an event, an assignment, is decided like any
+    other: its start is among its sources (`START_NOT_A_SOURCE`), so the
+    policy decides over the mail it is about: a client that may not see the
+    mail does not see the assignment either. The entity it points at is its
+    one end and decides along, as for any relation."""
+    if any(not isinstance(v.claim.body, RelationBody) for v in thread.versions):
         return False
     verdict = claim_verdict(
         policy,

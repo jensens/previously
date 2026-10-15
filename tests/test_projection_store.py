@@ -24,6 +24,8 @@ import pytest
 
 
 if TYPE_CHECKING:
+    from previously.contract.store import GraphStore
+    from previously.contract.store import LogReader
     from previously.contract.store import LogStore
     from previously.contract.store import ProjectionStore
     from previously.contract.store import RedactionStore
@@ -188,6 +190,22 @@ def test_postgres_storage_satisfies_both_protocols() -> None:
     assert isinstance(projections, PostgresStorage)
 
 
+def test_the_log_and_its_store_satisfy_the_read_protocol_of_a_projection() -> None:
+    """`LogReader` is what a projection may read of the log while it catches
+    up ({ref}`graph-projection`), and both what `catch_up` holds, a
+    `LogStore`, and what the command line hands it, a `PostgresStorage`,
+    satisfy it. pyright proves it at the two assignments, as in the test
+    above; measured red with a method of `LogReader` renamed."""
+    from sqlalchemy import Connection
+    from sqlalchemy import create_engine
+
+    storage = PostgresStorage(create_engine("postgresql+psycopg://x:y@localhost/z"))
+    log: LogStore[Connection] = storage
+    read_by_a_projection: LogReader[Connection] = log
+    read_from_the_store: LogReader[Connection] = storage
+    assert read_by_a_projection is read_from_the_store
+
+
 def test_postgres_storage_satisfies_the_redaction_protocol() -> None:
     """The third protocol, in the form of the test above (ruling P-2 of the
     2026-10-04 stage 1c plan): pyright proves it at the assignment, and the
@@ -200,3 +218,16 @@ def test_postgres_storage_satisfies_the_redaction_protocol() -> None:
     storage = PostgresStorage(create_engine("postgresql+psycopg://x:y@localhost/z"))
     eraser: RedactionStore[Connection] = storage
     assert isinstance(eraser, PostgresStorage)
+
+
+def test_postgres_storage_satisfies_the_read_protocol_of_the_graph() -> None:
+    """`GraphStore` is what a reader asks of the graph projection
+    ({ref}`graph-projection`): pyright proves at the assignment that
+    `PostgresStorage` answers it, as in the tests above. Measured red with
+    a method of `GraphStore` renamed."""
+    from sqlalchemy import Connection
+    from sqlalchemy import create_engine
+
+    storage = PostgresStorage(create_engine("postgresql+psycopg://x:y@localhost/z"))
+    reader: GraphStore[Connection] = storage
+    assert isinstance(reader, PostgresStorage)

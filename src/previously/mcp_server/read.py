@@ -37,10 +37,12 @@ from previously.core.assertion import REJECTION_NOTE
 from previously.core.assertions import ASSERTION
 from previously.core.assertions import assertion_decisions
 from previously.core.assertions import erased_assertion
+from previously.core.assertions import read_events
 from previously.core.assertions import read_source_events
 from previously.core.assertions import read_threads
 from previously.core.assertions import rejections_of
 from previously.core.assertions import source_identities
+from previously.core.assertions import SourceEvents
 from previously.core.assertions import thread_circles
 from previously.core.canonical import MAX_SAFE_INT
 from previously.core.chain import read_references
@@ -58,12 +60,15 @@ from previously.core.graph import RelationBody
 from previously.core.graph import RETRACTED
 from previously.core.graph import TRANSITIVE
 from previously.core.graph import value_text
+from previously.core.graph_read import reader_bracket_edges
 from previously.core.graph_write import claim_decisions
 from previously.core.graph_write import claim_sources
 from previously.core.graph_write import read_claim_events
 from previously.core.graph_write import relation_ends
 from previously.core.graph_write import relation_visible
 from previously.core.hashing import iso_utc
+from previously.core.members import deciding_edges
+from previously.core.members import members
 from previously.core.policy import LOCAL_ONLY
 from previously.core.policy import RULE
 from previously.core.vocabulary import display_label
@@ -91,15 +96,16 @@ if TYPE_CHECKING:
     from datetime import datetime
     from previously.contract.rows import UnitRow
     from previously.contract.store import LogStore
+    from previously.core.assertion import Source
     from previously.core.assertion import Statement
     from previously.core.assertion import Thread
     from previously.core.assertion import Version
-    from previously.core.assertions import SourceEvents
     from previously.core.graph import Claim
     from previously.core.graph import ClassState
     from previously.core.graph import Graph
     from previously.core.graph import GraphThread
     from previously.core.graph import GraphVersion
+    from previously.core.members import Members
     from previously.core.policy import Client
     from previously.core.policy import Policy
     from previously.core.vocabulary import Vocabulary
@@ -107,11 +113,12 @@ if TYPE_CHECKING:
 
 # Rows per query of the chronicle. A page holds at most 60,000 characters, and
 # a mail of the pilot runs from a few hundred to a few thousand, so one batch
-# fills a page unless a circle filter drops most of the rows; then the loop
-# reads the next batch, and so on until the page is full or the log ends.
-# The bound is per query, not per call: how many rows a sparse circle costs is
-# an open limit of the pilot, and a derived view of its own waits until
-# reading the log is too slow ({ref}`mcp-open-limits`).
+# fills a page unless a circle filter or a bracket (`within`) drops most of
+# the rows; then the loop reads the next batch, and so on until the page is
+# full or the log ends. The bound is per query, not per call: how many rows a
+# sparse circle or a small bracket costs is an open limit of the pilot, and a
+# derived view of its own waits until reading the log is too slow
+# ({ref}`mcp-open-limits`).
 BATCH: Final = 200
 
 # How much of a page an item is taken to fill before it is rendered: its text
@@ -374,6 +381,7 @@ def chronicle[Conn](
     since: datetime | None,
     until: datetime | None,
     after: tuple[datetime, int] | None,
+    within: Members | None = None,
 ) -> Seen:
     """The observations after `after` in time order, as many as fill a page
     and one more if it exists, each shown or as a placeholder.
@@ -381,7 +389,21 @@ def chronicle[Conn](
     `circle` keeps the events a member of the circle is involved in, as
     `decide` counts it, own identities left out; an erased event has no
     participants any more and drops out of a circle filter.
+
+    `within` keeps the events of which anything belongs to a bracket, as
+    the client finds it (`seen_members`), and of each shown event the units
+    that do; an event left with no unit to show is left out. It selects and
+    releases nothing ({ref}`chronicle-of-a-bracket`): the policy decides
+    every event it keeps as it decides without it, so a unit shown is one
+    the client sees without `within` too. The scan ends at the last event
+    of the bracket rather than at the end of the log, and reads nothing
+    for a bracket nothing belongs to.
     """
+    last: tuple[datetime, int] | None = None
+    if within is not None:
+        last = _last_member(log, conn, within)
+        if last is None or (after is not None and after >= last):
+            return Seen(())
     reads: list[Read] = []
     size = 0
     position = after
@@ -392,24 +414,83 @@ def chronicle[Conn](
             )
         )
         keys = log.source_keys(conn, [row.id for row in rows])
-        pending: list[_Pending] = []
-        for row in rows:
-            if circle is not None and (
-                row.payload is None or circle not in circles_of(policy, _identities(row.payload))
-            ):
-                continue
-            pending.append(_decided(policy, client, row, keys.get(row.id)))
+        pending = [
+            _decided(policy, client, row, keys.get(row.id))
+            for row in rows
+            if _filtered_in(policy, row, circle, within)
+        ]
         shown_ids = [item.row.id for item in pending if item.read is None]
         units = log.units_by_event(conn, shown_ids)
         for item in pending:
+            read = _read_of(item, units.get(item.row.id, []), within)
+            if read is None:
+                continue
             if size > PAGE_CHARS:
                 return Seen(tuple(reads), more=True)
-            read = item.read or _shown(item, units.get(item.row.id, []), full=False, from_unit=None)
             reads.append(read)
             size += _weight(read)
         if len(rows) < BATCH:
             return Seen(tuple(reads), more=False)
         position = (rows[-1].occurred_at, rows[-1].id)
+        if last is not None and position >= last:
+            return Seen(tuple(reads), more=False)
+
+
+def _filtered_in(policy: Policy, row: EventRow, circle: str | None, within: Members | None) -> bool:
+    """Whether the filters `circle` and `within` keep `row`, before the
+    policy decides it."""
+    if circle is not None and (
+        row.payload is None or circle not in circles_of(policy, _identities(row.payload))
+    ):
+        return False
+    return within is None or row.id in within.events
+
+
+def _read_of(item: _Pending, units: Sequence[UnitRow], within: Members | None) -> Read | None:
+    """The read of a decided event: its placeholder, or the event with the
+    units `within` keeps; `None` for one shown with no unit left to show
+    under `within`, which the bracket's chronicle leaves out."""
+    if item.read is not None:
+        return item.read
+    if within is not None:
+        units = [unit for unit in units if within.holds(item.row.id, unit.seq)]
+        if all(unit.content is None for unit in units):
+            return None
+    return _shown(item, units, full=False, from_unit=None)
+
+
+def _last_member[Conn](
+    log: LogStore[Conn], conn: Conn, within: Members
+) -> tuple[datetime, int] | None:
+    """Where the chronicle meets the last event of a bracket, as
+    `(occurred_at, id)`, or `None` when no observation belongs to it: one
+    read of the events of the bracket, so that a page of a bracket whose
+    events lie early in the log doesn't read the rest of it."""
+    rows = log.events_by_id(conn, sorted(within.events))
+    found = [(row.occurred_at, row.id) for row in rows.values() if row.kind == "observation"]
+    return max(found, default=None)
+
+
+def seen_members[Conn](
+    log: LogStore[Conn], conn: Conn, policy: Policy, client: Client, graph: Graph, bracket: int
+) -> Members:
+    """What belongs to `bracket` as `client` finds it: over the edges it may
+    see, an assignment or a hierarchy edge counting only where
+    `relation_visible` lets it through ({ref}`chronicle-of-a-bracket`). A
+    hidden link stops the walk, an assignment of a mail the client may not
+    see doesn't count, and neither does a hidden assignment of a unit of
+    its own, which then doesn't take the unit from its mail's bracket.
+
+    The edges are first walked all, which gives every event that can belong;
+    visibility is then decided only for the edges `deciding_edges` names,
+    the ones the result can turn on, so a call reads the sources of the
+    bracket's edges and not those of every assignment there is."""
+    edges, kinds = reader_bracket_edges(log, conn, graph)
+    deciding = deciding_edges(edges, members(edges, bracket, kinds), kinds)
+    if not deciding:
+        return members((), bracket, kinds)
+    view = graph_view(log, conn, policy, client, graph, [edge.subject for edge in deciding])
+    return members([edge for edge in deciding if view.seen(edge.subject)], bracket, kinds)
 
 
 def resume_point[Conn](
@@ -844,11 +925,8 @@ class ThreadVerdict:
     source it was taken for; `ends` those of the entities a relation names,
     which decide along; `blocked` is the first that chooses nothing, with
     its source, or `None`. `shown` is whether the client sees the thread,
-    for a relation as `relation_visible` decides it: a relation that starts
-    at an event is not shown, since phase 1 shows none at all. `blocked`
-    is not cleared for one: it holds what the decisions of the relation and
-    its entity ends say, as for any other relation, and nothing reads it for
-    a relation.
+    for a relation as `relation_visible` decides it, an assignment, which
+    starts at an event, among them: that event is one of its sources.
     """
 
     decisions: tuple[tuple[str | None, Decision], ...]
@@ -874,21 +952,47 @@ class GraphView:
     any client. An end that names something other than an entity, which
     only a forged payload does, is not seen, and gets no placeholder.
 
-    The verdicts are taken once per thread and kept for the call.
+    The verdicts are taken once per thread and kept for the call. The
+    source events of a thread are those read with the view, and with `more`
+    those of a thread asked about later are read when it is: a graph read
+    from its projection folds the end of a relation, or an entity a `ref`
+    names, only when a line names it. Without `more`, a thread whose events
+    were not read is refused as `SourceEvents.named` refuses it.
     """
 
-    def __init__(self, policy: Policy, client: Client, graph: Graph, events: SourceEvents) -> None:
+    def __init__(
+        self,
+        policy: Policy,
+        client: Client,
+        graph: Graph,
+        events: SourceEvents,
+        more: Callable[[Iterable[int]], SourceEvents] | None = None,
+    ) -> None:
         self.policy = policy
         self.client = client
         self.graph = graph
         self._events = events
+        self._more = more
         self._verdicts: dict[int, ThreadVerdict] = {}
+
+    def _read(self, thread: GraphThread) -> None:
+        """Reads the source events of `thread` the view has not read yet."""
+        wanted = {s.event for version in thread.versions for s in version.claim.sources}
+        missing = wanted - self._events.read
+        if missing and self._more is not None:
+            more, known = self._more(missing), self._events
+            self._events = SourceEvents(
+                known.read | more.read,
+                {**known.identities, **more.identities},
+                {**known.sources, **more.sources},
+            )
 
     def verdict(self, subject: int) -> ThreadVerdict:
         found = self._verdicts.get(subject)
         if found is not None:
             return found
         thread = self.graph.threads[subject]
+        self._read(thread)
         identities, sources = claim_sources(self._events, thread)
         recollection = any(v.claim.evidence == RECOLLECTION for v in thread.versions)
         own = claim_decisions(
@@ -966,7 +1070,8 @@ def graph_view[Conn](
 ) -> GraphView:
     """The view of `graph` for `client`, with the source events of the
     threads `subjects` names, of every entity those name as an end, or of
-    every thread with `None`, read in two queries."""
+    every thread with `None`, read in two queries; those of a thread asked
+    about later are read when it is."""
     if subjects is None:
         threads = list(graph.threads.values())
     else:
@@ -976,7 +1081,13 @@ def graph_view[Conn](
                 end for end in relation_ends(graph.threads[subject]) if end in graph.threads
             )
         threads = [graph.threads[s] for s in sorted(wanted)]
-    return GraphView(policy, client, graph, read_claim_events(log, conn, threads))
+    return GraphView(
+        policy,
+        client,
+        graph,
+        read_claim_events(log, conn, threads),
+        lambda events: read_events(log, conn, events),
+    )
 
 
 def objections_seen[Conn](
@@ -986,8 +1097,9 @@ def objections_seen[Conn](
     or a relation it sees, for the header of every result
     ({ref}`mcp-tools`). One the client may not see is not counted, so that
     the header tells nothing of what the policy keeps from it. `graph` is
-    the one the call folded, which the body reads as well."""
-    waiting = {s: t for s, t in graph.threads.items() if t.objections(graph.classes)}
+    the one the call reads, the body as well; read from the projection, it
+    folds only the threads with an objection, and none when none waits."""
+    waiting = graph.objected()
     if not waiting:
         return 0
     view = graph_view(log, conn, policy, client, graph, waiting)
@@ -1047,16 +1159,21 @@ def entity_text(view: GraphView, entity: int, *, ref: bool = False) -> str:
     return f"entity {entity}" if name is None else f"entity {entity} {name}"
 
 
-def _evidence_line(claim: Claim) -> str:
-    if claim.evidence == RECOLLECTION:
-        return "sources: none, the operator's recollection"
+def _source_uris(sources: Iterable[Source]) -> str:
+    """Events as URIs, and the units cited of one as a URI per unit."""
     uris: list[str] = []
-    for source in claim.sources:
+    for source in sources:
         if source.units is None:
             uris.append(event_uri(source.event))
         else:
             uris.extend(f"{event_uri(source.event)}#unit-{seq}" for seq in source.units)
-    return f"sources: {', '.join(uris)}"
+    return ", ".join(uris)
+
+
+def _evidence_line(claim: Claim) -> str:
+    if claim.evidence == RECOLLECTION:
+        return "sources: none, the operator's recollection"
+    return f"sources: {_source_uris(claim.sources)}"
 
 
 def claim_lines(view: GraphView, vocabulary: Vocabulary, claim: Claim) -> list[str]:
@@ -1070,7 +1187,9 @@ def claim_lines(view: GraphView, vocabulary: Vocabulary, claim: Claim) -> list[s
             lines.append(f"language: {body.language}")
     else:
         start = body.start
-        lines.append(f"from: {entity_text(view, start) if isinstance(start, int) else 'an event'}")
+        lines.append(
+            f"from: {entity_text(view, start) if isinstance(start, int) else _source_uris([start])}"
+        )
         if body.candidates is not None:
             named = ", ".join(entity_text(view, item) for item in body.candidates)
             lines.append(f"to one of: {named}")
@@ -1169,10 +1288,12 @@ def _relation_lines(
     period and its level where it is not direct."""
     lines: list[str] = []
     classes = view.graph.classes
-    relations = view.graph.relations()
+    relations = view.graph.relations(touching=subject)
     for relation_id in sorted(relations):
         relation = relations[relation_id]
         body = cast("RelationBody", relation.claim.body)
+        # An assignment of a mail is no relation between two entities, and a
+        # bracket may have many: the page stays the entity's.
         if not isinstance(body.start, int) or not view.seen(relation_id):
             continue
         if body.start == subject:
@@ -1283,9 +1404,9 @@ def entities[Conn](
     the call folded.
     """
     vocabulary = read_vocabulary(log, conn)
-    view = graph_view(log, conn, policy, client, graph)
     if listing.subject is not None:
         subject = listing.subject
+        view = graph_view(log, conn, policy, client, graph, (subject,))
         uri = event_uri(subject)
         thread = graph.threads.get(subject)
         if thread is None and erased_assertion(log, conn, subject):
@@ -1298,15 +1419,14 @@ def entities[Conn](
             missing = ErrorMark(uri, "no entity stands under this id")
             return Seen((Read(missing, None, event=subject),))
         return Seen((cast("Read", _entity_entry(view, vocabulary, thread, listing, language)),))
+    standing = graph.winners(ENTITY)
+    view = graph_view(log, conn, policy, client, graph, standing)
     reads: list[Read] = []
     size = 0
-    for subject in sorted(graph.threads):
-        thread = graph.threads[subject]
-        if (after is not None and subject <= after) or thread.kind != ENTITY:
+    for subject in sorted(standing):
+        if after is not None and subject <= after:
             continue
-        if thread.winner(graph.classes) is None:
-            continue
-        read = _entity_entry(view, vocabulary, thread, listing, language)
+        read = _entity_entry(view, vocabulary, graph.threads[subject], listing, language)
         if read is None:
             continue
         if size > PAGE_CHARS:
@@ -1335,7 +1455,7 @@ def waiting_versions(graph: Graph) -> dict[str, list[tuple[GraphThread, GraphVer
         section: [] for section in (OBJECTION, QUESTION, PROPOSAL)
     }
     classes = graph.classes
-    for thread in graph.threads.values():
+    for thread in graph.waiting().values():
         winner = thread.winner(classes)
         waiting = list(thread.pending(classes))
         if winner is not None and level_of(winner, classes) == OPEN:
@@ -1405,9 +1525,11 @@ def triage[Conn](
     an entity the client may not see, and went when it was answered, would
     tell what the header leaves out. `graph` is the one the call folded."""
     vocabulary = read_vocabulary(log, conn)
-    view = graph_view(log, conn, policy, client, graph)
+    waiting = waiting_versions(graph)
+    subjects = {thread.subject for pairs in waiting.values() for thread, _version in pairs}
+    view = graph_view(log, conn, policy, client, graph, subjects)
     found: list[tuple[str, int, Callable[[], Read]]] = []
-    for section, pairs in waiting_versions(graph).items():
+    for section, pairs in waiting.items():
         for thread, version in pairs:
             if view.verdict(thread.subject).shown:
                 found.append(

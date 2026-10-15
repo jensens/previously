@@ -81,6 +81,13 @@ BUILT_IN: Final[frozenset[tuple[str, str]]] = frozenset(
 )
 GATE_TYPES: Final[frozenset[str]] = frozenset(name for _declares, name in BUILT_IN)
 
+# A relation kind may start at an event (`from = ["event"]`) and may point at
+# any entity kind (`to = ["*"]`), so that `concerns` can be declared in the
+# vocabulary file rather than built in. Neither is an entity kind: the first
+# stands only in `from`, the second only in `to` and only alone.
+EVENT_START: Final = "event"
+ANY_ENTITY: Final = "*"
+
 NAME_FIELD: Final = "name"
 PERIOD_FIELD: Final = "period"
 
@@ -220,8 +227,10 @@ def _built_in(declares: str, name: str) -> KindSpec:
                 False,
             )
         case _:
-            # `in_circle` starts at an event, which is no entity kind, so
-            # `from_` is empty until phase 3 gives a relation that start.
+            # `in_circle` is to start at an event once the gate reads it, in
+            # phase 3. Until then `from_` stays empty, and no relation of it
+            # can be written: an entity start finds no kind in it, and an
+            # event start fits only a kind whose `from_` names `event`.
             labels = {"de": "Im Kreis", "en": "In circle"}
             return KindSpec(declares, name, labels, (), frozenset(), (), ("circle",), False)
 
@@ -277,6 +286,25 @@ def _labels(value: object) -> dict[str, str]:
 def _identifiers(value: object, what: str) -> tuple[str, ...]:
     items = [_identifier(item, f'a kind in "{what}"') for item in _list(value, what)]
     return tuple(sorted(set(items)))
+
+
+def _starts(value: object) -> tuple[str, ...]:
+    items = [
+        item if item == EVENT_START else _identifier(item, 'a kind in "from"')
+        for item in _list(value, "from")
+    ]
+    return tuple(sorted(set(cast("list[str]", items))))
+
+
+def _targets(value: object) -> tuple[str, ...]:
+    items = _list(value, "to")
+    if ANY_ENTITY in items:
+        if len(items) != 1:
+            raise _FormError(f'has "{ANY_ENTITY}" in "to" together with other kinds')
+        return (ANY_ENTITY,)
+    if EVENT_START in items:
+        raise _FormError(f'has "{EVENT_START}" in "to", where only an entity kind can stand')
+    return _identifiers(value, "to")
 
 
 def _choice_values(value: object) -> tuple[str, ...]:
@@ -353,6 +381,12 @@ def _parse(payload: Mapping[str, object]) -> tuple[KindSpec, str]:
     if not (connected if declares == RELATION_KIND else unconnected):
         raise _FormError("has from and to exactly when it is a relation")
     name = _identifier(payload["name"], "a name")
+    if declares == ENTITY_KIND and name == EVENT_START:
+        raise _FormError(f'is named "{EVENT_START}", which a relation kind uses for an event')
+    if from_ is not None and ANY_ENTITY in _list(from_, "from"):
+        raise _FormError(
+            f'has "{ANY_ENTITY}" in "from", where only an entity kind or "{EVENT_START}" can stand'
+        )
     labels = _labels(payload["labels"])
     fields = tuple(_field(item) for item in _list(payload["fields"], "fields"))
     behaviors = _behaviors(payload["behaviors"], declares)
@@ -363,8 +397,8 @@ def _parse(payload: Mapping[str, object]) -> tuple[KindSpec, str]:
         labels,
         fields,
         behaviors,
-        None if from_ is None else _identifiers(from_, "from"),
-        None if to is None else _identifiers(to, "to"),
+        None if from_ is None else _starts(from_),
+        None if to is None else _targets(to),
         _flag(payload["retired"], "retired"),
     )
     statement = payload["statement"]
@@ -535,7 +569,8 @@ def _reference_problem(spec: KindSpec, kinds: Mapping[tuple[str, str], KindSpec]
     A retired kind is not checked: it takes nothing new, whatever it names."""
     if spec.retired:
         return None
-    named = [("from", name) for name in spec.from_ or ()] + [("to", n) for n in spec.to or ()]
+    named = [("from", name) for name in spec.from_ or () if name != EVENT_START]
+    named += [("to", name) for name in spec.to or () if name != ANY_ENTITY]
     named += [(f'the ref of "{f.name}"', f.ref) for f in spec.fields if f.ref is not None]
     for where, name in named:
         target = kinds.get((ENTITY_KIND, name))

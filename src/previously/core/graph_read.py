@@ -1,0 +1,455 @@
+# Previously — an append-only knowledge store for project histories
+# Copyright (C) 2026 Jens W. Klein
+# SPDX-License-Identifier: AGPL-3.0-or-later
+"""Reading the graph from its projection ({ref}`graph-projection`).
+
+A reader reads in `graph_snapshot`: it catches the projection up first,
+with `catch_up(log, store, GRAPH, rebuild=False)` in transactions of its
+own, and then reads in a snapshot of its own, where `projected_graph`
+gives a `Graph` that answers the questions of a reader — which entities,
+which relations, what waits, what is objected to — from the tables of the
+projection, and folds from the log only the threads the answer names.
+What a reader shows of a thread, its names, fields and versions, comes
+from the log, by id; the projection holds no content but the dates of a
+period and only says which threads to fold.
+
+A thread folded this way is the one `fold_graph` over the whole log gives,
+since nothing outside its own rows changes what the fold makes of it, so a
+reader shows what it showed when it folded the log, and runs the same code
+on what it shows. Where the projection itself drifted from the log, which
+the page names, `previously project --check` reports the threads.
+
+A reader has no second way to the graph: where the projection is not
+built at this code's version, or a catch-up fails, the reader fails with
+the error ({ref}`graph-readers`). `--as-of`, `verify`,
+`previously project --check` and the write path fold the log on purpose,
+which is no way around the projection: the projection knows only what
+stands now, a check that read it would check it against itself, and the
+write path checks under the tip it locks.
+
+One serving path still folds the whole log, and it is a second way to the
+graph, not a fallback: `policy gaps` on the command line and the MCP tool
+`policy_gaps` (`core/gaps.py`, `_recollection_gaps`), whenever no rule
+covers a source `recollection`. It counts the entities and relations that
+stand on the operator's recollection, and the projection has no column
+that says what a version rests on; moving it onto the projection takes such
+a column and a version change, a design step of its own, which the map
+carries.
+"""
+
+from collections.abc import Mapping
+from contextlib import contextmanager
+from dataclasses import dataclass
+from dataclasses import fields
+from datetime import date
+from previously.core.assertion import Source
+from previously.core.classes import read_classes
+from previously.core.errors import ProjectionNotBuilt
+from previously.core.errors import ProjectionRebuilt
+from previously.core.graph import ENTITY
+from previously.core.graph import fold_graph
+from previously.core.graph import Graph
+from previously.core.graph import GraphThread
+from previously.core.graph import RELATION
+from previously.core.graph_write import relation_ends
+from previously.core.members import bracket_kinds
+from previously.core.members import BracketEdge
+from previously.core.members import BracketKinds
+from previously.core.members import members
+from previously.core.projection.graph import class_states
+from previously.core.projection.graph import fold_threads
+from previously.core.projection.graph import GRAPH
+from previously.core.projection.graph import rebuilt_versions
+from previously.core.projection.graph import summary
+from previously.core.projection.worker import catch_up
+from previously.core.vocabulary import read_vocabulary
+from typing import cast
+from typing import Final
+from typing import override
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
+    from collections.abc import Collection
+    from collections.abc import Generator
+    from collections.abc import Iterable
+    from collections.abc import Iterator
+    from collections.abc import Sequence
+    from previously.contract.rows import GraphThreadRow
+    from previously.contract.rows import GraphVersionRow
+    from previously.contract.store import GraphStore
+    from previously.contract.store import LogStore
+    from previously.contract.store import ProjectionStore
+    from previously.core.graph import GraphVersion
+    from previously.core.members import Members
+
+
+_ASSERTION: Final = "assertion"
+
+
+class ThreadsFromLog(Mapping[int, GraphThread]):
+    """The threads of a graph, each folded from the log the first time it is
+    asked for, and kept for the rest of the read.
+
+    Asked for one id, it folds that thread; `load` folds many in one go, for
+    a reader that knows what it is going to show. Walking every thread folds
+    every thread there is, which is correct and as slow as folding the log:
+    the readers of the projection ask `ProjectedGraph` for what they show
+    instead.
+    """
+
+    def __init__(
+        self,
+        fold: Callable[[Sequence[int]], Mapping[int, GraphThread]],
+        subjects: Callable[[], Iterable[int]],
+    ) -> None:
+        self._fold = fold
+        self._subjects = subjects
+        self._found: dict[int, GraphThread | None] = {}
+
+    def load(self, subjects: Iterable[int]) -> None:
+        """Folds the threads of `subjects` not folded yet, together."""
+        missing = sorted({subject for subject in subjects if subject not in self._found})
+        if not missing:
+            return
+        folded = self._fold(missing)
+        for subject in missing:
+            self._found[subject] = folded.get(subject)
+
+    @override
+    def __getitem__(self, key: int) -> GraphThread:
+        self.load((key,))
+        found = self._found[key]
+        if found is None:
+            raise KeyError(key)
+        return found
+
+    @override
+    def __iter__(self) -> Iterator[int]:
+        subjects = sorted(set(self._subjects()))
+        self.load(subjects)
+        return iter([subject for subject in subjects if self._found[subject] is not None])
+
+    @override
+    def __len__(self) -> int:
+        return sum(1 for _subject in self)
+
+
+class GraphIndex[Conn]:
+    """The store of the projection and the snapshot a `ProjectedGraph` asks
+    it in. A class of its own and no field of the graph, since the fields of
+    a dataclass are read at runtime and the store protocols are imported
+    for the type checker alone."""
+
+    def __init__(self, store: GraphStore[Conn], conn: Conn) -> None:
+        self.store = store
+        self.conn = conn
+
+
+@dataclass(frozen=True)
+class ProjectedGraph[Conn](Graph):
+    """A graph whose questions the projection answers, in the snapshot of
+    `index`.
+
+    Each question asks the projection which threads it concerns, folds
+    those from the log, and asks the same question of a `Graph` of them:
+    the answer is the one the whole fold gives, by the same code. With them
+    come the threads their relations name as ends, folded in the same go,
+    since a reader names every end it shows. `entity_kinds` alone is read
+    off the rows, which hold the kind of each winner.
+    """
+
+    index: GraphIndex[Conn]
+
+    def _found(self) -> ThreadsFromLog:
+        return cast("ThreadsFromLog", self.threads)
+
+    def _graph_of(self, subjects: Iterable[int]) -> Graph:
+        """The threads of `subjects` as a graph of their own, with the ends
+        of their relations folded alongside."""
+        wanted = sorted(set(subjects))
+        found = self._found()
+        found.load(wanted)
+        threads = {subject: found[subject] for subject in wanted if subject in found}
+        found.load(
+            end
+            for thread in threads.values()
+            if thread.kind == RELATION
+            for end in relation_ends(thread)
+        )
+        return Graph(threads, self.classes)
+
+    @override
+    def winners(
+        self, kind: str, *, types: Collection[str] | None = None
+    ) -> dict[int, GraphVersion]:
+        rows = self.index.store.read_graph_threads(
+            self.index.conn, kind=kind, types=None if types is None else sorted(types)
+        )
+        return self._graph_of(row.subject for row in rows).winners(kind, types=types)
+
+    @override
+    def entity_kinds(self) -> dict[int, str]:
+        rows = self.index.store.read_graph_threads(self.index.conn, kind=ENTITY)
+        return {row.subject: row.type for row in rows}
+
+    @override
+    def relations(
+        self,
+        *,
+        at: date | None = None,
+        types: Collection[str] | None = None,
+        start: int | None = None,
+        to: int | None = None,
+        touching: int | None = None,
+    ) -> Mapping[int, GraphVersion]:
+        rows = self.index.store.graph_relations(
+            self.index.conn,
+            at=at,
+            types=None if types is None else sorted(types),
+            start=start,
+            to=to,
+            touching=touching,
+        )
+        return self._graph_of(row.subject for row in rows).relations(
+            at=at, types=types, start=start, to=to, touching=touching
+        )
+
+    @override
+    def waiting(self) -> Mapping[int, GraphThread]:
+        rows = self.index.store.graph_waiting(self.index.conn)
+        return self._graph_of(row.subject for row in rows).waiting()
+
+    @override
+    def objected(self) -> Mapping[int, GraphThread]:
+        rows = self.index.store.graph_objected(self.index.conn)
+        return self._graph_of(row.subject for row in rows).objected()
+
+    @override
+    def under(self, class_ids: Collection[int]) -> Mapping[int, GraphThread]:
+        subjects = self.index.store.class_subjects(self.index.conn, sorted(class_ids))
+        return self._graph_of(subjects).under(class_ids)
+
+
+def projected_graph[Conn](
+    log: LogStore[Conn], store: GraphStore[Conn], conn: Conn
+) -> ProjectedGraph[Conn]:
+    """The graph of a reader, read from the projection in the snapshot
+    `conn` belongs to, under the approval classes in force. `conn` is one
+    of `graph_snapshot`, in which the projection stands where its catch-up
+    left it."""
+    classes = read_classes(log, conn).states
+
+    def fold(subjects: Sequence[int]) -> Mapping[int, GraphThread]:
+        ids = store.graph_version_ids(conn, subjects)
+        return fold_threads(log, conn, subjects, ids, classes).threads
+
+    threads = ThreadsFromLog(fold, lambda: store.graph_subjects(conn))
+    return ProjectedGraph(threads, classes, GraphIndex(store, conn))
+
+
+def projected_bracket_edges[Conn](
+    store: GraphStore[Conn], conn: Conn, kinds: BracketKinds
+) -> tuple[BracketEdge, ...]:
+    """The edges `members` reads, out of the rows of the projection: the
+    relations of the kinds of `kinds`, as `bracket_edges` takes them from a
+    fold. A row holds the ends and the level of its winner, which is all an
+    edge is, so nothing is read from the log."""
+    rows = store.graph_relations(conn, types=sorted(kinds.hierarchy | kinds.assignments))
+    return tuple(
+        BracketEdge(
+            row.subject,
+            row.type,
+            (
+                cast("int", row.start_entity)
+                if row.start_event is None
+                else Source(row.start_event, row.start_units)
+            ),
+            cast("int", row.to_entity),
+            row.level,
+        )
+        for row in rows
+    )
+
+
+def read_brackets[Conn](
+    log: LogStore[Conn], store: GraphStore[Conn], conn: Conn, bracket: int
+) -> Members:
+    """`members` of `bracket`, over the edges the projection holds, under
+    the vocabulary in force, which is all it reads of the log, in a
+    snapshot of `graph_snapshot`."""
+    kinds = bracket_kinds(read_vocabulary(log, conn))
+    return members(projected_bracket_edges(store, conn, kinds), bracket, kinds)
+
+
+def reader_bracket_edges[Conn](
+    log: LogStore[Conn], conn: Conn, graph: Graph
+) -> tuple[tuple[BracketEdge, ...], BracketKinds]:
+    """The edges `members` reads in the graph a reader reads in the
+    snapshot of `conn`, out of the rows of the projection, with the kinds
+    they are read by. A reader reads `graph` from the projection
+    (`graph_snapshot`) and has no other graph; a fold handed in here is a
+    programming error and is refused as one, rather than answered by
+    `bracket_edges` over the fold, which would be a second way to the
+    graph."""
+    if not isinstance(graph, ProjectedGraph):
+        raise TypeError("a reader finds a bracket in the projection, and this graph is a fold")
+    projected = cast("ProjectedGraph[Conn]", graph)
+    kinds = bracket_kinds(read_vocabulary(log, conn))
+    return projected_bracket_edges(projected.index.store, conn, kinds), kinds
+
+
+def bracket_members[Conn](log: LogStore[Conn], conn: Conn, graph: Graph, bracket: int) -> Members:
+    """`members` of `bracket` over every edge of the graph a reader reads
+    (`reader_bracket_edges`): what the operator finds."""
+    edges, kinds = reader_bracket_edges(log, conn, graph)
+    return members(edges, bracket, kinds)
+
+
+def _cell(value: object) -> str:
+    """A value of a row as a line of `previously project --check` shows it."""
+    if value is None:
+        return "-"
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, tuple):
+        return ",".join(str(item) for item in cast("tuple[object, ...]", value))
+    return str(value)
+
+
+def differences(rows: Iterable[GraphThreadRow], graph: Graph) -> list[tuple[int, str]]:
+    """Every subject on which the rows of `p_graph_thread` and `graph`
+    disagree, by subject, with what differs: each column as `name projected
+    instead of folded`, or a row where the fold has no winner, or none where
+    it has one."""
+    projected = {row.subject: row for row in rows}
+    folded = {
+        subject: row
+        for subject, thread in graph.threads.items()
+        if (row := summary(thread, graph.classes)) is not None
+    }
+    found: list[tuple[int, str]] = []
+    for subject in sorted(projected.keys() | folded.keys()):
+        here, there = projected.get(subject), folded.get(subject)
+        if here == there:
+            continue
+        if here is None:
+            what = f"no row instead of winner {cast('GraphThreadRow', there).winner_id}"
+        elif there is None:
+            what = f"winner {here.winner_id} instead of no row"
+        else:
+            what = ", ".join(
+                f"{column.name} {_cell(getattr(here, column.name))} instead of "
+                f"{_cell(getattr(there, column.name))}"
+                for column in fields(here)
+                if getattr(here, column.name) != getattr(there, column.name)
+            )
+        found.append((subject, what))
+    return found
+
+
+def _version_text(row: GraphVersionRow) -> str:
+    under = "" if row.under is None else f" under {row.under}"
+    return f"{row.kind} of {row.subject}{under}"
+
+
+def version_differences(
+    rows: Iterable[GraphVersionRow], rebuilt: Iterable[GraphVersionRow]
+) -> list[tuple[int, str]]:
+    """Every id on which the rows of `p_graph_version` and those a rebuild
+    writes disagree, by id: each column as `version row name projected
+    instead of rebuilt`, a row the rebuild doesn't write, or none where it
+    writes one."""
+    projected = {row.id: row for row in rows}
+    expected = {row.id: row for row in rebuilt}
+    found: list[tuple[int, str]] = []
+    for event_id in sorted(projected.keys() | expected.keys()):
+        here, there = projected.get(event_id), expected.get(event_id)
+        if here == there:
+            continue
+        if here is None:
+            what = f"no version row instead of {_version_text(cast('GraphVersionRow', there))}"
+        elif there is None:
+            what = f"version row {_version_text(here)} instead of none"
+        else:
+            what = "version row " + ", ".join(
+                f"{column.name} {_cell(getattr(here, column.name))} instead of "
+                f"{_cell(getattr(there, column.name))}"
+                for column in fields(here)
+                if getattr(here, column.name) != getattr(there, column.name)
+            )
+        found.append((event_id, what))
+    return found
+
+
+def check_graph[Conn](
+    log: LogStore[Conn], store: GraphStore[Conn], conn: Conn, up_to: int
+) -> list[tuple[int, str]]:
+    """What differs between the projection and the log up to event `up_to`,
+    the projection's `up_to_id`: `differences` of the threads against the
+    fold under the classes as of that event, then `version_differences` of
+    the version rows against what a rebuild would write. The readers fold
+    the threads they show from the version rows, so a wrong one there is as
+    much a fault as a wrong thread."""
+    events = [row for row in log.read_by_kind(conn, _ASSERTION) if row.id <= up_to]
+    graph = fold_graph(
+        ((row.id, row.recorded_at, row.payload) for row in events), class_states(log, conn, up_to)
+    )
+    return differences(store.read_graph_threads(conn), graph) + version_differences(
+        store.read_graph_versions(conn), rebuilt_versions(events)
+    )
+
+
+# How often `graph_snapshot` catches up again when the projection, at this
+# code's version, no longer stands in its snapshot where its catch-up left
+# it. One, because the miss it answers is a `previously project` that
+# rebuilt between the catch-up and the snapshot, after an operator deleted
+# the state row, and the second catch-up meets the projection at its own
+# version: it only takes turns with that build under the lock of the state
+# row and carries it on to the tip. A second miss in a row is a rebuild
+# started again in that moment, which a reader reports rather than
+# outlasts. A projection at another version is never retried: catching up
+# cannot change a version, so a retry could only fail the same way again.
+REBUILD_RETRIES: Final = 1
+
+
+@contextmanager
+def graph_snapshot[Conn](
+    log: LogStore[Conn], projections: ProjectionStore[Conn], store: GraphStore[Conn]
+) -> Generator[Conn]:
+    """A snapshot in which the graph projection stands where a catch-up
+    just left it, for a reader to read the graph from ({ref}`graph-readers`).
+
+    It catches the projection up with `rebuild=False`, opens a snapshot of
+    `log`, and holds the state row there against the catch-up's outcome.
+    At another version, or with no state row, it raises
+    `ProjectionNotBuilt`, as the catch-up would. Behind the outcome, it
+    leaves that snapshot and does it all again, `REBUILD_RETRIES` times,
+    and then raises `ProjectionRebuilt`: an empty or half-built projection
+    is never shown as if it were the graph.
+
+    A catch-up that fails fails the reader: a projection not built at this
+    code's version raises `ProjectionNotBuilt`, a gap in the log
+    `ProjectionGap`, a database that refuses its `StorageError`. None of
+    them is answered by folding the log instead: a gap is damage that a
+    fold would answer over silently, and a refusal is a misconfiguration
+    that it would hide."""
+    for _attempt in range(REBUILD_RETRIES + 1):
+        outcome = catch_up(log, projections, GRAPH, rebuild=False)
+        with log.snapshot() as conn:
+            state = store.projection_state(conn, GRAPH.name)
+            if state is None or state.version != GRAPH.version:
+                raise ProjectionNotBuilt(
+                    GRAPH.name, None if state is None else state.version, GRAPH.version
+                )
+            if state.up_to_id >= outcome.up_to_id:
+                yield conn
+                return
+    raise ProjectionRebuilt(
+        f"projection {GRAPH.name} was rebuilt between catching it up and reading it, "
+        f"on each of {REBUILD_RETRIES + 1} tries; read again once `previously project` "
+        "has finished"
+    )

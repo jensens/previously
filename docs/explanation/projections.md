@@ -2,11 +2,12 @@
 
 # About derived views
 
-Stage 1b adds three tables that carry no truth of their own: `projection_state`, `p_chronicle`, and `p_source_stats`.
+Stage 1b added three tables that carry no truth of their own: `projection_state`, `p_chronicle`, and `p_source_stats`, and the second phase of the assignments adds two for the graph, `p_graph_version` and `p_graph_thread`.
 This page explains what that promise means in practice and why the two content-bearing tables look the way they do.
 Three sections follow on the worker that keeps them current: how it catches up in batches, why a gap in the log can't arise and is checked for all the same, and which test makes the promise more than a claim.
 Two more follow on the commands that read them: why `log` and `chronicle` are two commands rather than one with more options, and what the commands say about what they don't know.
-A last section follows on how the chronicle follows an erasure, and why the per-source statistics don't have to.
+Two follow on the chronicle: how it follows an erasure, and why the per-source statistics don't have to, and why it shows observations only.
+A last one follows on the graph, which keeps no content beyond the period dates of a relation and folds again only the threads that new events touch.
 
 ## Derivable and disposable
 
@@ -17,7 +18,7 @@ Nothing may come to depend on a projection that a rebuild wouldn't reproduce, be
 The consequence lands on the schema itself.
 A projection carries a foreign key onto `event`, because a projection built for an event that doesn't exist must never stand.
 It carries no foreign key onto another projection, because that would make one derived table depend on another derived table's current state rather than on the log—exactly the dependency the promise rules out.
-{ref}`database-schema` lists the three tables with their columns; this page is where the reason for that missing foreign key belongs.
+{ref}`database-schema` lists the five tables with their columns; this page is where the reason for that missing foreign key belongs.
 
 ## What the two tables are for
 
@@ -73,7 +74,7 @@ The bookmark carries the design only if one catch-up at a time moves it.
 Before stage 1c, two catch-ups of one projection needed two `project` runs at once; since then every `redact` catches up as well, beside whatever `project` runs on a schedule, so two at once is the ordinary case.
 
 Each transaction of a catch-up therefore begins by locking the projection's row in `projection_state`, and takes `up_to_id` and the version from the locked row, never from the transaction before.
-That holds for the first transaction, which builds or rebuilds the table, and for every batch after it.
+That holds for the first transaction, which checks the version and, in `previously project`, builds or rebuilds the table, and for every batch after it.
 A second catch-up waits at the row while the first holds it, and then starts where the first committed.
 A projection without a state row has nothing to lock yet, so the first transaction inserts a placeholder row and holds that; a second first build waits at the row's key, inserts nothing, and locks the row the first one committed.
 
@@ -96,8 +97,9 @@ With the lock, B waits for A, reads `up_to_id 1` from the row A committed, reads
 `test_two_catch_ups_of_one_projection_take_turns` in `tests/test_projection_worker.py` holds that interleaving, with a control that leaves out the extra append, and `test_two_first_builds_build_once` holds the first build.
 
 The lock settles two catch-ups of one version of the code, and not two versions.
-A catch-up rebuilds whenever the version it finds differs from its own, in either direction, so two releases running against one database would each rebuild what the other built.
-A batch that finds the row at another version than its own, or finds no row, therefore stops with `ProjectionRebuilt` instead of rebuilding in turn: two releases that each rebuilt whenever they met the other's version would take turns at the lock and never finish, while one that stops leaves the other to carry its build to the end.
+`previously project` rebuilds whenever the version it finds differs from its own, in either direction, so two releases that each ran it against one database would each rebuild what the other built.
+That's why `project` is the only command that builds: a reader, the MCP server and `redact` catch up and never build, and meeting no state row or one at another version they stop with `ProjectionNotBuilt`, whose sentence names `previously project` ({ref}`graph-readers`).
+A batch that finds the row at another version than its own, or finds no row, stops with `ProjectionRebuilt` instead of rebuilding in turn: two runs that each rebuilt whenever they met the other's version would take turns at the lock and never finish, while one that stops leaves the other to carry its build to the end.
 The error names the version it found; {ref}`rebuild-a-projection` says what to do, and `test_a_catch_up_stops_when_another_release_rebuilds_under_it` holds it.
 
 ## Why there are no gaps to worry about
@@ -191,7 +193,7 @@ Beside the comparison stands a property that interleaves "append some events," "
 Twenty-five examples per run, with `occurred_at` drawn at random as well and sources from a set of three, so that something is aggregated at all.
 
 The version trigger gets the same treatment.
-A projection declares its version in the code, and a catch-up that meets a different version in `projection_state` empties the table and starts over—any difference, not only a higher one, because a rolled-back release derives differently from the table it meets.
+A projection declares its version in the code, and a catch-up of `previously project` that meets a different version in `projection_state` empties the table and starts over—any difference, not only a higher one, because a rolled-back release derives differently from the table it meets.
 The test poisons a row in `p_source_stats`, raises the version, and finds the poison gone.
 Its control sits right next to it: a catch-up at the unchanged version leaves the poison in place.
 Without that control the first half would show only that the worker writes, not that the version is what set it off.
@@ -233,7 +235,7 @@ Silence is therefore a statement: no notice means current and complete.
 
 The third is the one `project` answers.
 A catch-up that empties a table and builds it again looks, in the table, exactly like one that appended a few rows—so `project` names the path the run took, `built`, `caught up`, `rebuilt: version 1 -> 2` or `up to date`, and a version-triggered rebuild stops being invisible.
-`redact`, which catches up as well, names a build or a rebuild it runs in the same words, on standard error.
+`redact` catches up as well and never builds, so it has no such path to name; where a projection isn't built at its version, it says so in its error and leaves the build to `project`.
 What that line reports is the path *this* run took, and one case escapes it: if a run is interrupted after the version check has rewritten the state row but before its first batch commits, the next run finds the state row already at the new version and reports an ordinary catch-up, because the rebuild it continues was recorded nowhere that survived the interruption.
 That's a known limit rather than a bug to fix in the worker: the alternative is a second stored field whose only reader is a sentence on the terminal.
 
@@ -256,9 +258,9 @@ Within one batch the rows go in first and the deletions run after, so a redactio
 A redaction that names a later event than itself takes nothing, since it can only order the erasure of something before it; taken, it would delete rows in a rebuild and none on the incremental path.
 
 `redact` catches the projections up itself, after the erasure, so the chronicle stops showing what was erased without waiting for the next `project`.
-The derivation reads redactions now, so the chronicle's version went from 1 to 2, and the first catch-up after the upgrade rebuilds it and says `rebuilt: version 1 -> 2`.
-That catch-up can be a `project` or a `redact`, since `redact` catches up too, and both name the rebuild: `project` on standard output, `redact` on standard error, where its one line on standard output stays alone.
-A rebuild takes as long as reading the whole log does, and a command that rebuilt without a word would look as if it hung.
+The derivation reads redactions now, so the chronicle's version went from 1 to 2, and the first `project` after the upgrade rebuilds it and says `rebuilt: version 1 -> 2`.
+Until the second phase of the assignments a `redact` could be that first catch-up and run the rebuild itself, naming it on standard error; now it stops at a projection that isn't built at its version, its error says to run `previously project` and then the same command again, and the redaction stands meanwhile.
+A rebuild takes as long as reading the whole log does, which belongs in the upgrade step, not inside a command that erases one thing.
 That rebuild isn't a formality: a table that version 1 built can still hold the rows of a unit erased since.
 
 The chronicle per unit is also what made this necessary.
@@ -271,7 +273,7 @@ What stays of the older behavior is the tombstone without an order: `test_a_payl
 The chronicle answers "what happened, line by line, and how it's known," and the answer is a statement a source made.
 An action is something the system did, so it isn't one.
 Since the pilot's gate a model call is an action that keeps the answer it received as units, so that an erasure can take them out one by one, and without a rule those units would stand in the chronicle among the lines of a mail.
-The derivation therefore skips every event whose kind isn't `observation`, and the chronicle's version went from 2 to 3 so that the first catch-up after the upgrade rebuilds the table.
+The derivation therefore skips every event whose kind isn't `observation`, and the chronicle's version went from 2 to 3 so that the first `project` after the upgrade rebuilds the table.
 A redaction is an action too, but it has no units, so the table of version 2 holds no row of one; the rebuild matters for the actions written with units.
 `test_the_upgrade_to_version_3_rebuilds_and_ends_as_a_fresh_build` puts such a row into a table the way version 2 would have built it, and finds the rebuilt table equal to a fresh one.
 What an action did stays readable in `log`, which reads the chain one event at a time and shows every kind.
@@ -281,3 +283,117 @@ An erasure leaves the rows of its units in the log as tombstones, so no row disa
 `units` therefore counts the units recorded, erased ones included, and not the units that still carry content.
 A count of units with content is one an erasure would lower below the bookmark, where the worker never looks again, and keeping it right would take arithmetic that subtracts or a rebuild after every erasure.
 `test_the_stats_keep_counting_an_erased_unit` holds the count before and after an erasure, on the incremental path and rebuilt.
+
+(graph-projection)=
+
+## The graph, folded again thread by thread
+
+Until the second phase of the assignments every reader of the graph folded the whole log: every assertion, every approval class, every version of every thread.
+At 100,000 relations that took seven seconds, and every MCP call paid it for the count of objections in its header.
+The projection `graph` keeps what the fold makes of each thread, so that a reader can look it up instead.
+Measured on 2026-10-15 at commit `22b3dec`, on an i7-11370H, `whoami` with that header takes 0.019 s at 100,000 relations, where phase 1 took 7.69 s; {ref}`graph-cost` has the rest of the figures and what they mean for a reader.
+
+It keeps two tables under one name.
+`p_graph_version` says which versions and which rejections belong to which thread.
+`p_graph_thread` holds, for each thread that has a winner, what the winner is: its kind, type, level and state, its ends, its period, and the counts of pending versions and objections.
+Neither table holds content.
+No name, no field and no source is in them: ids, counts and words of the vocabulary, and the dates of a relation's period, the one thing a claim asserts that stands here.
+Those dates leave with their version when it's erased, because the erasure folds its thread again.
+A reader that shows a version reads it from the log by its id, and that's what lets an erasure hold here without this projection deleting any content: what an erasure takes is gone from the log, and the projection never had it.
+The chronicle had to learn to delete rows when erasure came; the graph never holds a row worth deleting for its content.
+
+A catch-up doesn't fold the batch into stored rows the way `p_source_stats` adds counts.
+A winner isn't additive: a rejection, an approval or a revoked class can turn an older version into the winner again, and an erasure takes a version back out of the fold, which the fold has no step for.
+So a batch marks the threads it touches and folds each of them again from scratch, from its rows in the log, under the approval classes as of the batch's last event.
+A thread is touched by a version of it and by a rejection of one of its versions.
+It's touched by an erasure of one of its rows, and of its subject, since an erased subject still lets later versions of it stand.
+It's touched by an approval class event of a name one of its versions stands under, because every event of a name shares the state of the newest one.
+An erased action may have been a class event, and its name goes with its payload, so the erasure of any action folds every thread under a class again; that's rare, and folding again is always safe.
+A vocabulary event touches nothing, because the fold doesn't read the vocabulary: what fits the vocabulary is the reader's to decide.
+
+Marking too much costs time and nothing else, since folding a thread again gives the same thread however often it runs.
+Marking too little leaves a thread where it stood, and nothing would say so.
+That asymmetry is why the assurance for this projection is a comparison with the fold rather than with a rebuild alone.
+`test_property_the_projection_stands_where_the_fold_does` writes random histories through the write path—versions at every level, assignments of mails and of their units, questions, objections, approvals, rejections, erasures of versions, of mails whose claims the cascade takes, and of class events, classes revoked with and without `demote`—catches up at random points in batches of random size, and after every catch-up holds each row against what `fold_graph` over the whole log makes of its thread.
+Each way a thread changes also has a test of its own, and each was measured red with the marking it needs taken out.
+
+`p_graph_version` is held to the rebuild as well, and that took a rule.
+A catch-up that read a version before it was erased has a row for it, while a rebuild reads the tombstone and writes none.
+So folding a thread again also takes out the rows a rebuild wouldn't write: an erased version or rejection, and a rejection whose version is erased.
+After that, both tables are what reading the log now gives, whichever batches the catch-ups cut it into.
+
+What the projection doesn't follow is what the write path never writes.
+A version written around it that approves or contests a version of another thread counts in the fold once that other version is erased, and the erasure doesn't touch the thread that names it.
+A payload set to `NULL` by hand, without a redaction, is a tombstone without an order, which `verify` reports, and nothing tells the projection to look again.
+In both cases the log stays right and the projection can lag behind it; `previously project --check` names the threads, and a rebuild brings them back.
+
+Two readers that catch up at once take turns at the state row of `projection_state`, as every projection does.
+The second starts where the first committed, so neither sees half a batch and no row is written twice; `test_two_catch_ups_at_once_write_every_row_once_and_end_where_the_fold_does` holds that, and the primary key of `p_graph_version` would refuse a second row for one version if it didn't.
+
+(graph-readers)=
+
+### How a reader reads it
+
+A reader of the graph doesn't wait for anybody to run `previously project`.
+Every listing of the command line and every MCP call first catches the projection up, in transactions of its own, and then reads in a snapshot of its own.
+When nothing is new, the catch-up costs two short transactions: one locks the state row, and the other locks it again and finds the tip of the log where the projection stands.
+Measured the same day, `previously project` with nothing new takes 0.022 s at 10,000 relations and 0.023 s at 100,000, and 0.040 s after one write, so the cost doesn't grow with the log.
+An MCP call always finds one thing new, the access entry of the call before it, and that batch touches no thread, so it ends before it reads any approval class.
+
+The projection then says which threads a question concerns, and the log says what they hold.
+Asked for the entities, the relations that touch an entity, what waits, or what's objected to, the reader takes the subjects from `p_graph_thread`, folds those threads again from their rows in the log, and asks the same question of the threads it folded, with the same code the whole fold answers it with.
+A thread folded that way is the one the whole fold gives, which is the argument the catch-up rests on as well.
+So a listing shows what it showed when it folded the log, and it still reads every name, field and version from the log, where an erasure has already taken what it took.
+The rows alone would answer more cheaply, but they hold no content, and a listing that showed what the rows hold would need the content in them.
+The ends of the relations come along in the same go, and a thread nobody asked about yet is folded when a line names it, so no question of a reader ever meets a thread the projection left out.
+
+The chronicle of a bracket asks the rows alone.
+An assignment or a hierarchy edge is no more than its kind, its two ends and the level of its winner, and `p_graph_thread` holds all four, so the walk that finds what belongs to a bracket for the operator folds no thread and reads nothing of the log but the vocabulary ({ref}`chronicle-of-a-bracket`).
+Around the walk, `chronicle --within` folds one thread, the bracket's own, to check that it stands, and reads the approval classes, as every reader of the projection does.
+On the command line the selection then goes into the query of `p_chronicle`, before its limit.
+Over MCP an edge counts only where the client sees it, and deciding that reads the edge's sources.
+So the server walks every edge first, which finds every event that can belong, and decides the client's view only for the edges the result can turn on: the parts below the bracket, and the assignments of the events that walk found, those of a unit of its own to another bracket among them.
+Taking edges away shrinks the walk, and adds a unit only where it takes away the assignment that excluded it, so no other edge can change the answer.
+That bound keeps the answer right and doesn't make it cheap: it decides the view for every edge that can turn the answer, and the server reads the payload of every member event to find the newest, so the cost grows with the bracket and not with the page.
+Measured on 2026-10-15 at commit `22b3dec`, a call with `within` over a large bracket took 1.75 s at 10,000 relations and 17.5 s at 100,000, over the empty one 0.025 s and 0.135 s, while `chronicle --within` on the command line answered for the same large bracket in 0.143 s ({ref}`graph-cost`).
+The chronicle then reads the log, as it always has, keeps the events of the bracket as it reads, and stops at the last of them.
+
+The header of every MCP result is where this matters most.
+It counts the threads with `objections > 0`, folds only those, and asks the policy only about them, so it folds no thread and asks the policy nothing while no objection waits.
+`test_a_call_reads_no_assertion_in_full_and_of_the_graph_only_what_is_new` holds that a call reads no assertion in full, none at all when nothing waits and nothing is new, and only the new version when one was written.
+
+Three readers still fold the whole log.
+`relations --as-of` asks for a past moment, and the projection knows only what stands now; that question is rare and may be slow.
+The write path checks a claim against what stands under the tip it locks, and a projection that lags inside that transaction would let the check pass on a stale state.
+`verify` holds every statement against what stood before it in the chain, which no projection keeps.
+
+One more command folds the whole log, and unlike those three it serves an answer that the projection could give: `policy gaps` on the command line and the MCP tool `policy_gaps`, whenever no rule covers a source `recollection`.
+It counts the entities and relations that stand on the operator's recollection, and the projection has no column that says what a version rests on.
+Moving it onto the projection takes such a column and a raised version, a design step of its own rather than a fix, so until that step it's a second way to the graph, named here so that the list stays honest.
+
+`previously project --check` is the counterpart of the property for a running system.
+It folds the log up to where the projection stands and names every thread whose row differs, and every row of `p_graph_version` that a rebuild wouldn't write as it stands, since a reader folds the threads it shows from those rows.
+The projection is disposable and the log is the truth, so a projection that drifted, by one of the two ways above or by a fault nobody has found yet, mustn't stay silent.
+
+A reader has one way to the graph, and it's the projection.
+A reader never builds it: where the state row is missing, or stands at another version than the one the code declares, its catch-up stops with `ProjectionNotBuilt`, whose sentence says what it found, what the code declares, and that `previously project` builds it.
+Only `previously project` builds, the first time and after an upgrade that changes the version, the way a migration runs in the upgrade step.
+A reader that rebuilt instead would put a build as long as the log inside a client's call, 35 s at 100,000 relations, and during a rolling update that runs two releases side by side, an old reader meeting the new version would rebuild the old one and the new reader would rebuild it back, call after call, with no end a retry could reach.
+
+What a reader can still meet is a rebuild at its own version between its catch-up and its snapshot: a `previously project` that runs after an operator deleted the state row, and empties the tables.
+So a reader holds the state row in its snapshot against the outcome of its own catch-up, and where `up_to_id` stands behind it, the reader leaves that snapshot, catches up once more, and reads in a new snapshot.
+The second catch-up meets the projection at its own version, takes turns with the build at the state row and carries it to the tip, so one retry is enough; a second miss in a row is a build started again in that moment, and the reader reports it with `ProjectionRebuilt` rather than outlast it.
+A state row at another version in the snapshot isn't retried at all: catching up can't change a version.
+Two readers that catch up at once need no retry either, since they take turns at the state row: the first one wins and the second one waits.
+
+A reader whose catch-up fails stops with that error, as every command does: a gap in the log with `ProjectionGap`, a database that refuses with its own error.
+Until the second phase of the assignments, a reader answered all of these by folding the whole log, with one line on standard error or in the server's log.
+That second way to the graph was removed on purpose.
+The log has no gaps by construction, so a gap is damage, and a fold over the whole log would have answered over it as if nothing were wrong.
+A missing table or a missing privilege is a fault of the setup, which the fold hid behind answers that were right and slow: at 100,000 relations a call that folds the log waited more than seven seconds whatever it asked for ({ref}`graph-cost`), an outage that looks like slowness.
+And the fold disguised the two releases rebuilding each other as nothing worse than slower calls.
+An error says what's wrong where it happens, and the readiness probe of the MCP server says it before any call does ({ref}`rebuild-a-projection`).
+
+A catch-up with much to do still does it inside the reader that finds it, at the projection's own version.
+A large ingest leaves a catch-up of its own size, and the first reader after it pays for it: two catch-ups take turns at the state row, batch by batch, and no lock timeout is set, so every reader that arrives meanwhile waits at the lock, takes its share of the batches, and answers only once the projection has reached the tip.
+That keeps every answer current and costs those readers the wait, which is why a bulk ingest is best followed by `previously project`, so that the wait falls on the operator's command and not on a client's call.

@@ -237,7 +237,7 @@ def test_an_access_has_no_units_and_does_not_enter_the_chronicle(db: Engine) -> 
     storage = PostgresStorage(db)
     _mail(storage)
     record_access(storage, _access(delivered=(Delivered(1, (1, 2), ()),)), recorded_at=T1)
-    catch_up(storage, storage, CHRONICLE)
+    catch_up(storage, storage, CHRONICLE, rebuild=True)
     with storage.begin() as conn:
         assert storage.units_by_event(conn, [2]).get(2, []) == []
     with db.begin() as conn:

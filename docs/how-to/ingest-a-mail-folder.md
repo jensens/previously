@@ -64,6 +64,7 @@ Run `project`, then read the chronicle:
 $ previously project
 chronicle       built: 5 events, up_to_id 5
 source-stats    built: 5 events, up_to_id 5
+graph           built: 5 events, up_to_id 5
 $ previously chronicle --since 2026-10-06T00:00:00+00:00
 3	1	2026-10-06T09:02:11+00:00	email	AM0PR01MB1234ABCD@example.org	AW: Angebot für den Relaunch
 3	2	2026-10-06T09:02:11+00:00	email	AM0PR01MB1234ABCD@example.org	Hallo Jürgen,

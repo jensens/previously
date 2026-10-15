@@ -78,15 +78,52 @@ class ProjectionGap(PreviouslyError):
 
 
 class ProjectionRebuilt(PreviouslyError):
-    """The state row of a projection changed its version, or vanished, while
-    a catch-up of it ran ({ref}`projections`).
+    """A projection was rebuilt under a reader or a catch-up
+    ({ref}`projections`): its state row changed its version, or vanished,
+    between two batches of a catch-up, or a reader found it emptied again
+    between its catch-up and its snapshot more often than it retries.
 
-    Only another release does that: a catch-up at a different version
-    rebuilds the table between two batches of this one. Raised rather than
-    rebuilt over in turn, because two releases that each rebuilt whenever
-    they met the other's version would take turns at the lock and never
-    finish; this one stops, and the other carries its build to the end.
+    Only `previously project` rebuilds, of this release or of another, or an
+    operator who deleted the state row by hand. Raised rather than rebuilt
+    over in turn, because two releases that each rebuilt whenever they met
+    the other's version would take turns at the lock and never finish; this
+    one stops, and the other carries its build to the end.
     """
+
+
+class ProjectionNotBuilt(PreviouslyError):
+    """A projection is not built at the version this code declares, and the
+    caller may not build it ({ref}`projections`): it has no state row, or
+    its state row stands at another version.
+
+    Only `previously project` builds a projection, the first time and after
+    a release that changed its version, as a migration runs in the upgrade
+    step. A reader, the MCP server and `redact` catch up only, and meeting a
+    projection they would have to build, they stop with this: a build takes
+    as long as the log is, and two releases that each rebuilt the other's
+    version would undo each other without end.
+
+    `finding` is what was found and what this code declares, which
+    `redact` puts into its own sentence; the message adds who builds it.
+    """
+
+    def __init__(self, name: str, found: int | None, declared: int) -> None:
+        if found is None:
+            finding = f"projection {name} is not built, and this code declares version {declared}"
+            advice = "`previously project` builds it"
+        else:
+            finding = (
+                f"projection {name} stands at version {found}, "
+                f"and this code declares version {declared}"
+            )
+            # Which of the two releases is the newer one, this code cannot
+            # know; the advice must not send an old release to build back.
+            advice = "the release that is to serve builds it with `previously project`"
+        super().__init__(f"{finding}; {advice}")
+        self.name = name
+        self.found = found
+        self.declared = declared
+        self.finding = finding
 
 
 class RedactionRefused(PreviouslyError):

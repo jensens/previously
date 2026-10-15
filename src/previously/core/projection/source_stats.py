@@ -28,6 +28,7 @@ from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
+    from previously.contract.store import LogReader
     from previously.contract.store import ProjectionStore
     from previously.core.projection.worker import Batch
 
@@ -72,7 +73,9 @@ class SourceStatsProjection:
     name: str = "source-stats"
     version: int = 1
 
-    def write[Conn](self, store: ProjectionStore[Conn], conn: Conn, batch: Batch) -> None:
+    def write[Conn](
+        self, store: ProjectionStore[Conn], log: LogReader[Conn], conn: Conn, batch: Batch
+    ) -> None:
         additions = derive(batch)
         if not additions:
             return

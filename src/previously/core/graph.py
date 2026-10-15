@@ -31,6 +31,7 @@ and a statement's text may come from a mail whose erasure the log has to
 survive.
 """
 
+from collections.abc import Collection
 from collections.abc import Iterable
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -46,10 +47,12 @@ from previously.core.assertion import parse_statement
 from previously.core.assertion import REJECTION
 from previously.core.assertion import Source
 from previously.core.canonical import MAX_SAFE_INT
+from previously.core.vocabulary import ANY_ENTITY
 from previously.core.vocabulary import CHOICE
 from previously.core.vocabulary import CLOSABLE
 from previously.core.vocabulary import DATE
 from previously.core.vocabulary import ENTITY_KIND
+from previously.core.vocabulary import EVENT_START
 from previously.core.vocabulary import GATE_TYPES
 from previously.core.vocabulary import is_identifier
 from previously.core.vocabulary import is_language_tag
@@ -96,6 +99,8 @@ MAX_CONFIDENCE: Final = 100
 MIN_CANDIDATES: Final = 2
 MAX_CANDIDATES: Final = 5
 
+START_NOT_A_SOURCE: Final = "the event a relation starts at must be among its sources"
+
 _DATE_FORM = re.compile(r"\d{4}-\d{2}-\d{2}", re.ASCII)
 
 _COMMON_KEYS: Final = frozenset(
@@ -136,8 +141,9 @@ class EntityBody:
 @dataclass(frozen=True)
 class RelationBody:
     """`start` is what `from` names: the id of an entity, or a `Source`, an
-    event with the units it cites, which the form admits for phase 2 and
-    `conformance_problem` refuses until then. `to` is the entity it points
+    event with the units it cites, for a relation kind that starts at an
+    event, such as the assignment `concerns`. Such an event is among the
+    sources of the claim (`START_NOT_A_SOURCE`). `to` is the entity it points
     at, or `None` for a question, which names `candidates` instead."""
 
     type: str
@@ -421,10 +427,10 @@ def _entity_problem(payload: Mapping[str, object]) -> str | None:
 
 def _end_problem(value: object) -> str | None:
     if isinstance(value, dict) and set(cast("dict[str, object]", value)) == {"event", "units"}:
-        # An event as the start, with the units it cites, is sound form: the
-        # payload keeps room for what phase 2 brings, and
-        # `conformance_problem` refuses it until then, so that `verify` will
-        # not call a phase 2 event malformed.
+        # An event as the start, with the units it cites: whether the
+        # relation kind starts at an event is the vocabulary's to say
+        # (`conformance_problem`), and that the event is among the sources
+        # is `_start_problem`'s.
         entry = cast("dict[str, object]", value)
         if not _is_id(entry["event"]):
             return "from names an event that is not a whole number of at least 1"
@@ -461,8 +467,66 @@ def _to_problem(value: object, responsibility: object) -> str | None:
     return None
 
 
+def covers(source: Source, start: Source) -> bool:
+    """Whether `source` cites everything the start `start` names: the same
+    event, and the whole of it, or at least the units the start names."""
+    if source.event != start.event:
+        return False
+    if source.units is None:
+        return True
+    return start.units is not None and set(start.units) <= set(source.units)
+
+
+def sources_with_start(start: int | Source, sources: tuple[Source, ...]) -> tuple[Source, ...]:
+    """The sources of a relation that starts at `start`, with an event start
+    added at the end where no source names its event; for the command line
+    and the MCP server, which let the caller leave it out.
+
+    A source that names the event without covering the start stays as given,
+    and the write path refuses the claim with `START_NOT_A_SOURCE`: adding
+    the start beside it would make the claim rest on more of the event than
+    the caller said it does."""
+    if not isinstance(start, Source) or any(source.event == start.event for source in sources):
+        return sources
+    return (*sources, start)
+
+
+def rests_on(claim: Claim) -> tuple[Source, ...]:
+    """What a claim is checked against the log for: its sources, and the
+    event a relation starts at, with exactly the units the start names.
+
+    A source that cites the whole event covers any start of it, so the
+    start's own units are checked as well: that they exist and are not
+    erased, as a cited unit is (ruling T2-f of the 2026-10-15 assignments
+    plan, phase 2). An assignment of a unit that is not there, or no longer
+    there, would otherwise stand and be found."""
+    body = claim.body
+    if isinstance(body, RelationBody) and isinstance(body.start, Source):
+        return (*claim.sources, body.start)
+    return claim.sources
+
+
+def _start_problem(payload: Mapping[str, object]) -> str | None:
+    """A relation that starts at an event rests on that event: one of its
+    sources covers the start. The erasure cascade and `verify` find an
+    assertion by its sources, and the policy decides a relation over them,
+    so a start outside the sources would outlive the erasure of its mail,
+    and nobody would ask the policy about the mail it is about. Run after
+    the form of `from` and of the sources is checked."""
+    origin = cast("dict[str, object]", payload["from"])
+    if "event" not in origin:
+        return None
+    start = _source_of(origin)
+    sources = [_source_of(item) for item in cast("list[object]", payload["sources"])]
+    return None if any(covers(source, start) for source in sources) else START_NOT_A_SOURCE
+
+
 def _relation_problem(payload: Mapping[str, object]) -> str | None:
-    problem = _end_problem(payload["from"]) or _to_problem(payload["to"], payload["responsibility"])
+    problem = (
+        _end_problem(payload["from"])
+        or _to_problem(payload["to"], payload["responsibility"])
+        or _start_problem(payload)
+    )
     if problem is not None:
         return problem
     period = payload["period"]
@@ -624,18 +688,24 @@ def _fields_conformance(
 
 
 def _ends_conformance(
-    spec: KindSpec, body: RelationBody, start: int, entity_types: Mapping[int, str]
+    spec: KindSpec, body: RelationBody, start: int | Source, entity_types: Mapping[int, str]
 ) -> str | None:
-    """`start` is `body.start`, which the caller has found to be an entity."""
+    """`start` is `body.start`. An event is no entity, so it has no kind to
+    look up: the caller has found that the relation kind starts at an event."""
     # One sentence for an entity that does not stand and one the caller may
     # not see: a caller passes only the entities it may show, and the
     # sentence must not tell the two apart.
-    ends = [start, *([body.to] if body.to is not None else body.candidates or ())]
+    targets = [body.to] if body.to is not None else body.candidates or ()
+    ends = targets if isinstance(start, Source) else [start, *targets]
     if any(end not in entity_types for end in ends):
         return "an end of the relation is not an entity that stands"
-    if entity_types[start] not in (spec.from_ or ()):
+    if not isinstance(start, Source) and entity_types[start] not in (spec.from_ or ()):
         return "the start of the relation is of a kind its relation kind does not start from"
-    if any(entity_types[end] not in (spec.to or ()) for end in ends[1:]):
+    # `*` takes every kind, but only of an entity that stands, which the
+    # lookup above has already checked.
+    if spec.to != (ANY_ENTITY,) and any(
+        entity_types[end] not in (spec.to or ()) for end in targets
+    ):
         return "the end of the relation is of a kind its relation kind does not point at"
     return None
 
@@ -653,13 +723,15 @@ def conformance_problem(
     nothing about what it names, so its ends and refs are not looked up.
     """
     body = claim.body
-    if isinstance(body, RelationBody) and isinstance(body.start, Source):
-        # The form admits it for phase 2; until assignments come, a relation
-        # starts at an entity.
-        return "an event as the start of a relation comes with assignments"
     spec = vocabulary.kind(claim.kind, body.type)
     if spec is None:
         return f"the type is not declared as a kind of {claim.kind} in the vocabulary"
+    if (
+        isinstance(body, RelationBody)
+        and isinstance(body.start, Source)
+        and EVENT_START not in (spec.from_ or ())
+    ):
+        return "an event as the start of a relation needs a relation kind that starts at an event"
     if spec.retired and new_thread:
         return f"the kind is retired and takes no new {claim.kind}"
     # The gate reads circles and memberships, and a class must never decide
@@ -679,7 +751,7 @@ def conformance_problem(
         return "a period needs a relation kind with the behavior period"
     if retracted:
         return None
-    return _ends_conformance(spec, body, cast("int", body.start), entity_types)
+    return _ends_conformance(spec, body, body.start, entity_types)
 
 
 # --- Folding versions -------------------------------------------------------------
@@ -817,14 +889,28 @@ class GraphThread:
 
 @dataclass(frozen=True)
 class Graph:
+    """The threads of the entities and relations, and the approval classes
+    they are read under.
+
+    The methods are the questions a reader asks of the whole graph. Here
+    each walks every thread. A graph read from its projection
+    (`core.graph_read`) answers them from the projection's tables, folds
+    only the threads they name, and runs the same method on those, so that
+    both give the same answer ({ref}`graph-projection`).
+    """
+
     threads: Mapping[int, GraphThread]
     classes: Mapping[int, ClassState]
 
-    def _winners(self, kind: str) -> dict[int, GraphVersion]:
+    def winners(
+        self, kind: str, *, types: Collection[str] | None = None
+    ) -> dict[int, GraphVersion]:
+        """The winner of each thread of `kind` that has one, by id; with
+        `types`, of the threads whose winner is of one of them."""
         winners: dict[int, GraphVersion] = {}
         for subject, thread in self.threads.items():
             winner = thread.winner(self.classes) if thread.kind == kind else None
-            if winner is not None:
+            if winner is not None and (types is None or winner.claim.body.type in types):
                 winners[subject] = winner
         return winners
 
@@ -832,11 +918,27 @@ class Graph:
         """The winner of each entity, by id, unless it is retracted."""
         return {
             subject: version
-            for subject, version in self._winners(ENTITY).items()
+            for subject, version in self.winners(ENTITY).items()
             if version.claim.body.state != RETRACTED
         }
 
-    def relations(self, *, at: date | None = None) -> Mapping[int, GraphVersion]:
+    def entity_kinds(self) -> dict[int, str]:
+        """The kind of every entity that has a winner, a retracted one
+        included, by id: what a version is held against when the vocabulary
+        is asked whether it still fits."""
+        return {
+            subject: version.claim.body.type for subject, version in self.winners(ENTITY).items()
+        }
+
+    def relations(
+        self,
+        *,
+        at: date | None = None,
+        types: Collection[str] | None = None,
+        start: int | None = None,
+        to: int | None = None,
+        touching: int | None = None,
+    ) -> Mapping[int, GraphVersion]:
         """The winner of each relation, by id, if it stands, points at an
         entity, and, with `at`, its period holds on that day. A question is
         no relation yet, and a relation without a period holds on every day.
@@ -844,16 +946,50 @@ class Graph:
         Winners of every level are here, open proposals included. The cycle
         check of a direct or transitive write does not see open edges (see
         `reaches`), so these relations may hold a cycle that runs through an
-        open one: a walk over them needs a visited set."""
+        open one: a walk over them needs a visited set.
+
+        The other arguments narrow the answer: `types` to relations of those
+        kinds, `start` and `to` to those that start at or point at that
+        entity, `touching` to those with that entity at either end. An
+        entity id matches no start at an event."""
         found: dict[int, GraphVersion] = {}
-        for subject, version in self._winners(RELATION).items():
+        for subject, version in self.winners(RELATION, types=types).items():
             body = cast("RelationBody", version.claim.body)
             if body.state != STANDING or body.to is None:
                 continue
             if at is not None and body.period is not None and not body.period.holds(at):
                 continue
+            if (start is not None and body.start != start) or (to is not None and body.to != to):
+                continue
+            if touching is not None and touching not in (body.start, body.to):
+                continue
             found[subject] = version
         return found
+
+    def waiting(self) -> Mapping[int, GraphThread]:
+        """The threads in which something waits for the operator: a pending
+        version, or a winner that stands as a proposal."""
+        found: dict[int, GraphThread] = {}
+        for subject, thread in self.threads.items():
+            winner = thread.winner(self.classes)
+            proposed = winner is not None and level_of(winner, self.classes) == OPEN
+            if proposed or thread.pending(self.classes):
+                found[subject] = thread
+        return found
+
+    def objected(self) -> Mapping[int, GraphThread]:
+        """The threads with an objection pending to what the operator
+        stands for."""
+        return {s: t for s, t in self.threads.items() if t.objections(self.classes)}
+
+    def under(self, class_ids: Collection[int]) -> Mapping[int, GraphThread]:
+        """The threads with a version that names one of `class_ids` as the
+        approval class it stands under."""
+        return {
+            subject: thread
+            for subject, thread in self.threads.items()
+            if any(version.claim.under in class_ids for version in thread.versions)
+        }
 
     def reaches(
         self,

@@ -18,7 +18,7 @@ The payload holds exactly these keys, no more and no fewer.
 | `labels` | An object from a language tag to a text of 1 to 80 characters without control characters. At least one language. |
 | `fields` | A list of fields, each an object with exactly the keys below. |
 | `behaviors` | A list. An entity kind has `closable` and `period`, a relation kind has `transitive`, `acyclic` and `period`. |
-| `from`, `to` | For a relation, lists of identifiers of entity kinds. For an entity, `null`. |
+| `from`, `to` | For a relation, lists of identifiers of entity kinds. `from` may also hold `event`, and `to` may be the single entry `*`. For an entity, `null`. |
 | `retired` | `true` when the kind takes nothing new. |
 | `statement` | The sentence it was written with. It isn't blank. |
 
@@ -40,6 +40,11 @@ A language tag is two or three lower-case letters, then any number of groups of 
 - A field named `period` has the type `period`, and an entity kind with the behavior `period` has one.
 - A relation kind has no field `period`, because the relation has a period of its own.
 - A relation kind that isn't built in names at least one kind in `from` and in `to`.
+- `event` stands only in `from`.
+  It says that the relation starts at an event or at units of one, and it may stand beside entity kinds.
+- `*` stands only in `to`, and only alone.
+  It says that the relation points at an entity of any kind that stands.
+- `event` and `*` aren't entity kinds, so a check of the kinds a relation names skips them, and no entity kind may be named `event`.
 
 ## What a write checks
 
@@ -72,7 +77,7 @@ Their connections and behaviors stand in the code, and an event for one of them 
 `show` marks each of the three with the comment line `# built in: the gate reads it; only its labels can change` directly above its table.
 `apply` reads it as the comment it is.
 
-`in_circle` starts at an event, which isn't an entity kind, so its `from` is empty until a later phase gives a relation that start.
+`in_circle` starts at an event, but its `from` stays empty until a later phase gives a built-in relation that start.
 
 ## The file
 
@@ -88,7 +93,7 @@ The package ships `vocabulary.toml`, and `previously vocabulary apply --base` ad
 It never retires a kind or changes one the log holds.
 Nothing applies it on its own.
 The built-in kinds always exist, so `apply --base` never writes them.
-It writes the nine kinds in the table below, while `show` lists those nine and the three built-in kinds, twelve in all.
+It writes the ten kinds in the table below, while `show` lists those ten and the three built-in kinds, thirteen in all.
 
 | Kind | Declares | Behaviors | Connects |
 |---|---|---|---|
@@ -100,7 +105,9 @@ It writes the nine kinds in the table below, while `show` lists those nine and t
 | `part_of` | relation | `transitive`, `acyclic`. | `matter` and `project` to `project` and `organization`. |
 | `holds` | relation | `period`. | `person` to `post`. |
 | `post_in` | relation | None. | `post` to `organization`. |
+| `concerns` | relation | None. | `event` to every kind of entity. |
 | `involved_in` | relation | `period`. | `circle`, `organization` and `person` to `matter` and `project`; the text field `role`. |
 
 Every label comes in German and English.
-The relation `concerns` isn't in it, because it starts at an event.
+`concerns` is a declared kind and not a built-in one, because the gate doesn't read it.
+An operator whose log holds the previous base gets it with `apply --base`, which writes nothing else.

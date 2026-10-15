@@ -23,7 +23,10 @@ keep the two apart.
 
 from contextlib import contextmanager
 from previously.contract.rows import ChronicleRow
+from previously.contract.rows import ChronicleSelection
 from previously.contract.rows import EventRow
+from previously.contract.rows import GraphThreadRow
+from previously.contract.rows import GraphVersionRow
 from previously.contract.rows import ProjectionState
 from previously.contract.rows import SourceStatsRow
 from previously.contract.rows import Tip
@@ -34,29 +37,39 @@ from previously.storage.errors import ChainPositionTaken
 from previously.storage.errors import InvalidDsn
 from previously.storage.errors import MigrationPending
 from previously.storage.errors import OperationFailed
+from previously.storage.errors import PrivilegeMissing
 from previously.storage.errors import ServerUnreachable
 from previously.storage.errors import SourceKeyTaken
 from previously.storage.errors import TransactionAborted
 from previously.storage.schema import event
 from previously.storage.schema import event_blob
 from previously.storage.schema import p_chronicle
+from previously.storage.schema import p_graph_thread
+from previously.storage.schema import p_graph_version
 from previously.storage.schema import p_source_stats
 from previously.storage.schema import projection_state
 from previously.storage.schema import source_key
 from previously.storage.schema import unit
 from previously.storage.schema import watermark
+from sqlalchemy import any_
+from sqlalchemy import BigInteger
 from sqlalchemy import Connection
 from sqlalchemy import create_engine
 from sqlalchemy import delete
 from sqlalchemy import Engine
 from sqlalchemy import func
 from sqlalchemy import insert
+from sqlalchemy import Integer
+from sqlalchemy import literal
 from sqlalchemy import null
+from sqlalchemy import or_
 from sqlalchemy import Row
+from sqlalchemy import Select
 from sqlalchemy import select
 from sqlalchemy import tuple_
 from sqlalchemy import update
 from sqlalchemy import URL
+from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.exc import IntegrityError
@@ -76,6 +89,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
     from collections.abc import Sequence
     from contextlib import AbstractContextManager
+    from datetime import date
     from datetime import datetime
     from sqlalchemy import Table
 
@@ -296,6 +310,17 @@ class PostgresStorage:
                 raise ServerUnreachable(
                     f"connecting to {where} failed: "
                     "the client library refused a query parameter of PREVIOUSLY_DSN"
+                ) from error
+            if getattr(error.orig, "sqlstate", None) == "42501":
+                # A missing privilege, which psycopg files under the same
+                # class as a missing table: measured on 2026-10-15 with a role
+                # that may only read the projection tables, whose catch-up was
+                # told the schema is incomplete and to run `previously
+                # migrate`, which would have changed nothing.
+                where = _where(engine.url)
+                reason = diagnosis(error, "message_primary") or "permission denied"
+                raise PrivilegeMissing(
+                    f"the role of PREVIOUSLY_DSN lacks a privilege on {where}: {reason}"
                 ) from error
             # `previously migrate` and not `alembic upgrade head`: an installed
             # previously has no `alembic.ini` and no checkout to run Alembic
@@ -719,17 +744,19 @@ class PostgresStorage:
 
     # --- ProjectionStore ({ref}`projections`) --------------------------------
 
-    # Name as the caller knows it -> table. `truncate_projection` takes the
-    # name and not the table, because `core` must not know a `Table`.
-    _PROJECTION_TABLES: ClassVar[dict[str, Table]] = {
-        "chronicle": p_chronicle,
-        "source-stats": p_source_stats,
+    # Name as the caller knows it -> its tables. `truncate_projection` takes
+    # the name and not a table, because `core` must not know a `Table`; a
+    # projection may keep more than one, and a rebuild empties them all.
+    _PROJECTION_TABLES: ClassVar[dict[str, tuple[Table, ...]]] = {
+        "chronicle": (p_chronicle,),
+        "source-stats": (p_source_stats,),
+        "graph": (p_graph_thread, p_graph_version),
     }
 
     def projection_state(self, conn: Connection, name: str) -> ProjectionState | None:
-        """The state row of one projection, unlocked, or `None`. Outside the
-        protocol: the worker locks the row instead, and only tests read it
-        this way."""
+        """The state row of one projection, unlocked, or `None`. The worker
+        locks the row instead; a reader of the graph reads it this way, in
+        its snapshot, through `GraphStore`."""
         row = conn.execute(
             select(projection_state).where(projection_state.c.name == name)
         ).one_or_none()
@@ -786,15 +813,16 @@ class PostgresStorage:
         )
 
     def truncate_projection(self, conn: Connection, name: str) -> None:
-        """Empties one projection table. A plain DELETE, not TRUNCATE: TRUNCATE
-        takes an ACCESS EXCLUSIVE lock and is not transactional in the sense
-        that matters here — the caller's transaction has to be able to roll
-        it back together with the state row."""
+        """Empties the tables of one projection. A plain DELETE, not TRUNCATE:
+        TRUNCATE takes an ACCESS EXCLUSIVE lock and is not transactional in the
+        sense that matters here — the caller's transaction has to be able to
+        roll it back together with the state row."""
         try:
-            table = self._PROJECTION_TABLES[name]
+            tables = self._PROJECTION_TABLES[name]
         except KeyError:
             raise ValueError(f"unknown projection {name!r}") from None
-        conn.execute(delete(table))
+        for table in tables:
+            conn.execute(delete(table))
 
     def insert_chronicle(self, conn: Connection, rows: Sequence[ChronicleRow]) -> None:
         if not rows:
@@ -878,6 +906,97 @@ class PostgresStorage:
             ],
         )
 
+    def insert_graph_versions(self, conn: Connection, rows: Sequence[GraphVersionRow]) -> None:
+        """A plain insert: every id is read once, in the batch that holds it,
+        so a second row for one id is a catch-up that went wrong, and the
+        primary key says so."""
+        if not rows:
+            return
+        conn.execute(
+            insert(p_graph_version),
+            [{"id": r.id, "subject": r.subject, "kind": r.kind, "under": r.under} for r in rows],
+        )
+
+    def graph_versions(self, conn: Connection, ids: Sequence[int]) -> dict[int, GraphVersionRow]:
+        if not ids:
+            return {}
+        return {
+            row.id: GraphVersionRow(row.id, row.subject, row.kind, row.under)
+            for row in conn.execute(select(p_graph_version).where(p_graph_version.c.id.in_(ids)))
+        }
+
+    def graph_version_ids(self, conn: Connection, subjects: Sequence[int]) -> dict[int, list[int]]:
+        """The ids of every row under each of `subjects`, ascending; a subject
+        without a row is not in the result."""
+        if not subjects:
+            return {}
+        found: dict[int, list[int]] = {}
+        for row in conn.execute(
+            select(p_graph_version.c.subject, p_graph_version.c.id)
+            .where(p_graph_version.c.subject.in_(subjects))
+            .order_by(p_graph_version.c.id)
+        ):
+            found.setdefault(row.subject, []).append(row.id)
+        return found
+
+    def class_subjects(self, conn: Connection, under_ids: Sequence[int]) -> set[int]:
+        """The subjects of the versions under any of `under_ids`, through the
+        partial index on `under`."""
+        if not under_ids:
+            return set()
+        return set(
+            conn.execute(
+                select(p_graph_version.c.subject)
+                .distinct()
+                .where(p_graph_version.c.under.in_(under_ids))
+            ).scalars()
+        )
+
+    def delete_graph_versions(self, conn: Connection, ids: Sequence[int]) -> None:
+        if not ids:
+            return
+        conn.execute(delete(p_graph_version).where(p_graph_version.c.id.in_(ids)))
+
+    def upsert_graph_threads(self, conn: Connection, rows: Sequence[GraphThreadRow]) -> None:
+        """Writes the rows as given, each replacing the row of its subject —
+        what a thread stands at is folded in `core` ({ref}`projections`)."""
+        if not rows:
+            return
+        statement = pg_insert(p_graph_thread)
+        columns = [column.name for column in p_graph_thread.columns if column.name != "subject"]
+        conn.execute(
+            statement.on_conflict_do_update(
+                index_elements=[p_graph_thread.c.subject],
+                set_={name: statement.excluded[name] for name in columns},
+            ),
+            [
+                {
+                    "subject": r.subject,
+                    "kind": r.kind,
+                    "type": r.type,
+                    "winner_id": r.winner_id,
+                    "level": r.level,
+                    "state": r.state,
+                    "start_entity": r.start_entity,
+                    "start_event": r.start_event,
+                    "start_units": None if r.start_units is None else list(r.start_units),
+                    "to_entity": r.to_entity,
+                    "candidates": None if r.candidates is None else list(r.candidates),
+                    "period_start": r.period_start,
+                    "period_end": r.period_end,
+                    "pending": r.pending,
+                    "objections": r.objections,
+                    "question": r.question,
+                }
+                for r in rows
+            ],
+        )
+
+    def delete_graph_threads(self, conn: Connection, subjects: Sequence[int]) -> None:
+        if not subjects:
+            return
+        conn.execute(delete(p_graph_thread).where(p_graph_thread.c.subject.in_(subjects)))
+
     # --- WatermarkStore -------------------------------------------------------
 
     def watermark(self, conn: Connection, connector: str) -> Watermark | None:
@@ -919,9 +1038,104 @@ class PostgresStorage:
             )
         )
 
+    # --- GraphStore -----------------------------------------------------------
+
+    @staticmethod
+    def _graph_thread_rows(conn: Connection, query: Select[Any]) -> list[GraphThreadRow]:
+        return [
+            GraphThreadRow(
+                subject=row.subject,
+                kind=row.kind,
+                type=row.type,
+                winner_id=row.winner_id,
+                level=row.level,
+                state=row.state,
+                start_entity=row.start_entity,
+                start_event=row.start_event,
+                start_units=None if row.start_units is None else tuple(row.start_units),
+                to_entity=row.to_entity,
+                candidates=None if row.candidates is None else tuple(row.candidates),
+                period_start=row.period_start,
+                period_end=row.period_end,
+                pending=row.pending,
+                objections=row.objections,
+                question=row.question,
+            )
+            for row in conn.execute(query.order_by(p_graph_thread.c.subject))
+        ]
+
+    def read_graph_threads(
+        self, conn: Connection, *, kind: str | None = None, types: Sequence[str] | None = None
+    ) -> list[GraphThreadRow]:
+        """The rows of `p_graph_thread`, by subject: every one, or of `kind`,
+        and of `types` where given, through the index on kind and type."""
+        query = select(p_graph_thread)
+        if kind is not None:
+            query = query.where(p_graph_thread.c.kind == kind)
+        if types is not None:
+            query = query.where(p_graph_thread.c.type.in_(types))
+        return self._graph_thread_rows(conn, query)
+
+    def graph_relations(
+        self,
+        conn: Connection,
+        *,
+        at: date | None = None,
+        types: Sequence[str] | None = None,
+        start: int | None = None,
+        to: int | None = None,
+        touching: int | None = None,
+    ) -> list[GraphThreadRow]:
+        """The rows of the relations that stand and point at an entity, as
+        `Graph.relations` takes them, narrowed by its arguments. A period
+        holds on a day between its ends, both included, and an open end
+        holds on every day on its side."""
+        thread = p_graph_thread.c
+        query = select(p_graph_thread).where(
+            thread.kind == "relation", thread.state == "standing", thread.to_entity.isnot(None)
+        )
+        if types is not None:
+            query = query.where(thread.type.in_(types))
+        if start is not None:
+            query = query.where(thread.start_entity == start)
+        if to is not None:
+            query = query.where(thread.to_entity == to)
+        if touching is not None:
+            query = query.where(or_(thread.start_entity == touching, thread.to_entity == touching))
+        if at is not None:
+            query = query.where(
+                or_(thread.period_start.is_(None), thread.period_start <= at),
+                or_(thread.period_end.is_(None), thread.period_end >= at),
+            )
+        return self._graph_thread_rows(conn, query)
+
+    def graph_waiting(self, conn: Connection) -> list[GraphThreadRow]:
+        """The rows with a pending version or a winner at level `open`."""
+        thread = p_graph_thread.c
+        query = select(p_graph_thread).where(or_(thread.pending > 0, thread.level == "open"))
+        return self._graph_thread_rows(conn, query)
+
+    def graph_objected(self, conn: Connection) -> list[GraphThreadRow]:
+        """The rows with an objection pending: the header of every MCP
+        result counts them."""
+        query = select(p_graph_thread).where(p_graph_thread.c.objections > 0)
+        return self._graph_thread_rows(conn, query)
+
+    def read_graph_versions(self, conn: Connection) -> list[GraphVersionRow]:
+        return [
+            GraphVersionRow(row.id, row.subject, row.kind, row.under)
+            for row in conn.execute(select(p_graph_version).order_by(p_graph_version.c.id))
+        ]
+
+    def graph_subjects(self, conn: Connection) -> list[int]:
+        return list(
+            conn.execute(
+                select(p_graph_version.c.subject).distinct().order_by(p_graph_version.c.subject)
+            ).scalars()
+        )
+
     # --- Reads for the command line, outside the protocols -------------------
-    # Like `units`: only `cli` calls these. The protocols hold what `core`
-    # needs, and `core` never reads a projection back.
+    # Like `units`: only `cli` and the tests call these.
 
     def tip_and_bookmark(self, conn: Connection, name: str) -> TipAndBookmark:
         """Both numbers out of **one** statement, for the lag of one projection.
@@ -968,13 +1182,29 @@ class PostgresStorage:
         since: datetime | None,
         until: datetime | None,
         limit: int,
+        within: ChronicleSelection | None = None,
     ) -> list[ChronicleRow]:
-        """Time order, half-open window: `since` inclusive, `until` exclusive."""
+        """Time order, half-open window: `since` inclusive, `until` exclusive.
+
+        With `within`, only the units it selects, chosen in the query and so
+        before the limit: a unit outside takes no place under it. The ids go
+        in as arrays, two bind parameters each, so that a bracket with many
+        events doesn't run into the limit on bind parameters that a list of
+        `IN` would.
+        """
         query = select(p_chronicle)
         if since is not None:
             query = query.where(p_chronicle.c.occurred_at >= since)
         if until is not None:
             query = query.where(p_chronicle.c.occurred_at < until)
+        if within is not None:
+            key = tuple_(p_chronicle.c.event_id, p_chronicle.c.seq)
+            whole = p_chronicle.c.event_id == any_(
+                literal(sorted(within.events), ARRAY(BigInteger))
+            )
+            query = query.where(
+                or_(whole & key.not_in(_pairs(within.excluded)), key.in_(_pairs(within.units)))
+            )
         query = query.order_by(
             p_chronicle.c.occurred_at, p_chronicle.c.event_id, p_chronicle.c.seq
         ).limit(limit)
@@ -1024,6 +1254,20 @@ def _event_row(row: Row[Any]) -> EventRow:
         hash_version=row.hash_version,
         payload_salt=row.payload_salt,
     )
+
+
+def _pairs(pairs: frozenset[tuple[int, int]]) -> Select[int, int]:
+    """`(event_id, seq)` pairs as rows of a query, out of two arrays."""
+    ordered = sorted(pairs)
+    table = (
+        func.unnest(
+            literal([event_id for event_id, _seq in ordered], ARRAY(BigInteger)),
+            literal([seq for _event_id, seq in ordered], ARRAY(Integer)),
+        )
+        .table_valued("event_id", "seq")
+        .render_derived()
+    )
+    return select(table.c.event_id, table.c.seq)
 
 
 def _unreadable() -> InvalidDsn:

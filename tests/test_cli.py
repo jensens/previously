@@ -40,20 +40,28 @@ from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
 from previously.core.graph import ENTITY
 from previously.core.graph import EntityBody
+from previously.core.graph import Graph
 from previously.core.graph import RELATION
 from previously.core.graph import RelationBody
 from previously.core.graph import SOURCES
 from previously.core.graph_write import check_claims
 from previously.core.graph_write import GraphRefused
+from previously.core.graph_write import read_graph
 from previously.core.graph_write import write_claims
 from previously.core.identity import artifact_hash_of
+from previously.core.members import bracket_edges
+from previously.core.members import bracket_kinds
+from previously.core.members import members
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
+from previously.core.projection import PROJECTIONS
 from previously.core.redact import redact_blob
 from previously.core.redact import redact_event
 from previously.core.sealing import recipient_of
 from previously.core.sealing import seal
 from previously.core.units import split_plaintext
+from previously.core.verify import verify
+from previously.core.vocabulary import read_vocabulary
 from previously.storage.postgres import PostgresStorage
 from typing import cast
 from typing import TYPE_CHECKING
@@ -78,10 +86,13 @@ import time
 if TYPE_CHECKING:
     from collections.abc import Callable
     from collections.abc import Generator
+    from collections.abc import Iterator
     from collections.abc import Sequence
     from mailserver import MailServer
     from previously.contract.blobs import ClosableSource
     from previously.contract.blobs import StoredBlob
+    from previously.core.members import BracketEdge
+    from previously.core.members import BracketKinds
     from previously.storage.s3 import S3BlobStore
     from sqlalchemy import Connection
     from sqlalchemy import Engine
@@ -1315,6 +1326,7 @@ def test_project_on_an_empty_log_is_up_to_date_at_zero_but_still_names_a_rebuild
     assert capsys.readouterr().out.splitlines() == [
         "chronicle       up to date, up_to_id 0",
         "source-stats    up to date, up_to_id 0",
+        "graph           up to date, up_to_id 0",
     ]
 
     with db.begin() as c:
@@ -1323,6 +1335,7 @@ def test_project_on_an_empty_log_is_up_to_date_at_zero_but_still_names_a_rebuild
     assert capsys.readouterr().out.splitlines() == [
         "chronicle       rebuilt: version 4 -> 3, 0 events, up_to_id 0",
         "source-stats    up to date, up_to_id 0",
+        "graph           up to date, up_to_id 0",
     ]
 
 
@@ -1348,6 +1361,7 @@ def test_project_says_which_path_it_took(
     assert first == [
         "chronicle       built: 1 event, up_to_id 1",
         "source-stats    built: 1 event, up_to_id 1",
+        "graph           built: 1 event, up_to_id 1",
     ]
 
     _append("email", "m2", "Again", "2026-10-02T09:00:00Z")
@@ -1357,6 +1371,7 @@ def test_project_says_which_path_it_took(
     assert second == [
         "chronicle       caught up: 1 event, up_to_id 2",
         "source-stats    caught up: 1 event, up_to_id 2",
+        "graph           caught up: 1 event, up_to_id 2",
     ]
 
     assert main(["project"]) == 0
@@ -1364,14 +1379,16 @@ def test_project_says_which_path_it_took(
     assert third == [
         "chronicle       up to date, up_to_id 2",
         "source-stats    up to date, up_to_id 2",
+        "graph           up to date, up_to_id 2",
     ]
 
     # The fourth path, and the only one invisible in the table itself: the
     # stored version is raised past the one the code declares, the way a
     # rolled-back release leaves it, and the next run empties `p_chronicle` and
     # builds it again. Without this line `rebuilt:` would be a format the
-    # reference page promises and nothing produces. `source-stats` is left
-    # alone, so the two projections report different paths in the same run.
+    # reference page promises and nothing produces. `source-stats` and
+    # `graph` are left alone, so the projections report different paths in
+    # the same run.
     with db.begin() as c:
         c.execute(text("UPDATE projection_state SET version = 4 WHERE name = 'chronicle'"))
     capsys.readouterr()
@@ -1380,6 +1397,7 @@ def test_project_says_which_path_it_took(
     assert fourth == [
         "chronicle       rebuilt: version 4 -> 3, 2 events, up_to_id 2",
         "source-stats    up to date, up_to_id 2",
+        "graph           up to date, up_to_id 2",
     ]
 
 
@@ -1922,10 +1940,16 @@ type WriteVersion1 = Callable[[PostgresStorage, Sequence[RawEvent], datetime], l
 
 
 def _connect(db: object, monkeypatch: pytest.MonkeyPatch) -> Engine:
+    """The test database as `PREVIOUSLY_DSN`, with the projections built on
+    the empty log, as `previously project` builds them after the first
+    `migrate`: `redact` catches them up and never builds one."""
     from sqlalchemy import Engine
 
     assert isinstance(db, Engine)
     monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
+    storage = PostgresStorage(db)
+    for projection in PROJECTIONS:
+        catch_up(storage, storage, projection, rebuild=True)
     return db
 
 
@@ -1937,15 +1961,10 @@ def test_redact_event_prints_the_redaction_and_show_names_it(
     assert main(["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"]) == 0
     capsys.readouterr()
 
-    # Nothing was projected before, so the catch-up after the redaction
-    # builds both projections and says so on standard error.
+    # The catch-up after the redaction says nothing: it builds nothing.
     assert main(["redact", "event", "1", "--reason", "wrong recipient"]) == 0
     out, err = capsys.readouterr()
-    assert (out, err) == (
-        "redacted by event 2\n",
-        "chronicle       built: 2 events, up_to_id 2\n"
-        "source-stats    built: 2 events, up_to_id 2\n",
-    )
+    assert (out, err) == ("redacted by event 2\n", "")
 
     assert main(["show", "1"]) == 0
     output = capsys.readouterr().out
@@ -2087,18 +2106,11 @@ def test_redact_units_names_each_tombstone(
     assert main(["redact", "units", "1", "1", "3", "--reason", "r"]) == 0
     out, err = capsys.readouterr()
     assert out == "redacted by event 2\nredacted by event 3\n"
-    # The first `redact` builds the projections, which nobody had built; the
-    # second only catches up and says nothing about it. Both say that the
-    # payload, which holds the whole text under `text`, holds the wording of
-    # a unit they erased: unit 3 in the first, unit 1 in the second.
+    # Both say that the payload, which holds the whole text under `text`,
+    # holds the wording of a unit they erased: unit 3 in the first, unit 1
+    # in the second.
     standing = _payload_standing(1)
-    assert err == (
-        "chronicle       built: 2 events, up_to_id 2\n"
-        "source-stats    built: 2 events, up_to_id 2\n"
-        f"{standing}"
-        "unit 3 was already erased\n"
-        f"{standing}"
-    )
+    assert err == f"{standing}unit 3 was already erased\n{standing}"
 
     assert main(["show", "1"]) == 0
     output = capsys.readouterr().out
@@ -2381,7 +2393,7 @@ def test_redact_beside_a_project_holding_rows_ends_without_a_traceback(
 
     def run_project() -> None:
         try:
-            catch_up(project, project, CHRONICLE)
+            catch_up(project, project, CHRONICLE, rebuild=True)
         except BaseException as e:
             errors.append(e)
 
@@ -2398,44 +2410,91 @@ def test_redact_beside_a_project_holding_rows_ends_without_a_traceback(
     assert not thread.is_alive(), "thread is hanging"
 
     assert errors == []
-    assert capsys.readouterr() == (
-        "redacted by event 3\n",
-        "source-stats    built: 3 events, up_to_id 3\n",
-    )
+    assert capsys.readouterr() == ("redacted by event 3\n", "")
     with storage.begin() as conn:
         rows = storage.read_chronicle(conn, since=None, until=None, limit=10)
     assert [(row.event_id, row.seq) for row in rows] == [(1, 1), (1, 2)]
 
 
+def _chronicle_rows(engine: Engine) -> tuple[object, ...]:
+    """The chronicle's state row and its rows."""
+    from sqlalchemy import text
+
+    with engine.begin() as c:
+        return (
+            c.execute(text("SELECT * FROM projection_state WHERE name = 'chronicle'")).all(),
+            c.execute(text("SELECT * FROM p_chronicle ORDER BY event_id, seq")).all(),
+        )
+
+
 @pytest.mark.db
-def test_redact_reports_a_rebuild_it_runs_on_standard_error(
-    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("change", "found", "then"),
+    [
+        (
+            "UPDATE projection_state SET version = 1 WHERE name = 'chronicle'",
+            "stands at version 1",
+            "the release that is to serve builds it with `previously project`, "
+            "then run the same command again",
+        ),
+        (
+            "UPDATE projection_state SET version = 4 WHERE name = 'chronicle'",
+            "stands at version 4",
+            "the release that is to serve builds it with `previously project`, "
+            "then run the same command again",
+        ),
+        (
+            "DELETE FROM projection_state WHERE name = 'chronicle'",
+            "is not built",
+            "run `previously project`, then the same command again",
+        ),
+    ],
+    ids=["older-version", "newer-version", "no-state-row"],
+)
+def test_redact_does_not_rebuild_and_names_project_as_what_finishes_it(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+    found: str,
+    then: str,
 ) -> None:
-    """A `redact` that is the first catch-up after an upgrade rebuilds the
-    chronicle, and says so in the words of `project`, on standard error:
-    standard output stays the one line ({ref}`projections`). The `project`
-    after it has nothing left to rebuild. The control is
-    `test_after_redact_the_chronicle_no_longer_shows_it`, where the
-    projections are current and `redact` says nothing on standard error."""
+    """Ruling F-c of the 2026-10-15 assignments plan: a `redact` that is the
+    first catch-up after an upgrade does not rebuild the chronicle, which
+    would take as long as the log inside a command that erases one thing.
+    The redaction stands, the chronicle is left as it was, and the sentence
+    says to build it and then run the same command, because the same command
+    alone would stop at the chronicle again. Where the chronicle stands at
+    another version, this code can't tell which release is the older, so
+    the advice names the release that is to serve (review finding I-1 of
+    fix round F2): run by an old release at a newer table, a plain "run
+    `previously project`" would build it back. Measured red by letting
+    `_catch_up_after` catch up with `rebuild=True` (exit 0, the chronicle
+    rebuilt), and by giving the plain advice to every `ProjectionNotBuilt`
+    (the two version cases)."""
     from sqlalchemy import text
 
     engine = _connect(db, monkeypatch)
     _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
     assert main(["project"]) == 0
     with engine.begin() as c:
-        c.execute(text("UPDATE projection_state SET version = 1 WHERE name = 'chronicle'"))
+        c.execute(text(change))
+    before = _chronicle_rows(engine)
     capsys.readouterr()
 
-    assert main(["redact", "event", "1", "--reason", "r"]) == 0
-    assert capsys.readouterr() == (
-        "redacted by event 2\n",
-        "chronicle       rebuilt: version 1 -> 3, 2 events, up_to_id 2\n",
+    assert _refused(capsys, "redact", "event", "1", "--reason", "r") == (
+        "the redaction is recorded as event 2, but it is not finished: "
+        f"projection chronicle {found}, and this code declares version 3; {then}"
     )
+    assert _chronicle_rows(engine) == before
+    # The control: `project` builds it and takes the redaction in, and the
+    # same command finds the target covered and finishes.
     assert main(["project"]) == 0
-    assert capsys.readouterr().out.splitlines() == [
-        "chronicle       up to date, up_to_id 2",
-        "source-stats    up to date, up_to_id 2",
-    ]
+    assert capsys.readouterr().out.splitlines()[0].startswith("chronicle       ")
+    assert main(["chronicle"]) == 0
+    assert capsys.readouterr().out == ""
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+    assert capsys.readouterr().err == ""
 
 
 @pytest.mark.db
@@ -3308,8 +3367,8 @@ def test_redact_event_deletes_its_blob_and_says_which_one_stays(
 ) -> None:
     """Event 1 has a blob of its own and one it shares with events 2 and 3.
     Erasing event 1 deletes its own blob and leaves the shared one, named
-    with the events that still use it, on standard error after the lines of
-    the catch-up; erasing event 2 names the one event left."""
+    with the events that still use it, on standard error; erasing event 2
+    names the one event left."""
     own, shared = b"only in the first mail", b"in three mails"
     own_address = hashlib.sha256(own).hexdigest()
     shared_address = hashlib.sha256(shared).hexdigest()
@@ -3322,11 +3381,7 @@ def test_redact_event_deletes_its_blob_and_says_which_one_stays(
     capsys.readouterr()
 
     assert main(["redact", "event", "1", "--reason", "r"]) == 0
-    assert capsys.readouterr() == (
-        "redacted by event 4\n",
-        "chronicle       built: 4 events, up_to_id 4\n"
-        "source-stats    built: 4 events, up_to_id 4\n" + _stays(shared_address, 2, 3),
-    )
+    assert capsys.readouterr() == ("redacted by event 4\n", _stays(shared_address, 2, 3))
     assert _bucket(blobs.store) == [shared_address]
 
     assert main(["redact", "event", "2", "--reason", "r"]) == 0
@@ -4942,6 +4997,31 @@ def test_mcp_for_a_client_not_in_force_ends_with_2(
         )
 
 
+@pytest.mark.db
+def test_mcp_and_serve_refuse_to_start_before_project_built_the_graph(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Ruling F-c of the 2026-10-15 assignments plan: the server catches the
+    graph projection up before it serves, and never builds it. Before
+    `previously project`, both commands exit 2 with the sentence that names
+    it, and `serve` hasn't said that it serves. Measured red by removing the
+    catch-up from `build_server`: `mcp` starts and doesn't exit 2."""
+    _setup(db, monkeypatch)
+    _declare_local(db, capsys)
+    argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s", "--yes"]
+    assert main(argv) == 0
+    capsys.readouterr()
+    monkeypatch.setenv("PREVIOUSLY_MCP_CLIENT", "claude-code")
+    monkeypatch.setenv("PREVIOUSLY_MCP_ADDRESS", f"127.0.0.1:{_free_port('127.0.0.1')}")
+    sentence = (
+        "Error: projection graph is not built, and this code declares version 1; "
+        "`previously project` builds it\n"
+    )
+    for command in ("mcp", "serve"):
+        assert main([command]) == 2
+        assert capsys.readouterr() == ("", sentence)
+
+
 @pytest.mark.parametrize(
     "address",
     [
@@ -5036,6 +5116,9 @@ def test_serve_listens_where_the_address_says_beside_the_variables_of_a_service(
         pytest.skip(f"{host} is not an address of this machine")
     where = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
     _setup(db, monkeypatch)
+    # The upgrade step: the server refuses to start before `project` built
+    # the graph projection.
+    assert main(["project"]) == 0
     environment = {
         **os.environ,
         "PREVIOUSLY_MCP_ADDRESS": where,
@@ -5112,6 +5195,7 @@ def test_serve_passes_the_confirm_key_on_to_the_writing_tools(
     the control that the answer depends on the key."""
     port = _free_port("127.0.0.1")
     _setup(db, monkeypatch)
+    assert main(["project"]) == 0
     _declare_local(db, capsys)
     argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s", "--yes"]
     assert main(argv) == 0
@@ -5182,8 +5266,10 @@ def _assertion_mail(external_id: str, *identities: tuple[str, str | None]) -> Ra
 
 def _assertion_log(db: object, monkeypatch: pytest.MonkeyPatch, mails: int = 2) -> PostgresStorage:
     """A log with `mails` observations, ids 1 to `mails`; the first one is
-    from Anna Huber."""
-    _setup(db, monkeypatch)
+    from Anna Huber. The projections are built, as `previously project`
+    builds them before anything reads the graph: a reader and `redact`
+    catch up and never build."""
+    _connect(db, monkeypatch)
     from sqlalchemy import Engine
 
     assert isinstance(db, Engine)
@@ -6243,13 +6329,13 @@ def test_vocabulary_apply_base_writes_one_event_per_kind_and_show_prints_the_fil
     assert main(["vocabulary", "apply", "--base", "--yes"]) == 0
     lines = capsys.readouterr().out.splitlines()
     assert "add\tentity\tproject" in lines
-    assert lines[-9:] == [f"vocabulary event {n}" for n in range(1, 10)]
-    assert _action_count(db) == 9
+    assert lines[-10:] == [f"vocabulary event {n}" for n in range(1, 11)]
+    assert _action_count(db) == 10
     assert main(["vocabulary", "show"]) == 0
     assert capsys.readouterr().out == base_vocabulary()
     assert main(["vocabulary", "apply", "--base", "--yes"]) == 0
     assert capsys.readouterr().out == "nothing to change\n"
-    assert _action_count(db) == 9
+    assert _action_count(db) == 10
 
 
 @pytest.mark.db
@@ -6275,11 +6361,11 @@ def test_vocabulary_apply_shows_each_difference_before_it_asks(
     assert "change\tentity\tproject" in captured.out
     assert "  labels\t" in captured.out
     assert "nothing written" in captured.err
-    assert _action_count(db) == 9
+    assert _action_count(db) == 10
     _answer(monkeypatch, "y\n")
     assert main(["vocabulary", "apply", str(path)]) == 0
-    assert _action_count(db) == 11
-    assert "vocabulary event 10" in capsys.readouterr().out
+    assert _action_count(db) == 12
+    assert "vocabulary event 11" in capsys.readouterr().out
 
 
 @pytest.mark.db
@@ -6394,7 +6480,7 @@ def _graph_log(
     db: object, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> PostgresStorage:
     """A log with two mails (events 1 and 2) and the base vocabulary, so the
-    first entity gets event id 12 (the vocabulary writes nine events)."""
+    first entity gets event id 13 (the vocabulary writes ten events)."""
     storage = _assertion_log(db, monkeypatch)
     assert main(["vocabulary", "apply", "--base", "--yes"]) == 0
     capsys.readouterr()
@@ -6437,9 +6523,9 @@ def test_entity_shows_the_claim_asks_and_writes_a_direct_version(
     _answer(monkeypatch, "y\n")
     assert main(["entity", "organization", "--name", _VELLENFELD, "--source", "1:1,2"]) == 0
     captured = capsys.readouterr()
-    assert captured.out.endswith("write? [y/N] assertion 12\n")
+    assert captured.out.endswith("write? [y/N] assertion 13\n")
     assert captured.err == ""
-    preview = json.loads(captured.out.removesuffix("write? [y/N] assertion 12\n"))
+    preview = json.loads(captured.out.removesuffix("write? [y/N] assertion 13\n"))
     assert preview["assertion"] == "entity"
     assert preview["author"] == "human:operator"
     assert preview["responsibility"] == "direct"
@@ -6448,7 +6534,7 @@ def test_entity_shows_the_claim_asks_and_writes_a_direct_version(
     assert preview["fields"] == {"name": _VELLENFELD}
     assert preview["state"] == "active"
     ((event_id, payload),) = _standing(db)
-    assert event_id == 12
+    assert event_id == 13
     assert payload == preview
 
 
@@ -6471,7 +6557,7 @@ def test_a_recollection_has_no_source_and_the_two_together_are_refused(
 ) -> None:
     _graph_log(db, monkeypatch, capsys)
     out = _run(capsys, "entity", "person", "--name", "Anna", "--recollection", "--yes")
-    assert out.endswith("assertion 12\n")
+    assert out.endswith("assertion 13\n")
     ((_id, payload),) = _standing(db)
     assert payload["evidence"] == "recollection"
     assert payload["sources"] == []
@@ -6985,8 +7071,8 @@ def test_classes_add_shows_the_class_asks_and_writes_an_event(
     _answer(monkeypatch, "y\n")
     assert main(argv) == 0
     out = capsys.readouterr().out
-    assert out.endswith("write? [y/N] approval class event 12\n")
-    payload = json.loads(out.removesuffix("write? [y/N] approval class event 12\n"))
+    assert out.endswith("write? [y/N] approval class event 13\n")
+    payload = json.loads(out.removesuffix("write? [y/N] approval class event 13\n"))
     assert payload["threshold"] == 80
     assert payload["types"] == ["person"]
     assert payload["revoked"] is False
@@ -7012,7 +7098,7 @@ def test_a_class_that_cannot_be_written_is_refused_before_the_question(
     # The control: a class that can be written reaches the question.
     assert main([*argv, "--type", "person"]) == 1
     assert "no answer: the input ended" in capsys.readouterr().err
-    assert _action_count(db) == 9
+    assert _action_count(db) == 10
 
 
 @pytest.mark.db
@@ -7056,7 +7142,7 @@ def test_the_hit_rate_counts_what_was_confirmed_corrected_and_left_standing(
     _written(capsys, *argv, "--type", "person", "--threshold", "80", "--statement", "s")
     assert _lines(_run(capsys, "classes", "list"))[0][7:] == [
         "0 total, 0 confirmed, 0 corrected, 0 standing",
-        "(event 12)",
+        "(event 13)",
     ]
     confirmed, corrected, standing = (
         _model_person(storage, name, confidence=90) for name in ("Anna", "Berta", "Carl")
@@ -7454,3 +7540,754 @@ def test_approve_sends_a_question_to_answer_and_writes_nothing(
     assert len(_standing(db)) == before
     # The control: answering it, which the sentence names, works.
     assert _written(capsys, "answer", str(question), "--choose", str(ids["circle_a"]))
+
+
+# --- assignments: relate concerns --from-event ------------------------------------
+
+
+def _markus(capsys: pytest.CaptureFixture[str]) -> dict[str, int]:
+    """Markus's mail, the example of the 2026-10-14 assignments specification, as
+    mail 1: its units are about the project XZ, and its last, unit 3, about
+    the summer party of the club. Assigned on the command line: the mail to
+    XZ, its last unit to the summer party, and the summer party part of the
+    club."""
+    ids: dict[str, int] = {}
+    ids["xz"] = _written(capsys, "entity", "project", "--name", "XZ", "--source", "2")
+    ids["club"] = _written(capsys, "entity", "organization", "--name", "Verein", "--source", "2")
+    ids["party"] = _written(capsys, "entity", "matter", "--name", "Sommerfest", "--source", "2")
+    ids["part_of"] = _written(
+        capsys,
+        *("relate", "part_of", "--from", str(ids["party"]), "--to", str(ids["club"])),
+        *("--source", "2"),
+    )
+    ids["mail"] = _written(
+        capsys, "relate", "concerns", "--from-event", "1", "--to", str(ids["xz"])
+    )
+    ids["last"] = _written(
+        capsys, "relate", "concerns", "--from-event", "1:3", "--to", str(ids["party"])
+    )
+    return ids
+
+
+@pytest.mark.db
+def test_relate_concerns_assigns_a_mail_and_a_unit_with_the_start_as_their_source(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _graph_log(db, monkeypatch, capsys)
+    ids = _markus(capsys)
+
+    payloads = dict(_standing(db))
+    assert payloads[ids["mail"]]["from"] == {"event": 1, "units": None}
+    assert payloads[ids["mail"]]["sources"] == [{"event": 1, "units": None}]
+    assert payloads[ids["last"]]["from"] == {"event": 1, "units": [3]}
+    assert payloads[ids["last"]]["sources"] == [{"event": 1, "units": [3]}]
+    assert payloads[ids["last"]]["responsibility"] == "direct"
+    lines = _lines(_run(capsys, "relations", "--type", "concerns"))
+    assert lines == [
+        [str(ids["mail"]), "standing", "concerns", "event 1", f"{ids['xz']} XZ", "-", "1 version"],
+        [
+            *(str(ids["last"]), "standing", "concerns", "event 1 #3"),
+            *(f"{ids['party']} Sommerfest", "-", "1 version"),
+        ],
+    ]
+    with storage.begin() as conn:
+        vocabulary = read_vocabulary(storage, conn)
+        edges = bracket_edges(read_graph(storage, conn), vocabulary)
+    kinds = bracket_kinds(vocabulary)
+    assert [members(edges, ids["xz"], kinds).holds(1, seq) for seq in (1, 2, 3)] == [
+        True,
+        True,
+        False,
+    ]
+    assert [members(edges, ids["party"], kinds).holds(1, seq) for seq in (1, 2, 3)] == [
+        False,
+        False,
+        True,
+    ]
+    assert [members(edges, ids["club"], kinds).holds(1, seq) for seq in (1, 2, 3)] == [
+        False,
+        False,
+        True,
+    ]
+    # The page of the project is the project's; its assignments are listed
+    # by `relations`, above.
+    page = _run(capsys, "entity", str(ids["xz"]))
+    assert "concerns" not in page
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_relate_concerns_keeps_a_source_that_covers_the_start_and_refuses_one_that_does_not(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A source of another event stands beside the start, which is added;
+    one of the same event that covers the start is the start's source; one
+    of the same event with fewer units is refused, not merged."""
+    _graph_log(db, monkeypatch, capsys)
+    xz = str(_written(capsys, "entity", "project", "--name", "XZ", "--source", "2"))
+    beside = _written(
+        capsys, "relate", "concerns", "--from-event", "1:3", "--to", xz, "--source", "2"
+    )
+    covered = _written(
+        capsys, "relate", "concerns", "--from-event", "1:3", "--to", xz, "--source", "1:2,3"
+    )
+    payloads = dict(_standing(db))
+    assert payloads[beside]["sources"] == [
+        {"event": 2, "units": None},
+        {"event": 1, "units": [3]},
+    ]
+    assert payloads[covered]["sources"] == [{"event": 1, "units": [2, 3]}]
+    count = len(_standing(db))
+    argv = ("relate", "concerns", "--from-event", "1:2,3", "--to", xz, "--source", "1:2", "--yes")
+    assert _refused(capsys, *argv) == (
+        "a statement has no valid form: the event a relation starts at must be among its sources"
+    )
+    assert _refused(
+        capsys, "relate", "concerns", "--from-event", "1", "--to", xz, "--recollection", "--yes"
+    ) == ("a statement has no valid form: the event a relation starts at must be among its sources")
+    assert len(_standing(db)) == count
+
+
+@pytest.mark.db
+def test_relate_concerns_refuses_a_start_it_cannot_read_and_one_given_twice(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    xz = str(_written(capsys, "entity", "project", "--name", "XZ", "--source", "2"))
+    assert _refused(capsys, "relate", "concerns", "--from-event", "1:", "--to", xz, "--yes") == (
+        "--from-event is not EVENT or EVENT:SEQ,SEQ: '1:'"
+    )
+    assert _refused(capsys, "relate", "concerns", "--from-event", "1:9", "--to", xz, "--yes") == (
+        "event 1 has no unit 9"
+    )
+    # A source of the whole mail covers the start, and its unit is checked all the same.
+    whole = ("--source", "1", "--yes")
+    assert _refused(capsys, "relate", "concerns", "--from-event", "1:9", "--to", xz, *whole) == (
+        "event 1 has no unit 9"
+    )
+    assert _refused(capsys, "relate", "concerns", "--to", xz, "--yes") == (
+        "a relation needs --from or --from-event and --source or --recollection "
+        "unless --subject names the one to change"
+    )
+    with pytest.raises(SystemExit) as both:
+        main(["relate", "concerns", "--from", xz, "--from-event", "1", "--to", xz])
+    assert both.value.code == 2
+    assert "not allowed with argument" in capsys.readouterr().err
+
+
+@pytest.mark.db
+def test_an_assignment_is_retracted_and_a_models_question_about_one_is_answered(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    storage = _graph_log(db, monkeypatch, capsys)
+    ids = _markus(capsys)
+    _written(capsys, "relate", "concerns", "--subject", str(ids["last"]), "--retract")
+    listed = _lines(_run(capsys, "relations", "--type", "concerns"))
+    assert [line[0] for line in listed] == [str(ids["mail"])]
+    payload = dict(_standing(db))[_standing(db)[-1][0]]
+    assert (payload["state"], payload["from"]) == ("retracted", {"event": 1, "units": [3]})
+
+    asking = RelationBody(
+        "concerns", Source(1, (1,)), None, (ids["xz"], ids["party"]), None, {}, "standing"
+    )
+    (question,) = _model_writes(storage, _model_claim(RELATION, asking))
+    assert _lines(_run(capsys, "triage")) == [
+        [
+            *("question", str(question), "concerns"),
+            f"event 1 #1 -> ? ({ids['xz']} XZ, {ids['party']} Sommerfest)",
+            "model:claude-code",
+        ],
+    ]
+    answer = _written(capsys, "answer", str(question), "--choose", str(ids["party"]))
+    stands = _lines(_run(capsys, "relations", "--type", "concerns"))
+    assert [(line[0], line[3], line[4]) for line in stands] == [
+        (str(ids["mail"]), "event 1", f"{ids['xz']} XZ"),
+        (str(question), "event 1 #1", f"{ids['party']} Sommerfest"),
+    ]
+    assert dict(_standing(db))[answer]["approves"] == question
+    assert verify(storage) == []
+
+
+# --- the readers read the graph from its projection -------------------------------
+
+
+def _listed_history(storage: PostgresStorage, capsys: pytest.CaptureFixture[str]) -> dict[str, int]:
+    """Vellenfeld and Markus's mail, and one of every kind of thread the
+    listings tell apart: a retracted organization, a relation with a
+    period, a class and a person standing under it, a proposal, an
+    objection and a question."""
+    ids = _markus(capsys)
+    ids["vellenfeld"] = _written(
+        capsys, "entity", "organization", "--name", _VELLENFELD, "--source", "2"
+    )
+    ids["anna"] = _written(capsys, "entity", "person", "--name", "Anna", "--source", "1")
+    ids["involved"] = _written(
+        capsys,
+        *("relate", "involved_in", "--from", str(ids["anna"]), "--to", str(ids["xz"])),
+        *("--from-date", "2026-01-01", "--source", "1"),
+    )
+    _written(capsys, "entity", "organization", "--subject", str(ids["vellenfeld"]), "--retract")
+    ids["class"] = _written(
+        capsys,
+        *("classes", "add", "maier", "--author", "model:claude-code", "--assertion", "entity"),
+        *("--type", "person", "--threshold", "80", "--statement", "names from mails"),
+    )
+    ids["through"] = _model_person(storage, "Clara", confidence=90)
+    ids["proposal"] = _model_person(storage, "Dora", confidence=40)
+    ids["objection"] = _model_person(storage, "Anna Maier", subject=ids["anna"], confidence=40)
+    asking = RelationBody(
+        "concerns", Source(1, (1,)), None, (ids["xz"], ids["party"]), None, {}, "standing"
+    )
+    (ids["question"],) = _model_writes(storage, _model_claim(RELATION, asking))
+    return ids
+
+
+def _fold_instead(log: PostgresStorage, store: PostgresStorage, conn: Connection) -> Graph:
+    """What the readers read before the projection: the fold of the log."""
+    del store
+    return read_graph(log, conn)
+
+
+def _edges_of_the_fold(
+    log: PostgresStorage, conn: Connection, graph: Graph
+) -> tuple[tuple[BracketEdge, ...], BracketKinds]:
+    """The oracle of a bracket's edges: `bracket_edges` over the fold. A
+    reader finds them in the projection only and refuses a fold, so the test
+    that holds the two against each other hands this in itself."""
+    vocabulary = read_vocabulary(log, conn)
+    return bracket_edges(graph, vocabulary), bracket_kinds(vocabulary)
+
+
+@pytest.mark.db
+def test_the_listings_read_from_the_projection_are_those_the_fold_gives(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Every listing of the graph shows from the projection what it showed
+    when it folded the log ({ref}`graph-projection`). The oracle is the
+    fold: the same commands with the reader swapped back."""
+    storage = _graph_log(db, monkeypatch, capsys)
+    ids = _listed_history(storage, capsys)
+    commands = [
+        ["entities"],
+        ["entities", "--proposals"],
+        ["entities", "--state", "retracted"],
+        ["entities", "--type", "person"],
+        ["relations"],
+        ["relations", "--type", "concerns"],
+        ["relations", "--at", "2025-12-31"],
+        ["relations", "--to", str(ids["xz"])],
+        ["relations", "--from", str(ids["party"])],
+        ["entity", str(ids["xz"])],
+        ["entity", str(ids["anna"])],
+        ["entity", str(ids["anna"]), "--history"],
+        ["entity", str(ids["vellenfeld"])],
+        ["triage"],
+        ["status"],
+        ["classes", "list"],
+        ["classes", "sample", "maier", "--count", "50"],
+    ]
+    projected = [_run(capsys, *command) for command in commands]
+    monkeypatch.setattr("previously.cli.projected_graph", _fold_instead)
+    folded = [_run(capsys, *command) for command in commands]
+    assert projected == folded
+    # Every listing has something to show, so that agreeing is not
+    # agreeing on nothing.
+    assert all(projected)
+    assert _lines(projected[-4]) == [
+        ["objection", str(ids["objection"]), "Person", "Anna Maier", "model:claude-code"],
+        [
+            *("question", str(ids["question"]), "concerns"),
+            f"event 1 #1 -> ? ({ids['xz']} XZ, {ids['party']} Sommerfest)",
+            "model:claude-code",
+        ],
+        ["proposal", str(ids["proposal"]), "Person", "Dora", "model:claude-code"],
+    ]
+    assert _lines(projected[-3]) == [["objections", "1"], ["questions", "1"], ["proposals", "1"]]
+    assert projected[-1].startswith(f"{ids['through']}\t")
+
+
+@pytest.mark.db
+def test_a_listing_catches_the_projection_up_before_it_reads(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Nothing but the listing itself catches up here: the writes go
+    through `core`, past the command line, and nobody runs `project`."""
+    storage = _graph_log(db, monkeypatch, capsys)
+    assert _run(capsys, "status") == "objections\t0\nquestions\t0\nproposals\t0\n"
+    assert _run(capsys, "entities") == ""
+    first = _model_person(storage, "Dora", confidence=40)
+    assert _run(capsys, "status") == "objections\t0\nquestions\t0\nproposals\t1\n"
+    assert _lines(_run(capsys, "entities", "--proposals")) == [
+        [str(first), "proposed active", "Person", "Dora", "1 version", "0 proposals"]
+    ]
+    assert _lines(_run(capsys, "triage"))[0][:2] == ["proposal", str(first)]
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.db
+def test_project_check_is_clean_after_a_history_and_names_each_row_falsified_by_hand(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`--check` holds every row of `p_graph_thread` against the fold of the
+    log and writes nothing beyond the catch-up: a row changed by hand is
+    named on every run, until a rebuild writes it again."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    storage = _graph_log(db, monkeypatch, capsys)
+    ids = _listed_history(storage, capsys)
+    redact_event(storage, storage, ids["proposal"], reason="wrong", recorded_at=_ASSERT_AT)
+    clean = _run(capsys, "project", "--check")
+    assert [line.split()[0] for line in clean.splitlines()] == [
+        "chronicle",
+        "source-stats",
+        "graph",
+    ]
+    assert isinstance(db, Engine)
+    with db.begin() as c:
+        c.execute(
+            text("UPDATE p_graph_thread SET objections = 2 WHERE subject = :s"), {"s": ids["xz"]}
+        )
+        c.execute(text("DELETE FROM p_graph_thread WHERE subject = :s"), {"s": ids["club"]})
+        c.execute(
+            text("UPDATE p_graph_thread SET level = 'open', pending = 4 WHERE subject = :s"),
+            {"s": ids["mail"]},
+        )
+        # The version rows the readers fold a thread from: one missing, one
+        # extra, on a mail, and one under a class it was never written under.
+        c.execute(text("DELETE FROM p_graph_version WHERE id = :s"), {"s": ids["part_of"]})
+        c.execute(text("INSERT INTO p_graph_version VALUES (2, 2, 'entity', NULL)"))
+        c.execute(
+            text("UPDATE p_graph_version SET under = :c WHERE id = :s"),
+            {"c": ids["class"], "s": ids["anna"]},
+        )
+    falsified = [
+        f"graph\t{ids['xz']}\tobjections 2 instead of 0",
+        f"graph\t{ids['club']}\tno row instead of winner {ids['club']}",
+        f"graph\t{ids['mail']}\tlevel open instead of direct, pending 4 instead of 0",
+        "graph\t2\tversion row entity of 2 instead of none",
+        f"graph\t{ids['part_of']}\tno version row instead of relation of {ids['part_of']}",
+        f"graph\t{ids['anna']}\tversion row under {ids['class']} instead of -",
+    ]
+    for _run_again in (1, 2):
+        out = _run(capsys, "project", "--check", code=1)
+        assert out.splitlines()[3:] == falsified
+        assert capsys.readouterr().err == ""
+    # The control: without `--check`, `project` says nothing of it.
+    assert len(_run(capsys, "project").splitlines()) == 3
+    with storage.begin() as conn:
+        storage.truncate_projection(conn, "graph")
+        conn.execute(text("DELETE FROM projection_state WHERE name = 'graph'"))
+    rebuilt = _run(capsys, "project", "--check")
+    assert rebuilt.splitlines()[2].startswith("graph           built:")
+    assert len(rebuilt.splitlines()) == 3
+
+
+def _expected_listings(capsys: pytest.CaptureFixture[str]) -> list[str]:
+    return [_run(capsys, *command) for command in (["entities"], ["triage"], ["status"])]
+
+
+def _graph_rows(db: object) -> tuple[object, ...]:
+    """Everything of the graph projection: its state row and both tables."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    with db.begin() as c:
+        return (
+            c.execute(text("SELECT * FROM projection_state WHERE name = 'graph'")).all(),
+            c.execute(text("SELECT * FROM p_graph_thread ORDER BY subject")).all(),
+            c.execute(text("SELECT * FROM p_graph_version ORDER BY id")).all(),
+        )
+
+
+class _RebuiltBeforeSnapshot(PostgresStorage):
+    """The real store, where `previously project` empties the graph
+    projection at its own version between a reader's catch-up and its
+    snapshot, as after an operator deleted the state row: before each of the
+    first `misses` snapshots, its state row goes back to `up_to_id` 0 and
+    its tables are emptied. Every snapshot after those finds it as it is."""
+
+    def __init__(self, engine: Engine, misses: int) -> None:
+        super().__init__(engine)
+        self.misses = misses
+        self.snapshots = 0
+
+    @contextmanager
+    def snapshot(self) -> Generator[Connection]:
+        from sqlalchemy import text
+
+        self.snapshots += 1
+        if self.snapshots <= self.misses:
+            with self.begin() as conn:
+                conn.execute(text("UPDATE projection_state SET up_to_id = 0 WHERE name = 'graph'"))
+                conn.execute(text("DELETE FROM p_graph_thread"))
+                conn.execute(text("DELETE FROM p_graph_version"))
+        with super().snapshot() as conn:
+            yield conn
+
+
+def _through(monkeypatch: pytest.MonkeyPatch, storage: PostgresStorage) -> None:
+    """Every command from here on works with `storage`, the database of the
+    test seen through a store of its own."""
+
+    def given(dsn: str) -> PostgresStorage:
+        del dsn
+        return storage
+
+    monkeypatch.setattr("previously.cli.from_dsn", given)
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("change", "found"),
+    [
+        ("DELETE FROM projection_state WHERE name = 'graph'", "is not built"),
+        ("UPDATE projection_state SET version = 7 WHERE name = 'graph'", "stands at version 7"),
+    ],
+    ids=["no-state-row", "other-version"],
+)
+def test_a_listing_meeting_a_projection_it_would_have_to_build_fails_and_touches_nothing(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    change: str,
+    found: str,
+) -> None:
+    """Ruling F-c of the 2026-10-15 assignments plan: only `previously
+    project` builds. A reader meeting no state row, or one at another
+    version, exits 2 with the sentence that names `previously project`, and
+    leaves the state row and both tables as they were. Measured red by
+    letting `graph_snapshot` catch up with `rebuild=True`: every listing
+    exits 0, and the rows are rebuilt."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    storage = _graph_log(db, monkeypatch, capsys)
+    _listed_history(storage, capsys)
+    _run(capsys, "project")
+    expected = _expected_listings(capsys)
+    assert isinstance(db, Engine)
+    with db.begin() as c:
+        c.execute(text(change))
+    before = _graph_rows(db)
+    for command in (["entities"], ["triage"], ["status"]):
+        sentence = _refused(capsys, *command)
+        assert sentence.startswith(f"projection graph {found}, and this code declares version ")
+        assert "`previously project`" in sentence
+        assert _graph_rows(db) == before
+    # The control: `previously project` builds it, and the listings read.
+    _run(capsys, "project")
+    assert _expected_listings(capsys) == expected
+
+
+@pytest.mark.db
+def test_a_listing_catches_up_once_more_after_a_rebuild_between_catch_up_and_snapshot(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A `previously project` that empties the projection at its own version
+    between a reader's catch-up and its snapshot costs one more catch-up,
+    and the listing shows what it shows otherwise, with nothing on standard
+    error ({ref}`graph-readers`). Measured red with `REBUILD_RETRIES` at 0:
+    exit 2 with `ProjectionRebuilt`'s sentence."""
+    from sqlalchemy import Engine
+
+    storage = _graph_log(db, monkeypatch, capsys)
+    _listed_history(storage, capsys)
+    _run(capsys, "project")
+    expected = _expected_listings(capsys)
+    assert all(expected)
+    assert isinstance(db, Engine)
+    for command, shown in zip((["entities"], ["triage"], ["status"]), expected, strict=True):
+        rebuilt = _RebuiltBeforeSnapshot(db, misses=1)
+        _through(monkeypatch, rebuilt)
+        assert main(command) == 0
+        assert capsys.readouterr() == (shown, "")
+        assert rebuilt.snapshots == 2
+
+
+@pytest.mark.db
+def test_a_listing_fails_on_a_second_rebuild_in_a_row_though_a_third_try_would_read(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """One retry, not two: with the projection emptied before each of the
+    first two snapshots, a third try would read, and the listing does not
+    take it. Measured red with `REBUILD_RETRIES` at 2: exit 0 after three
+    snapshots."""
+    from sqlalchemy import Engine
+
+    storage = _graph_log(db, monkeypatch, capsys)
+    _listed_history(storage, capsys)
+    _run(capsys, "project")
+    assert isinstance(db, Engine)
+    rebuilt = _RebuiltBeforeSnapshot(db, misses=2)
+    _through(monkeypatch, rebuilt)
+    assert _refused(capsys, "status") == (
+        "projection graph was rebuilt between catching it up and reading it, on each of "
+        "2 tries; read again once `previously project` has finished"
+    )
+    assert rebuilt.snapshots == 2
+    # The control: the same store, past its misses, reads.
+    assert _run(capsys, "status") == "objections\t1\nquestions\t1\nproposals\t1\n"
+
+
+class _GapAboveTheProjection(PostgresStorage):
+    """The real store, whose log has a gap where a catch-up reads: a read of
+    more than one event leaves out the first one asked for, so `catch_up`
+    refuses with `ProjectionGap`. A read of one event finds it."""
+
+    def read(self, conn: Connection, from_id: int, limit: int) -> Iterator[EventRow]:
+        found = super().read(conn, from_id, limit)
+        return found if limit == 1 else (row for row in found if row.id != from_id)
+
+
+@pytest.mark.db
+def test_a_listing_whose_catch_up_meets_a_gap_in_the_log_fails_with_it(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A gap above where the projection stands, which `catch_up` refuses
+    with `ProjectionGap`, is damage, and the listing says so as its error
+    with exit code 2 rather than answer from a fold of the log over it
+    ({ref}`graph-readers`)."""
+    from sqlalchemy import Engine
+
+    storage = _graph_log(db, monkeypatch, capsys)
+    _listed_history(storage, capsys)
+    _run(capsys, "project")
+    # Two events past the projection, so that a gap has room to stand
+    # between them: with only the tip new, there is none.
+    _model_person(storage, "Bert", confidence=40)
+    _model_person(storage, "Clara", confidence=40)
+    assert isinstance(db, Engine)
+    before = _graph_rows(db)
+    _through(monkeypatch, _GapAboveTheProjection(db))
+    for command in (["entities"], ["triage"], ["status"]):
+        assert _refused(capsys, *command).startswith("expected events ")
+    assert _graph_rows(db) == before
+    # The control: the same log through the real store reads.
+    _through(monkeypatch, PostgresStorage(db))
+    assert _run(capsys, "status") == "objections\t1\nquestions\t1\nproposals\t3\n"
+
+
+@pytest.mark.db
+def test_a_role_that_may_only_read_the_projection_is_told_so_and_not_to_migrate(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A role with every right on the log and only `SELECT` on the tables of
+    the projections: a reader's catch-up locks the state row, which the role
+    may not, and the reader fails with the database's reason. Measured on
+    2026-10-15 before `PrivilegeMissing`: "database schema incomplete —
+    previously migrate has not run yet" (backticks around the command left
+    out here), advice that
+    changes nothing for a role that lacks a grant; and before ruling F-c of
+    the 2026-10-15 assignments plan that sentence stood in a warning, and
+    the listing folded the log."""
+    from sqlalchemy import Engine
+    from sqlalchemy import make_url
+    from sqlalchemy import text
+
+    storage = _graph_log(db, monkeypatch, capsys)
+    _listed_history(storage, capsys)
+    _run(capsys, "project")
+    assert isinstance(db, Engine)
+    name, password = f"reader_{secrets.token_hex(4)}", secrets.token_hex(16)
+    projections = "projection_state, p_chronicle, p_source_stats, p_graph_thread, p_graph_version"
+    with db.begin() as c:
+        c.execute(text(f"CREATE ROLE {name} LOGIN PASSWORD '{password}'"))
+        c.execute(text(f"GRANT USAGE ON SCHEMA public TO {name}"))
+        c.execute(text(f"GRANT SELECT, INSERT, UPDATE ON ALL TABLES IN SCHEMA public TO {name}"))
+        c.execute(text(f"GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {name}"))
+        c.execute(text(f"REVOKE INSERT, UPDATE ON {projections} FROM {name}"))
+    try:
+        url = make_url(db.url.render_as_string(hide_password=False))
+        dsn = url.set(username=name, password=password).render_as_string(hide_password=False)
+        monkeypatch.setenv("PREVIOUSLY_DSN", dsn)
+        where = f"database {url.database} at {url.host}:{url.port}"
+        for command in (["entities"], ["status"]):
+            assert _refused(capsys, *command) == (
+                f"the role of PREVIOUSLY_DSN lacks a privilege on {where}: "
+                "permission denied for table projection_state"
+            )
+        # The control: the same role reads what needs no catch-up.
+        assert main(["chronicle", "--limit", "1"]) == 0
+        capsys.readouterr()
+    finally:
+        with db.begin() as c:
+            c.execute(text(f"DROP OWNED BY {name}"))
+            c.execute(text(f"DROP ROLE {name}"))
+
+
+# --- the chronicle of a bracket: chronicle --within ---------------------------------
+
+_MAIL_1 = "2026-10-30T09:00:00+00:00\temail\tm1"
+
+
+def _within(capsys: pytest.CaptureFixture[str], bracket: int, *argv: str) -> list[str]:
+    """The lines of `chronicle --within bracket`, which has to say nothing
+    on standard error."""
+    out = _run(capsys, "chronicle", "--within", str(bracket), *argv)
+    assert capsys.readouterr().err == ""
+    return out.splitlines()
+
+
+@pytest.mark.db
+def test_chronicle_within_shows_the_units_of_a_bracket_and_one_level_up_those_of_the_club(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Markus, point 2 of the acceptance of the 2026-10-14 assignments
+    specification: mail 1 is about the project XZ, its last unit about the
+    summer party, and the summer party is part of the club. The chronicle
+    of the summer party holds the last unit, so does the club's, one level
+    up, and the project's holds the others: the more specific replaces the
+    general."""
+    storage = _graph_log(db, monkeypatch, capsys)
+    ids = _markus(capsys)
+    _run(capsys, "project")
+
+    assert _within(capsys, ids["party"]) == [f"1\t3\t{_MAIL_1}\tThree."]
+    assert _within(capsys, ids["club"]) == [f"1\t3\t{_MAIL_1}\tThree."]
+    assert _within(capsys, ids["xz"]) == [f"1\t1\t{_MAIL_1}\tOne.", f"1\t2\t{_MAIL_1}\tTwo."]
+    # The control: the whole chronicle holds both mails, the second of
+    # which belongs to no bracket.
+    assert len(_run(capsys, "chronicle").splitlines()) == 6
+
+    # A unit assigned on its own after `project`: the reader catches the
+    # graph up and finds it, and says that the chronicle itself stands one
+    # event behind, as `chronicle` does.
+    _written(capsys, "relate", "concerns", "--from-event", "1:2", "--to", str(ids["party"]))
+    assert main(["chronicle", "--within", str(ids["party"])]) == 0
+    assert capsys.readouterr() == (
+        f"1\t2\t{_MAIL_1}\tTwo.\n1\t3\t{_MAIL_1}\tThree.\n",
+        "projection is 1 event behind; run `previously project`\n",
+    )
+    _run(capsys, "project")
+    assert _within(capsys, ids["xz"]) == [f"1\t1\t{_MAIL_1}\tOne."]
+
+    # An erased unit takes its assignments with it, and an assignment of
+    # the whole mail falls with it too (ruling T2-b of the 2026-10-15
+    # assignments plan): what is left is the unit assigned on its own.
+    _run(capsys, "redact", "units", "1", "3", "--reason", "wrong")
+    assert _within(capsys, ids["party"]) == [f"1\t2\t{_MAIL_1}\tTwo."]
+    assert _within(capsys, ids["xz"]) == []
+    assert verify(storage) == []
+
+
+def _observation_at(storage: PostgresStorage, name: str, day: int) -> int:
+    """An observation with one unit, `name`, on day `day` of October 2026."""
+    _append("email", name, name, f"2026-10-{day:02d}T09:00:00Z")
+    with storage.begin() as conn:
+        tip = storage.tip(conn)
+    assert tip is not None
+    return tip.id
+
+
+@pytest.mark.db
+def test_chronicle_within_counts_its_limit_and_its_window_among_the_units_of_the_bracket(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A unit outside the bracket takes no place under `--limit`: the
+    selection is made in the query, before the limit, so that the notice of
+    a cut says what it says without `--within`."""
+    storage = _graph_log(db, monkeypatch, capsys)
+    days = {name: _observation_at(storage, name, day) for day, name in enumerate("ABCD", 1)}
+    project = _written(capsys, "entity", "project", "--name", "P", "--source", "2")
+    for name in "ACD":
+        _written(
+            capsys, "relate", "concerns", "--from-event", str(days[name]), "--to", str(project)
+        )
+    _run(capsys, "project")
+
+    def line(name: str) -> str:
+        day = "ABCD".index(name) + 1
+        return f"{days[name]}\t1\t2026-10-{day:02d}T09:00:00+00:00\temail\t{name}\t{name}"
+
+    assert _within(capsys, project) == [line("A"), line("C"), line("D")]
+    assert _within(capsys, project, "--limit", "3") == [line("A"), line("C"), line("D")]
+    assert main(["chronicle", "--within", str(project), "--limit", "2"]) == 0
+    assert capsys.readouterr() == (
+        f"{line('A')}\n{line('C')}\n",
+        "output truncated at 2 lines; raise --limit or narrow --since/--until\n",
+    )
+    window = ("--since", "2026-10-02T00:00:00Z", "--until", "2026-10-04T00:00:00Z")
+    assert _within(capsys, project, *window) == [line("C")]
+    # The control: without `--within` the same window holds B as well.
+    assert len(_run(capsys, "chronicle", *window).splitlines()) == 2
+
+
+@pytest.mark.db
+def test_chronicle_within_refuses_what_is_not_an_entity_that_stands_and_shows_an_empty_one(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _graph_log(db, monkeypatch, capsys)
+    ids = _markus(capsys)
+    gone = _written(capsys, "entity", "project", "--name", "Alt", "--source", "2")
+    _written(capsys, "entity", "project", "--subject", str(gone), "--retract")
+    empty = _written(capsys, "entity", "project", "--name", "Leer", "--source", "2")
+    _run(capsys, "project")
+
+    # Nothing at that id, a relation, a mail, a retracted entity, and an
+    # id no event can have.
+    for bracket in (999_999, ids["part_of"], 1, gone, 0):
+        assert _refused(capsys, "chronicle", "--within", str(bracket)) == (
+            f"--within {bracket} is not an entity that stands"
+        )
+    # The control: an entity nothing is assigned to has an empty chronicle.
+    assert _within(capsys, empty) == []
+
+
+@pytest.mark.db
+def test_chronicle_within_finds_from_the_projection_what_the_fold_finds(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The oracle is the fold, as for the listings: the same commands with
+    the reader swapped back. The history holds an open proposal of a unit
+    of its own, which adds the unit to the summer party and takes it from
+    nothing (ruling T2-c of the 2026-10-15 assignments plan), and a question,
+    which points at no bracket yet."""
+    storage = _graph_log(db, monkeypatch, capsys)
+    ids = _listed_history(storage, capsys)
+    proposal = RelationBody("concerns", Source(1, (1,)), ids["party"], None, None, {}, "standing")
+    _model_writes(storage, _model_claim(RELATION, proposal, confidence=40))
+    _run(capsys, "project")
+    brackets = [ids[name] for name in ("party", "club", "xz", "anna")]
+    projected = [_within(capsys, bracket) for bracket in brackets]
+    monkeypatch.setattr("previously.cli.projected_graph", _fold_instead)
+    monkeypatch.setattr("previously.core.graph_read.reader_bracket_edges", _edges_of_the_fold)
+    folded = [_within(capsys, bracket) for bracket in brackets]
+    assert projected == folded
+    assert projected == [
+        [f"1\t1\t{_MAIL_1}\tOne.", f"1\t3\t{_MAIL_1}\tThree."],
+        [f"1\t1\t{_MAIL_1}\tOne.", f"1\t3\t{_MAIL_1}\tThree."],
+        [f"1\t1\t{_MAIL_1}\tOne.", f"1\t2\t{_MAIL_1}\tTwo."],
+        [],
+    ]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("misses", [1, 2])
+def test_chronicle_within_reads_the_projection_once_more_after_a_rebuild_and_fails_on_two(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch, misses: int
+) -> None:
+    """Ruling F-c of the 2026-10-15 assignments plan, which replaces ruling
+    T4-b of the same plan: `chronicle --within` reads its bracket as every
+    reader of the graph does. A rebuild between the catch-up and the
+    snapshot costs one more catch-up and shows the same chronicle; a second
+    one in a row fails the command, never an empty chronicle and never a
+    fold of the log."""
+    from sqlalchemy import Engine
+
+    _graph_log(db, monkeypatch, capsys)
+    ids = _markus(capsys)
+    _run(capsys, "project")
+    expected = _within(capsys, ids["club"])
+    assert expected
+    assert isinstance(db, Engine)
+    rebuilt = _RebuiltBeforeSnapshot(db, misses=misses)
+    _through(monkeypatch, rebuilt)
+    if misses == 1:
+        assert _within(capsys, ids["club"]) == expected
+    else:
+        assert _refused(capsys, "chronicle", "--within", str(ids["club"])).startswith(
+            "projection graph was rebuilt between catching it up and reading it"
+        )
+    assert rebuilt.snapshots == 2

@@ -59,6 +59,7 @@ from previously.core.assertions import thread_circles
 from previously.core.assertions import write_statements
 from previously.core.blob import fetch_blob
 from previously.core.blob import store_blob
+from previously.core.canonical import MAX_SAFE_INT
 from previously.core.chain import read_references
 from previously.core.classes import ApprovalClass
 from previously.core.classes import class_payload
@@ -77,6 +78,7 @@ from previously.core.errors import BatchTooLarge
 from previously.core.errors import CannotOpen
 from previously.core.errors import InvalidPayload
 from previously.core.errors import PreviouslyError
+from previously.core.errors import ProjectionNotBuilt
 from previously.core.errors import reason_of
 from previously.core.errors import RedactionRefused
 from previously.core.errors import SinkUnwritable
@@ -98,16 +100,23 @@ from previously.core.graph import RELATION
 from previously.core.graph import RelationBody
 from previously.core.graph import RETRACTED
 from previously.core.graph import SOURCES
+from previously.core.graph import sources_with_start
 from previously.core.graph import STANDING
 from previously.core.graph import TRANSITIVE
+from previously.core.graph_read import bracket_members
+from previously.core.graph_read import check_graph
+from previously.core.graph_read import graph_snapshot
+from previously.core.graph_read import projected_graph
 from previously.core.graph_write import check_claims
 from previously.core.graph_write import decided
+from previously.core.graph_write import EntityTypes
 from previously.core.graph_write import read_graph
 from previously.core.graph_write import write_claims
 from previously.core.hashing import is_address
 from previously.core.hashing import iso_utc
 from previously.core.identity import artifact_hash_of
 from previously.core.ingest import ingest
+from previously.core.members import chronicle_selection
 from previously.core.policy import Circle
 from previously.core.policy import Client
 from previously.core.policy import Inference
@@ -125,6 +134,7 @@ from previously.core.policy import set_policy
 from previously.core.policy import to_payload
 from previously.core.projection import catch_up
 from previously.core.projection import CHRONICLE
+from previously.core.projection import GRAPH
 from previously.core.projection import Outcome
 from previously.core.projection import PROJECTIONS
 from previously.core.projection import SOURCE_STATS
@@ -193,6 +203,7 @@ if TYPE_CHECKING:
     from collections.abc import Sequence
     from previously.contract.blobs import BlobStore
     from previously.contract.blobs import KeyProvider
+    from previously.contract.rows import ChronicleSelection
     from previously.contract.rows import EventRow
     from previously.contract.types import Anchor
     from previously.core.assertion import Thread
@@ -1278,11 +1289,38 @@ def _payload_line(event_id: int) -> str:
     )
 
 
-def _unfinished(redaction_id: int, outstanding: str) -> PreviouslyError:
+# What finishes an unfinished redaction, by what stopped it: the same
+# command again; `previously project` first, where a projection isn't built;
+# and where it stands at another version, the build of the release that is
+# to serve, since this code cannot tell whether it is the older one, and an
+# older release's `project` would build the projection back.
+_AGAIN = "again"
+_BUILD = "build"
+_RELEASE = "release"
+
+
+def _unfinished(redaction_id: int, outstanding: str, *, then: str) -> PreviouslyError:
     """The error of a redaction that stands and is not carried out to its
-    end: what stands, what is outstanding, and that the same command
-    finishes it — the second call finds the target covered, writes nothing,
-    and does what is left."""
+    end: what stands, what is outstanding, and what finishes it, which ends
+    in the same command — the second call finds the target covered, writes
+    nothing, and does what is left.
+
+    Where a projection is not built (`then` is `_BUILD`), the same command
+    alone would stop at it again: `previously project` builds it first, and
+    in building it takes the redaction in. Where it stands at another
+    version (`_RELEASE`), the advice is the one `ProjectionNotBuilt` gives,
+    which names the release that is to serve."""
+    if then == _BUILD:
+        return PreviouslyError(
+            f"the redaction is recorded as event {redaction_id}, but it is not finished: "
+            f"{outstanding}; run `previously project`, then the same command again"
+        )
+    if then == _RELEASE:
+        return PreviouslyError(
+            f"the redaction is recorded as event {redaction_id}, but it is not finished: "
+            f"{outstanding}; the release that is to serve builds it with `previously project`, "
+            "then run the same command again"
+        )
     return PreviouslyError(
         f"the redaction is recorded as event {redaction_id}, but it is not finished: "
         f"{outstanding}; run the same command again"
@@ -1321,33 +1359,33 @@ def _delete_obsolete(result: Redacted) -> str | None:
     return outstanding
 
 
-def _catch_up_after(storage: PostgresStorage) -> str | None:
+def _catch_up_after(storage: PostgresStorage) -> tuple[str, str] | None:
     """Brings every projection up to the tip once a redaction is recorded, so
     the chronicle stops showing what was erased without waiting for the next
     `project` ({ref}`projections`).
 
     A failure here comes after the redaction committed, and is returned as
     what is outstanding, for the caller to say in its one sentence: what
-    stands, what does not, and that the same command finishes it — the
-    second call finds the target covered, writes nothing and catches up.
-    Only the errors `main` turns into a sentence are caught; anything foreign
-    goes through as a stack trace, as everywhere else.
+    stands, what does not, and how to finish it. Only the errors `main`
+    turns into a sentence are caught; anything foreign goes through as a
+    stack trace, as everywhere else.
 
-    A catch-up that builds a projection from scratch — the first build, or a
-    rebuild after a version change — is named on standard error, in the line
-    `project` prints for it. `project` names its path so that a rebuild is not
-    invisible, and the first `redact` after an upgrade would otherwise rebuild
-    without a word, for as long as the log takes. An ordinary catch-up says
-    nothing, and standard output stays the one line.
+    It catches up and never builds: a projection not built at this code's
+    version is left as it is, and named as what is outstanding, in the
+    words of `ProjectionNotBuilt` without its advice, which `_unfinished`
+    gives by the second value. Only `previously project` builds
+    ({ref}`projections`), and the first `redact` after an upgrade would
+    otherwise rebuild for as long as the log takes, inside a command that
+    erases one thing.
     """
     for projection in PROJECTIONS:
         try:
-            outcome = catch_up(storage, storage, projection)
+            catch_up(storage, storage, projection, rebuild=False)
+        except ProjectionNotBuilt as error:
+            return error.finding, _BUILD if error.found is None else _RELEASE
         except (PreviouslyError, StorageError) as error:
             outstanding = f"projection {projection.name} is not caught up ({error})"
-            return outstanding
-        if outcome.rebuilt_from is not None:
-            print(f"{outcome.name:<15} {_describe(outcome)}", file=sys.stderr)
+            return outstanding, _AGAIN
     return None
 
 
@@ -1398,14 +1436,15 @@ def _cmd_redact(args: argparse.Namespace) -> int:
         deletion = _delete_obsolete(result)
         catching_up = _catch_up_after(storage)
         approvals = _approvals_of(storage, args)
-    left = [step for step in (deletion, catching_up) if step is not None]
+    outstanding, then = (None, _AGAIN) if catching_up is None else catching_up
+    left = [step for step in (deletion, outstanding) if step is not None]
     if left:
         # The units are erased whether or not what follows is finished, and
         # the payload is left as it was either way, so the notice comes beside
         # the sentence of the unfinished redaction too.
         _notice_payload(result, args)
         _notice_approvals(approvals, args)
-        raise _unfinished(result.redaction_id, ", and ".join(left))
+        raise _unfinished(result.redaction_id, ", and ".join(left), then=then)
     print(_redacted_line(result))
     for event_id in result.cascaded:
         kind = "assertion" if event_id in result.cascaded_assertions else "model_call"
@@ -1456,21 +1495,47 @@ def _notice_approvals(approvals: Sequence[int], args: argparse.Namespace) -> Non
         )
 
 
-def _cmd_project(_args: argparse.Namespace) -> int:
+def _project_arguments(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument(
+        "--check",
+        action="store_true",
+        help="then fold the log and report every row the graph projection holds otherwise",
+    )
+
+
+def _cmd_project(args: argparse.Namespace) -> int:
     # `PROJECTIONS` fixes the order, so two runs print their lines the same way
     # round. `catch_up` gets the same object twice because `PostgresStorage` is
     # both the log it reads and the projection store it writes.
     with _storage() as storage:
         for projection in PROJECTIONS:
-            outcome = catch_up(storage, storage, projection)
+            outcome = catch_up(storage, storage, projection, rebuild=True)
             print(f"{outcome.name:<15} {_describe(outcome)}")
-    return 0
+        if not args.check:
+            return 0
+        # The projection is disposable and the log is the truth, so a thread
+        # the projection holds otherwise must not stay silent: the check
+        # folds the log up to where the projection stands and holds every
+        # thread row against the fold and every version row against what a
+        # rebuild would write ({ref}`graph-projection`). It writes nothing.
+        with storage.snapshot() as conn:
+            state = storage.projection_state(conn, GRAPH.name)
+            found = check_graph(storage, storage, conn, 0 if state is None else state.up_to_id)
+    for subject, what in found:
+        print(f"graph\t{subject}\t{what}")
+    return 1 if found else 0
 
 
 def _chronicle_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--since", help="ISO 8601 with a zone, inclusive")
     parser.add_argument("--until", help="ISO 8601 with a zone, exclusive")
     parser.add_argument("--limit", type=int, default=50)
+    parser.add_argument(
+        "--within",
+        type=int,
+        metavar="N",
+        help="only what belongs to entity N, or to an entity that is part of it",
+    )
 
 
 def _cmd_chronicle(args: argparse.Namespace) -> int:
@@ -1495,14 +1560,27 @@ def _cmd_chronicle(args: argparse.Namespace) -> int:
     # refused here too rather than silently read as local time.
     since = parse_moment(args.since) if args.since else None
     until = parse_moment(args.until) if args.until else None
-    with _storage() as storage, storage.begin() as conn:
-        # Tip and bookmark in one statement, not in two: a transaction is not
-        # a moment under READ COMMITTED (see `tip_and_bookmark`).
+    with _storage() as storage, ExitStack() as stack:
+        # A snapshot, not `begin`: under `--within` it is the reader's of the
+        # graph, which catches the graph up before it as every reader of it
+        # does and holds the projection against that catch-up in it
+        # ({ref}`graph-readers`), and the members of the bracket and the rows
+        # they select are read at one moment. The chronicle is not caught up,
+        # and its lag is the line below. Tip and bookmark stay one statement
+        # (see `tip_and_bookmark`), which is a moment under either.
+        within = None
+        if args.within is None:
+            conn = stack.enter_context(storage.snapshot())
+        else:
+            conn, graph = stack.enter_context(_graph_snapshot(storage))
+            within = _bracket_selection(storage, conn, graph, args.within)
         position = storage.tip_and_bookmark(conn, CHRONICLE.name)
-        # One more than the limit: if that extra row comes back, the window was
-        # cut. Counting the printed lines against the limit cannot tell a
+        # One more than the limit: if that extra row comes back, the window
+        # was cut. Counting the printed lines against the limit cannot tell a
         # window that ends exactly at the limit from one that was cut there.
-        rows = storage.read_chronicle(conn, since=since, until=until, limit=args.limit + 1)
+        rows = storage.read_chronicle(
+            conn, since=since, until=until, limit=args.limit + 1, within=within
+        )
     # Every string field through `escape_field`, not `content` alone: a tab or
     # a newline in `source` or `external_id` would otherwise add a field or
     # break the record in two (see `escape_field`).
@@ -1524,6 +1602,18 @@ def _cmd_chronicle(args: argparse.Namespace) -> int:
     if lag:
         print(lag, file=sys.stderr)
     return 0
+
+
+def _bracket_selection(
+    storage: PostgresStorage, conn: Connection, graph: Graph, bracket: int
+) -> ChronicleSelection:
+    """The units of the chronicle that belong to `bracket`, an entity that
+    stands, found in the graph the reader reads ({ref}`graph-readers`)."""
+    # An id beyond what an event id can be in a payload names no entity, and
+    # is refused before the lookup, which would hand it to the database.
+    if not 1 <= bracket <= MAX_SAFE_INT or bracket not in EntityTypes(graph):
+        raise InvalidPayload(f"--within {bracket} is not an entity that stands")
+    return chronicle_selection(bracket_members(storage, conn, graph, bracket))
 
 
 def _cmd_stats(_args: argparse.Namespace) -> int:
@@ -2287,12 +2377,12 @@ _BLANK_OBLIGATION = ObligationBody("", "", "", None, "open")
 _BLANK_DECISION = DecisionBody("", (), date.min, "valid", None)
 
 
-def _parse_source(text: str) -> AssertionSource:
+def _parse_source(text: str, option: str = "--source") -> AssertionSource:
     """`EVENT` for the whole event, `EVENT:SEQ,SEQ` for units of it. Strict:
     anything else, white space around a number included, is refused."""
     found = _SOURCE_FORM.fullmatch(text)
     if found is None:
-        raise PreviouslyError(f"--source is not EVENT or EVENT:SEQ,SEQ: {text!r}")
+        raise PreviouslyError(f"{option} is not EVENT or EVENT:SEQ,SEQ: {text!r}")
     units = found[2]
     return AssertionSource(
         int(found[1]), None if units is None else tuple(int(seq) for seq in units.split(","))
@@ -3179,13 +3269,23 @@ def _relation_claim(args: argparse.Namespace, vocabulary: Vocabulary, graph: Gra
             f"{args.what} is not declared as a kind of relation in the vocabulary"
         )
     given = _parse_fields(args, spec)
+    named: int | AssertionSource | None = (
+        _parse_source(args.start_event, "--from-event")
+        if args.start_event is not None
+        else args.start
+    )
+    start = named if named is not None else (old.start if old else None)
     evidence = _evidence_of(args, base)
-    start = args.start if args.start is not None else (old.start if old else None)
+    if isinstance(start, AssertionSource) and (evidence is None or evidence[0] == SOURCES):
+        # The event an assignment starts at is among its sources; left out,
+        # it is added. A recollection keeps none, and the write path refuses
+        # it with the rule's sentence.
+        evidence = (SOURCES, sources_with_start(start, () if evidence is None else evidence[1]))
     end = args.to if args.to is not None else (old.to if old else None)
     absent = [
         flag
         for flag, missing in (
-            ("--from", start is None),
+            ("--from or --from-event", start is None),
             ("--to", end is None),
             ("--source or --recollection", evidence is None),
         )
@@ -3283,10 +3383,6 @@ def _field_text(value: FieldValue) -> str:
     return str(value)
 
 
-def _period_text(period: Period | None) -> str:
-    return _NO_VALUE if period is None else _field_text(period)
-
-
 def _period_cell(period: Period | None) -> str:
     return "-" if period is None else _field_text(period)
 
@@ -3294,18 +3390,6 @@ def _period_cell(period: Period | None) -> str:
 def _name_of(claim: Claim) -> str:
     value = claim.body.fields.get(NAME_FIELD)
     return _NO_VALUE if value is None else _field_text(value)
-
-
-def _kinds_of(graph: Graph) -> dict[int, str]:
-    """The kind of every entity that has a winner, a retracted one included:
-    what a version is held against when the vocabulary is asked whether it
-    still fits."""
-    kinds: dict[int, str] = {}
-    for subject, thread in graph.threads.items():
-        winner = thread.winner(graph.classes)
-        if thread.kind == ENTITY and winner is not None:
-            kinds[subject] = winner.claim.body.type
-    return kinds
 
 
 def _end_text(graph: Graph, entity: int) -> str:
@@ -3320,6 +3404,20 @@ def _end_text(graph: Graph, entity: int) -> str:
     if winner.claim.body.state == RETRACTED:
         return f"{entity} (retracted)"
     return f"{entity} {_name_of(winner.claim)}"
+
+
+def _event_start_text(start: AssertionSource) -> str:
+    """The event an assignment starts at: `event E`, and `event E #3,4` for
+    units of it."""
+    if start.units is None:
+        return f"event {start.event}"
+    return f"event {start.event} #{','.join(str(seq) for seq in start.units)}"
+
+
+def _start_text(graph: Graph, start: int | AssertionSource) -> str:
+    """The start of a relation: an entity as `_end_text` names it, or an
+    event as `_event_start_text` does."""
+    return _end_text(graph, start) if isinstance(start, int) else _event_start_text(start)
 
 
 def _marks(
@@ -3373,7 +3471,7 @@ def _claim_label(graph: Graph, claim: Claim) -> str:
     body = claim.body
     if isinstance(body, EntityBody):
         return escape_field(_name_of(claim))
-    start = _end_text(graph, body.start) if isinstance(body.start, int) else "(an event)"
+    start = _start_text(graph, body.start)
     if body.to is not None:
         return escape_field(f"{start} -> {_end_text(graph, body.to)}")
     candidates = ", ".join(_end_text(graph, item) for item in body.candidates or ())
@@ -3401,30 +3499,46 @@ def _entity_line(
     )
 
 
+@contextmanager
+def _graph_snapshot(storage: PostgresStorage) -> Generator[tuple[Connection, Graph]]:
+    """The snapshot a reader of the graph reads in, and the graph it reads
+    there from the projection ({ref}`graph-readers`).
+
+    `graph_snapshot` catches the projection up first, without building it,
+    and catches up once more where `previously project` rebuilt it in
+    between. Silent, as the MCP server's catch-up is: a reader's output is
+    what it reads. What stops it is an error of the command, as every
+    `PreviouslyError` and `StorageError` is, and `main` says it in one
+    sentence: a projection not built at this code's version, which names
+    `previously project`, a gap in the log, a database that refuses. A
+    reader has no second way to the graph that would answer instead."""
+    with graph_snapshot(storage, storage, storage) as conn:
+        yield conn, projected_graph(storage, storage, conn)
+
+
 def _cmd_entities(args: argparse.Namespace) -> int:
     default = _language()
-    with _storage() as storage, storage.snapshot() as conn:
-        graph = read_graph(storage, conn)
+    with _storage() as storage, _graph_snapshot(storage) as (conn, graph):
         vocabulary = read_vocabulary(storage, conn)
-    kinds = _kinds_of(graph)
-    for subject in sorted(graph.threads):
-        thread = graph.threads[subject]
-        winner = thread.winner(graph.classes)
-        if thread.kind != ENTITY or winner is None:
-            continue
-        body = winner.claim.body
-        proposed = level_of(winner, graph.classes) == OPEN
-        listed = (
-            (proposed or bool(thread.pending(graph.classes))) if args.proposals else not proposed
-        )
-        # A retracted entity is out of the list unless asked for by name, or
-        # unless what stands of it is a proposal.
-        gone = body.state == RETRACTED and args.state != RETRACTED and not args.proposals
-        kept = (args.type is None or body.type == args.type) and (
-            args.state is None or body.state == args.state
-        )
-        if listed and kept and not gone:
-            print(_entity_line(graph, vocabulary, kinds, thread, winner, default))
+        kinds = graph.entity_kinds()
+        found = graph.winners(ENTITY, types=None if args.type is None else (args.type,))
+        for subject in sorted(found):
+            thread, winner = graph.threads[subject], found[subject]
+            body = winner.claim.body
+            proposed = level_of(winner, graph.classes) == OPEN
+            listed = (
+                (proposed or bool(thread.pending(graph.classes)))
+                if args.proposals
+                else not proposed
+            )
+            # A retracted entity is out of the list unless asked for by
+            # name, or unless what stands of it is a proposal.
+            gone = body.state == RETRACTED and args.state != RETRACTED and not args.proposals
+            kept = (args.type is None or body.type == args.type) and (
+                args.state is None or body.state == args.state
+            )
+            if listed and kept and not gone:
+                print(_entity_line(graph, vocabulary, kinds, thread, winner, default))
     return 0
 
 
@@ -3437,7 +3551,7 @@ def _relation_line(
     default: str,
 ) -> str:
     body = cast("RelationBody", winner.claim.body)
-    start = _end_text(graph, body.start) if isinstance(body.start, int) else "(an event)"
+    start = _start_text(graph, body.start)
     return "\t".join(
         (
             str(thread.subject),
@@ -3456,39 +3570,38 @@ def _cmd_relations(args: argparse.Namespace) -> int:
     default = _language()
     at = _parse_day("--at", args.at) if args.at is not None else None
     as_of = parse_moment(args.as_of) if args.as_of is not None else None
-    with _storage() as storage, storage.snapshot() as conn:
-        graph = read_graph(storage, conn, as_of=as_of)
+    # The projection knows only what stands now; a past moment folds the log
+    # up to it, which is rare and may be slow.
+    with _storage() as storage, ExitStack() as stack:
+        if as_of is None:
+            conn, graph = stack.enter_context(_graph_snapshot(storage))
+        else:
+            conn = stack.enter_context(storage.snapshot())
+            graph = read_graph(storage, conn, as_of=as_of)
         vocabulary = read_vocabulary(storage, conn)
-    kinds = _kinds_of(graph)
-    found = graph.relations(at=at)
-    for subject in sorted(found):
-        winner = found[subject]
-        body = cast("RelationBody", winner.claim.body)
-        kept = (
-            (args.type is None or body.type == args.type)
-            and (args.start is None or body.start == args.start)
-            and (args.to is None or body.to == args.to)
-            and level_of(winner, graph.classes) != OPEN
+        kinds = graph.entity_kinds()
+        found = graph.relations(
+            at=at,
+            types=None if args.type is None else (args.type,),
+            start=args.start,
+            to=args.to,
         )
-        if kept:
-            print(_relation_line(graph, vocabulary, kinds, graph.threads[subject], winner, default))
+        for subject in sorted(found):
+            winner = found[subject]
+            if level_of(winner, graph.classes) != OPEN:
+                thread = graph.threads[subject]
+                print(_relation_line(graph, vocabulary, kinds, thread, winner, default))
     return 0
 
 
-def _claim_fields(claim: Claim) -> list[tuple[str, str]]:
-    """What a claim says, as the names `claim_changes` uses, so that the
-    first version of a history and the changes after it read alike."""
-    body = claim.body
-    fields = [("type", body.type)]
-    if isinstance(body, EntityBody):
-        fields.append(("language", _NO_VALUE if body.language is None else body.language))
-    else:
-        fields.append(("from", str(body.start) if isinstance(body.start, int) else "(an event)"))
-        if body.candidates is not None:
-            fields.append(("to", "candidates " + ", ".join(str(item) for item in body.candidates)))
-        else:
-            fields.append(("to", str(body.to)))
-        fields.append(("period", _period_text(body.period)))
+def _entity_fields(body: EntityBody) -> list[tuple[str, str]]:
+    """What an entity version says, as the names `claim_changes` uses, so
+    that the first version of a history and the changes after it read
+    alike."""
+    fields = [
+        ("type", body.type),
+        ("language", _NO_VALUE if body.language is None else body.language),
+    ]
     fields += [(f"fields.{name}", _field_text(body.fields[name])) for name in sorted(body.fields)]
     fields.append(("state", body.state))
     return fields
@@ -3537,7 +3650,7 @@ def _entity_lines(
         f"versions\t{len(thread.versions)}",
         f"proposals\t{len(thread.pending(graph.classes))}",
     ]
-    relations = graph.relations()
+    relations = graph.relations(touching=thread.subject)
     for subject in sorted(relations):
         relation = relations[subject]
         related = cast("RelationBody", relation.claim.body)
@@ -3546,6 +3659,9 @@ def _entity_lines(
         elif related.to == thread.subject and isinstance(related.start, int):
             way, other = "in", related.start
         else:
+            # An assignment of a mail is no relation between two entities,
+            # and a bracket may have many: `relations --type concerns --to
+            # ID` lists them, and the page stays the entity's.
             continue
         label = display_label(
             vocabulary, RELATION_KIND, related.type, language=None, default=default
@@ -3599,9 +3715,11 @@ def _entity_history_lines(
             f"reason\t{escape_field(_NO_VALUE if claim.reason is None else claim.reason)}",
         ]
         if position == 0:
+            # `_show_entity` hands over only a thread of kind entity, and
+            # every version of a thread is of the thread's kind.
             lines += [
                 f"set\t{escape_field(name)}\t{escape_field(text)}"
-                for name, text in _claim_fields(claim)
+                for name, text in _entity_fields(cast("EntityBody", claim.body))
             ]
         else:
             lines += _claim_change_lines("change", thread.versions[position - 1].claim, claim)
@@ -3611,22 +3729,21 @@ def _entity_history_lines(
 def _show_entity(args: argparse.Namespace) -> int:
     default = _language()
     subject = int(args.what)
-    with _storage() as storage, storage.snapshot() as conn:
-        graph = read_graph(storage, conn)
+    with _storage() as storage, _graph_snapshot(storage) as (conn, graph):
         vocabulary = read_vocabulary(storage, conn)
         thread = graph.threads.get(subject)
         if thread is None and erased_assertion(storage, conn, subject):
             print(f"assertion {subject} is erased", file=sys.stderr)
             return 1
-    winner = None if thread is None else thread.winner(graph.classes)
-    if thread is None or thread.kind != ENTITY or (winner is None and not args.history):
-        print(f"no entity stands under event {subject}", file=sys.stderr)
-        return 1
-    kinds = _kinds_of(graph)
-    if args.history or winner is None:
-        lines = _entity_history_lines(graph, vocabulary, kinds, thread)
-    else:
-        lines = _entity_lines(graph, vocabulary, kinds, thread, winner, default)
+        winner = None if thread is None else thread.winner(graph.classes)
+        if thread is None or thread.kind != ENTITY or (winner is None and not args.history):
+            print(f"no entity stands under event {subject}", file=sys.stderr)
+            return 1
+        kinds = graph.entity_kinds()
+        if args.history or winner is None:
+            lines = _entity_history_lines(graph, vocabulary, kinds, thread)
+        else:
+            lines = _entity_lines(graph, vocabulary, kinds, thread, winner, default)
     for line in lines:
         print(line)
     return 0
@@ -3667,7 +3784,7 @@ def _waiting(graph: Graph) -> dict[str, list[GraphVersion]]:
     proposal. A version is in one of the three, and a proposal that stands
     as the winner of its thread counts as one."""
     found: dict[str, list[GraphVersion]] = {kind: [] for kind in _TRIAGE_KINDS}
-    for thread in graph.threads.values():
+    for thread in graph.waiting().values():
         winner = thread.winner(graph.classes)
         waiting = list(thread.pending(graph.classes))
         if winner is not None and level_of(winner, graph.classes) == OPEN:
@@ -3689,32 +3806,30 @@ def _waiting(graph: Graph) -> dict[str, list[GraphVersion]]:
 def _cmd_triage(args: argparse.Namespace) -> int:
     del args
     default = _language()
-    with _storage() as storage, storage.snapshot() as conn:
-        graph = read_graph(storage, conn)
+    with _storage() as storage, _graph_snapshot(storage) as (conn, graph):
         vocabulary = read_vocabulary(storage, conn)
-    for kind, versions in _waiting(graph).items():
-        for version in versions:
-            claim = version.claim
-            declares = ENTITY_KIND if isinstance(claim.body, EntityBody) else RELATION_KIND
-            print(
-                "\t".join(
-                    (
-                        kind,
-                        str(version.id),
-                        _kind_label(vocabulary, declares, claim, default),
-                        _claim_label(graph, claim),
-                        escape_field(claim.author),
+        for kind, versions in _waiting(graph).items():
+            for version in versions:
+                claim = version.claim
+                declares = ENTITY_KIND if isinstance(claim.body, EntityBody) else RELATION_KIND
+                print(
+                    "\t".join(
+                        (
+                            kind,
+                            str(version.id),
+                            _kind_label(vocabulary, declares, claim, default),
+                            _claim_label(graph, claim),
+                            escape_field(claim.author),
+                        )
                     )
                 )
-            )
     return 0
 
 
 def _cmd_status(args: argparse.Namespace) -> int:
     del args
-    with _storage() as storage, storage.snapshot() as conn:
-        graph = read_graph(storage, conn)
-    waiting = _waiting(graph)
+    with _storage() as storage, _graph_snapshot(storage) as (_conn, graph):
+        waiting = _waiting(graph)
     for kind in _TRIAGE_KINDS:
         print(f"{kind}s\t{len(waiting[kind])}")
     return 0
@@ -3816,9 +3931,11 @@ def _cmd_classes_set(args: argparse.Namespace) -> int:
 
 def _cmd_classes_list(args: argparse.Namespace) -> int:
     del args
-    with _storage() as storage, storage.snapshot() as conn:
+    # A hit rate counts the versions under a class, and the projection says
+    # which threads hold one: only those are folded.
+    with _storage() as storage, _graph_snapshot(storage) as (conn, graph):
         classes = read_classes(storage, conn)
-        rates = {rate.name: rate for rate in hit_rates(read_graph(storage, conn), classes)}
+        rates = {rate.name: rate for rate in hit_rates(graph, classes)}
     for name in sorted(classes.by_name):
         item, event_id = classes.by_name[name]
         rate = rates[name]
@@ -3847,30 +3964,29 @@ def _cmd_classes_sample(args: argparse.Namespace) -> int:
     if args.count < 1:
         raise PreviouslyError(f"--count must be at least 1, got {args.count}")
     default = _language()
-    with _storage() as storage, storage.snapshot() as conn:
+    with _storage() as storage, _graph_snapshot(storage) as (conn, graph):
         classes = read_classes(storage, conn)
-        graph = read_graph(storage, conn)
         vocabulary = read_vocabulary(storage, conn)
-    current = classes.by_name.get(args.name)
-    if current is None:
-        raise PreviouslyError(f"no approval class is named {args.name}")
-    for version in sample(graph, current[1], args.count, random.SystemRandom()):
-        claim = version.claim
-        declares = ENTITY_KIND if isinstance(claim.body, EntityBody) else RELATION_KIND
-        subject = claim.subject if claim.subject is not None else version.id
-        print(
-            "\t".join(
-                (
-                    str(version.id),
-                    str(subject),
-                    declares,
-                    _kind_label(vocabulary, declares, claim, default),
-                    _claim_label(graph, claim),
-                    str(claim.confidence),
-                    escape_field(claim.author),
+        current = classes.by_name.get(args.name)
+        if current is None:
+            raise PreviouslyError(f"no approval class is named {args.name}")
+        for version in sample(graph, current[1], args.count, random.SystemRandom()):
+            claim = version.claim
+            declares = ENTITY_KIND if isinstance(claim.body, EntityBody) else RELATION_KIND
+            subject = claim.subject if claim.subject is not None else version.id
+            print(
+                "\t".join(
+                    (
+                        str(version.id),
+                        str(subject),
+                        declares,
+                        _kind_label(vocabulary, declares, claim, default),
+                        _claim_label(graph, claim),
+                        str(claim.confidence),
+                        escape_field(claim.author),
+                    )
                 )
             )
-        )
     return 0
 
 
@@ -3917,8 +4033,16 @@ def _entity_arguments(parser: argparse.ArgumentParser) -> None:
 
 def _relate_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("what", metavar="TYPE", help="the kind of the relation")
-    parser.add_argument(
+    start = parser.add_mutually_exclusive_group()
+    start.add_argument(
         "--from", dest="start", type=int, metavar="ID", help="the entity it starts at"
+    )
+    start.add_argument(
+        "--from-event",
+        dest="start_event",
+        metavar="EVENT[:SEQ,SEQ]",
+        help="the event, or units of it, an assignment such as concerns starts at; "
+        "a source of its own unless --source names the event",
     )
     parser.add_argument("--to", type=int, metavar="ID", help="the entity it points at")
     parser.add_argument("--from-date", help="the first day it holds, YYYY-MM-DD")
@@ -4141,6 +4265,8 @@ def _cmd_mcp(_args: argparse.Namespace) -> int:
             storage,
             name,
             locker=storage,
+            graph=storage,
+            projections=storage,
             confirm_key=os.environ.get(KEY_VARIABLE),
             language=language,
         )
@@ -4179,15 +4305,17 @@ def _cmd_serve(_args: argparse.Namespace) -> int:
     allowed = (os.environ.get("PREVIOUSLY_MCP_ALLOWED_HOSTS") or "").replace(",", " ").split()
     where = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
     with _storage() as storage:
-        print(f"serving MCP over HTTP on http://{where}/mcp", file=sys.stderr)
         run_http(
             storage,
             host=host,
             port=port,
             allowed_hosts=allowed,
             locker=storage,
+            graph=storage,
+            projections=storage,
             confirm_key=os.environ.get(KEY_VARIABLE),
             language=language,
+            announce=lambda: print(f"serving MCP over HTTP on http://{where}/mcp", file=sys.stderr),
         )
     return 0
 
@@ -4215,7 +4343,12 @@ COMMANDS: tuple[Command, ...] = (
     Command("anchor", "print the tip of an intact chain as an anchor line", _cmd_anchor),
     Command("show", "show one event with its units", _cmd_show, _show_arguments),
     Command("blob", "fetch a stored blob into a file", _cmd_blob_get, _blob_arguments),
-    Command("project", "bring the projections up to the tip of the log", _cmd_project),
+    Command(
+        "project",
+        "bring the projections up to the tip of the log",
+        _cmd_project,
+        _project_arguments,
+    ),
     Command("chronicle", "print the chronicle in time order", _cmd_chronicle, _chronicle_arguments),
     Command("stats", "print the per-source statistics", _cmd_stats),
     Command("policy", "set and show the processing policy", _cmd_policy, _policy_arguments),

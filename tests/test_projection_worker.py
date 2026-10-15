@@ -10,6 +10,7 @@ incremental step, and that is the failure that kills projections.
 """
 
 from dataclasses import dataclass
+from dataclasses import replace
 from datetime import datetime
 from datetime import timedelta
 from datetime import UTC
@@ -19,14 +20,33 @@ from hypothesis import settings
 from hypothesis import strategies as st
 from previously.contract.rows import ChronicleRow
 from previously.contract.rows import EventRow
+from previously.contract.rows import GraphThreadRow
+from previously.contract.rows import GraphVersionRow
 from previously.contract.rows import ProjectionState
 from previously.contract.rows import SourceStatsRow
 from previously.contract.rows import UnitRow
 from previously.contract.types import Evidence
 from previously.contract.types import RawEvent
 from previously.core.append import append
+from previously.core.assertion import DIRECT
+from previously.core.assertion import model_author
+from previously.core.assertion import OPEN
+from previously.core.assertion import OPERATOR
+from previously.core.assertion import REJECTION
+from previously.core.assertion import Source
+from previously.core.assertion import Statement
+from previously.core.assertions import write_statements
 from previously.core.errors import ProjectionGap
 from previously.core.errors import ProjectionRebuilt
+from previously.core.graph import ACTIVE
+from previously.core.graph import Claim
+from previously.core.graph import ENTITY
+from previously.core.graph import EntityBody
+from previously.core.graph import RELATION
+from previously.core.graph import RelationBody
+from previously.core.graph import SOURCES
+from previously.core.graph import STANDING
+from previously.core.graph_write import write_claims
 from previously.core.projection import PROJECTIONS
 from previously.core.projection.chronicle import CHRONICLE
 from previously.core.projection.chronicle import ChronicleProjection
@@ -36,6 +56,9 @@ from previously.core.projection.worker import catch_up
 from previously.core.redact import redact_event
 from previously.core.redact import redact_units
 from previously.core.units import split_plaintext
+from previously.core.vocabulary import apply_vocabulary
+from previously.core.vocabulary import base_vocabulary
+from previously.core.vocabulary import parse_file
 from previously.storage.postgres import PostgresStorage
 from sqlalchemy import Connection
 from sqlalchemy import Engine
@@ -68,20 +91,29 @@ def _raw(n: int, source: str, occurred_at: datetime, text_: str = "one\n\ntwo") 
     )
 
 
-def _snapshot(db: Engine) -> tuple[list[tuple[object, ...]], list[tuple[object, ...]]]:
-    """Both projection tables as sorted tuples — rows, not a digest, so a
-    failure names the field that moved (the lesson of the pinned hash vector)."""
+type _Rows = list[tuple[object, ...]]
+
+
+def _snapshot(db: Engine) -> tuple[_Rows, _Rows, _Rows, _Rows]:
+    """Every projection table as sorted tuples — rows, not a digest, so a
+    failure names the field that moved (the lesson of the pinned hash
+    vector): the chronicle, the statistics, and the two tables of the
+    graph."""
     with db.begin() as c:
         chronicle = [
             tuple(r) for r in c.execute(text("SELECT * FROM p_chronicle ORDER BY event_id, seq"))
         ]
         stats = [tuple(r) for r in c.execute(text("SELECT * FROM p_source_stats ORDER BY source"))]
-    return chronicle, stats
+        versions = [tuple(r) for r in c.execute(text("SELECT * FROM p_graph_version ORDER BY id"))]
+        threads = [
+            tuple(r) for r in c.execute(text("SELECT * FROM p_graph_thread ORDER BY subject"))
+        ]
+    return chronicle, stats, versions, threads
 
 
 def _project_all(storage: PostgresStorage) -> None:
     for projection in PROJECTIONS:
-        catch_up(storage, storage, projection)
+        catch_up(storage, storage, projection, rebuild=True)
 
 
 def _force_rebuild(storage: PostgresStorage) -> None:
@@ -122,12 +154,19 @@ def test_incremental_equals_rebuilt(db: Engine) -> None:
 
     All three remeasured on 2026-10-05, with sixteen tests in this file and
     eleven in `test_projection_derive.py`, and each came out as above.
+
+    The graph walks the same two paths since 2026-10-15
+    ({ref}`graph-projection`): a project, an assignment that falls with the
+    unit it rests on, and a proposal with its rejection. With the graph
+    keeping the rows of `p_graph_version` a rebuild would not write
+    (`_stale` returning nothing), this test fails on the comparison.
     """
     storage = PostgresStorage(db)
     moments = [NOW, NOW + timedelta(days=1), NOW - timedelta(days=5)]
     for n, moment in enumerate(moments, start=1):
         append(storage, [_raw(n, "email", moment)], recorded_at=NOW)
         _project_all(storage)  # the incremental path, one event at a time
+    project, _assigned, proposal, rejection = _graph_history(storage, lambda: _project_all(storage))
     incremental = _snapshot(db)
 
     _force_rebuild(storage)
@@ -137,6 +176,48 @@ def test_incremental_equals_rebuilt(db: Engine) -> None:
     assert incremental == rebuilt
     (stats_row,) = rebuilt[1]
     assert stats_row[3] == NOW - timedelta(days=5)  # first_seen is the earliest, not the last
+    # The graph kept the project; the assignment fell with its unit, the
+    # proposal with its rejection, and both tables say so on both paths.
+    assert [row[0] for row in rebuilt[3]] == [project]
+    assert [(row[0], row[2]) for row in rebuilt[2]] == [
+        (project, "entity"),
+        (proposal, "entity"),
+        (rejection, "rejection"),
+    ]
+
+
+def _graph_history(storage: PostgresStorage, after_each: Callable[[], None]) -> tuple[int, ...]:
+    """The base vocabulary, the operator's project and an assignment of unit
+    1 of event 2 to it, a model's proposal and its rejection, and the erasure
+    of that unit, which takes the assignment; `after_each` runs after every
+    step. Returns the ids of project, assignment, proposal and rejection."""
+    apply_vocabulary(storage, parse_file(base_vocabulary()), recorded_at=NOW)
+    after_each()
+    project = Claim(
+        ENTITY, OPERATOR, DIRECT, SOURCES, (Source(1, None),), None, None, None, None, None,
+        None, None, EntityBody("project", "de", {"name": "XZ"}, ACTIVE),
+    )  # fmt: skip
+    (project_id,) = write_claims(storage, storage, [project], recorded_at=NOW).ids
+    after_each()
+    assigned = replace(
+        project,
+        kind=RELATION,
+        sources=(Source(2, (1,)),),
+        body=RelationBody("concerns", Source(2, (1,)), project_id, None, None, {}, STANDING),
+    )
+    (assigned_id,) = write_claims(storage, storage, [assigned], recorded_at=NOW).ids
+    after_each()
+    proposal = replace(project, author=model_author("claude"), responsibility=OPEN, confidence=10)
+    (proposal_id,) = write_claims(storage, storage, [proposal], recorded_at=NOW).ids
+    after_each()
+    rejection = Statement(
+        REJECTION, OPERATOR, DIRECT, (Source(1, None),), None, None, None, None, proposal_id, None
+    )
+    (rejection_id,) = write_statements(storage, storage, [rejection], recorded_at=NOW)
+    after_each()
+    redact_units(storage, storage, 2, [1], reason="a third party", recorded_at=NOW)
+    after_each()
+    return project_id, assigned_id, proposal_id, rejection_id
 
 
 @pytest.mark.db
@@ -146,17 +227,17 @@ def test_a_version_bump_rebuilds_and_without_it_nothing_moves(db: Engine) -> Non
     poison stays."""
     storage = PostgresStorage(db)
     append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
-    catch_up(storage, storage, SOURCE_STATS)
+    catch_up(storage, storage, SOURCE_STATS, rebuild=True)
     with db.begin() as c:
         c.execute(text("UPDATE p_source_stats SET events = 999"))
 
-    unchanged = catch_up(storage, storage, SOURCE_STATS)  # control: same version
+    unchanged = catch_up(storage, storage, SOURCE_STATS, rebuild=True)  # control: same version
     with db.begin() as c:
         assert c.execute(text("SELECT events FROM p_source_stats")).scalar_one() == 999
     assert unchanged.rebuilt_from is None
     assert unchanged.events == 0
 
-    outcome = catch_up(storage, storage, SourceStatsProjection(version=2))
+    outcome = catch_up(storage, storage, SourceStatsProjection(version=2), rebuild=True)
     with db.begin() as c:
         assert c.execute(text("SELECT events FROM p_source_stats")).scalar_one() == 1
         version = c.execute(
@@ -173,8 +254,8 @@ def test_a_lower_code_version_rebuilds_too(db: Engine) -> None:
     — a rolled-back release derives differently from the table it meets."""
     storage = PostgresStorage(db)
     append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
-    catch_up(storage, storage, ChronicleProjection(version=4))
-    outcome = catch_up(storage, storage, ChronicleProjection(version=3))
+    catch_up(storage, storage, ChronicleProjection(version=4), rebuild=True)
+    outcome = catch_up(storage, storage, ChronicleProjection(version=3), rebuild=True)
     assert outcome.rebuilt_from == 4
     assert outcome.version == 3
     assert outcome.events == 1
@@ -220,6 +301,27 @@ class _FailingStore:
     def upsert_source_stats(self, conn: Connection, rows: Sequence[SourceStatsRow]) -> None:
         self._inner.upsert_source_stats(conn, rows)
 
+    def insert_graph_versions(self, conn: Connection, rows: Sequence[GraphVersionRow]) -> None:
+        self._inner.insert_graph_versions(conn, rows)
+
+    def graph_versions(self, conn: Connection, ids: Sequence[int]) -> dict[int, GraphVersionRow]:
+        return self._inner.graph_versions(conn, ids)
+
+    def graph_version_ids(self, conn: Connection, subjects: Sequence[int]) -> dict[int, list[int]]:
+        return self._inner.graph_version_ids(conn, subjects)
+
+    def class_subjects(self, conn: Connection, under_ids: Sequence[int]) -> set[int]:
+        return self._inner.class_subjects(conn, under_ids)
+
+    def delete_graph_versions(self, conn: Connection, ids: Sequence[int]) -> None:
+        self._inner.delete_graph_versions(conn, ids)
+
+    def upsert_graph_threads(self, conn: Connection, rows: Sequence[GraphThreadRow]) -> None:
+        self._inner.upsert_graph_threads(conn, rows)
+
+    def delete_graph_threads(self, conn: Connection, subjects: Sequence[int]) -> None:
+        self._inner.delete_graph_threads(conn, subjects)
+
 
 @pytest.mark.db
 def test_an_abort_leaves_rows_and_up_to_id_in_step(db: Engine) -> None:
@@ -232,7 +334,7 @@ def test_an_abort_leaves_rows_and_up_to_id_in_step(db: Engine) -> None:
     failing: ProjectionStore[Connection] = _FailingStore(storage, fail_on_call=3)
 
     with pytest.raises(RuntimeError, match="injected"):
-        catch_up(storage, failing, CHRONICLE, batch_size=2)
+        catch_up(storage, failing, CHRONICLE, rebuild=True, batch_size=2)
 
     with db.begin() as c:
         highest = c.execute(text("SELECT max(event_id) FROM p_chronicle")).scalar_one()
@@ -241,7 +343,7 @@ def test_an_abort_leaves_rows_and_up_to_id_in_step(db: Engine) -> None:
     assert state is not None
     assert (state.up_to_id, highest, rows) == (4, 4, 8)  # two units per event
 
-    outcome = catch_up(storage, storage, CHRONICLE, batch_size=2)
+    outcome = catch_up(storage, storage, CHRONICLE, rebuild=True, batch_size=2)
     assert (outcome.events, outcome.up_to_id) == (6, 10)
 
 
@@ -256,7 +358,7 @@ def test_a_second_run_changes_nothing(db: Engine) -> None:
     append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
     _project_all(storage)
     before = _snapshot(db)
-    outcomes = [catch_up(storage, storage, p) for p in PROJECTIONS]
+    outcomes = [catch_up(storage, storage, p, rebuild=True) for p in PROJECTIONS]
     assert _snapshot(db) == before
     assert all(o.events == 0 and o.rebuilt_from is None for o in outcomes)
 
@@ -265,9 +367,9 @@ def test_a_second_run_changes_nothing(db: Engine) -> None:
 def test_an_empty_log_is_up_to_date_at_zero(db: Engine) -> None:
     """Review Focus 5."""
     storage = PostgresStorage(db)
-    outcome = catch_up(storage, storage, CHRONICLE)
+    outcome = catch_up(storage, storage, CHRONICLE, rebuild=True)
     assert (outcome.rebuilt_from, outcome.events, outcome.up_to_id) == (0, 0, 0)
-    assert _snapshot(db) == ([], [])
+    assert _snapshot(db) == ([], [], [], [])
 
 
 @pytest.mark.db
@@ -289,7 +391,7 @@ def test_an_event_without_a_source_is_in_the_chronicle_and_not_in_the_stats(db: 
             None,
         )
     _project_all(storage)
-    chronicle, stats = _snapshot(db)
+    chronicle, stats, _versions, _threads = _snapshot(db)
     assert any(r[0] == 2 and r[6] is None for r in chronicle)  # event_id 2, source NULL
     assert [r[0] for r in stats] == ["email"]
     assert stats[0][1] == 1  # one event counted, not two
@@ -312,7 +414,7 @@ def test_a_payload_erased_without_a_redaction_keeps_its_chronicle_rows_with_evid
         # The salt goes with the payload, or `event_payload_salt_check`
         # refuses the statement (ruling P-1 of the 2026-10-04 stage 1c plan).
         c.execute(text("UPDATE event SET payload = NULL, payload_salt = NULL WHERE id = 1"))
-    catch_up(storage, storage, CHRONICLE)
+    catch_up(storage, storage, CHRONICLE, rebuild=True)
     with db.begin() as c:
         rows = c.execute(text("SELECT content, evidence FROM p_chronicle ORDER BY seq")).all()
     assert [tuple(r) for r in rows] == [("one", None), ("two", None)]
@@ -394,7 +496,7 @@ def test_a_redacted_event_leaves_no_chronicle_row(db: Engine) -> None:
     storage = PostgresStorage(db)
     append(storage, [_raw(n, "email", NOW) for n in (1, 2)], recorded_at=NOW)
     redact_event(storage, storage, 1, reason="wrong recipient", recorded_at=NOW)
-    catch_up(storage, storage, CHRONICLE)
+    catch_up(storage, storage, CHRONICLE, rebuild=True)
     assert _chronicle_keys(db) == [(2, 1), (2, 2)]
 
 
@@ -431,14 +533,14 @@ def test_a_gap_in_the_log_raises_instead_of_being_skipped(db: Engine) -> None:
     append(storage, [_raw(n, "email", NOW) for n in range(1, 11)], recorded_at=NOW)
     failing: ProjectionStore[Connection] = _FailingStore(storage, fail_on_call=3)
     with pytest.raises(RuntimeError, match="injected"):
-        catch_up(storage, failing, CHRONICLE, batch_size=2)
+        catch_up(storage, failing, CHRONICLE, rebuild=True, batch_size=2)
     with db.begin() as c:
         c.execute(text("DELETE FROM source_key WHERE event_id = 5"))
         c.execute(text("DELETE FROM unit WHERE event_id = 5"))
         c.execute(text("DELETE FROM event WHERE id = 5"))
 
     with pytest.raises(ProjectionGap, match="above id 4"):
-        catch_up(storage, storage, CHRONICLE, batch_size=2)
+        catch_up(storage, storage, CHRONICLE, rebuild=True, batch_size=2)
 
     with db.begin() as c:
         highest = c.execute(text("SELECT max(event_id) FROM p_chronicle")).scalar_one()
@@ -457,7 +559,7 @@ def test_batch_size_below_one_is_a_caller_error_not_a_gap(db: Engine) -> None:
     storage = PostgresStorage(db)
     for bad in (0, -1):
         with pytest.raises(ValueError, match="batch_size"):
-            catch_up(storage, storage, CHRONICLE, batch_size=bad)
+            catch_up(storage, storage, CHRONICLE, rebuild=True, batch_size=bad)
 
 
 @pytest.mark.db
@@ -483,7 +585,7 @@ def test_a_batch_without_any_source_leaves_the_stats_untouched(db: Engine) -> No
             [UnitRow(2, 1, "orphan")],
             None,
         )
-    outcome = catch_up(storage, storage, SOURCE_STATS)
+    outcome = catch_up(storage, storage, SOURCE_STATS, rebuild=True)
     assert outcome.events == 1
     assert _snapshot(db)[1] == before
 
@@ -656,7 +758,7 @@ def test_two_catch_ups_of_one_projection_take_turns(db: Engine, appended: bool) 
     without the append, ends clean with and without the lock: the first
     catch-up's own next batch reads the redaction."""
     storage = PostgresStorage(db)
-    catch_up(storage, storage, CHRONICLE)
+    catch_up(storage, storage, CHRONICLE, rebuild=True)
     erased = "secret line one.\n\nsecret line two."
     append(storage, [_raw(1, "email", NOW, erased)], recorded_at=NOW)
     second_done = threading.Event()
@@ -665,14 +767,14 @@ def test_two_catch_ups_of_one_projection_take_turns(db: Engine, appended: bool) 
 
     def project() -> None:
         try:
-            catch_up(first, first, CHRONICLE)
+            catch_up(first, first, CHRONICLE, rebuild=True)
         except BaseException as e:
             errors.append(e)
 
     def redact_catch_up() -> None:
         try:
             assert first.holding.wait(timeout=10)
-            catch_up(storage, storage, CHRONICLE)
+            catch_up(storage, storage, CHRONICLE, rebuild=False)
         except BaseException as e:
             errors.append(e)
         finally:
@@ -692,11 +794,11 @@ def test_two_catch_ups_of_one_projection_take_turns(db: Engine, appended: bool) 
 
     assert errors == []
     assert _chronicle_keys(db) == ([(3, 1), (3, 2)] if appended else [])
-    again = catch_up(storage, storage, CHRONICLE)
+    again = catch_up(storage, storage, CHRONICLE, rebuild=True)
     assert (again.events, again.up_to_id) == (0, 3 if appended else 2)
     incremental = _snapshot(db)[0]
     _force_rebuild(storage)
-    catch_up(storage, storage, CHRONICLE)
+    catch_up(storage, storage, CHRONICLE, rebuild=True)
     assert _snapshot(db)[0] == incremental
 
 
@@ -743,14 +845,14 @@ def test_two_first_builds_build_once(db: Engine) -> None:
 
     def build_first() -> None:
         try:
-            outcomes["first"] = catch_up(first, first, CHRONICLE)
+            outcomes["first"] = catch_up(first, first, CHRONICLE, rebuild=True)
         except BaseException as e:
             errors.append(e)
 
     def build_second() -> None:
         try:
             assert first.holding.wait(timeout=10)
-            outcomes["second"] = catch_up(storage, storage, CHRONICLE)
+            outcomes["second"] = catch_up(storage, storage, CHRONICLE, rebuild=True)
         except BaseException as e:
             errors.append(e)
         finally:
@@ -783,7 +885,7 @@ def _catch_up_beside(db: Engine, other: ChronicleProjection | None) -> list[Base
 
     def run() -> None:
         try:
-            catch_up(first, first, CHRONICLE)
+            catch_up(first, first, CHRONICLE, rebuild=True)
         except BaseException as e:
             errors.append(e)
 
@@ -791,7 +893,7 @@ def _catch_up_beside(db: Engine, other: ChronicleProjection | None) -> list[Base
     thread.start()
     assert first.stopped.wait(timeout=10)
     if other is not None:
-        assert catch_up(storage, storage, other).rebuilt_from == CHRONICLE.version
+        assert catch_up(storage, storage, other, rebuild=True).rebuilt_from == CHRONICLE.version
     first.resume.set()
     thread.join(timeout=20)
     assert not thread.is_alive(), "thread is hanging"

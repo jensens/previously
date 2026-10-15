@@ -55,6 +55,7 @@ from previously.core.graph import RelationBody
 from previously.core.graph import RETRACTED
 from previously.core.graph import SOURCES
 from previously.core.graph import STANDING
+from previously.core.graph import START_NOT_A_SOURCE
 from previously.core.graph import TRANSITIVE
 from previously.core.graph_write import check_claims
 from previously.core.graph_write import claim_sources
@@ -77,6 +78,8 @@ from previously.core.policy import Inference
 from previously.core.policy import Policy
 from previously.core.policy import Provider
 from previously.core.policy import Rule
+from previously.core.redact import redact_units
+from previously.core.verify import verify
 from previously.core.vocabulary import apply_vocabulary
 from previously.core.vocabulary import base_vocabulary
 from previously.core.vocabulary import ENTITY_KIND
@@ -1097,9 +1100,10 @@ def test_approving_an_open_edge_that_closes_a_cycle_is_refused(db: Engine) -> No
 
 @pytest.mark.db
 def test_a_relation_that_starts_at_an_event_closes_no_cycle(db: Engine) -> None:
-    """Phase 1 refuses such a relation before the cycle rule; the rule
-    itself counts it as no edge between entities, so that `verify` does not
-    trip over one written by hand."""
+    """`part_of` does not start at an event, and the vocabulary refuses
+    one that does before the cycle rule; the rule itself counts it as no
+    edge between entities, so that `verify` does not trip over one written
+    by hand, and an assignment, which does start at one, closes nothing."""
     storage = _setup(db)
     with storage.begin() as conn:
         vocabulary = read_vocabulary(storage, conn)
@@ -1261,15 +1265,32 @@ def test_a_relation_is_visible_when_its_sources_and_both_ends_are() -> None:
     assert not relation_visible(policy, CLIENT, holds, {10: True, 12: False}, [], ("email",))
     assert not relation_visible(policy, CLIENT, holds, {10: True}, [], ("email",))
     assert not relation_visible(_policy(), CLIENT, holds, {10: True, 12: True}, [], ("email",))
-    from_event = replace(
-        relation("holds", 10, 12),
-        body=RelationBody("holds", Source(1, None), 12, None, None, {}, STANDING),
-    )
-    assert not relation_visible(policy, CLIENT, _thread(from_event), {12: True}, [], ("email",))
     question = _thread(relation("holds", 10, None, candidates=(12, 13)))
     assert not relation_visible(policy, CLIENT, question, {10: True, 12: True}, [], ("email",))
     assert relation_visible(
         policy, CLIENT, question, {10: True, 12: True, 13: True}, [], ("email",)
+    )
+
+
+def test_an_assignment_is_decided_over_its_mail_and_the_entity_it_points_at() -> None:
+    """Its start is among its sources, so the sources the caller hands in
+    are the mail's: a client that may not see the mail does not see the
+    assignment, and one that may not see the bracket does not either.
+    Measured red with the phase 1 rule back, which showed no relation that
+    starts at an event."""
+    policy = _policy("source:email")
+    start = Source(1, (2,))
+    assigned = replace(
+        relation("concerns", 10, 12, sources=(start,)),
+        body=RelationBody("concerns", start, 12, None, None, {}, STANDING),
+    )
+    thread = _thread(assigned)
+    assert relation_visible(policy, CLIENT, thread, {12: True}, [], ("email",))
+    assert not relation_visible(policy, CLIENT, thread, {12: False}, [], ("email",))
+    assert not relation_visible(_policy(), CLIENT, thread, {12: True}, [], ("email",))
+    # A thread that holds an entity is no relation, whatever the policy says.
+    assert not relation_visible(
+        policy, CLIENT, _thread(entity("project", "XZ")), {12: True}, [], ("email",)
     )
 
 
@@ -1305,3 +1326,151 @@ def test_the_source_events_of_graph_threads_are_read_with_their_identities(db: E
     identities, sources = claim_sources(events, graph.threads[anna])
     assert [identity["address"] for identity in identities] == [ADDRESS, ADDRESS]
     assert sources == ("email",)
+
+
+# --- Assignments: a relation that starts at an event (the 2026-10-15
+# assignments plan, phase 2) ------------------------------------------------------
+
+ASSIGNMENTS = ApprovalClass(
+    "claude_assignments",
+    MODEL,
+    RELATION,
+    frozenset({"concerns"}),
+    80,
+    None,
+    None,
+    revoked=False,
+    demote=False,
+)
+
+
+def assignment(
+    start: Source,
+    to: int | None,
+    *,
+    sources: tuple[Source, ...] | None = None,
+    candidates: tuple[int, ...] | None = None,
+    **changes: object,
+) -> Claim:
+    """The operator's `concerns` from `start`, resting on the start unless
+    `sources` says otherwise."""
+    claim = relation(
+        "concerns", 1, to, sources=(start,) if sources is None else sources, candidates=candidates
+    )
+    claim = replace(claim, body=replace(claim.body, start=start))
+    return replace(claim, **changes)
+
+
+@pytest.mark.db
+def test_an_assignment_of_a_mail_or_of_its_units_is_written_and_verify_finds_nothing(
+    db: Engine,
+) -> None:
+    storage = _setup(db)
+    (project,) = _ids(storage, entity("project", "XZ", sources=(Source(2, None),)))
+    whole, unit = _ids(
+        storage, assignment(Source(1, None), project), assignment(Source(1, (2,)), project)
+    )
+
+    relations = _graph(storage).relations()
+    assert relations[whole].claim.body == RelationBody(
+        "concerns", Source(1, None), project, None, None, {}, STANDING
+    )
+    assert relations[unit].claim.sources == (Source(1, (2,)),)
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_an_assignment_whose_start_no_source_covers_is_refused(db: Engine) -> None:
+    """Decision 3: the write path refuses it with the sentence of the form,
+    and so does the preview. Measured red with `_start_problem` answering
+    None: both were written."""
+    storage = _setup(db)
+    (project,) = _ids(storage, entity("project", "XZ"))
+    sentence = f"a statement has no valid form: {START_NOT_A_SOURCE}"
+    for sources in ((Source(2, None),), (Source(1, (1,)),)):
+        claim = assignment(Source(1, (1, 2)), project, sources=sources)
+        assert _refused(storage, claim) == sentence
+        with pytest.raises(GraphRefused, match=f"^{sentence}$"):
+            _checked(storage, claim)
+
+
+@pytest.mark.db
+def test_the_start_of_an_assignment_is_checked_as_a_source(db: Engine) -> None:
+    """The start is a source, so what refuses a source refuses a start: no
+    such event, no such unit, an event that is no observation."""
+    storage = _setup(db)
+    (project,) = _ids(storage, entity("project", "XZ"))
+    assert _refused(storage, assignment(Source(999, None), project)) == (
+        "there is no event 999 to rest on"
+    )
+    assert _refused(storage, assignment(Source(1, (7,)), project)) == "event 1 has no unit 7"
+    assert _refused(storage, assignment(Source(project, None), project)) == (
+        f"event {project} is not an observation, and only one can be a source"
+    )
+
+
+@pytest.mark.db
+def test_the_units_of_a_start_are_checked_when_a_source_cites_the_whole_event(db: Engine) -> None:
+    """Ruling T2-f of the 2026-10-15 assignments plan, phase 2: a source of
+    the whole mail covers any start of it, and the start's own units are
+    checked against the log all the same, by the write and by the preview.
+    Measured red with only the sources checked: both were written."""
+    storage = _setup(db)
+    (project,) = _ids(storage, entity("project", "XZ", sources=(Source(2, None),)))
+    whole = (Source(1, None),)
+    missing = assignment(Source(1, (7,)), project, sources=whole)
+    assert _refused(storage, missing) == "event 1 has no unit 7"
+    with pytest.raises(GraphRefused, match=r"^event 1 has no unit 7$"):
+        _checked(storage, missing)
+    redact_units(storage, storage, 1, [2], reason="wrong", recorded_at=T1)
+    erased = assignment(Source(1, (2,)), project, sources=whole)
+    sentence = "unit 2 of event 1 is erased and cannot be a source"
+    assert _refused(storage, erased) == sentence
+    with pytest.raises(GraphRefused, match=f"^{sentence}$"):
+        _checked(storage, erased)
+    # The control: a unit that is there, under the same source, is written.
+    assert _ids(storage, assignment(Source(1, (1,)), project, sources=whole))
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_a_model_assigns_at_the_level_of_its_class_and_asks_with_candidates(
+    db: Engine,
+) -> None:
+    """An assignment is a relation like any other: a class makes a confident
+    one transitive, an unsure one stays open, and a question with
+    candidates waits for the operator."""
+    storage = _setup(db)
+    class_id = set_class(storage, ASSIGNMENTS, statement="assignments", recorded_at=T0)
+    xz, party = _ids(storage, entity("project", "XZ"), entity("project", "Summer party"))
+
+    def model(claim: Claim, confidence: int) -> Claim:
+        return replace(claim, author=MODEL, responsibility=OPEN, confidence=confidence)
+
+    sure, unsure, asking = _write(
+        storage,
+        model(assignment(Source(1, None), xz), 90),
+        model(assignment(Source(2, None), xz), 40),
+        model(assignment(Source(3, (2,)), None, candidates=(xz, party)), 99),
+    ).ids
+    graph = _graph(storage)
+    claims = {
+        subject: graph.threads[subject].versions[0].claim for subject in (sure, unsure, asking)
+    }
+    levels = {subject: (claim.responsibility, claim.under) for subject, claim in claims.items()}
+    assert levels == {sure: (TRANSITIVE, class_id), unsure: (OPEN, None), asking: (OPEN, None)}
+    question = graph.threads[asking].question(graph.classes)
+    assert question is not None
+    assert verify(storage) == []
+
+
+@pytest.mark.db
+def test_an_assignment_is_retracted_with_a_new_version(db: Engine) -> None:
+    storage = _setup(db)
+    (project,) = _ids(storage, entity("project", "XZ"))
+    (assigned,) = _ids(storage, assignment(Source(1, (2,)), project))
+    claim = assignment(Source(1, (2,)), project, subject=assigned)
+    _ids(storage, replace(claim, body=replace(claim.body, state=RETRACTED)))
+
+    assert assigned not in _graph(storage).relations()
+    assert verify(storage) == []

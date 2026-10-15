@@ -9,7 +9,7 @@ For why the model has this shape, see {ref}`graph`; for every option, {ref}`cli-
 You need two things before you start.
 
 - The `previously` command from the first release with entities and relations, the one after `0.1.0a6`, or from a checkout, where `uv run previously …` runs it.
-- A database that `previously migrate` has brought up to date, with `PREVIOUSLY_DSN` exported.
+- A database that `previously migrate` has brought up to date and `previously project` has built the projections in, with `PREVIOUSLY_DSN` exported.
 
 ## Apply the base vocabulary
 

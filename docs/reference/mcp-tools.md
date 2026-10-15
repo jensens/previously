@@ -39,6 +39,13 @@ previously · TITLE · N objections pending · page N · next: c=CURSOR · N con
 `· N objections pending` stands right after the title in every result that has a header, with `objection` for one, and only when at least one objection waits that the client may see.
 An objection counts when it's pending on an entity or a relation that the policy lets the client see, as `list_triage` would show it; one on an entity or a relation the policy withholds isn't counted.
 The server counts once per call, in the snapshot the call reads, before the call's own work, so the result of a writing call counts what waited before it wrote.
+Before that snapshot, every call of `mcp` and `serve` brings the graph projection up to the tip of the log, and the count, `list_entities` and `list_triage` read the graph from it ({ref}`graph-readers`).
+The catch-up never builds the projection, and no other way to the graph answers in its place.
+Where the projection isn't built at the version of the server's release, or the catch-up fails, the call fails with the error a call gets for any failure inside the server, and the server's log says why.
+Where `previously project` rebuilt the projection between the catch-up and the snapshot, the call catches up once more and reads; a second rebuild in a row fails the call the same way.
+`whoami` and `get_event` catch up too, so they fail alike.
+What they show of an entity or a relation comes from the log.
+The tools that write fold the log for their checks.
 
 `· page N` stands in the results of `previously` and `get_event`, which can run over more than one page.
 `· next: c=CURSOR` stands only in a result of `previously` that has a next page.
@@ -251,11 +258,21 @@ The chronicle: the observations in the order of `occurred_at`, then `id`, that m
 | `source` | string | none | Only events of this source, such as `email`. |
 | `since` | string | none | Only events from this time on, inclusive. An ISO 8601 date, which means midnight UTC, or a moment with a zone. |
 | `until` | string | none | Only events before this time, exclusive. The same form as `since`. |
+| `within` | integer | none | The id of an entity, the bracket: only the events of which a unit belongs to it or to an entity that's part of it, each with only the units that belong. |
 | `cursor` | string | none | The cursor from the footer of the previous page. |
 
-The title is `chronicle`, followed by each filter given as `· NAME VALUE`.
+The title is `chronicle`, followed by each filter given as `· NAME VALUE`, such as `chronicle · within 12`.
 Each event is shown with its heading and all its units, or as a placeholder.
+With `within`, a shown event carries only the units that belong to the bracket, and the access entry names those.
+A unit belongs to the bracket as it does for `previously chronicle --within` ({ref}`cli-reference`), with one difference: an assignment or a hierarchy edge counts only where the client sees it, as a relation on the page of an entity does ({ref}`chronicle-of-a-bracket`).
+So an event the client may not see isn't shown under `within`, not even as a placeholder, a part or a `part_of` the client may not see stops the walk, and an assignment of a unit of its own that the client may not see doesn't take the unit from its event's bracket.
+The client can find less than the operator, and in that last case one more unit of an event it sees.
+An event left with no unit of the bracket isn't shown.
+The policy decides every event that `within` keeps as it does without `within`.
+When an event is cut at the end of a page, the note's `get_event` call serves every unit from the next one on, of the bracket or not.
+A bracket the client may not see is refused with the sentence of an id that names no entity, and so are an id of an event, a relation or a retracted entity, and an id below 1 or beyond 2^53 − 1.
 A cursor carries the id of the last item the page consumed, the filters and the number of the page it opens, encoded as base64url without padding; it isn't sealed, and grants nothing, because every call decides again.
+A cursor carries `within` as text, such as `"12"`, and the access entry as the number the call gave.
 A cursor for other filters, a malformed one, or one whose id names no observation is refused.
 
 ### `get_event`
@@ -649,15 +666,23 @@ The cycle rule holds the operator's versions, approvals and answers instead.
 The title is `write_relation`.
 Every source has to be an observation the client may see, and the start, the end or every candidate and a `subject` an entity or a relation the client may see.
 
+A kind whose `from` names `event` in the vocabulary, such as `concerns`, starts at an event: `from` is then an object with `event`, the id, and `units`, the units it concerns in ascending order, left out for the whole event.
+That event is one of the sources of the relation.
+Where no source names it, the server adds the start as a source of its own, so `sources` may be empty for such an item.
+A start the client may not see is refused as a source is, with `event N is not one this client can use as a source`.
+The units the start names are checked as a source's units are, even where a source cites the whole event.
+A source that names the event with fewer units than the start is refused as `a statement has no valid form: the event a relation starts at must be among its sources`, and the server doesn't merge the two.
+The preview shows such a start as `from:` and the URI of the event, or one URI per unit, as `sources:` shows a source.
+
 #### The fields of a relation
 
 | Field | Required | Description |
 |---|---|---|
 | `type` | yes | The kind of relation, as the vocabulary declares it. |
-| `from` | yes | The id of the entity it starts at. |
+| `from` | yes | The id of the entity it starts at, or, for a kind that starts at an event, an object with `event` and `units` as for a source. |
 | `to` | one of two | The id of the entity it points at. |
 | `candidates` | one of two | 2 to 5 ids of entities it may point at, for a question. |
-| `sources` | yes | The events it rests on, at least one, as for `write_assertion`. |
+| `sources` | yes | The events it rests on, as for `write_assertion`: at least one, the event it starts at among them, which the server adds where no source names it. |
 | `confidence` | yes | How sure the client is, a whole number from 0 to 100. |
 | `period` | no | When it held, an object with `from` and `to` as for a period field, for a kind with the behavior `period`. |
 | `fields` | no | The fields the kind declares, as for `write_entity`. |
@@ -731,6 +756,7 @@ Error: the client claude-code is not in force: it was revoked or never added
 Error: no circle nowhere exists; list_circles names the circles
 Error: since is not an ISO 8601 date, or a moment with a zone, such as 2026-09-01
 Error: since has no zone; give a date, or a moment such as 2026-09-01T09:00+02:00
+Error: within 12 is not an entity that stands
 Error: cursor is not valid for these filters; call again without a cursor for the first page
 Error: ids takes 1 to 20 event ids, this call gave 0
 Error: from_unit is a unit number, 1 or more
@@ -846,9 +872,9 @@ Its `arguments` hold only these keys, for a call the SDK refused as well:
 | Key | Value |
 |---|---|
 | `statements` | How many statements the call names. |
-| `sources` | `write_assertion`, `write_entity` and `write_relation`: the ids of the source events, ascending, each once. |
+| `sources` | `write_assertion`, `write_entity` and `write_relation`: the ids of the source events, ascending, each once; for `write_relation` an event a `from` names among them. |
 | `proposals` | `write_approve`, `write_reject` and `write_triage_answer`: the ids of the proposals or of the question answered. |
-| `ends` | `write_relation`: the ids of the entities its items name as `from`, `to` and candidates, ascending, each once; `write_triage_answer`: the candidate chosen. |
+| `ends` | `write_relation`: the ids of the entities its items name as `from`, `to` and candidates, ascending, each once, without an event a `from` names; `write_triage_answer`: the candidate chosen. |
 | `confirm` | `write_assertion`, `write_entity` and `write_relation`: `true` where the call gave a handle. |
 | `written` | The ids written, or found written by an earlier confirmation of the same handle; empty for a preview, a refusal, and an answer that stood already. |
 

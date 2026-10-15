@@ -13,12 +13,14 @@ from previously.contract.rows import EventRow
 from previously.contract.rows import ProjectionState
 from previously.contract.rows import UnitRow
 from previously.core.errors import ProjectionGap
+from previously.core.errors import ProjectionNotBuilt
 from previously.core.errors import ProjectionRebuilt
 from typing import Protocol
 from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
+    from previously.contract.store import LogReader
     from previously.contract.store import LogStore
     from previously.contract.store import ProjectionStore
 
@@ -45,7 +47,15 @@ class Projection(Protocol):
     `name` and `version` are read-only properties, not attributes: the
     implementations are frozen dataclasses, whose fields pyright treats as
     read-only, and a protocol attribute `name: str` is mutable — the two
-    would not match."""
+    would not match.
+
+    `write` writes through `store` and may read the log through `log`, both
+    in the transaction of `conn`: the graph folds a thread again from its
+    versions in the log, so that its tables need to hold no content
+    ({ref}`graph-projection`). The other two read only the batch. `log` is a
+    `LogReader`, which reads rows by id and actions by name and has no
+    method that appends, so a projection cannot write to the log through
+    it; `catch_up` passes its `LogStore`, which satisfies that protocol."""
 
     @property
     def name(self) -> str: ...
@@ -53,7 +63,9 @@ class Projection(Protocol):
     @property
     def version(self) -> int: ...
 
-    def write[Conn](self, store: ProjectionStore[Conn], conn: Conn, batch: Batch) -> None: ...
+    def write[Conn](
+        self, store: ProjectionStore[Conn], log: LogReader[Conn], conn: Conn, batch: Batch
+    ) -> None: ...
 
 
 @dataclass(frozen=True)
@@ -76,9 +88,19 @@ def catch_up[Conn](
     store: ProjectionStore[Conn],
     projection: Projection,
     *,
+    rebuild: bool,
     batch_size: int = 500,
 ) -> Outcome:
     """Brings one projection up to the tip of the log, in batches.
+
+    **Only `rebuild=True` builds.** With it, a projection without a state
+    row is built from the start, and one whose state row stands at another
+    version is emptied and built again. Without it, the same finding raises
+    `ProjectionNotBuilt` and the transaction that found it rolls back, so
+    the tables and the state row stay as they were. `previously project`
+    alone passes `True`: every reader, the MCP server and `redact` pass
+    `False` and catch up only ({ref}`projections`). Keyword-only and without
+    a default, so that no caller rebuilds by leaving it out.
 
     **Rows and `up_to_id` move in one transaction or not at all.** An abort in
     the middle leaves a consistent partial projection, and the next run
@@ -115,6 +137,13 @@ def catch_up[Conn](
     with store.begin() as conn:
         state = store.lock_projection_state(conn, projection.name)
         if state is None or state.version != projection.version:
+            if not rebuild:
+                # Raised inside the transaction, which rolls back: the
+                # placeholder `lock_projection_state` wrote for a missing row
+                # goes with it, and nothing of the projection is touched.
+                raise ProjectionNotBuilt(
+                    projection.name, None if state is None else state.version, projection.version
+                )
             # `!=` and not `<`: a rolled-back release derives differently from
             # the table it meets, in either direction.
             rebuilt_from = 0 if state is None else state.version
@@ -156,7 +185,7 @@ def catch_up[Conn](
                 units=log.units_by_event(conn, ids),
                 keys=log.source_keys(conn, ids),
             )
-            projection.write(store, conn, batch)
+            projection.write(store, log, conn, batch)
             state = replace(state, up_to_id=events[-1].id, built_at=datetime.now(UTC))
             store.set_projection_state(conn, state)
             processed += len(events)

@@ -391,10 +391,11 @@ def _raised_patterns(path: pathlib.Path, error: str) -> list[list[str]]:
     ]
 
 
-def _outstanding_patterns(path: pathlib.Path) -> list[list[str]]:
+def _outstanding_patterns(path: pathlib.Path, name: str = "outstanding") -> list[list[str]]:
     """The static parts of what a module hands to `_unfinished` as what is
     outstanding: the second argument of each call, and every f-string
-    assigned to `outstanding`."""
+    assigned to `name`, which is `outstanding` in `cli.py` and `finding` in
+    `core/errors.py`, where `ProjectionNotBuilt` words what it found."""
     tree = ast.parse(path.read_text(encoding="utf-8"))
     found: list[list[str]] = []
     for node in ast.walk(tree):
@@ -406,7 +407,7 @@ def _outstanding_patterns(path: pathlib.Path) -> list[list[str]]:
         ):
             found.append(_static_parts(node.args[1]))
         if isinstance(node, ast.Assign) and any(
-            isinstance(target, ast.Name) and target.id == "outstanding" for target in node.targets
+            isinstance(target, ast.Name) and target.id == name for target in node.targets
         ):
             found.append(_static_parts(node.value))
     return [parts for parts in found if parts]
@@ -518,7 +519,8 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     one `storage/postgres.py` raises as `MigrationPending`, the four
     failures to connect against the two it raises as `ServerUnreachable`,
     the failed operation against `OperationFailed` and the refused
-    connection string against `InvalidDsn`; the nine errors of the blob commands and of an
+    connection string against `InvalidDsn`, and the missing privilege against
+    `PrivilegeMissing`; the eleven errors of the blob commands and of an
     unfinished redaction against the messages `cli.py` raises as
     `PreviouslyError` or `InvalidPayload` and `core/blob.py` raises as
     `BlobError`;
@@ -626,6 +628,12 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
         ("is refused, and nothing changes", "migrate.py", "UnknownRevision", 1),
         ("the database's own reason", "migrate.py", "MigrationFailed", 2),
         ("against a database without it prints one sentence", "postgres.py", "MigrationPending", 1),
+        (
+            "lacks a privilege on a table a command touches",
+            "postgres.py",
+            "PrivilegeMissing",
+            1,
+        ),
         ("When connecting to the database fails", "postgres.py", "ServerUnreachable", 4),
         ("When the database ends an operation", "postgres.py", "OperationFailed", 1),
         (
@@ -668,7 +676,7 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
                 f"cli.md quotes the error {error!r} and {module} raises no such message. "
                 "Either the code's wording changed, or the page's did."
             )
-    assert quoted == 9, quoted
+    assert quoted == 11, quoted
 
     # `ingest imap`: the refused address and the renamed host out of
     # `cli.py`, the errors of the
@@ -704,9 +712,13 @@ def test_the_reference_quotes_what_the_code_actually_prints() -> None:
     # of `_unfinished`, so the sentence above holds only its frame; what
     # stands between `finished: ` and `; run` is held against the phrases
     # `cli.py` builds for it, in the assignments and calls that name it.
-    outstanding = _outstanding_patterns(ROOT / "src" / "previously" / "cli.py")
+    outstanding = [
+        *_outstanding_patterns(ROOT / "src" / "previously" / "cli.py"),
+        *_outstanding_patterns(ROOT / "src" / "previously" / "core" / "errors.py", "finding"),
+    ]
     for line in _quoted_block(page, "If deleting a blob or the catch-up fails"):
-        phrase = line.split("but it is not finished: ", 1)[1].rsplit("; run the same", 1)[0]
+        rest = line.split("but it is not finished: ", 1)[1]
+        phrase = re.split(r"; (?:run |the release that is to serve )", rest)[0]
         assert any(_is_the_same_sentence(parts, phrase) for parts in outstanding), (
             f"cli.md quotes {phrase!r} as outstanding and cli.py builds no such phrase. "
             "Either the code's wording changed, or the page's did."
@@ -1248,6 +1260,8 @@ def test_the_reference_quotes_what_mcp_and_serve_say() -> None:
     `PreviouslyError`, the line against what it prints to standard error,
     and the 401 and both answers of the readiness probe against the
     constants the HTTP wrapper sends, whole."""
+    from previously.mcp_server.auth import NOT_BUILT
+    from previously.mcp_server.auth import NOT_PERMITTED
     from previously.mcp_server.auth import NOT_READY
     from previously.mcp_server.auth import READY
     from previously.mcp_server.auth import REFUSAL
@@ -1261,10 +1275,14 @@ def test_the_reference_quotes_what_mcp_and_serve_say() -> None:
     address = _quoted_block(page, "without the address that took its place, are refused before")
     assert len(address) == 2, address
     _assert_raised(address, raised, "PreviouslyError")
-    (line,) = _quoted_block(page, "On start it prints one line to standard error")
+    (line,) = _quoted_block(page, "Then it prints one line to standard error")
     assert any(_is_the_same_sentence(parts, line) for parts in _message_patterns(cli)), line
     assert _quoted_block(page, "and one sentence as its body") == [REFUSAL]
     assert _quoted_block(page, "with the status 503 and this body") == [NOT_READY]
+    assert _quoted_block(page, "that names the version it found") == [NOT_BUILT]
+    assert _quoted_block(page, "as after a grant was revoked while the server ran") == [
+        NOT_PERMITTED
+    ]
     assert "with the status 200 and the body `" + READY + "`," in page
 
     configuration = (DOCS / "reference" / "configuration.md").read_text(encoding="utf-8")
@@ -1590,7 +1608,9 @@ def _assertions_section() -> str:
 def test_the_assertions_reference_quotes_only_sentences_the_code_says() -> None:
     """Every `Error: ` the "Assertions" section of `cli.md` quotes, in a block
     or inline, is a message `cli.py` raises, one the write path in
-    `core/assertions.py` refuses with, or, behind an option name, one that
+    `core/assertions.py` refuses with, one a reader of the graph stops with
+    (`ProjectionNotBuilt`, and `ProjectionRebuilt` as `core/graph_read.py`
+    raises it), or, behind an option name, one that
     `core/assertion.py` returns; and the hint is the sentence `cli.py`
     builds. A sentence changed on the page alone, or in the code alone, fails.
 
@@ -1599,6 +1619,8 @@ def test_the_assertions_reference_quotes_only_sentences_the_code_says() -> None:
     control. Patterns shorter than ten characters are left out, or the bare
     `{option}: {problem}` would stand in for any sentence with a colon.
     """
+    from previously.core.errors import ProjectionNotBuilt
+
     section = _assertions_section()
     quoted = re.findall(r"^Error: (.+)$", section, re.MULTILINE)
     quoted += re.findall(r"`Error: ([^`]+)`", section)
@@ -1609,6 +1631,10 @@ def test_the_assertions_reference_quotes_only_sentences_the_code_says() -> None:
         for parts in [
             *_raised_patterns(source / "cli.py", "PreviouslyError"),
             *_raised_patterns(source / "core" / "assertions.py", "AssertionRefused"),
+            *_raised_patterns(source / "core" / "graph_read.py", "ProjectionRebuilt"),
+            # What a listing of the graph says of a projection it may not
+            # build, produced whole at the versions the page names.
+            *([str(ProjectionNotBuilt("graph", found, 1))] for found in (None, 2)),
         ]
         if len("".join(parts)) >= 10
     ]
@@ -1972,3 +1998,29 @@ def test_the_command_line_reference_names_every_subcommand_and_counts_them() -> 
     listed = re.findall(r"`([a-z]+)`", found[2])
     assert sorted(listed) == sorted(command.name for command in COMMANDS)
     assert len(listed) == len(set(listed))
+
+
+def test_the_reference_quotes_what_a_reader_of_the_graph_says_when_it_cannot_read() -> None:
+    """The three errors `cli.md` quotes for a listing of the graph whose
+    projection it may not build or keeps finding rebuilt, held against the
+    code: the two of `ProjectionNotBuilt` against the messages the class
+    builds, produced whole for the graph at the version the page names, and
+    the third against what `core/graph_read.py` raises as
+    `ProjectionRebuilt`, with the number of tries `REBUILD_RETRIES` gives."""
+    from previously.core.errors import ProjectionNotBuilt
+    from previously.core.graph_read import REBUILD_RETRIES
+
+    page = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
+    quoted = _quoted_block(page, "they exit 2 with one sentence on standard error")
+    assert quoted == [
+        f"Error: {ProjectionNotBuilt('graph', None, 1)}",
+        f"Error: {ProjectionNotBuilt('graph', 2, 1)}",
+    ]
+    (twice,) = _quoted_block(page, "where that happens twice in a row")
+    prefix, _, error = twice.partition(": ")
+    assert prefix == "Error"
+    rebuilt = _raised_patterns(
+        ROOT / "src" / "previously" / "core" / "graph_read.py", "ProjectionRebuilt"
+    )
+    assert any(_is_the_same_sentence(parts, error) for parts in rebuilt), error
+    assert f"on each of {REBUILD_RETRIES + 1} tries" in error

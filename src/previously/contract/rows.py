@@ -15,6 +15,7 @@ it may import nothing above it. Measured on 2026-10-04 against
 
 from collections.abc import Mapping
 from dataclasses import dataclass
+from datetime import date
 from datetime import datetime
 
 
@@ -103,6 +104,18 @@ class ChronicleRow:
 
 
 @dataclass(frozen=True)
+class ChronicleSelection:
+    """Which units of the chronicle a reader asks for, by `(event_id, seq)`:
+    every unit of each event in `events` except those `excluded` names, and
+    each unit `units` names. What belongs to a bracket comes in this form
+    ({ref}`chronicle-of-a-bracket`)."""
+
+    events: frozenset[int]
+    excluded: frozenset[tuple[int, int]]
+    units: frozenset[tuple[int, int]]
+
+
+@dataclass(frozen=True)
 class SourceStatsRow:
     source: str
     events: int
@@ -110,3 +123,54 @@ class SourceStatsRow:
     first_seen: datetime
     last_seen: datetime
     last_event_id: int
+
+
+@dataclass(frozen=True)
+class GraphVersionRow:
+    """One row of `p_graph_version`: a version of an entity or a relation,
+    or a rejection of one, and the thread it belongs to.
+
+    `kind` is `entity`, `relation` or `rejection`. A version's `subject` is
+    the one it names, or its own id for a first version; a rejection's is the
+    subject of the version it rejects. `under` is the approval class a
+    version names, and `None` for a rejection and for a version under none.
+    Ids and vocabulary words, nothing a source said ({ref}`graph-projection`).
+    """
+
+    id: int
+    subject: int
+    kind: str
+    under: int | None
+
+
+@dataclass(frozen=True)
+class GraphThreadRow:
+    """One row of `p_graph_thread`: what one entity or relation stands at,
+    folded from its versions under the approval classes in force.
+
+    The winner's kind, type, state and level, its ends for a relation —
+    `start_entity` for a start at an entity, `start_event` and `start_units`
+    for a start at an event, `None` for all of its units — and its period,
+    and the counts the header and the triage list read. No field, no name,
+    no content; the period's dates are the one thing a claim asserts that
+    stands here, and they leave with their version, since an erasure folds
+    the thread again. What a reader shows, it reads from the log by
+    `winner_id` ({ref}`graph-projection`).
+    """
+
+    subject: int
+    kind: str
+    type: str
+    winner_id: int
+    level: str
+    state: str
+    start_entity: int | None
+    start_event: int | None
+    start_units: tuple[int, ...] | None
+    to_entity: int | None
+    candidates: tuple[int, ...] | None
+    period_start: date | None
+    period_end: date | None
+    pending: int
+    objections: int
+    question: bool
