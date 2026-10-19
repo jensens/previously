@@ -200,7 +200,7 @@ Using --randomly-seed=915380473
 configfile: pyproject.toml
 testpaths: tests
 plugins: anyio-4.15.1, platformdirs-4.12.2, hypothesis-6.168.3, cov-7.1.0, randomly-5.0.0
-collected 2865 items
+collected 2866 items
 
 tests/test_units.py .............                                        [  0%]
 tests/test_chronicle.py ....                                             [  0%]
@@ -288,7 +288,7 @@ tests/test_mail.py ..................................................... [ 93%]
 tests/test_redaction.py ..........................                       [ 98%]
 tests/test_append.py ..................................................  [100%]
 
-================== 2865 passed in 408.94s (0:06:48) ==================
+====== 2866 passed in 408.94s (0:06:48) ==================
 ```
 
 `pytest-randomly` reshuffles the file order on every run and prints its seed, so a hidden dependency between two tests surfaces instead of staying hidden.
