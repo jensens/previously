@@ -63,11 +63,15 @@ A scheduled run with `--build` builds whenever its image's version differs from 
 
 If the step is skipped, nothing is built behind your back, and nothing answers from a slower path either:
 
-- `previously project` without `--build` exits 2 with the sentence ``projection <name> is not built, and this code declares version <n>; `previously project --build` builds it``, or with `stands at version <m>` in place of `is not built` and an advice that names the release meant to serve.
-- `previously entities`, `relations`, `entity`, `triage`, `status`, `classes list`, `classes sample` and `chronicle --within` exit 2 with the same sentence for the projection `graph`.
-- `previously mcp` and `previously serve` refuse to start with the same sentence.
+- `previously project` without `--build` exits 4 with the sentence ``projection <name> is not built, and this code declares version <n>; `previously project --build` builds it``, or with `stands at version <m>` in place of `is not built` and an advice that names the release meant to serve.
+- `previously entities`, `relations`, `entity`, `triage`, `status`, `classes list`, `classes sample` and `chronicle --within` exit 4 with the same sentence for the projection `graph`.
+- `previously mcp` and `previously serve` refuse to start with the same sentence and exit code 4.
 - A server that's already running fails every call, and the reason is in its log.
-- `previously redact` records the redaction and then reports it as unfinished, with the advice to run `previously project --build` and then the same command again.
+- `previously redact` records the redaction and then reports it as unfinished, with exit code 4 and the advice to run `previously project --build` and then the same command again.
+
+Exit code 4 says that running the command again doesn't help until the step has built the projection, which is a different thing from an unreachable database, exit code 2.
+A scheduler may skip its retries on 4; it doesn't have to.
+An image from before exit code 4 exits 2 on the same finding.
 
 ### During a rolling update
 
@@ -81,7 +85,7 @@ The old pods don't rebuild back, so the two releases never take turns at undoing
 Graph calls to an old pod fail for as long as it runs, so keep that window short.
 
 A scheduled `previously project` doesn't have to move to the new image before the deployment step runs, in an upgrade or a rollback.
-A run of the other image that starts after the step built the projection leaves it as it stands and exits 2 with a sentence that the projection `stands at version <n>`.
+A run of the other image that starts after the step built the projection leaves it as it stands and exits 4 with a sentence that the projection `stands at version <n>`, or 2 where that image is from before exit code 4.
 That's one failed run of the scheduled job, which your job alert may report; the next run, of the image the step deployed, catches up as usual.
 A run that was already going when the step rebuilt the projection stops at its next batch, as {ref}`the section on a catch-up that finds the projection rebuilt <rebuild-a-projection-rebuilt-while-it-ran>` describes.
 Releases up to `v0.1.0a8` don't know `--build`, refuse it as an unknown argument, and build with a plain `previously project`, in either direction; so the scheduled job is harmless only once every image that runs it comes from a later release.
@@ -133,7 +137,7 @@ The lines for the other projections again report `up to date`.
 
 :::{warning}
 The `DELETE` drops the bookmark and leaves the rows of `p_chronicle` standing.
-Until the next `previously project --build`, `previously chronicle` prints those old rows and reports the whole log as its lag, and a scheduled `previously project` exits 2 with the sentence that the projection `is not built`.
+Until the next `previously project --build`, `previously chronicle` prints those old rows and reports the whole log as its lag, and a scheduled `previously project` exits 4 with the sentence that the projection `is not built`.
 For the graph, every listing of the graph and every MCP call fails meanwhile, with the same sentence, and the readiness probe of a running server answers 503.
 `previously project --build` then empties the table in its first transaction and fills it batch by batch, so a `previously chronicle` run during a long rebuild sees a partial chronicle, with the lag line saying how far the rebuild has come.
 :::

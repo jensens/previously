@@ -18,6 +18,7 @@ from dataclasses import replace
 from datetime import date
 from datetime import datetime
 from datetime import UTC
+from importlib.metadata import version as distribution_version
 from pathlib import Path
 from previously.connectors.imap import ImapConnector
 from previously.connectors.imap import ImapError
@@ -1299,16 +1300,26 @@ _AGAIN = "run the same command again"
 _BUILD = "run `previously project --build`, then the same command again"
 
 
+class _AwaitsBuild(PreviouslyError):
+    """An unfinished redaction whose outstanding step includes a projection
+    that is not built at this code's version: it exits like
+    `ProjectionNotBuilt` does, because the same command again stops at that
+    projection until `previously project --build` has run."""
+
+
 def _unfinished(redaction_id: int, outstanding: str, *, then: str) -> PreviouslyError:
     """The error of a redaction that stands and is not carried out to its
     end: what stands, what is outstanding, and `then`, what finishes it,
     which ends in the same command — the second call finds the target
     covered, writes nothing, and does what is left.
 
-    Where a projection is not built (`then` is `_BUILD`), the same command
-    alone would stop at it again: `previously project --build` builds it first, and
-    in building it takes the redaction in."""
-    return PreviouslyError(
+    Where a projection is not built (`then` is not `_AGAIN`), the same
+    command alone would stop at it again: `previously project --build`
+    builds it first, and in building it takes the redaction in. That error
+    exits with `EXIT_NOT_BUILT`, as `ProjectionNotBuilt` does; any other
+    unfinished redaction exits 2, because running it again may finish it."""
+    kind = PreviouslyError if then == _AGAIN else _AwaitsBuild
+    return kind(
         f"the redaction is recorded as event {redaction_id}, but it is not finished: "
         f"{outstanding}; {then}"
     )
@@ -4417,8 +4428,33 @@ def _terminate(signum: int, frame: FrameType | None) -> None:
     raise SystemExit(_SIGNAL_EXIT_BASE + signum)
 
 
+# The exit code of a command that met a projection it may not build: no state
+# row, or a state row at another version than this release declares. Running
+# the command again does not help until `previously project --build` has run,
+# which is what a scheduler may skip its retries on. 2 stays the code of
+# everything that running again may cure, 1 and 3 belong to the commands that
+# report findings and alarms.
+EXIT_NOT_BUILT = 4
+
+
+def _exit_code(error: PreviouslyError | StorageError) -> int:
+    """4 where the error is a projection not built at this code's version,
+    on its own or as the reason a redaction stands unfinished; 2 for every
+    other error. `ProjectionRebuilt` and `ProjectionGap` stay 2: the first
+    says a rebuild landed under a catch-up, so the next run finds the
+    projection built and may succeed, and the second is a log that violates
+    its own invariant, which no scheduler retry and no build repairs
+    differently from any other fault."""
+    if isinstance(error, ProjectionNotBuilt | _AwaitsBuild):
+        return EXIT_NOT_BUILT
+    return 2
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="previously")
+    parser.add_argument(
+        "--version", action="version", version=f"previously {distribution_version('previously')}"
+    )
     sub = parser.add_subparsers(dest="command", required=True)
     for command in COMMANDS:
         command.arguments(sub.add_parser(command.name, help=command.help))
@@ -4458,6 +4494,6 @@ def main(argv: Sequence[str] | None = None) -> int:
         # The sentence can quote a key, and the key of a mail is the
         # mail's Message-ID (`escape_controls`).
         print(f"Error: {escape_controls(str(error))}", file=sys.stderr)
-        return 2
+        return _exit_code(error)
     finally:
         signal.signal(signal.SIGTERM, previous)
