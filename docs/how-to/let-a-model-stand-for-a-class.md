@@ -89,7 +89,8 @@ previously triage
 `triage` lists them in the order to work through them, objections first:
 
 - An **objection** is a model's statement against something you stand for.
-  The version you wrote keeps standing, with a mark, until you answer.
+  The version you wrote keeps standing until you answer, and the objection shows in `triage` and `status` and, over MCP, in `list_triage`.
+  On the command line neither `entity ID` nor `relations` marks it; over MCP the label of an entity says `contested by` the objection, and an assignment appears on no entity page.
 - A **question** is a relation whose end a model couldn't decide: it names two to five candidates.
 - A **proposal** is any other version that waits.
 

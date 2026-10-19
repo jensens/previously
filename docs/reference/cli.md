@@ -916,6 +916,7 @@ A `--limit` below 1 is refused the same way, before anything is read.
 `--within` prints the lines of the units that belong to the bracket, with the same fields, in the same order and under the same `--since`, `--until` and `--limit`.
 A unit belongs when an assignment points at the bracket or at an entity below it, through any relation kind with the behavior `transitive`, such as `part_of`.
 An assignment of a unit of its own replaces the assignment of its event for that unit, unless it's an open proposal ({ref}`chronicle-of-a-bracket`).
+An open proposal for a whole mail already brings the mail into `--within`, while `relations --type concerns` lists only the assignments that stand, so a line of `--within` can lack a matching line there until someone approves the proposal.
 Every edge counts, whoever may see it; over MCP, only those the client sees do.
 Assignments and hierarchy edges count at every level and whatever their period.
 `--limit` counts only the units of the bracket, so a unit outside it takes no place.
@@ -926,7 +927,7 @@ An id that isn't an entity that stands, such as a relation, an event or a retrac
 Error: --within 999 is not an entity that stands
 ```
 
-`--within` catches the graph projection up first and reads the assignments from it, and fails where the projection isn't built, as the listings of the graph do ({ref}`cli-graph`).
+`--within` catches the graph projection up first and reads the assignments from it, and fails with exit code 4 where the projection isn't built, as the listings of the graph do ({ref}`cli-graph`).
 The chronicle itself isn't caught up, and its lag prints as below.
 
 Two notices go to standard error, and both leave the exit code at 0.

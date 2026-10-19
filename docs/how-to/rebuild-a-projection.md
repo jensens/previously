@@ -144,7 +144,8 @@ For the graph, every listing of the graph and every MCP call fails meanwhile, wi
 
 To force the statistics the same way, use `'source-stats'` in place of `'chronicle'` in the `DELETE`.
 
-A `previously project`, a `previously redact` or a reader of the graph whose next batch starts after your `DELETE` commits stops with exit code 2 and a sentence that the projection `has no state row`; run `previously project --build` once the `DELETE` is done.
+A `previously project`, a `previously redact` or a reader of the graph that's already running, and whose next batch starts after your `DELETE` commits, stops with exit code 2 and a sentence that the projection `has no state row`, as {ref}`the section on a catch-up that finds the projection rebuilt <rebuild-a-projection-rebuilt-while-it-ran>` describes; run `previously project --build` once the `DELETE` is done.
+A command that starts after the `DELETE` has committed exits 4 instead, with the sentence that the projection `is not built`.
 A reader whose snapshot finds the graph projection emptied by that `previously project --build` catches up once more and reads; a reader that finds it emptied twice in a row stops with a sentence to read again once `previously project --build` has finished.
 
 (rebuild-a-projection-rebuilt-while-it-ran)=

@@ -17,6 +17,8 @@ You need three things before you start.
 An assignment names an event, and for part of it the units by their numbers.
 `previously chronicle` prints one line per unit: the event's id, the unit's number, the time, the source, the external id and the text.
 Run `previously project` first if it says the projection stands behind.
+`chronicle` has no sender to filter by.
+To find a mail by who wrote it, run `previously show ID` on a candidate: it prints the addresses of the mail under `channel_identities`, as {ref}`set-a-policy-and-try-a-call` shows.
 Markus's mail is event 1 here, and its fourth unit is the afterthought:
 
 ```text
@@ -37,6 +39,8 @@ previously entity project --name XZ --recollection
 previously entity organization --name Verein --recollection
 previously entity matter --name Sommerfest --recollection
 ```
+
+A bracket stated with `--recollection` stays out of a client's sight until a rule opens it, and a client can't assign to a bracket it can't see; {ref}`keep-a-club-and-its-offices` names the two ways out.
 
 Each command ends with the id of what it wrote, here `assertion 13`, `assertion 14` and `assertion 15`.
 Yours differ; read them from `previously entities`.
@@ -116,6 +120,8 @@ previously chronicle --within 99
 ```text
 Error: --within 99 is not an entity that stands
 ```
+
+An open proposal for a whole mail already brings the mail into this chronicle, before anyone approves it, while `previously relations --type concerns` lists only the assignments that stand; a line here without a matching relation there is such a proposal.
 
 An MCP client reads the chronicle of a bracket with the tool `previously` and its argument `within`, through the assignments and the parts it may see, and within what the processing policy lets it see; see {ref}`mcp-tools`.
 

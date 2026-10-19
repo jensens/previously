@@ -191,10 +191,11 @@ On a bucket with versioning or object lock, the copy that deleting kept is out o
 Without `--blobs`, `verify` reads no blob setting; leave `--blobs` out if the log names no blob.
 The anchors you keep hold after an erasure as before, so run your usual check with `--anchors` as well; see {ref}`verify-the-chain`.
 
-## If the command stops with exit code 2
+## If the command stops with exit code 2 or 4
 
 If `redact` prints `the redaction is recorded as event …, but it is not finished`, the redaction stands, and a deletion from the store, the catch-up of the projections, or both are still outstanding; the sentence names each.
 Run the same command again, once the cause the sentence names is gone.
+The exit code is 4 where a projection that isn't built at this release's version is among what's outstanding, because running the command again doesn't help until `previously project --build` has run; it's 2 for every other cause.
 It finds the target covered and prints:
 
 ```console

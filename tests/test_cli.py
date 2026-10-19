@@ -3659,6 +3659,52 @@ def test_a_delete_and_a_catch_up_that_both_fail_are_named_in_one_sentence(
 
 @pytest.mark.db
 @pytest.mark.s3
+def test_a_failed_delete_beside_an_unbuilt_projection_exits_4(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    s3_settings: dict[str, str],
+) -> None:
+    """The store does not answer and the chronicle has no state row: the
+    one sentence names both, and the exit code is 4, because running the
+    command again stops at the projection until `project --build` has run,
+    whatever the store does. The control: once the store answers and the
+    projection is built, the same command finishes with 0. Measured red
+    with the code 2 whenever a deletion is outstanding: exit 2."""
+    from sqlalchemy import text
+
+    content = b"the attachment to erase"
+    address = hashlib.sha256(content).hexdigest()
+    assert main(_attach("a", _file(tmp_path, "a.txt", content))) == 0
+    assert main(["project", "--build"]) == 0
+    with blobs.engine.begin() as c:
+        c.execute(text("DELETE FROM projection_state WHERE name = 'chronicle'"))
+    capsys.readouterr()
+
+    good_endpoint = s3_settings["endpoint"]
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "http://127.0.0.1:1")
+    assert main(["redact", "event", "1", "--reason", "r"]) == 4
+    out, err = capsys.readouterr()
+    assert out == ""
+    line = _single_line(err)
+    assert line.startswith(
+        "Error: the redaction is recorded as event 2, but it is not finished: "
+        f"blob {address} is not deleted from the store ("
+    )
+    assert line.endswith(
+        "), and projection chronicle is not built, and this code declares version 3; "
+        "run `previously project --build`, then the same command again"
+    )
+
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", good_endpoint)
+    assert main(["project", "--build"]) == 0
+    capsys.readouterr()
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
+
+
+@pytest.mark.db
+@pytest.mark.s3
 def test_a_refused_redaction_deletes_nothing(
     blobs: _Blobs, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -39,6 +39,12 @@ A recollection has no source, so it stays out of a client's sight until a rule o
 A client such as Claude Code sees a placeholder, `no rule covers this content`, where one of them stands.
 `previously policy gaps` tells you which rule would open them: it counts the entities and relations stated from memory under `graph:source:recollection`, the rule `source:recollection`; see {ref}`cli-reference`.
 
+A client can't assign to a bracket it can't see.
+A matter or a project stated as a recollection can't be an end of the client's `write_relation`, which answers `an end of the relation is not an entity that stands`.
+There are two ways out.
+A rule for `source:recollection` opens the bracket, and it opens every recollection to every client the rule allows, so give it only where that's what you want.
+Or state the bracket with `--source` and the id of a mail instead of `--recollection`: it's then visible exactly where that mail is.
+
 ## Record the club and its parts
 
 Each command shows the payload and asks `write? [y/N]`; answer `y`, or add `--yes` to skip the question.

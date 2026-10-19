@@ -39,8 +39,29 @@ Exit codes 2 and 3 stay as they were (3 is for `gate try` alone), so nothing tha
 Until the scheduled job and the hook run the new image, the same finding exits 2 from them.
 So a rule that skips retries on 4 takes effect when the image of the job is this release or later.
 
-**It stands when** the scheduled `project` of this release, run against a projection that stands at another version, exits 4.
-Nobody has to make that happen for the check: the exit code table in `docs/reference/cli.md` and the tests of the release measure it.
+**It stands when** a check against a scratch database, never the real one, shows it.
+Start a throwaway PostgreSQL, point `PREVIOUSLY_DSN` at it, and run the commands of the new image in turn.
+Measured on 2026-10-20 against a fresh PostgreSQL 18 with the code of this release:
+
+```text
+$ previously migrate
+migrated: (empty) -> 0006_graph
+$ previously project
+Error: projection chronicle is not built, and this code declares version 3; `previously project --build` builds it
+$ previously entities
+Error: projection graph is not built, and this code declares version 1; `previously project --build` builds it
+$ previously project --build
+chronicle       up to date, up_to_id 0
+source-stats    up to date, up_to_id 0
+graph           up to date, up_to_id 0
+$ previously project
+chronicle       up to date, up_to_id 0
+source-stats    up to date, up_to_id 0
+graph           up to date, up_to_id 0
+```
+
+The exit codes are 0, 4, 4, 0 and 0.
+As the contrast, a wrong password in the DSN ends with `Error: connecting to database … failed: … password authentication failed …` and exit code 2.
 
 ## `previously --version`
 
