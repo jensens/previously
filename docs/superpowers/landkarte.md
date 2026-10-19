@@ -1571,6 +1571,14 @@ auf `assertions.md` unter *What the pilot leaves open*.
   der Zufallsanteil des Markers eine lange Folge von Ziffern enthält, die die
   Zahlenprüfung des Testrahmens als Zahl über 2^53 liest; das Auftreten hängt
   also an der Zufallsfolge und nicht an der Reihenfolge der Tests.
+  Zweites Auftreten am 2026-10-19, diesmal `[legacy]`, Saat `167703447`, auf
+  dem Zweig der Antwort auf a8, ohne Bezug zu dessen Änderungen. Die Diagnose
+  hält dabei nicht: der Marker ist `secrets.token_hex(4)`, acht Zeichen, und
+  kann keine 16 Ziffern in Folge ergeben, die `_text`
+  (`tests/test_mcp_server.py`) als Zahl über 2^53 liest. Vermutet, nicht
+  gemessen: die Seite trägt eine Kennung aus einem Hexadezimal-Digest, etwa die
+  erzeugte Kennung der gefälschten Mail ohne Message-ID. Mit der Saat
+  nachstellen, bevor etwas geändert wird.
 - Drei geparkte Testlöcher am Doku-Tor (1b §10 Punkt 5).
 - Die Reihenfolge der zwei `stderr`-Hinweise in `cli.md` hält nichts
   mechanisch; `_message_patterns` nimmt auch die `_describe`-Literale auf
