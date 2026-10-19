@@ -4681,20 +4681,18 @@ def test_the_server_refuses_to_start_without_a_projection_at_its_version(
     with db.begin() as c:
         c.execute(text(statement))
     before = _graph_rows(db)
-    with pytest.raises(ProjectionNotBuilt, match="`previously project`"):
+    with pytest.raises(ProjectionNotBuilt, match="`previously project --build`"):
         build_server(
             world.storage,
             stdio_client="claude-code",
             graph=world.storage,
             projections=world.storage,
         )
-    with pytest.raises(ProjectionNotBuilt, match="`previously project`"):
+    with pytest.raises(ProjectionNotBuilt, match="`previously project --build`"):
         build_app(world.storage, allowed_hosts=(), graph=world.storage, projections=world.storage)
     assert _graph_rows(db) == before
-    # The control: once `project` built it, the server starts; version 7 is
-    # newer than this code's, so building it takes the step back a rollback
-    # asks for, which changes nothing where no state row stands.
-    catch_up(world.storage, world.storage, GRAPH, rebuild=True, build_back=True)
+    # The control: once `project --build` built it, the server starts.
+    catch_up(world.storage, world.storage, GRAPH, rebuild=True)
     build_server(
         world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
     )
@@ -4751,9 +4749,8 @@ def test_the_readiness_probe_is_not_ready_while_the_projection_is_at_another_ver
             assert anyio.run(run) == (503, NOT_BUILT)
         assert "the readiness probe found projection graph" in caplog.text
         assert _graph_rows(db) == before
-        # The control: at this code's version again, built back from 7 as a
-        # rollback would, ready.
-        catch_up(world.storage, world.storage, GRAPH, rebuild=True, build_back=True)
+        # The control: at this code's version again, ready.
+        catch_up(world.storage, world.storage, GRAPH, rebuild=True)
         assert _ready(world.storage) == 200
 
 
@@ -5706,6 +5703,53 @@ def test_within_reveals_an_entity_exactly_when_list_entities_does_and_with_its_r
         recorded_at=T0,
     )
     held({"claude-code": {"by-recollection": _SHOWN}})
+
+
+def _crowd_mail(count: int) -> bytes:
+    """A mail to `count` addresses, each the one member of a circle of its
+    own with a long name and no rule."""
+    to = ", ".join(f"member-{n:02d}@crowd.example" for n in range(count))
+    return "\r\n".join(
+        [
+            "From: Markus <markus@firma.example>",
+            f"To: {to}",
+            "Subject: Rundschreiben",
+            "Date: Wed, 07 Oct 2026 11:00:00 +0000",
+            "Message-ID: <crowd@firma.example>",
+            "Content-Type: text/plain; charset=utf-8",
+            "",
+            "An alle.",
+            "",
+        ]
+    ).encode()
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_within_gives_a_long_reason_cut_as_the_placeholder_cuts_it(world: World, mode: str) -> None:
+    """A policy can make a reason longer than a placeholder shows: here
+    twenty-five circles without a rule, each with a long name, which the
+    placeholder cuts at 500 characters. `within` quotes the reason as the
+    placeholder does, cut at the same place, so that the two still say the
+    same. Measured red on 2026-10-19 with `within` quoting the reason
+    uncut: its sentence ran on past the placeholder's ellipsis."""
+    _graphed(world)
+    count = 25
+    for n in range(count):
+        circle = f"a-circle-with-a-rather-long-name-{n:02d}"
+        for item in (Circle(circle), Membership(circle, f"member-{n:02d}@crowd.example")):
+            set_policy(world.storage, item, statement="for the test", recorded_at=T0)
+    mail = _take_in(world.storage, _crowd_mail(count))
+    (crowd,) = write_claims(
+        world.storage, world.storage, [_person("Crowd", mail)], recorded_at=T0
+    ).ids
+
+    listed = _listed(world, mode, crowd, "claude-code")
+    within = _within(world, mode, crowd, "claude-code")
+    assert listed[0] == "withheld"
+    assert len(listed[1]) == 500
+    assert listed[1].endswith("…")
+    assert within == listed
 
 
 @pytest.mark.db

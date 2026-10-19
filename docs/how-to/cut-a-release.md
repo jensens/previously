@@ -73,17 +73,16 @@ If that lists a file, the notes have to say that `previously migrate` runs befor
 Nothing else enforces that order: `migrate` is the only command that compares revisions, and the other commands fail on a schema that's behind only where they touch a table or a column it lacks.
 An older image's `migrate` refuses a database a newer one has migrated; its other commands don't.
 
-If the release raises a projection's version, say so next: `previously project` runs after `previously migrate` and before the release serves.
+If the release raises a projection's version, say so next: `previously project --build` runs after `previously migrate` and before the release serves.
 List the version changes since the last release, with that release's tag in place of `v0.1.0a1`:
 
 ```shell
 git diff v0.1.0a1 main -- src/previously/core/projection/ | grep '^[-+] *version: int'
 ```
 
-If that prints a line, or the release adds the migration `0006_graph`, which creates the graph projection's tables empty, the notes have to say that `previously project` runs after `migrate` and before the release serves.
-Only `project` builds a projection: until it has run, the listings of the graph fail, `mcp` and `serve` refuse to start, and a running server's readiness probe answers 503 ({ref}`rebuild-a-projection`).
-Say in the same notes that a rollback from this release to an earlier one runs `previously project --build-back` of the earlier release before it serves.
-The earlier release's plain `project` leaves the newer projection as it stands and exits 2, so a scheduled run of the old image during the upgrade can't build it back, and the rollback has to ask for that step.
+If that prints a line, or the release adds the migration `0006_graph`, which creates the graph projection's tables empty, the notes have to say that `previously project --build` runs after `migrate` and before the release serves.
+Only `project --build` builds a projection: until it has run, the listings of the graph fail, `mcp` and `serve` refuse to start, and a running server's readiness probe answers 503 ({ref}`rebuild-a-projection`).
+The same step builds the projection back in a rollback from this release to an earlier one, as long as the earlier release knows `--build`; releases up to `v0.1.0a8` don't, and build with a plain `project`.
 
 If the release renames a setting, the notes give the operator three steps, in this order, each of which runs on its own:
 
@@ -107,7 +106,7 @@ gh release create v0.1.0a1 --prerelease --generate-notes --target main
 Leave out `--prerelease` for a stable release, and add the notes for operators with `--notes`:
 
 ```shell
-gh release create v1.0.0 --generate-notes --target main --notes 'Run `previously migrate` before anything else of this release: it adds the revision 0007_example. Then run `previously project` before the release serves: it raises the version of the graph projection. A rollback from this release runs `previously project --build-back` of the release it rolls back to.'
+gh release create v1.0.0 --generate-notes --target main --notes 'Run `previously migrate` before anything else of this release: it adds the revision 0007_example. Then run `previously project --build` before the release serves: it raises the version of the graph projection.'
 ```
 
 The version decides `<major>.<minor>`, and the mark decides `latest`.

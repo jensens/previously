@@ -37,7 +37,7 @@ from previously.core.assertion import Source
 from previously.core.assertion import Statement
 from previously.core.assertions import write_statements
 from previously.core.errors import ProjectionGap
-from previously.core.errors import ProjectionNewer
+from previously.core.errors import ProjectionNotBuilt
 from previously.core.errors import ProjectionRebuilt
 from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
@@ -48,9 +48,11 @@ from previously.core.graph import RelationBody
 from previously.core.graph import SOURCES
 from previously.core.graph import STANDING
 from previously.core.graph_write import write_claims
+from previously.core.projection import GRAPH
 from previously.core.projection import PROJECTIONS
 from previously.core.projection.chronicle import CHRONICLE
 from previously.core.projection.chronicle import ChronicleProjection
+from previously.core.projection.graph import GraphProjection
 from previously.core.projection.source_stats import SOURCE_STATS
 from previously.core.projection.source_stats import SourceStatsProjection
 from previously.core.projection.worker import catch_up
@@ -250,121 +252,65 @@ def test_a_version_bump_rebuilds_and_without_it_nothing_moves(db: Engine) -> Non
     assert outcome.events == 1
 
 
+@pytest.mark.db
+def test_a_lower_code_version_rebuilds_too(db: Engine) -> None:
+    """Review Focus 4: `!=`, not `<`. Code at version 3, table at version 4
+    — a rolled-back release derives differently from the table it meets."""
+    storage = PostgresStorage(db)
+    append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
+    catch_up(storage, storage, ChronicleProjection(version=4), rebuild=True)
+    outcome = catch_up(storage, storage, ChronicleProjection(version=3), rebuild=True)
+    assert outcome.rebuilt_from == 4
+    assert outcome.version == 3
+    assert outcome.events == 1
+
+
 def _states(db: Engine) -> list[tuple[object, ...]]:
     with db.begin() as c:
         return [tuple(r) for r in c.execute(text("SELECT * FROM projection_state ORDER BY name"))]
 
 
-def _built_by_a_newer_release(db: Engine, name: str) -> None:
-    """The state row of `name` one version above what the code declares, as
-    a newer release's `project` leaves it."""
-    with db.begin() as c:
-        c.execute(
-            text("UPDATE projection_state SET version = version + 1 WHERE name = :name"),
-            {"name": name},
-        )
-
-
 @pytest.mark.db
 @pytest.mark.parametrize("projection", PROJECTIONS, ids=lambda p: p.name)
-def test_an_older_code_version_leaves_a_newer_projection_standing(
-    db: Engine, projection: Projection
+@pytest.mark.parametrize("found", ["newer", "older", "none"])
+def test_a_catch_up_that_may_not_build_builds_in_no_direction(
+    db: Engine, projection: Projection, found: str
 ) -> None:
-    """A `project` of an older release that meets a projection a newer
-    release built refuses, and the tables and every state row stay as the
-    newer release left them, for every projection the command line builds.
-    Measured red on 2026-10-19 with the refusal taken out of `catch_up`,
-    which then built back and raised nothing, for each of the three; the
-    two tests below stayed green."""
+    """Without `rebuild`, a catch-up that meets the projection at a newer
+    version, an older one or without a state row raises
+    `ProjectionNotBuilt`, and every table and every state row stay as they
+    were, for every projection the command line builds; a plain `previously
+    project` is such a catch-up. An older projection is staged as a rollback
+    meets it, with the code's version raised by one, since no projection
+    can stand below version 1. The control: with `rebuild`, the same
+    finding is built, in each direction. Measured red on 2026-10-19 with the
+    `if not rebuild` refusal taken out of `catch_up`: all nine built."""
     storage = PostgresStorage(db)
     append(storage, [_raw(n, "email", NOW) for n in (1, 2)], recorded_at=NOW)
     _graph_history(storage, lambda: None)
     _project_all(storage)
-    _built_by_a_newer_release(db, projection.name)
+    newer_code: dict[str, Projection] = {
+        CHRONICLE.name: ChronicleProjection(version=CHRONICLE.version + 1),
+        SOURCE_STATS.name: SourceStatsProjection(version=SOURCE_STATS.version + 1),
+        GRAPH.name: GraphProjection(version=GRAPH.version + 1),
+    }
+    code = newer_code[projection.name] if found == "older" else projection
+    if found == "newer":
+        change = "UPDATE projection_state SET version = version + 1 WHERE name = :name"
+    else:
+        change = "DELETE FROM projection_state WHERE name = :name"
+    if found != "older":
+        with db.begin() as c:
+            c.execute(text(change), {"name": projection.name})
     before = (_snapshot(db), _states(db))
 
-    with pytest.raises(ProjectionNewer) as refused:
-        catch_up(storage, storage, projection, rebuild=True)
-    found = projection.version + 1
-    assert str(refused.value) == (
-        f"projection {projection.name} stands at version {found}, newer than this "
-        f"release's version {projection.version}; it was left as it stands, and a rollback "
-        "to this release runs `previously project --build-back`"
-    )
+    with pytest.raises(ProjectionNotBuilt):
+        catch_up(storage, storage, code, rebuild=False)
     assert (_snapshot(db), _states(db)) == before
 
-
-@pytest.mark.db
-def test_build_back_builds_a_newer_projection_back_to_this_version(db: Engine) -> None:
-    """The rollback: with `build_back`, the table a newer release built is
-    emptied and built again at this code's version. The poisoned row shows
-    that the rows were built again and not only the version set. Measured
-    red on 2026-10-19 with the flag ignored, which refused as without it."""
-    storage = PostgresStorage(db)
-    append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
-    catch_up(storage, storage, SourceStatsProjection(version=2), rebuild=True)
-    with db.begin() as c:
-        c.execute(text("UPDATE p_source_stats SET events = 999"))
-
-    outcome = catch_up(storage, storage, SOURCE_STATS, rebuild=True, build_back=True)
-    assert (outcome.rebuilt_from, outcome.version, outcome.events) == (2, 1, 1)
-    with db.begin() as c:
-        assert c.execute(text("SELECT events FROM p_source_stats")).scalar_one() == 1
-        version = c.execute(
-            text("SELECT version FROM projection_state WHERE name = 'source-stats'")
-        ).scalar_one()
-    assert version == 1
-
-
-@pytest.mark.db
-def test_build_back_permits_and_does_not_force(db: Engine) -> None:
-    """At this code's version the flag catches up as a run without it does,
-    and at an older version it builds forward as a run without it does: a
-    rollback's `project` that runs a second time, or by mistake after an
-    upgrade, does what a plain `project` would. Measured on 2026-10-19 with
-    the flag forcing a rebuild wherever the version matched: the first half
-    goes red, the poison gone."""
-    storage = PostgresStorage(db)
-    append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
-    catch_up(storage, storage, SOURCE_STATS, rebuild=True)
-    with db.begin() as c:
-        c.execute(text("UPDATE p_source_stats SET events = 999"))
-
-    same = catch_up(storage, storage, SOURCE_STATS, rebuild=True, build_back=True)
-    assert (same.rebuilt_from, same.events) == (None, 0)
-    with db.begin() as c:
-        assert c.execute(text("SELECT events FROM p_source_stats")).scalar_one() == 999
-
-    newer = SourceStatsProjection(version=2)
-    forward = catch_up(storage, storage, newer, rebuild=True, build_back=True)
-    assert (forward.rebuilt_from, forward.version, forward.events) == (1, 2, 1)
-
-
-@pytest.mark.db
-def test_an_older_projection_is_built_forward_without_the_flag(db: Engine) -> None:
-    """The control of the refusal: a projection an older release built is
-    rebuilt at this code's version by a plain `project`, as an upgrade
-    needs."""
-    storage = PostgresStorage(db)
-    append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
-    catch_up(storage, storage, ChronicleProjection(version=2), rebuild=True)
-    outcome = catch_up(storage, storage, CHRONICLE, rebuild=True)
-    assert (outcome.rebuilt_from, outcome.version, outcome.events) == (2, 3, 1)
-
-
-@pytest.mark.db
-def test_build_back_without_rebuild_is_a_caller_error(db: Engine) -> None:
-    """A caller that may not build has nothing to build back; asking for
-    both is refused before any transaction opens, and the state row a newer
-    release left stays. Measured red on 2026-10-19 without the guard: the
-    catch-up raised `ProjectionNotBuilt` instead."""
-    storage = PostgresStorage(db)
-    append(storage, [_raw(1, "email", NOW)], recorded_at=NOW)
-    catch_up(storage, storage, ChronicleProjection(version=4), rebuild=True)
-    before = _states(db)
-    with pytest.raises(ValueError, match="build_back needs rebuild"):
-        catch_up(storage, storage, CHRONICLE, rebuild=False, build_back=True)
-    assert _states(db) == before
+    outcome = catch_up(storage, storage, code, rebuild=True)
+    expected = {"none": 0, "newer": projection.version + 1, "older": projection.version}
+    assert (outcome.rebuilt_from, outcome.version) == (expected[found], code.version)
 
 
 class _FailingStore:

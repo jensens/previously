@@ -185,6 +185,7 @@ from previously.mcp_server.render import render_text
 from previously.mcp_server.render import sanitize
 from previously.mcp_server.render import Stated
 from previously.mcp_server.render import STATED_LINE_CHARS
+from previously.mcp_server.render import withheld_reason
 from previously.storage.errors import OperationFailed
 from previously.storage.errors import PrivilegeMissing
 from previously.storage.errors import ServerUnreachable
@@ -937,7 +938,7 @@ class Service[Conn]:
         """The snapshot of a call and the graph it reads there: from the
         projection in a snapshot of `graph_snapshot`, which catches it up
         first, without building it, and catches up once more where
-        `previously project` rebuilt it in between. What stops it is the
+        `previously project --build` rebuilt it in between. What stops it is the
         call's error, never a fold instead ({ref}`graph-readers`)."""
         with graph_snapshot(self.log, self.projections, self.graph) as conn:
             yield conn, projected_graph(self.log, self.graph, conn)
@@ -1183,7 +1184,7 @@ class Service[Conn]:
             presence = entity_presence(view, bracket, history=True)
         if presence is not None and presence.placeholder is not None:
             mark, _entry = presence.placeholder
-            raise Refused(f"within {bracket} is withheld: {mark.reason}")
+            raise Refused(f"within {bracket} is withheld: {withheld_reason(mark.reason)}")
         if presence is None or bracket not in EntityTypes(graph):
             raise Refused(f"within {bracket} is not an entity that stands")
         return seen_members(self.log, conn, policy, client, graph, bracket)
@@ -2633,7 +2634,7 @@ def build_server[Conn](
 
     The server catches the projection up once before it is built, without
     building it, and a projection it cannot catch up stops it there with the
-    error: `ProjectionNotBuilt` where `previously project` has not
+    error: `ProjectionNotBuilt` where `previously project --build` has not
     built it at this code's version, which is the sentence an operator needs
     and every call would otherwise fail with one by one."""
     if not is_language_tag(language):
@@ -3184,7 +3185,7 @@ def build_app[Conn](
         # The state row of the graph projection, one read by primary key: the
         # server is ready only while the projection is at the version this
         # code declares, which a rolling update that changes the version
-        # takes from the old pods once `previously project` of the new
+        # takes from the old pods once `previously project --build` of the new
         # release has run, and gives the new ones from then on. A catch-up
         # here would make the probe as slow as the log is new. The state row
         # may lag behind the tip, which the next call catches up. Nothing of

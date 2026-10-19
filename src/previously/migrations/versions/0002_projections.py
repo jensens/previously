@@ -9,7 +9,7 @@ Revises: 0001_log
 A forward migration, unlike the corrections folded into `0001_log`: nothing
 here touches the log, so there is nothing a rebuild would have to redo. The
 three tables are derivable and disposable ({ref}`projections`); dropping them
-loses no truth, and `previously project` builds them again from the log.
+loses no truth, and `previously project --build` builds them again from the log.
 """
 
 from alembic import op

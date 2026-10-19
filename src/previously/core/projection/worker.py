@@ -13,7 +13,6 @@ from previously.contract.rows import EventRow
 from previously.contract.rows import ProjectionState
 from previously.contract.rows import UnitRow
 from previously.core.errors import ProjectionGap
-from previously.core.errors import ProjectionNewer
 from previously.core.errors import ProjectionNotBuilt
 from previously.core.errors import ProjectionRebuilt
 from typing import Protocol
@@ -90,32 +89,21 @@ def catch_up[Conn](
     projection: Projection,
     *,
     rebuild: bool,
-    build_back: bool = False,
     batch_size: int = 500,
 ) -> Outcome:
     """Brings one projection up to the tip of the log, in batches.
 
     **Only `rebuild=True` builds.** With it, a projection without a state
-    row is built from the start, and one whose state row stands at an older
-    version is emptied and built again. Without it, the same finding raises
-    `ProjectionNotBuilt` and the transaction that found it rolls back, so
-    the tables and the state row stay as they were. `previously project`
-    alone passes `True`: every reader, the MCP server and `redact` pass
-    `False` and catch up only ({ref}`projections`). Keyword-only and without
-    a default, so that no caller rebuilds by leaving it out.
-
-    **Only `build_back=True` builds back.** A state row at a newer version
-    than this code declares is what an older release's `project` meets
-    when it starts after a newer one built the projection, such as a
-    scheduled run of the old image during an upgrade. Without the flag it
-    raises `ProjectionNewer` and rolls back, leaving the projection to the
-    newer release; with it, the projection is emptied and built again at
-    this code's version, as a rollback to this release needs. The flag
-    permits and does not force: at this code's version or an older one it
-    changes nothing, so a rollback's `project` that runs a second time
-    catches up as any other does. It needs `rebuild=True`, and a caller
-    that asks for one without the other is refused with `ValueError`
-    before the first transaction opens.
+    row is built from the start, and one whose state row stands at another
+    version, older or newer, is emptied and built again. Without it, the
+    same finding raises `ProjectionNotBuilt` and the transaction that found
+    it rolls back, so the tables and the state row stay as they were.
+    `previously project --build` alone passes `True`, the step that deploys
+    a release: a plain `previously project`, every reader, the MCP server
+    and `redact` pass `False` and catch up only ({ref}`projections`). A
+    build at this code's version is no rebuild: with the state row at it,
+    `True` catches up as `False` does. Keyword-only and without a default,
+    so that no caller rebuilds by leaving it out.
 
     **Rows and `up_to_id` move in one transaction or not at all.** An abort in
     the middle leaves a consistent partial projection, and the next run
@@ -138,10 +126,6 @@ def catch_up[Conn](
         # A caller error, named as one. `LIMIT 0` would return an empty read
         # and the loop below would report a gap in the log that is not there.
         raise ValueError(f"batch_size must be at least 1, got {batch_size}")
-    if build_back and not rebuild:
-        # A caller error too: building back is a kind of building, and a
-        # caller that may not build has nothing to build back.
-        raise ValueError("build_back needs rebuild")
 
     # Every transaction below starts by locking the state row and takes
     # `up_to_id` and the version from it, never from the transaction before.
@@ -163,15 +147,9 @@ def catch_up[Conn](
                 raise ProjectionNotBuilt(
                     projection.name, None if state is None else state.version, projection.version
                 )
-            if state is not None and state.version > projection.version and not build_back:
-                # Raised inside the transaction, which rolls back: the newer
-                # release's projection stays as it stands. Building back is
-                # right in a rollback and wrong everywhere else, and only the
-                # operator knows which this is.
-                raise ProjectionNewer(projection.name, state.version, projection.version)
-            # In either direction from here: a release derives differently
-            # from a table another version built, whether that version is
-            # older or, in a rollback, newer.
+            # `!=` and not `<`: a release derives differently from a table
+            # another version built, older after an upgrade, newer in a
+            # rollback, and only the deploy step asks for either.
             rebuilt_from = 0 if state is None else state.version
             store.truncate_projection(conn, projection.name)
             state = ProjectionState(projection.name, 0, projection.version, datetime.now(UTC))

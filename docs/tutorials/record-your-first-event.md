@@ -84,7 +84,7 @@ This is the first event in the chain, so there's no predecessor to link to.
 
 ```console
 $ uv run previously log
-1	2026-10-11T19:35:22.352591+00:00	observation	d0bb973765c4
+1	2026-10-19T17:54:56.218644+00:00	observation	30203e726b04
 ```
 
 Notice that the chain now has one event.
@@ -123,8 +123,8 @@ This `anchors.txt` is this tutorial's alone, so delete it from your clone once y
 ```console
 $ uv run previously show 1
 id=1 kind=observation
-occurred_at=2026-10-11T19:35:22.352591+00:00
-hash=d0bb973765c4bf3fb16f060f3d2ba42be45910fd4c29e060d9ffa8bef598abd4
+occurred_at=2026-10-19T17:54:56.218644+00:00
+hash=30203e726b042da56a70ef02bc0a568421dc5ca5ed68797d96bced2bd859ecb7
 evidence=recollection
 payload={"artifact_hash": "dc61469da1b794f30b8e795e72b06b98e6a5ad04bb46bac936d98c3ac3888b01", "evidence": "recollection"}
   ¶1 The client approved the new homepage design.
@@ -144,17 +144,17 @@ Only `artifact_hash` comes out the same as above, because it's computed from the
 ## Build the derived views
 
 The chronicle, the counts per source, and the graph are derived from the log, and they start out empty.
-One command fills them all.
+One command builds them all, with `--build`.
 
 ```console
-$ uv run previously project
+$ uv run previously project --build
 chronicle       built: 1 event, up_to_id 1
 source-stats    built: 1 event, up_to_id 1
 graph           built: 1 event, up_to_id 1
 ```
 
 Notice that all three lines say `built`: nothing existed yet, so the worker built each view from the log, starting at the first event.
-Run the same command a second time.
+Now run the command without `--build`, the way a scheduled job runs it to keep the views current.
 
 ```console
 $ uv run previously project
@@ -171,8 +171,8 @@ There was nothing left to project.
 
 ```console
 $ uv run previously chronicle
-1	1	2026-10-11T19:35:22.352591+00:00	email	2026-10-03-kickoff@example.org	The client approved the new homepage design.
-1	2	2026-10-11T19:35:22.352591+00:00	email	2026-10-03-kickoff@example.org	Next milestone: content migration starts Monday.
+1	1	2026-10-19T17:54:56.218644+00:00	email	2026-10-03-kickoff@example.org	The client approved the new homepage design.
+1	2	2026-10-19T17:54:56.218644+00:00	email	2026-10-03-kickoff@example.org	Next milestone: content migration starts Monday.
 ```
 
 Notice that each line is one unit, and that each one carries `email` and the message identifier we passed to `append`.
@@ -182,7 +182,7 @@ That source attribution is what makes this a chronicle and not a copy of `log`.
 
 ```console
 $ uv run previously stats
-email	1	2	2026-10-11T19:35:22.352591+00:00	2026-10-11T19:35:22.352591+00:00
+email	1	2	2026-10-19T17:54:56.218644+00:00	2026-10-19T17:54:56.218644+00:00
 ```
 
 Notice that `email` stands at one event and two units, and that the two timestamps are the same moment: the log holds one event, so the first one seen and the last one seen are that event.

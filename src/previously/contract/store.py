@@ -198,7 +198,7 @@ class ProjectionStore[Conn](Protocol):
     waits until the first ends and then finds the row the first committed.
     Version 0 is no version a projection declares, so a placeholder that
     were ever committed as it is would only make the next `previously
-    project` rebuild, and every other catch-up stop until it has.
+    project --build` rebuild, and every other catch-up stop until it has.
 
     `delete_chronicle` takes the chronicle rows of one event: those of the
     named units, or with `None` every row of the event; an empty sequence is

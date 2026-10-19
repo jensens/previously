@@ -42,7 +42,7 @@ The server counts once per call, in the snapshot the call reads, before the call
 Before that snapshot, every call of `mcp` and `serve` brings the graph projection up to the tip of the log, and the count, `list_entities` and `list_triage` read the graph from it ({ref}`graph-readers`).
 The catch-up never builds the projection, and no other way to the graph answers in its place.
 Where the projection isn't built at the version of the server's release, or the catch-up fails, the call fails with the error a call gets for any failure inside the server, and the server's log says why.
-Where `previously project` rebuilt the projection between the catch-up and the snapshot, the call catches up once more and reads; a second rebuild in a row fails the call the same way.
+Where `previously project --build` rebuilt the projection between the catch-up and the snapshot, the call catches up once more and reads; a second rebuild in a row fails the call the same way.
 `whoami` and `get_event` catch up too, so they fail alike.
 What they show of an entity or a relation comes from the log.
 The tools that write fold the log for their checks.
@@ -271,7 +271,9 @@ An event left with no unit of the bracket isn't shown.
 The policy decides every event that `within` keeps as it does without `within`.
 When an event is cut at the end of a page, the note's `get_event` call serves every unit from the next one on, of the bracket or not.
 A bracket the client may not see is refused as withheld, with the reason its placeholder in `list_entities` gives, wherever `list_entities` shows a placeholder for the id, a retracted entity's or a rejected proposal's included, and nothing of the bracket is read.
-An id under which `list_entities` shows no entity, such as an id of an event or a relation, an erased entity, a retracted entity or a rejected proposal the client sees, and an id below 1 or beyond 2^53 − 1 are refused with the sentence of an id that names no entity that stands.
+An id under which `list_entities` shows no entity, such as an id of an event or a relation, or an erased entity, and an id below 1 or beyond 2^53 − 1 are refused with the sentence of an id that names no entity that stands.
+So is a retracted entity or a rejected proposal the client sees: `list_entities` shows it, and it doesn't stand.
+A withheld reason longer than a placeholder shows is cut where the placeholder cuts it, at 500 characters.
 A cursor carries the id of the last item the page consumed, the filters and the number of the page it opens, encoded as base64url without padding; it isn't sealed, and grants nothing, because every call decides again.
 A cursor carries `within` as text, such as `"12"`, and the access entry as the number the call gave.
 A cursor for other filters, a malformed one, or one whose id names no observation is refused.

@@ -77,15 +77,16 @@ An image older than the database refuses to migrate it; {ref}`cli-reference` giv
 
 ## Build the projections next
 
-Run `project` right after `migrate`, before anything reads the graph or serves MCP: on a new database, on the first image with the migration `0006_graph`, and on every image whose release notes say that a projection's version changed.
+Run `project --build` right after `migrate`, before anything reads the graph or serves MCP, every time you start a new image: it builds on a new database and wherever a projection's version changed, and catches up otherwise.
 
 ```shell
 docker run --rm --network previously-blobs -e PREVIOUSLY_DSN \
-    ghcr.io/jensens/previously:0.1.0a1 project
+    ghcr.io/jensens/previously:0.1.0a1 project --build
 ```
 
-It's the only command that builds a projection.
-Until it has, the listings of the graph exit 2 with a sentence that names `previously project`, `mcp` and `serve` refuse to start, and `redact` leaves its redaction unfinished; see {ref}`rebuild-a-projection`.
+It's the only command that builds a projection; a scheduled `project` without `--build` only catches up.
+Until it has run, the listings of the graph exit 2 with a sentence that names `previously project --build`, `mcp` and `serve` refuse to start, and `redact` leaves its redaction unfinished; see {ref}`rebuild-a-projection`.
+Images up to `0.1.0a8` don't know `--build`; with one of those, run `project` without it, which builds in either direction.
 
 ## Run a command
 

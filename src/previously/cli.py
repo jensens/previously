@@ -1290,13 +1290,13 @@ def _payload_line(event_id: int) -> str:
 
 
 # What finishes an unfinished redaction, by what stopped it, as the clause
-# that ends its sentence: the same command again; `previously project` first,
-# where a projection isn't built. Where it stands at another version, the
-# clause is the advice of `ProjectionNotBuilt` with the same command after
-# it: this code cannot tell whether it is the release that is to serve, and
-# an older release builds the projection back only with `--build-back`.
+# that ends its sentence: the same command again; `previously project
+# --build` first, where a projection isn't built. Where it stands at another
+# version, the clause is the advice of `ProjectionNotBuilt` with the same
+# command after it: this code cannot tell whether it is the release that is
+# to serve.
 _AGAIN = "run the same command again"
-_BUILD = "run `previously project`, then the same command again"
+_BUILD = "run `previously project --build`, then the same command again"
 
 
 def _unfinished(redaction_id: int, outstanding: str, *, then: str) -> PreviouslyError:
@@ -1306,7 +1306,7 @@ def _unfinished(redaction_id: int, outstanding: str, *, then: str) -> Previously
     covered, writes nothing, and does what is left.
 
     Where a projection is not built (`then` is `_BUILD`), the same command
-    alone would stop at it again: `previously project` builds it first, and
+    alone would stop at it again: `previously project --build` builds it first, and
     in building it takes the redaction in."""
     return PreviouslyError(
         f"the redaction is recorded as event {redaction_id}, but it is not finished: "
@@ -1361,7 +1361,7 @@ def _catch_up_after(storage: PostgresStorage) -> tuple[str, str] | None:
     version is left as it is, and named as what is outstanding, in the
     words of `ProjectionNotBuilt`; the second value is the clause that
     finishes the redaction, which carries the error's advice where the
-    projection stands at another version. Only `previously project` builds
+    projection stands at another version. Only `previously project --build` builds
     ({ref}`projections`), and the first `redact` after an upgrade would
     otherwise rebuild for as long as the log takes, inside a command that
     erases one thing.
@@ -1492,26 +1492,25 @@ def _project_arguments(parser: argparse.ArgumentParser) -> None:
         help="then fold the log and report every row the graph projection holds otherwise",
     )
     parser.add_argument(
-        "--build-back",
+        "--build",
         action="store_true",
-        help="build a projection a newer release built back to this release's version, "
-        "as a rollback to this release needs",
+        help="build a projection that is not built at this release's version, from scratch, "
+        "forward or back; for the step that deploys this release",
     )
 
 
 def _cmd_project(args: argparse.Namespace) -> int:
     # `PROJECTIONS` fixes the order, so two runs print their lines the same way
     # round. `catch_up` gets the same object twice because `PostgresStorage` is
-    # both the log it reads and the projection store it writes. A projection
-    # a newer release built stops the run with `ProjectionNewer` unless
-    # `--build-back` asks for the step back; the projections before it in
-    # the order are caught up by then, and those after it are left for the
-    # release that is to serve.
+    # both the log it reads and the projection store it writes. Without
+    # `--build` it catches up only, as a reader does: a scheduled job must
+    # never build against the step that deploys a release, in either
+    # direction ({ref}`projections`). A projection it would have to build
+    # stops the run with `ProjectionNotBuilt`; the projections before it in
+    # the order are caught up by then, and those after it are left alone.
     with _storage() as storage:
         for projection in PROJECTIONS:
-            outcome = catch_up(
-                storage, storage, projection, rebuild=True, build_back=args.build_back
-            )
+            outcome = catch_up(storage, storage, projection, rebuild=args.build)
             print(f"{outcome.name:<15} {_describe(outcome)}")
         if not args.check:
             return 0
@@ -3507,12 +3506,12 @@ def _graph_snapshot(storage: PostgresStorage) -> Generator[tuple[Connection, Gra
     there from the projection ({ref}`graph-readers`).
 
     `graph_snapshot` catches the projection up first, without building it,
-    and catches up once more where `previously project` rebuilt it in
+    and catches up once more where `previously project --build` rebuilt it in
     between. Silent, as the MCP server's catch-up is: a reader's output is
     what it reads. What stops it is an error of the command, as every
     `PreviouslyError` and `StorageError` is, and `main` says it in one
     sentence: a projection not built at this code's version, which names
-    `previously project`, a gap in the log, a database that refuses. A
+    `previously project --build`, a gap in the log, a database that refuses. A
     reader has no second way to the graph that would answer instead."""
     with graph_snapshot(storage, storage, storage) as conn:
         yield conn, projected_graph(storage, storage, conn)
