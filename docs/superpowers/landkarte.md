@@ -27,7 +27,7 @@ Gebaut und abgenommen, auf `main`:
 | Einheit 4 | MCP-Lesezugang: Clients als Prinzipale mit Token und Verarbeitungskette (`client`); die Zusage um Betreiber, Training, Unterverarbeiter und Herkunft des Modells erweitert, die Regel um die vier passenden Einschränkungen; `previously mcp` (stdio) und `previously serve` (HTTP, beide Generationen, Bereitschaft über `GET /healthz` ohne Token); fünf Werkzeuge, zwei Ressourcen-Vorlagen, zwei Prompts, jeder Inhalt nur nach `decide` mit der Kette des Clients; das Zugriffsprotokoll als `mcp_access` und `previously access`; `policy gaps` zählt, was MCP zurückhielt; die Seiten `mcp-interface.md`, `mcp-tools.md` und die Anleitung `connect-claude-code-and-vibe.md`; der Handoff `handoffs/2026-10-11-kup6s-mcp.md` | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, beide eingefroren am 2026-10-11 | PR #12, `ffa28fb`; veröffentlicht als `v0.1.0a3` am 2026-10-11; Bedingung 9 erledigt am 2026-10-11, nach Entscheidung des Betreuers auf den Lauf von kup6s (RG), ohne Vibe und ohne die drei Kreise |
 | Einheit 5 | Feststellungen: Verpflichtung und Entscheidung mit Quellen (`core/assertion.py`, `core/assertions.py`), Vorschläge, Freigabe und Ablehnung, Lesen durch Falten des Logs, die Kommandos dazu, fünf MCP-Werkzeuge; die Antworten in einem Aufruf (PR #20) | `specs/2026-10-12-pilot-feststellungen.md`, eingefroren am 2026-10-12 | PR #17, `4735e3f`; veröffentlicht als `v0.1.0a5`; die Abnahme nach F §14 lief am 2026-10-13; `v0.1.0a6` mit PR #20 |
 | Zuordnungen, Phase 1 | Das Vokabular als Handlung `vocabulary` mit Grundvokabular (`core/vocabulary.py`), Entitäten und Beziehungen als Feststellungen (`core/graph.py`, `core/graph_write.py`), die Freigabeklassen (`core/classes.py`), die Kommandos dazu, fünf MCP-Werkzeuge | `specs/2026-10-14-zuordnungen.md` (lebendig) | PR #24, `cce8b4b`; veröffentlicht als `v0.1.0a7`; der Lauf mit Vellenfeld nach Z §17 Punkt 1 lief am 2026-10-14 in kup6s (die vier Befunde sind geschlossen, `14de3d3`) |
-| Zuordnungen, Phase 2 | Die Zuordnung von Events und Einheiten an Klammern: die Art `concerns` im Grundvokabular (`from = ["event"]`, `to = ["*"]`), ein Event am Anfang ist Quelle, `members` (die Menge einer Klammer, das Genauere ersetzt das Allgemeine); die Projektion `graph` (Migration `0006_graph`, `p_graph_version`, `p_graph_thread`), von Lesern beim Lesen nachgezogen und nur von `previously project` gebaut, ohne Rückfall auf das Falten des Logs (Fixrunde F2); `project --check`; `chronicle --within N` und MCP `previously(within=N)`, über MCP zählt eine Kante nur, wo der Client sie sieht; die Seiten und `handoffs/2026-10-15-kup6s-graph-phase-2.md` | `specs/2026-10-14-zuordnungen.md` (lebendig), Plan `plans/2026-10-15-zuordnungen-phase-2.md` | PR #26, `98375a7`, gemerged am 2026-10-15; veröffentlicht als `v0.1.0a8`; läuft seit dem 2026-10-19 in kup6s, alle sechs Prüfungen des Handoffs stehen (R8); die Antwort auf R8 ist PR #27 |
+| Zuordnungen, Phase 2 | Die Zuordnung von Events und Einheiten an Klammern: die Art `concerns` im Grundvokabular (`from = ["event"]`, `to = ["*"]`), ein Event am Anfang ist Quelle, `members` (die Menge einer Klammer, das Genauere ersetzt das Allgemeine); die Projektion `graph` (Migration `0006_graph`, `p_graph_version`, `p_graph_thread`), von Lesern beim Lesen nachgezogen und nur von `previously project` gebaut (seit PR #27 nur mit `--build`), ohne Rückfall auf das Falten des Logs (Fixrunde F2); `project --check`; `chronicle --within N` und MCP `previously(within=N)`, über MCP zählt eine Kante nur, wo der Client sie sieht; die Seiten und `handoffs/2026-10-15-kup6s-graph-phase-2.md` | `specs/2026-10-14-zuordnungen.md` (lebendig), Plan `plans/2026-10-15-zuordnungen-phase-2.md` | PR #26, `98375a7`, gemerged am 2026-10-15; veröffentlicht als `v0.1.0a8`; läuft seit dem 2026-10-19 in kup6s, alle sechs Prüfungen des Handoffs stehen (R8); die Antwort auf R8 ist PR #27 |
 
 Mit Stufe 1c ist Teilprojekt 1 gebaut und abgeschlossen, wie die Architektur
 es in §12.1 zuschneidet: Log, Projektionen, Blobs. Die Auslieferung und die
@@ -153,9 +153,12 @@ antworten, fünfzehn Werkzeuge. Der Migrationsjob ist ein Sync-Hook von ArgoCD,
 der `migrate` als Init-Container und `project` als Hauptcontainer fährt;
 `previously-mcp` läuft mit `Recreate`; `project --check` läuft täglich um
 03:45 UTC. Zwei Punkte der Rückmeldung schließt der Zweig
-`worktree-rueckmeldung-a8` (PR #27, unter *Erledigt*): ein älteres `project`
-baut eine neuere Projektion nicht mehr zurück, außer mit `--build-back`, so
-dass die Forderung entfällt, den geplanten `project` vor dem Hook umzustellen;
+`worktree-rueckmeldung-a8` (PR #27, unter *Erledigt*): ein `project` ohne
+Flag baut nicht mehr, in keiner Richtung, auch nicht zum ersten Mal; nur
+`previously project --build` baut, im Schritt, der ein Release ausrollt (der
+Hook in kup6s), so dass die Forderung entfällt, den geplanten `project` vor
+dem Hook umzustellen, beim Upgrade wie beim Rollback (Entscheidung des
+Betreuers vom 2026-10-19, nach dem Review, das die Lücke im Rollback fand);
 und `within` über MCP nennt eine Klammer, die der Client nicht sehen darf,
 zurückgehalten, wie `list_entities` sie als Platzhalter zeigt. Der Handoff
 `handoffs/2026-10-19-kup6s-a8-answer.md` liegt bei.
@@ -579,6 +582,13 @@ das mit der Endprüfung ins Repository kommt):
   Betreuers). Seit PR #27 nennt `within` über MCP einen verborgenen Faden ohne
   Gewinner zurückgehalten, wie `list_entities` mit `subject` und `history`
   seinen Platzhalter zeigt; die Liste ohne `subject` lässt ihn weiter aus.
+- **Eine Ablehnung durch `within` zählt `policy gaps` nicht.** Weist
+  `previously(within=N)` eine Klammer als zurückgehalten ab, ist das ein
+  `Refused`: der Eintrag im Zugriffsprotokoll trägt keinen `withheld`-Eintrag,
+  und `policy gaps` zählt die Zurückhaltung nicht, während dieselbe Id in
+  `list_entities` als Platzhalter gezählt wird. Zu entscheiden, ob die Ablehnung
+  einen `Withheld`-Eintrag schreibt (R8, Review des Zweigs
+  `worktree-rueckmeldung-a8`, M-3).
 - **Das Vokabular kann sich zwischen Vorschau und Schreiben von `vocabulary
   apply FILE` ändern.** `_cmd_vocabulary_apply` zeigt die Unterschiede aus
   einer Transaktion, `apply_vocabulary` rechnet sie unter dem Tip neu und
@@ -1665,16 +1675,21 @@ auf `assertions.md` unter *What the pilot leaves open*.
   antwortet nicht mehr mit dem Satz einer fehlenden, sondern sagt offen, dass
   sie zurückgehalten ist, wie `list_entities` es mit dem Platzhalter sagt; eine
   Zeitmessung verrät nichts mehr, was die Antwort nicht schon sagt.
-- ~~Ein geplanter `project` des alten Images baut die Projektion zurück~~ (R8,
-  *One requirement kup6s meets only in part*) — geschlossen im Zweig
-  `worktree-rueckmeldung-a8`, PR #27: `catch_up` mit `rebuild=True` weist eine
-  Projektion, deren Zustandszeile über der Version des Codes steht, mit
-  `ProjectionNewer` ab und lässt Tabellen und Zustandszeile stehen; nur
-  `previously project --build-back` baut zurück, wie ein Rollback es braucht,
-  und das Flag erzwingt sonst nichts. Für jede Projektion in `PROJECTIONS`,
-  gemessen rot mit der Abweisung herausgenommen. Die Forderung des Handoffs
-  vom 2026-10-15, den geplanten `project` vor dem Hook umzustellen oder
-  auszusetzen, entfällt (`handoffs/2026-10-19-kup6s-a8-answer.md`).
+- ~~Ein geplanter `project` des anderen Images baut die Projektion um~~ (R8,
+  *One requirement kup6s meets only in part*; das Review des ersten Entwurfs
+  fand dieselbe Lücke im Rollback) — geschlossen im Zweig
+  `worktree-rueckmeldung-a8`, PR #27: `previously project` ohne Flag zieht nur
+  nach, wie ein Leser, und lässt eine Projektion ohne Zustandszeile oder auf
+  einer anderen Version mit `ProjectionNotBuilt` stehen; nur `previously
+  project --build` baut, von Grund auf, vorwärts oder zurück, und erzwingt
+  nichts, wo die Projektion auf der eigenen Version steht. Für jede
+  Projektion in `PROJECTIONS` und jede Richtung, gemessen rot mit
+  `rebuild=True` für jeden `project`. Die Forderung des Handoffs vom
+  2026-10-15, den geplanten `project` vor dem Hook umzustellen oder
+  auszusetzen, entfällt in beide Richtungen; neu ist, dass der Hook `project
+  --build` fährt (`handoffs/2026-10-19-kup6s-a8-answer.md`). Was bleibt: ein
+  übrig gebliebener oder wiederholter Hook eines älteren Releases baut
+  stillschweigend zurück, und nichts heilt das von selbst.
 - ~~`within` und `list_entities` sagen über eine verborgene Entität
   Verschiedenes~~ (R8, *One thing a reader stumbles over*) — geschlossen im
   Zweig `worktree-rueckmeldung-a8`, PR #27: `within` weist eine Klammer, die
