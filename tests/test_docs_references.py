@@ -2000,6 +2000,23 @@ def test_the_command_line_reference_names_every_subcommand_and_counts_them() -> 
     assert len(listed) == len(set(listed))
 
 
+def test_the_reference_quotes_what_a_plain_project_says_when_it_would_have_to_build() -> None:
+    """The two sentences `cli.md` quotes for a plain `previously project`
+    that meets a projection it would have to build, held against
+    `ProjectionNotBuilt`, produced whole at the names and versions the page
+    gives. Measured on 2026-10-19: with `--build` taken out of the first
+    quoted sentence, this test goes red; the unchanged page is the
+    control."""
+    from previously.core.errors import ProjectionNotBuilt
+
+    page = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
+    quoted = _quoted_block(page, "a plain `project` leaves it as it stands")
+    assert quoted == [
+        f"Error: {ProjectionNotBuilt('chronicle', None, 3)}",
+        f"Error: {ProjectionNotBuilt('graph', 2, 1)}",
+    ]
+
+
 def test_the_reference_quotes_what_a_reader_of_the_graph_says_when_it_cannot_read() -> None:
     """The three errors `cli.md` quotes for a listing of the graph whose
     projection it may not build or keeps finding rebuilt, held against the

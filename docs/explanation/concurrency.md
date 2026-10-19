@@ -99,7 +99,7 @@ A catch-up of a projection locks the projection's row in `projection_state` at t
 Two catch-ups of one projection, a scheduled `project` and the catch-up every `redact` runs, then take turns batch by batch, and each starts where the other committed.
 Without it, the two were measured to leave erased text in the chronicle for good, and {ref}`catch-up-lock` gives that interleaving.
 That lock and an erasure's never wait for each other: a catch-up reads the log without a lock, and the only lock it takes on an event row is the key-share lock of a foreign-key check, which `FOR NO KEY UPDATE` lets through.
-A catch-up that finds the state row at another version of the code stops with an error rather than rebuilding in turn, which {ref}`catch-up-lock` explains as well, and only `previously project` builds at all.
+A catch-up that finds the state row at another version of the code stops with an error rather than rebuilding in turn, which {ref}`catch-up-lock` explains as well, and only `previously project --build` builds at all.
 
 (concurrency-graph)=
 

@@ -275,6 +275,15 @@ def _one_line(clean: str, limit: int) -> str:
     return line
 
 
+def withheld_reason(reason: str) -> str:
+    """The reason of a withheld item in the words its placeholder gives:
+    cleaned, on one line, and cut at `_REASON_CHARS`. The refusal of a
+    withheld bracket of `previously` quotes it through this function too,
+    so that the two say the same, however long a reason a policy makes."""
+    clean, _ = sanitize(reason)
+    return _one_line(clean, _REASON_CHARS)
+
+
 def _time(moment: datetime) -> str:
     if moment.tzinfo is not None:
         moment = moment.astimezone(UTC)
@@ -415,7 +424,7 @@ def _placeholder(item: WithheldMark | ErasedMark | ErrorMark, counter: _Counter)
     uri = counter.line(item.uri)
     if isinstance(item, ErasedMark):
         return f"[erased: {uri}]"
-    return f"[withheld: {uri} — {counter.line(item.reason, _REASON_CHARS)}]"
+    return f"[withheld: {uri} — {withheld_reason(counter.text(item.reason))}]"
 
 
 def _removed_note(removed: int) -> str:

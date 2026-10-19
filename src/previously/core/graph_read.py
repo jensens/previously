@@ -405,8 +405,8 @@ def check_graph[Conn](
 
 # How often `graph_snapshot` catches up again when the projection, at this
 # code's version, no longer stands in its snapshot where its catch-up left
-# it. One, because the miss it answers is a `previously project` that
-# rebuilt between the catch-up and the snapshot, after an operator deleted
+# it. One, because the miss it answers is a `previously project --build`
+# that rebuilt between the catch-up and the snapshot, after an operator deleted
 # the state row, and the second catch-up meets the projection at its own
 # version: it only takes turns with that build under the lock of the state
 # row and carries it on to the tip. A second miss in a row is a rebuild
@@ -450,6 +450,6 @@ def graph_snapshot[Conn](
                 return
     raise ProjectionRebuilt(
         f"projection {GRAPH.name} was rebuilt between catching it up and reading it, "
-        f"on each of {REBUILD_RETRIES + 1} tries; read again once `previously project` "
+        f"on each of {REBUILD_RETRIES + 1} tries; read again once `previously project --build` "
         "has finished"
     )

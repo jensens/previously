@@ -101,6 +101,7 @@ from previously.mcp_server.auth import NOT_BUILT
 from previously.mcp_server.confirm import HANDLE_SECONDS
 from previously.mcp_server.confirm import seal
 from previously.mcp_server.read import event_hidden
+from previously.mcp_server.read import seen_members
 from previously.mcp_server.render import PAGE_CHARS
 from previously.mcp_server.render import STATED_LINE_CHARS
 from previously.mcp_server.server import build_app
@@ -4680,17 +4681,17 @@ def test_the_server_refuses_to_start_without_a_projection_at_its_version(
     with db.begin() as c:
         c.execute(text(statement))
     before = _graph_rows(db)
-    with pytest.raises(ProjectionNotBuilt, match="`previously project`"):
+    with pytest.raises(ProjectionNotBuilt, match="`previously project --build`"):
         build_server(
             world.storage,
             stdio_client="claude-code",
             graph=world.storage,
             projections=world.storage,
         )
-    with pytest.raises(ProjectionNotBuilt, match="`previously project`"):
+    with pytest.raises(ProjectionNotBuilt, match="`previously project --build`"):
         build_app(world.storage, allowed_hosts=(), graph=world.storage, projections=world.storage)
     assert _graph_rows(db) == before
-    # The control: once `project` built it, the server starts.
+    # The control: once `project --build` built it, the server starts.
     catch_up(world.storage, world.storage, GRAPH, rebuild=True)
     build_server(
         world.storage, stdio_client="claude-code", graph=world.storage, projections=world.storage
@@ -4748,8 +4749,8 @@ def test_the_readiness_probe_is_not_ready_while_the_projection_is_at_another_ver
             assert anyio.run(run) == (503, NOT_BUILT)
         assert "the readiness probe found projection graph" in caplog.text
         assert _graph_rows(db) == before
-        catch_up(world.storage, world.storage, GRAPH, rebuild=True)
         # The control: at this code's version again, ready.
+        catch_up(world.storage, world.storage, GRAPH, rebuild=True)
         assert _ready(world.storage) == 200
 
 
@@ -5355,8 +5356,8 @@ def test_previously_within_refuses_a_cursor_carried_to_a_client_that_may_not_see
 ) -> None:
     """⚠️ 6 of the review of task 5: the bracket is checked on every call,
     before the cursor is read, so a cursor of Lea's chronicle that
-    `local-harness` got is refused for `claude-code` as an id that names no
-    entity."""
+    `local-harness` got is refused for `claude-code`, as withheld, in the
+    words of her placeholder in `list_entities`."""
     ids = _brackets(world)
     lea = ids.graphed.lea
     for number in range(5):
@@ -5368,7 +5369,7 @@ def test_previously_within_refuses_a_cursor_carried_to_a_client_that_may_not_see
 
     carried = _tool(world, mode, "previously", arguments)
     assert carried.is_error
-    assert _text(carried) == f"Error: within {lea} is not an entity that stands"
+    assert _text(carried) == f"Error: within {lea} is withheld: {_BY_TEAM}"
     # The control: the client the cursor was made for goes on with it.
     rest = _tool(world, mode, "previously", arguments, client="local-harness")
     assert not rest.is_error
@@ -5472,26 +5473,42 @@ def test_previously_within_shows_no_unit_the_client_does_not_see_without_it(
             assert {entry.event for entry in selected.withheld} <= withheld
 
 
+# The reasons the policy of the world gives `claude-code` for what it
+# withholds: a circle without a rule, a recollection no rule covers, and the
+# rule of `bauer`, which allows only the EU.
+_NOT_LOCAL: Final = (
+    ", so only local processing is allowed; this client (claude-code) processes with "
+    "claude-max, which is not local"
+)
+_BY_TEAM: Final = "circle team has no rule" + _NOT_LOCAL
+_BY_NO_RULE: Final = "no rule covers this content" + _NOT_LOCAL
+_BY_BAUER: Final = (
+    "the rules of circle:bauer do not allow claude-max, the processor of this client "
+    "(claude-code): the provider stores in ['us'], outside the allowed ['eu']"
+)
+
+
 @pytest.mark.db
 @pytest.mark.parametrize("mode", MODES)
-def test_previously_within_a_bracket_the_client_may_not_see_is_refused_as_a_missing_one(
+def test_previously_within_names_a_bracket_the_client_may_not_see_withheld(
     world: World, mode: str
 ) -> None:
-    """Review Focus 3: Lea stands on the plain mail, which `claude-code` may
-    not see. An empty page would tell it that she exists; the refusal of an
-    id that names no entity tells it nothing."""
+    """Lea stands on the plain mail, which `claude-code` may not see, and
+    `list_entities` shows her as a placeholder: `within` refuses her as
+    withheld, with the placeholder's reason, and not in the words of an id
+    that names nothing. An unknown id, a relation, a mail and 0 stay
+    refused as not standing, in one sentence."""
     ids = _brackets(world)
     graphed = ids.graphed
-    answers = [
-        _tool(world, mode, "previously", {"within": bracket})
-        for bracket in (graphed.lea, 999_999, graphed.holds, ids.mail, 0)
-    ]
+    withheld = _tool(world, mode, "previously", {"within": graphed.lea})
+    assert withheld.is_error
+    assert _text(withheld) == f"Error: within {graphed.lea} is withheld: {_BY_TEAM}"
+    missing = (999_999, graphed.holds, ids.mail, 0)
+    answers = [_tool(world, mode, "previously", {"within": bracket}) for bracket in missing]
     assert all(answer.is_error for answer in answers)
     texts = {
         _text(answer).replace(str(bracket), "ID")
-        for answer, bracket in zip(
-            answers, (graphed.lea, 999_999, graphed.holds, ids.mail, 0), strict=True
-        )
+        for answer, bracket in zip(answers, missing, strict=True)
     }
     assert texts == {"Error: within ID is not an entity that stands"}
     assert _accesses(world)[-1].access.arguments == {"within": 0}
@@ -5499,6 +5516,240 @@ def test_previously_within_a_bracket_the_client_may_not_see_is_refused_as_a_miss
     local = _tool(world, mode, "previously", {"within": graphed.lea}, client="local-harness")
     assert not local.is_error
     assert _units_shown(_text(local)) == {}
+
+
+type _Found = tuple[str, ...]
+
+
+def _listed(world: World, mode: str, subject: int, client: str) -> _Found:
+    """What `list_entities` lets `client` know of `subject`, over both of its
+    calls that name one id, with and without the history: withheld with the
+    placeholder's reason, shown, erased, or absent, in that precedence."""
+    found: list[_Found] = []
+    for history in (False, True):
+        arguments = {"subject": subject, "history": history}
+        page = _text(_tool(world, mode, "list_entities", arguments, client=client))
+        last = page.splitlines()[-1]
+        placeholder = re.fullmatch(rf"\[withheld: previously://event/{subject} — (.*)\]", last)
+        if placeholder is not None:
+            found.append(("withheld", placeholder.group(1)))
+        elif f"### previously://event/{subject} · entity · " in page:
+            found.append(("shown",))
+        elif last == f"[erased: previously://event/{subject}]":
+            found.append(("erased",))
+        else:
+            assert last == f"Error: previously://event/{subject} — no entity stands under this id"
+            found.append(("absent",))
+    for kind in ("withheld", "shown", "erased"):
+        of_kind = {item for item in found if item[0] == kind}
+        if of_kind:
+            assert len(of_kind) == 1, of_kind  # one reason, whichever call shows it
+            return of_kind.pop()
+    return ("absent",)
+
+
+def _within(world: World, mode: str, subject: int, client: str) -> _Found:
+    """What `previously` with `within` lets `client` know of `subject`."""
+    result = _tool(world, mode, "previously", {"within": subject}, client=client)
+    if not result.is_error:
+        return ("chronicle",)
+    said = _text(result)
+    withheld = re.fullmatch(rf"Error: within {subject} is withheld: (.*)", said)
+    if withheld is not None:
+        return ("withheld", withheld.group(1))
+    assert said == f"Error: within {subject} is not an entity that stands"
+    return ("not standing",)
+
+
+def _presence_world(world: World) -> dict[str, int]:
+    """One id for each case `list_entities` tells apart, by name: an entity
+    shown to both clients, three withheld from `claude-code`, one for each
+    reason the policy of the world gives, a retracted entity and a rejected
+    proposal each seen and withheld, a relation, an erased entity and an id
+    that names nothing."""
+    ids = _brackets(world)
+    graphed = ids.graphed
+    storage = world.storage
+    scanned, plain = world.ids["attachments_only"], world.ids["plain"]
+
+    def proposed(name: str, source: int) -> Claim:
+        return replace(
+            _person(name, source), author=model_author("claude"), responsibility=OPEN, confidence=10
+        )
+
+    remembered = replace(_person("Remembered", 1), evidence="recollection", sources=())
+    written = write_claims(
+        storage,
+        storage,
+        [
+            remembered,
+            _person("Ruled", world.ids["html_blockquote"]),
+            _person("Gone", scanned),
+            _person(PRIVATE_NAME, plain),
+            proposed("Proposed", scanned),
+            proposed(PRIVATE_NAME, plain),
+            _person("Erased", scanned),
+        ],
+        recorded_at=T0,
+    ).ids
+    recollection, ruled, gone, gone_hidden, rejected, rejected_hidden, erased = written
+    _retract_entity(world, gone, "Gone", scanned)
+    _retract_entity(world, gone_hidden, PRIVATE_NAME, plain)
+    _state(
+        world,
+        _rejection(rejected, Source(scanned, None)),
+        _rejection(rejected_hidden, Source(plain, None)),
+    )
+    redact_event(storage, storage, erased, reason="test", recorded_at=T0)
+    return {
+        "shown": graphed.anna,
+        "by-circle": graphed.lea,
+        "by-recollection": recollection,
+        "by-rule": ruled,
+        "retracted": gone,
+        "retracted-withheld": gone_hidden,
+        "rejected": rejected,
+        "rejected-withheld": rejected_hidden,
+        "relation": graphed.holds,
+        "erased": erased,
+        "unknown": 999_999,
+    }
+
+
+# What each tool lets each client know of each id of `_presence_world`:
+# `list_entities` first, `previously` with `within` second.
+_SHOWN: Final = (("shown",), ("chronicle",))
+_GONE: Final = (("shown",), ("not standing",))
+_ABSENT: Final = (("absent",), ("not standing",))
+_ERASED: Final = (("erased",), ("not standing",))
+_PRESENCES: Final[dict[str, dict[str, tuple[_Found, _Found]]]] = {
+    "claude-code": {
+        "shown": _SHOWN,
+        "by-circle": (("withheld", _BY_TEAM), ("withheld", _BY_TEAM)),
+        "by-recollection": (("withheld", _BY_NO_RULE), ("withheld", _BY_NO_RULE)),
+        "by-rule": (("withheld", _BY_BAUER), ("withheld", _BY_BAUER)),
+        "retracted": _GONE,
+        "retracted-withheld": (("withheld", _BY_TEAM), ("withheld", _BY_TEAM)),
+        "rejected": _GONE,
+        "rejected-withheld": (("withheld", _BY_TEAM), ("withheld", _BY_TEAM)),
+        "relation": _ABSENT,
+        "erased": _ERASED,
+        "unknown": _ABSENT,
+    },
+    "local-harness": {
+        "shown": _SHOWN,
+        "by-circle": _SHOWN,
+        "by-recollection": _SHOWN,
+        "by-rule": _SHOWN,
+        "retracted": _GONE,
+        "retracted-withheld": _GONE,
+        "rejected": _GONE,
+        "rejected-withheld": _GONE,
+        "relation": _ABSENT,
+        "erased": _ERASED,
+        "unknown": _ABSENT,
+    },
+}
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_within_reveals_an_entity_exactly_when_list_entities_does_and_with_its_reason(
+    world: World, mode: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """For every case `list_entities` tells apart, for both clients, and
+    before and after a rule for recollections: `within` names an id
+    withheld exactly where `list_entities` shows its placeholder, with the
+    same reason, and reads none of its members; where `list_entities` shows
+    no entity, `within` refuses the id as not standing. The table pins what
+    each tool says, and the loop holds the two against each other. Measured
+    red on 2026-10-19 with `within` back at the sentence of a missing id for
+    a withheld bracket, with the members of a withheld bracket read before
+    the refusal, with `within` asking without the history (the withheld
+    rejected proposal) and with standing checked before the policy (the
+    withheld retracted entity); the other tests of `within` stayed green
+    under the last three."""
+    names = _presence_world(world)
+    read: list[int] = []
+
+    def counting(*args: Any) -> Any:
+        read.append(args[-1])
+        return seen_members(*args)
+
+    monkeypatch.setattr("previously.mcp_server.server.seen_members", counting)
+
+    def held(expected: dict[str, dict[str, tuple[_Found, _Found]]]) -> None:
+        for client, table in expected.items():
+            for name, pinned in table.items():
+                subject = names[name]
+                read.clear()
+                listed = _listed(world, mode, subject, client)
+                within = _within(world, mode, subject, client)
+                assert (listed, within) == pinned, (client, name)
+                assert (listed[0] == "withheld") == (within[0] == "withheld"), (client, name)
+                if listed[0] == "withheld":
+                    assert listed[1] == within[1], (client, name)
+                    assert read == [], (client, name)
+                if listed[0] in ("absent", "erased"):
+                    assert within == ("not standing",), (client, name)
+
+    held(_PRESENCES)
+    # The control of the reason: a rule for recollections lets the
+    # recollection through to `claude-code`, in both tools at once.
+    set_policy(
+        world.storage,
+        Rule("source:recollection", frozenset({"any"}), None, frozenset()),
+        statement="recollections may go anywhere",
+        recorded_at=T0,
+    )
+    held({"claude-code": {"by-recollection": _SHOWN}})
+
+
+def _crowd_mail(count: int) -> bytes:
+    """A mail to `count` addresses, each the one member of a circle of its
+    own with a long name and no rule."""
+    to = ", ".join(f"member-{n:02d}@crowd.example" for n in range(count))
+    return "\r\n".join(
+        [
+            "From: Markus <markus@firma.example>",
+            f"To: {to}",
+            "Subject: Rundschreiben",
+            "Date: Wed, 07 Oct 2026 11:00:00 +0000",
+            "Message-ID: <crowd@firma.example>",
+            "Content-Type: text/plain; charset=utf-8",
+            "",
+            "An alle.",
+            "",
+        ]
+    ).encode()
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("mode", MODES)
+def test_within_gives_a_long_reason_cut_as_the_placeholder_cuts_it(world: World, mode: str) -> None:
+    """A policy can make a reason longer than a placeholder shows: here
+    twenty-five circles without a rule, each with a long name, which the
+    placeholder cuts at 500 characters. `within` quotes the reason as the
+    placeholder does, cut at the same place, so that the two still say the
+    same. Measured red on 2026-10-19 with `within` quoting the reason
+    uncut: its sentence ran on past the placeholder's ellipsis."""
+    _graphed(world)
+    count = 25
+    for n in range(count):
+        circle = f"a-circle-with-a-rather-long-name-{n:02d}"
+        for item in (Circle(circle), Membership(circle, f"member-{n:02d}@crowd.example")):
+            set_policy(world.storage, item, statement="for the test", recorded_at=T0)
+    mail = _take_in(world.storage, _crowd_mail(count))
+    (crowd,) = write_claims(
+        world.storage, world.storage, [_person("Crowd", mail)], recorded_at=T0
+    ).ids
+
+    listed = _listed(world, mode, crowd, "claude-code")
+    within = _within(world, mode, crowd, "claude-code")
+    assert listed[0] == "withheld"
+    assert len(listed[1]) == 500
+    assert listed[1].endswith("…")
+    assert within == listed
 
 
 @pytest.mark.db

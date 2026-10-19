@@ -250,7 +250,10 @@ Finding mustn't tell a client what the rest of the server keeps from it, either,
 So over MCP an edge counts only where the client sees it, by the same rule that decides whether a relation appears on an entity's page or in the triage.
 An assignment starts at its mail, and the mail is among its sources, so a client that may not see a mail doesn't see its assignments: under `within` the mail isn't there at all, not even as a placeholder, while the whole chronicle shows its placeholder as before.
 A part or a `part_of` that the client may not see stops the walk, so a mail that belongs to the bracket only through it isn't found.
-A bracket that the client may not see is refused with the sentence of one that doesn't exist, since an empty page would tell the client that an entity stands under the id.
+A bracket that the client may not see is refused as withheld, with the reason of its placeholder in `list_entities`, since a page, even an empty one, would tell the client what belongs to an entity it may not see.
+Until the answer to the kup6s feedback on `v0.1.0a8`, the refusal used the sentence of an id that names no entity, while `list_entities` showed a placeholder under the same id, so the two tools disagreed about whether the client may know that the entity exists.
+`list_entities` shows the placeholder under every filter alike, so that a client learns neither the state nor the kind of what it may not see, and that decision stands; `within` now follows it, and one function decides for both whether an id names an entity that's shown, withheld or absent.
+The policy decides before anything that looks at the content, so a withheld entity is refused in the same words whether it stands, is retracted or lost its proposal, and none of its members is read.
 
 The command line is the operator's tool and walks every edge, so a client can find less than the operator.
 In one case it finds one unit more.
@@ -276,7 +279,7 @@ Each figure is the median of three runs, and `verify` found nothing in any of th
 
 | What | 10,000 relations | 100,000 relations |
 |---|---|---|
-| `previously project`, the first build | 3.54 s | 34.6 s |
+| The first build, today `previously project --build` | 3.54 s | 34.6 s |
 | `previously project`, nothing new | 0.022 s | 0.023 s |
 | `previously project` after one write | 0.038 s | 0.040 s |
 | `previously entities`, every entity printed | 0.30 s | 3.51 s |
@@ -294,7 +297,7 @@ Each figure is the median of three runs, and `verify` found nothing in any of th
 
 Interactive use needs a call or a list to answer in less than about a second, and by that measure the projection carries what it was built for.
 The header and `whoami`, triage, a catch-up, `chronicle --within` on the command line and the empty bracket over MCP all stay far below a second at 100,000 relations, so the header no longer costs every call what the whole graph costs.
-The first build, 35 s at 100,000 relations, is paid once for each version of the projection, by `previously project` in the upgrade step: a reader never builds, and fails until `project` has ({ref}`graph-readers`).
+The first build, 35 s at 100,000 relations, is paid once for each version of the projection, by `previously project --build` in the step that deploys a release: a reader never builds, and fails until that step has ({ref}`graph-readers`).
 
 What doesn't carry at 100,000 relations are the reads whose cost is the graph or the log itself, not the question.
 A full listing, `entities` or `relations --at`, takes its subjects from the projection and still folds each listed thread from the log, because what it shows comes from there, and printing every line of a graph that size takes 3.5 s and 6.8 s.

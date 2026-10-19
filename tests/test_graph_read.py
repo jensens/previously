@@ -533,9 +533,10 @@ def test_a_reader_meeting_a_projection_it_would_have_to_build_fails_and_touches_
         "is not built" if change.startswith("DELETE") else f"stands at version {GRAPH.version + 1}"
     )
     assert str(raised.value).startswith(f"projection graph {found}, and this code declares ")
-    assert "`previously project`" in str(raised.value)
+    assert "`previously project --build`" in str(raised.value)
     assert _projection_rows(db) == before
-    # The control: `previously project` builds it, and the reader reads.
+    # The control: `previously project --build` builds it, and the reader
+    # reads.
     _project(storage)
     assert _listed(storage)
 

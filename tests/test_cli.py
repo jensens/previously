@@ -1281,7 +1281,7 @@ def test_show_and_chronicle_print_no_control_of_a_unit_or_a_payload_raw(
     assert "\\u001b]0;Titel gesetzt\\u0007" in line
     assert "\\u009b0m\\u007f" in line
 
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     capsys.readouterr()
     assert main(["chronicle"]) == 0
     out = capsys.readouterr().out
@@ -1322,7 +1322,7 @@ def test_project_on_an_empty_log_is_up_to_date_at_zero_but_still_names_a_rebuild
 
     assert isinstance(db, Engine)
     _setup(db, monkeypatch)
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     assert capsys.readouterr().out.splitlines() == [
         "chronicle       up to date, up_to_id 0",
         "source-stats    up to date, up_to_id 0",
@@ -1330,10 +1330,10 @@ def test_project_on_an_empty_log_is_up_to_date_at_zero_but_still_names_a_rebuild
     ]
 
     with db.begin() as c:
-        c.execute(text("UPDATE projection_state SET version = 4 WHERE name = 'chronicle'"))
-    assert main(["project"]) == 0
+        c.execute(text("UPDATE projection_state SET version = 2 WHERE name = 'chronicle'"))
+    assert main(["project", "--build"]) == 0
     assert capsys.readouterr().out.splitlines() == [
-        "chronicle       rebuilt: version 4 -> 3, 0 events, up_to_id 0",
+        "chronicle       rebuilt: version 2 -> 3, 0 events, up_to_id 0",
         "source-stats    up to date, up_to_id 0",
         "graph           up to date, up_to_id 0",
     ]
@@ -1356,7 +1356,7 @@ def test_project_says_which_path_it_took(
     _setup(db, monkeypatch)
     _append("email", "m1", "Hello\n\nWorld", "2026-10-01T09:00:00Z")
     capsys.readouterr()
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     first = capsys.readouterr().out.splitlines()
     assert first == [
         "chronicle       built: 1 event, up_to_id 1",
@@ -1366,7 +1366,7 @@ def test_project_says_which_path_it_took(
 
     _append("email", "m2", "Again", "2026-10-02T09:00:00Z")
     capsys.readouterr()
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     second = capsys.readouterr().out.splitlines()
     assert second == [
         "chronicle       caught up: 1 event, up_to_id 2",
@@ -1374,7 +1374,7 @@ def test_project_says_which_path_it_took(
         "graph           caught up: 1 event, up_to_id 2",
     ]
 
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     third = capsys.readouterr().out.splitlines()
     assert third == [
         "chronicle       up to date, up_to_id 2",
@@ -1383,21 +1383,173 @@ def test_project_says_which_path_it_took(
     ]
 
     # The fourth path, and the only one invisible in the table itself: the
-    # stored version is raised past the one the code declares, the way a
-    # rolled-back release leaves it, and the next run empties `p_chronicle` and
-    # builds it again. Without this line `rebuilt:` would be a format the
+    # stored version is set below the one the code declares, the way an
+    # upgrade finds what the older release built, and the next run empties
+    # `p_chronicle` and builds it again. Without this line `rebuilt:` would be a format the
     # reference page promises and nothing produces. `source-stats` and
     # `graph` are left alone, so the projections report different paths in
     # the same run.
     with db.begin() as c:
-        c.execute(text("UPDATE projection_state SET version = 4 WHERE name = 'chronicle'"))
+        c.execute(text("UPDATE projection_state SET version = 2 WHERE name = 'chronicle'"))
     capsys.readouterr()
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     fourth = capsys.readouterr().out.splitlines()
     assert fourth == [
-        "chronicle       rebuilt: version 4 -> 3, 2 events, up_to_id 2",
+        "chronicle       rebuilt: version 2 -> 3, 2 events, up_to_id 2",
         "source-stats    up to date, up_to_id 2",
         "graph           up to date, up_to_id 2",
+    ]
+
+
+def _projection_rows(engine: object) -> tuple[object, ...]:
+    """Every state row and every row of every projection table."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(engine, Engine)
+    with engine.begin() as c:
+        return tuple(
+            c.execute(text(query)).all()
+            for query in (
+                "SELECT * FROM projection_state ORDER BY name",
+                "SELECT * FROM p_chronicle ORDER BY event_id, seq",
+                "SELECT * FROM p_source_stats ORDER BY source",
+                "SELECT * FROM p_graph_version ORDER BY id",
+                "SELECT * FROM p_graph_thread ORDER BY subject",
+            )
+        )
+
+
+_NEWER = "UPDATE projection_state SET version = version + 1 WHERE name = :name"
+_OLDER = "UPDATE projection_state SET version = version - 1 WHERE name = :name"
+_NONE = "DELETE FROM projection_state WHERE name = :name"
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("name", "change", "found"),
+    [
+        ("chronicle", _NEWER, "newer"),
+        ("chronicle", _OLDER, "older"),
+        ("chronicle", _NONE, "none"),
+        ("source-stats", _NEWER, "newer"),
+        ("source-stats", _NONE, "none"),
+        ("graph", _NEWER, "newer"),
+        ("graph", _NONE, "none"),
+    ],
+    ids=[
+        "chronicle-upgrade",
+        "chronicle-rollback",
+        "chronicle-first-build",
+        "source-stats-upgrade",
+        "source-stats-first-build",
+        "graph-upgrade",
+        "graph-first-build",
+    ],
+)
+def test_a_plain_project_builds_in_no_direction_and_project_build_does(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    name: str,
+    change: str,
+    found: str,
+) -> None:
+    """A plain `previously project`, the scheduled one, catches up only, for
+    every projection the command line builds. In an upgrade, the old image's
+    run meets the projection at a newer version than its code declares; in
+    a rollback, the newer image's run meets it at an older version; on a
+    new database, or after an operator deleted the state row, it meets no
+    state row. Each time it exits 2 with the sentence of
+    `ProjectionNotBuilt`, which names `previously project --build`, and
+    leaves every table and every state row as they were: a scheduled job
+    never builds against the step that deploys a release. The control:
+    `previously project --build` builds it, and its line says which way.
+    A rollback is staged for the chronicle alone: the other two declare
+    version 1, and no version below it is one a projection can stand at;
+    `tests/test_projection_worker.py` holds the rollback for every
+    projection with a code version raised instead. Measured red on
+    2026-10-19 with `_cmd_project` passing `rebuild=True` whatever the flag:
+    the plain run exited 0 and rebuilt, in all seven."""
+    from previously.core.projection import PROJECTIONS
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    _setup(db, monkeypatch)
+    _append("email", "m1", "Hello\n\nWorld", "2026-10-01T09:00:00Z")
+    assert main(["project", "--build"]) == 0
+    with db.begin() as c:
+        c.execute(text(change), {"name": name})
+        stood = c.execute(
+            text("SELECT version FROM projection_state WHERE name = :name"), {"name": name}
+        ).scalar_one_or_none()
+    before = _projection_rows(db)
+    capsys.readouterr()
+
+    assert main(["project"]) == 2
+    out, err = capsys.readouterr()
+    order = [projection.name for projection in PROJECTIONS]
+    assert [line.split()[0] for line in out.splitlines()] == order[: order.index(name)]
+    (declared,) = [p.version for p in PROJECTIONS if p.name == name]
+    if found == "none":
+        assert err == (
+            f"Error: projection {name} is not built, and this code declares version "
+            f"{declared}; `previously project --build` builds it\n"
+        )
+    else:
+        assert err == (
+            f"Error: projection {name} stands at version {stood}, and this code declares "
+            f"version {declared}; the release that is to serve builds it with "
+            "`previously project --build`\n"
+        )
+    assert _projection_rows(db) == before
+
+    assert main(["project", "--build"]) == 0
+    line = dict(row.split(maxsplit=1) for row in capsys.readouterr().out.splitlines())[name]
+    if found == "none":
+        assert line == "built: 1 event, up_to_id 1"
+    else:
+        assert line == f"rebuilt: version {stood} -> {declared}, 1 event, up_to_id 1"
+
+
+@pytest.mark.db
+def test_project_build_permits_and_never_forces(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """At this code's version, `previously project --build` catches up as a
+    plain run does and rebuilds nothing, so a deploy step that carries the
+    flag on every sync doesn't rebuild on every sync: a row poisoned by hand
+    stays poisoned. And a plain run after a build catches up. Measured red
+    on 2026-10-19 with `catch_up` rebuilding wherever `rebuild` is true: the
+    poison was gone and the line said `rebuilt`."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    _setup(db, monkeypatch)
+    _append("email", "m1", "Hello\n\nWorld", "2026-10-01T09:00:00Z")
+    assert main(["project", "--build"]) == 0
+    with db.begin() as c:
+        c.execute(text("UPDATE p_source_stats SET events = 999"))
+    capsys.readouterr()
+
+    assert main(["project", "--build"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "chronicle       up to date, up_to_id 1",
+        "source-stats    up to date, up_to_id 1",
+        "graph           up to date, up_to_id 1",
+    ]
+    with db.begin() as c:
+        assert c.execute(text("SELECT events FROM p_source_stats")).scalar_one() == 999
+
+    _append("email", "m2", "Again", "2026-10-02T09:00:00Z")
+    capsys.readouterr()
+    assert main(["project"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "chronicle       caught up: 1 event, up_to_id 2",
+        "source-stats    caught up: 1 event, up_to_id 2",
+        "graph           caught up: 1 event, up_to_id 2",
     ]
 
 
@@ -1453,7 +1605,7 @@ def test_chronicle_prints_one_line_per_unit_in_time_order_with_the_source(
             None,
         )
     _append("de\tsk", "id\nx", "raw", "2026-10-03T09:00:00Z")
-    main(["project"])
+    main(["project", "--build"])
     capsys.readouterr()
     assert main(["chronicle"]) == 0
     out, err = capsys.readouterr()
@@ -1495,7 +1647,7 @@ def test_both_reading_commands_report_the_lag_on_stderr_and_only_there(
     assert out == ""
     assert err.strip() == "projection is 1 event behind; run `previously project`"
 
-    main(["project"])
+    main(["project", "--build"])
     capsys.readouterr()
     with db.begin() as c:
         c.execute(text("UPDATE projection_state SET up_to_id = 0 WHERE name = 'source-stats'"))
@@ -1519,7 +1671,7 @@ def test_chronicle_window_is_half_open_and_an_empty_window_is_not_truncated(
     _setup(db, monkeypatch)
     for n, day in enumerate(("01", "02", "03"), start=1):
         _append("email", f"m{n}", f"day {day}", f"2026-10-{day}T09:00:00Z")
-    main(["project"])
+    main(["project", "--build"])
     capsys.readouterr()
     inside = ["chronicle", "--since", "2026-10-01T09:00:00Z", "--until", "2026-10-03T09:00:00Z"]
     assert main(inside) == 0
@@ -1551,7 +1703,7 @@ def test_chronicle_limit_warns_on_stderr_when_it_cuts_and_not_otherwise(
     _setup(db, monkeypatch)
     for n in range(1, 4):
         _append("email", f"m{n}", f"u{n}", f"2026-10-0{n}T09:00:00Z")
-    main(["project"])
+    main(["project", "--build"])
     capsys.readouterr()
     assert main(["chronicle", "--limit", "2"]) == 0
     out, err = capsys.readouterr()
@@ -1612,7 +1764,7 @@ def test_stats_prints_one_line_per_source(
     _append("email", "m2", "c", "2026-10-01T09:00:00Z")
     _append("chat", "c1", "d", "2026-10-03T09:00:00Z")
     _append("de\tsk", "d1", "e", "2026-10-04T09:00:00Z")
-    main(["project"])
+    main(["project", "--build"])
     capsys.readouterr()
     assert main(["stats"]) == 0
     out, err = capsys.readouterr()
@@ -2047,7 +2199,7 @@ def test_redact_units_on_an_event_of_append_leaves_no_text_and_says_nothing(
     _connect(db, monkeypatch)
     submit = ["append", "--source", "cli", "--external-id", "a", "--text", "One\n\nTwo"]
     assert main(submit) == 0
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     capsys.readouterr()
 
     assert main(["redact", "units", "1", "2", "--reason", "r"]) == 0
@@ -2077,7 +2229,7 @@ def test_redact_units_says_when_the_payload_holds_the_wording(
     failed; always `True`: the second."""
     engine = _connect(db, monkeypatch)
     _append_with_text_in_payload(engine, "One\n\nTwo")
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     capsys.readouterr()
 
     assert main(["redact", "units", "1", "2", "--reason", "r"]) == 0
@@ -2211,7 +2363,7 @@ def test_after_redact_the_chronicle_no_longer_shows_it(
     _connect(db, monkeypatch)
     _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
     _append("cli", "b", "Three", "2026-10-02T09:00:00Z")
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     capsys.readouterr()
 
     assert main(["redact", "event", "1", "--reason", "wrong recipient"]) == 0
@@ -2232,7 +2384,7 @@ def test_a_second_redact_finishes_what_the_first_left_behind(
     call, the one that says `already`."""
     engine = _connect(db, monkeypatch)
     _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     storage = PostgresStorage(engine)
     redact_event(storage, storage, 1, reason="r", recorded_at=datetime.now(UTC))
     capsys.readouterr()
@@ -2257,7 +2409,7 @@ def test_a_catch_up_that_fails_after_the_redaction_says_what_is_outstanding(
 
     engine = _connect(db, monkeypatch)
     _append("cli", "a", "One", "2026-10-01T09:00:00Z")
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     _append("cli", "b", "Two", "2026-10-02T09:00:00Z")
     _append("cli", "c", "Three", "2026-10-03T09:00:00Z")
     with engine.begin() as c:
@@ -2291,7 +2443,7 @@ def test_an_unfinished_redact_units_still_says_that_the_payload_holds_the_wordin
 
     engine = _connect(db, monkeypatch)
     _append_with_text_in_payload(engine, "One\n\nTwo")
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     _append("cli", "b", "Three", "2026-10-02T09:00:00Z")
     _append("cli", "c", "Four", "2026-10-03T09:00:00Z")
     with engine.begin() as c:
@@ -2434,19 +2586,19 @@ def _chronicle_rows(engine: Engine) -> tuple[object, ...]:
         (
             "UPDATE projection_state SET version = 1 WHERE name = 'chronicle'",
             "stands at version 1",
-            "the release that is to serve builds it with `previously project`, "
+            "the release that is to serve builds it with `previously project --build`, "
             "then run the same command again",
         ),
         (
             "UPDATE projection_state SET version = 4 WHERE name = 'chronicle'",
             "stands at version 4",
-            "the release that is to serve builds it with `previously project`, "
+            "the release that is to serve builds it with `previously project --build`, "
             "then run the same command again",
         ),
         (
             "DELETE FROM projection_state WHERE name = 'chronicle'",
             "is not built",
-            "run `previously project`, then the same command again",
+            "run `previously project --build`, then the same command again",
         ),
     ],
     ids=["older-version", "newer-version", "no-state-row"],
@@ -2465,18 +2617,18 @@ def test_redact_does_not_rebuild_and_names_project_as_what_finishes_it(
     The redaction stands, the chronicle is left as it was, and the sentence
     says to build it and then run the same command, because the same command
     alone would stop at the chronicle again. Where the chronicle stands at
-    another version, this code can't tell which release is the older, so
-    the advice names the release that is to serve (review finding I-1 of
-    fix round F2): run by an old release at a newer table, a plain "run
-    `previously project`" would build it back. Measured red by letting
-    `_catch_up_after` catch up with `rebuild=True` (exit 0, the chronicle
-    rebuilt), and by giving the plain advice to every `ProjectionNotBuilt`
-    (the two version cases)."""
+    another version, this code can't tell which release is to serve, so the
+    advice names the release that is to serve (review finding I-1 of fix
+    round F2). Only `previously project --build` builds, so every advice
+    names the flag. Measured red by letting `_catch_up_after` catch up with
+    `rebuild=True` (exit 0, the chronicle rebuilt), and by giving the
+    advice of a missing state row to every `ProjectionNotBuilt` (the two
+    version cases)."""
     from sqlalchemy import text
 
     engine = _connect(db, monkeypatch)
     _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     with engine.begin() as c:
         c.execute(text(change))
     before = _chronicle_rows(engine)
@@ -2487,9 +2639,9 @@ def test_redact_does_not_rebuild_and_names_project_as_what_finishes_it(
         f"projection chronicle {found}, and this code declares version 3; {then}"
     )
     assert _chronicle_rows(engine) == before
-    # The control: `project` builds it and takes the redaction in, and the
-    # same command finds the target covered and finishes.
-    assert main(["project"]) == 0
+    # The control: `project --build` builds it and takes the redaction in,
+    # and the same command finds the target covered and finishes.
+    assert main(["project", "--build"]) == 0
     assert capsys.readouterr().out.splitlines()[0].startswith("chronicle       ")
     assert main(["chronicle"]) == 0
     assert capsys.readouterr().out == ""
@@ -2510,7 +2662,7 @@ def test_project_rebuilds_a_chronicle_built_at_version_1(
     engine = _connect(db, monkeypatch)
     _append("cli", "a", "One\n\nTwo", "2026-10-01T09:00:00Z")
     _append("cli", "b", "Three", "2026-10-02T09:00:00Z")
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     storage = PostgresStorage(engine)
     redact_event(storage, storage, 1, reason="r", recorded_at=datetime.now(UTC))
     with engine.begin() as c:
@@ -2519,7 +2671,7 @@ def test_project_rebuilds_a_chronicle_built_at_version_1(
         )
     capsys.readouterr()
 
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     assert capsys.readouterr().out.splitlines()[0] == (
         "chronicle       rebuilt: version 1 -> 3, 3 events, up_to_id 3"
     )
@@ -2579,7 +2731,7 @@ def test_main_releases_the_connections_it_opened(
         ["verify"],
         ["anchor"],
         ["show", "1"],
-        ["project"],
+        ["project", "--build"],
         ["chronicle"],
         ["stats"],
         ["show", "99"],  # exit code 1
@@ -3125,7 +3277,7 @@ def test_the_commands_of_today_run_without_any_blob_setting(
         ["verify"],
         ["anchor"],
         ["show", "1"],
-        ["project"],
+        ["project", "--build"],
         ["chronicle"],
         ["stats"],
         ["redact", "event", "1", "--reason", "r"],
@@ -3397,7 +3549,7 @@ def test_redact_blob_and_then_blob_get_says_erased(
     content = b"a scan that must go"
     address = hashlib.sha256(content).hexdigest()
     assert main(_attach("a", _file(tmp_path, "scan.pdf", content))) == 0
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     capsys.readouterr()
 
     assert main(["redact", "blob", address, "--reason", "r"]) == 0
@@ -3428,7 +3580,7 @@ def test_a_delete_that_fails_is_finished_by_the_second_call(
     assert (
         main(_attach("a", _file(tmp_path, "a.txt", content), _file(tmp_path, "b.txt", other))) == 0
     )
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     capsys.readouterr()
 
     monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "http://127.0.0.1:1")
@@ -3480,7 +3632,7 @@ def test_a_delete_and_a_catch_up_that_both_fail_are_named_in_one_sentence(
     content = b"the attachment to erase"
     address = hashlib.sha256(content).hexdigest()
     assert main(_attach("a", _file(tmp_path, "a.txt", content))) == 0
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     _append("cli", "b", "Two", "2026-10-02T09:00:00Z")
     _append("cli", "c", "Three", "2026-10-03T09:00:00Z")
     with blobs.engine.begin() as c:
@@ -3906,7 +4058,7 @@ def test_ingest_imap_takes_in_the_folder_and_a_second_run_appends_nothing(
     )
     assert _events(imap.engine) == 5
 
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     capsys.readouterr()
     assert main(["chronicle"]) == 0
     out, err = capsys.readouterr()
@@ -5015,7 +5167,7 @@ def test_mcp_and_serve_refuse_to_start_before_project_built_the_graph(
     monkeypatch.setenv("PREVIOUSLY_MCP_ADDRESS", f"127.0.0.1:{_free_port('127.0.0.1')}")
     sentence = (
         "Error: projection graph is not built, and this code declares version 1; "
-        "`previously project` builds it\n"
+        "`previously project --build` builds it\n"
     )
     for command in ("mcp", "serve"):
         assert main([command]) == 2
@@ -5118,7 +5270,7 @@ def test_serve_listens_where_the_address_says_beside_the_variables_of_a_service(
     _setup(db, monkeypatch)
     # The upgrade step: the server refuses to start before `project` built
     # the graph projection.
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     environment = {
         **os.environ,
         "PREVIOUSLY_MCP_ADDRESS": where,
@@ -5195,7 +5347,7 @@ def test_serve_passes_the_confirm_key_on_to_the_writing_tools(
     the control that the answer depends on the key."""
     port = _free_port("127.0.0.1")
     _setup(db, monkeypatch)
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     _declare_local(db, capsys)
     argv = ["client", "add", "claude-code", "--processor", "local", "--statement", "s", "--yes"]
     assert main(argv) == 0
@@ -7837,7 +7989,7 @@ def test_project_check_is_clean_after_a_history_and_names_each_row_falsified_by_
     storage = _graph_log(db, monkeypatch, capsys)
     ids = _listed_history(storage, capsys)
     redact_event(storage, storage, ids["proposal"], reason="wrong", recorded_at=_ASSERT_AT)
-    clean = _run(capsys, "project", "--check")
+    clean = _run(capsys, "project", "--build", "--check")
     assert [line.split()[0] for line in clean.splitlines()] == [
         "chronicle",
         "source-stats",
@@ -7870,15 +8022,15 @@ def test_project_check_is_clean_after_a_history_and_names_each_row_falsified_by_
         f"graph\t{ids['anna']}\tversion row under {ids['class']} instead of -",
     ]
     for _run_again in (1, 2):
-        out = _run(capsys, "project", "--check", code=1)
+        out = _run(capsys, "project", "--build", "--check", code=1)
         assert out.splitlines()[3:] == falsified
         assert capsys.readouterr().err == ""
     # The control: without `--check`, `project` says nothing of it.
-    assert len(_run(capsys, "project").splitlines()) == 3
+    assert len(_run(capsys, "project", "--build").splitlines()) == 3
     with storage.begin() as conn:
         storage.truncate_projection(conn, "graph")
         conn.execute(text("DELETE FROM projection_state WHERE name = 'graph'"))
-    rebuilt = _run(capsys, "project", "--check")
+    rebuilt = _run(capsys, "project", "--build", "--check")
     assert rebuilt.splitlines()[2].startswith("graph           built:")
     assert len(rebuilt.splitlines()) == 3
 
@@ -7965,7 +8117,7 @@ def test_a_listing_meeting_a_projection_it_would_have_to_build_fails_and_touches
 
     storage = _graph_log(db, monkeypatch, capsys)
     _listed_history(storage, capsys)
-    _run(capsys, "project")
+    _run(capsys, "project", "--build")
     expected = _expected_listings(capsys)
     assert isinstance(db, Engine)
     with db.begin() as c:
@@ -7974,10 +8126,11 @@ def test_a_listing_meeting_a_projection_it_would_have_to_build_fails_and_touches
     for command in (["entities"], ["triage"], ["status"]):
         sentence = _refused(capsys, *command)
         assert sentence.startswith(f"projection graph {found}, and this code declares version ")
-        assert "`previously project`" in sentence
+        assert "`previously project --build`" in sentence
         assert _graph_rows(db) == before
-    # The control: `previously project` builds it, and the listings read.
-    _run(capsys, "project")
+    # The control: `previously project --build` builds it, and the listings
+    # read.
+    _run(capsys, "project", "--build")
     assert _expected_listings(capsys) == expected
 
 
@@ -7994,7 +8147,7 @@ def test_a_listing_catches_up_once_more_after_a_rebuild_between_catch_up_and_sna
 
     storage = _graph_log(db, monkeypatch, capsys)
     _listed_history(storage, capsys)
-    _run(capsys, "project")
+    _run(capsys, "project", "--build")
     expected = _expected_listings(capsys)
     assert all(expected)
     assert isinstance(db, Engine)
@@ -8018,13 +8171,13 @@ def test_a_listing_fails_on_a_second_rebuild_in_a_row_though_a_third_try_would_r
 
     storage = _graph_log(db, monkeypatch, capsys)
     _listed_history(storage, capsys)
-    _run(capsys, "project")
+    _run(capsys, "project", "--build")
     assert isinstance(db, Engine)
     rebuilt = _RebuiltBeforeSnapshot(db, misses=2)
     _through(monkeypatch, rebuilt)
     assert _refused(capsys, "status") == (
         "projection graph was rebuilt between catching it up and reading it, on each of "
-        "2 tries; read again once `previously project` has finished"
+        "2 tries; read again once `previously project --build` has finished"
     )
     assert rebuilt.snapshots == 2
     # The control: the same store, past its misses, reads.
@@ -8053,7 +8206,7 @@ def test_a_listing_whose_catch_up_meets_a_gap_in_the_log_fails_with_it(
 
     storage = _graph_log(db, monkeypatch, capsys)
     _listed_history(storage, capsys)
-    _run(capsys, "project")
+    _run(capsys, "project", "--build")
     # Two events past the projection, so that a gap has room to stand
     # between them: with only the tip new, there is none.
     _model_person(storage, "Bert", confidence=40)
@@ -8088,7 +8241,7 @@ def test_a_role_that_may_only_read_the_projection_is_told_so_and_not_to_migrate(
 
     storage = _graph_log(db, monkeypatch, capsys)
     _listed_history(storage, capsys)
-    _run(capsys, "project")
+    _run(capsys, "project", "--build")
     assert isinstance(db, Engine)
     name, password = f"reader_{secrets.token_hex(4)}", secrets.token_hex(16)
     projections = "projection_state, p_chronicle, p_source_stats, p_graph_thread, p_graph_version"
@@ -8142,7 +8295,7 @@ def test_chronicle_within_shows_the_units_of_a_bracket_and_one_level_up_those_of
     general."""
     storage = _graph_log(db, monkeypatch, capsys)
     ids = _markus(capsys)
-    _run(capsys, "project")
+    _run(capsys, "project", "--build")
 
     assert _within(capsys, ids["party"]) == [f"1\t3\t{_MAIL_1}\tThree."]
     assert _within(capsys, ids["club"]) == [f"1\t3\t{_MAIL_1}\tThree."]
@@ -8160,7 +8313,7 @@ def test_chronicle_within_shows_the_units_of_a_bracket_and_one_level_up_those_of
         f"1\t2\t{_MAIL_1}\tTwo.\n1\t3\t{_MAIL_1}\tThree.\n",
         "projection is 1 event behind; run `previously project`\n",
     )
-    _run(capsys, "project")
+    _run(capsys, "project", "--build")
     assert _within(capsys, ids["xz"]) == [f"1\t1\t{_MAIL_1}\tOne."]
 
     # An erased unit takes its assignments with it, and an assignment of
@@ -8195,7 +8348,7 @@ def test_chronicle_within_counts_its_limit_and_its_window_among_the_units_of_the
         _written(
             capsys, "relate", "concerns", "--from-event", str(days[name]), "--to", str(project)
         )
-    _run(capsys, "project")
+    _run(capsys, "project", "--build")
 
     def line(name: str) -> str:
         day = "ABCD".index(name) + 1
@@ -8223,7 +8376,7 @@ def test_chronicle_within_refuses_what_is_not_an_entity_that_stands_and_shows_an
     gone = _written(capsys, "entity", "project", "--name", "Alt", "--source", "2")
     _written(capsys, "entity", "project", "--subject", str(gone), "--retract")
     empty = _written(capsys, "entity", "project", "--name", "Leer", "--source", "2")
-    _run(capsys, "project")
+    _run(capsys, "project", "--build")
 
     # Nothing at that id, a relation, a mail, a retracted entity, and an
     # id no event can have.
@@ -8248,7 +8401,7 @@ def test_chronicle_within_finds_from_the_projection_what_the_fold_finds(
     ids = _listed_history(storage, capsys)
     proposal = RelationBody("concerns", Source(1, (1,)), ids["party"], None, None, {}, "standing")
     _model_writes(storage, _model_claim(RELATION, proposal, confidence=40))
-    _run(capsys, "project")
+    _run(capsys, "project", "--build")
     brackets = [ids[name] for name in ("party", "club", "xz", "anna")]
     projected = [_within(capsys, bracket) for bracket in brackets]
     monkeypatch.setattr("previously.cli.projected_graph", _fold_instead)
@@ -8278,7 +8431,7 @@ def test_chronicle_within_reads_the_projection_once_more_after_a_rebuild_and_fai
 
     _graph_log(db, monkeypatch, capsys)
     ids = _markus(capsys)
-    _run(capsys, "project")
+    _run(capsys, "project", "--build")
     expected = _within(capsys, ids["club"])
     assert expected
     assert isinstance(db, Engine)

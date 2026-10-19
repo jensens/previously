@@ -74,7 +74,7 @@ The bookmark carries the design only if one catch-up at a time moves it.
 Before stage 1c, two catch-ups of one projection needed two `project` runs at once; since then every `redact` catches up as well, beside whatever `project` runs on a schedule, so two at once is the ordinary case.
 
 Each transaction of a catch-up therefore begins by locking the projection's row in `projection_state`, and takes `up_to_id` and the version from the locked row, never from the transaction before.
-That holds for the first transaction, which checks the version and, in `previously project`, builds or rebuilds the table, and for every batch after it.
+That holds for the first transaction, which checks the version and, in `previously project --build`, builds or rebuilds the table, and for every batch after it.
 A second catch-up waits at the row while the first holds it, and then starts where the first committed.
 A projection without a state row has nothing to lock yet, so the first transaction inserts a placeholder row and holds that; a second first build waits at the row's key, inserts nothing, and locks the row the first one committed.
 
@@ -97,8 +97,21 @@ With the lock, B waits for A, reads `up_to_id 1` from the row A committed, reads
 `test_two_catch_ups_of_one_projection_take_turns` in `tests/test_projection_worker.py` holds that interleaving, with a control that leaves out the extra append, and `test_two_first_builds_build_once` holds the first build.
 
 The lock settles two catch-ups of one version of the code, and not two versions.
-`previously project` rebuilds whenever the version it finds differs from its own, in either direction, so two releases that each ran it against one database would each rebuild what the other built.
-That's why `project` is the only command that builds: a reader, the MCP server and `redact` catch up and never build, and meeting no state row or one at another version they stop with `ProjectionNotBuilt`, whose sentence names `previously project` ({ref}`graph-readers`).
+`previously project --build` rebuilds whenever the version it finds differs from its own, in either direction, because a release derives differently from a table another version built, older after an upgrade, newer after a rollback.
+Two releases that each did that against one database would each undo what the other built, and that's why only one thing builds: the step that deploys a release, as a migration runs there.
+A plain `previously project`, the one a scheduled job runs, catches up and never builds, not even a first build.
+
+Until the answer to the kup6s feedback on `v0.1.0a8`, a plain `project` built whatever it found at another version, and the advice was to move or suspend the scheduled job around every upgrade.
+The feedback found the window that advice guarded: the scheduled jobs move to the new image only after the deployment step, so a scheduled run of the old image can start in the seconds between and build the projection back.
+A first answer refused only that direction, building forward but not back without a flag, and the review of it found the same window the other way round.
+In a rollback, the step of the older release builds back, a scheduled run of the newer image then builds forward again, and from then on every scheduled run of the older image refuses, so the server stays unready until somebody intervenes.
+A rule that treats the two directions differently can close only one of them, so the scheduled job builds in neither, and a run of the other image in that window fails once and leaves the projection to the step.
+
+What stays is a condition on the deployment: only the step of the release being deployed runs `project --build`, one deployment serves a database, and no leftover or retried pod of an earlier release's step runs after it.
+Where that breaks, a stale step of an older release builds back without a word, and the newer server stays unready until the newer release's step runs again; nothing heals it by itself, because no scheduled run builds.
+That's the price of a scheduled job that never fights the deployment: the one thing that builds is the one thing that has to be right.
+
+The readers don't build at all either: a reader, the MCP server and `redact` catch up and never build, and meeting no state row or one at another version they stop with `ProjectionNotBuilt`, whose sentence names `previously project --build` ({ref}`graph-readers`).
 A batch that finds the row at another version than its own, or finds no row, stops with `ProjectionRebuilt` instead of rebuilding in turn: two runs that each rebuilt whenever they met the other's version would take turns at the lock and never finish, while one that stops leaves the other to carry its build to the end.
 The error names the version it found; {ref}`rebuild-a-projection` says what to do, and `test_a_catch_up_stops_when_another_release_rebuilds_under_it` holds it.
 
@@ -193,7 +206,7 @@ Beside the comparison stands a property that interleaves "append some events," "
 Twenty-five examples per run, with `occurred_at` drawn at random as well and sources from a set of three, so that something is aggregated at all.
 
 The version trigger gets the same treatment.
-A projection declares its version in the code, and a catch-up of `previously project` that meets a different version in `projection_state` empties the table and starts over—any difference, not only a higher one, because a rolled-back release derives differently from the table it meets.
+A projection declares its version in the code, and a catch-up of `previously project --build` that meets a different version in `projection_state` empties the table and starts over—any difference, not only a higher one, because a rolled-back release derives differently from the table it meets.
 The test poisons a row in `p_source_stats`, raises the version, and finds the poison gone.
 Its control sits right next to it: a catch-up at the unchanged version leaves the poison in place.
 Without that control the first half would show only that the worker writes, not that the version is what set it off.
@@ -234,8 +247,8 @@ In standard output either one would be a line every consumer reads as a record, 
 Silence is therefore a statement: no notice means current and complete.
 
 The third is the one `project` answers.
-A catch-up that empties a table and builds it again looks, in the table, exactly like one that appended a few rows—so `project` names the path the run took, `built`, `caught up`, `rebuilt: version 1 -> 2` or `up to date`, and a version-triggered rebuild stops being invisible.
-`redact` catches up as well and never builds, so it has no such path to name; where a projection isn't built at its version, it says so in its error and leaves the build to `project`.
+A catch-up that empties a table and builds it again looks, in the table, exactly like one that appended a few rows—so `project --build` names the path the run took, `built`, `caught up`, `rebuilt: version 1 -> 2` or `up to date`, and a version-triggered rebuild stops being invisible.
+`redact` catches up as well and never builds, so it has no such path to name; where a projection isn't built at its version, it says so in its error and leaves the build to `project --build`.
 What that line reports is the path *this* run took, and one case escapes it: if a run is interrupted after the version check has rewritten the state row but before its first batch commits, the next run finds the state row already at the new version and reports an ordinary catch-up, because the rebuild it continues was recorded nowhere that survived the interruption.
 That's a known limit rather than a bug to fix in the worker: the alternative is a second stored field whose only reader is a sentence on the terminal.
 
@@ -258,9 +271,9 @@ Within one batch the rows go in first and the deletions run after, so a redactio
 A redaction that names a later event than itself takes nothing, since it can only order the erasure of something before it; taken, it would delete rows in a rebuild and none on the incremental path.
 
 `redact` catches the projections up itself, after the erasure, so the chronicle stops showing what was erased without waiting for the next `project`.
-The derivation reads redactions now, so the chronicle's version went from 1 to 2, and the first `project` after the upgrade rebuilds it and says `rebuilt: version 1 -> 2`.
-Until the second phase of the assignments a `redact` could be that first catch-up and run the rebuild itself, naming it on standard error; now it stops at a projection that isn't built at its version, its error says to run `previously project` and then the same command again, and the redaction stands meanwhile.
-A rebuild takes as long as reading the whole log does, which belongs in the upgrade step, not inside a command that erases one thing.
+The derivation reads redactions now, so the chronicle's version went from 1 to 2, and the first `project` that built after the upgrade rebuilt it and said `rebuilt: version 1 -> 2`.
+Until the second phase of the assignments a `redact` could be that first catch-up and run the rebuild itself, naming it on standard error; now it stops at a projection that isn't built at its version, its error says to run `previously project --build` and then the same command again, and the redaction stands meanwhile.
+A rebuild takes as long as reading the whole log does, which belongs in the deployment step, not inside a command that erases one thing.
 That rebuild isn't a formality: a table that version 1 built can still hold the rows of a unit erased since.
 
 The chronicle per unit is also what made this necessary.
@@ -273,7 +286,7 @@ What stays of the older behavior is the tombstone without an order: `test_a_payl
 The chronicle answers "what happened, line by line, and how it's known," and the answer is a statement a source made.
 An action is something the system did, so it isn't one.
 Since the pilot's gate a model call is an action that keeps the answer it received as units, so that an erasure can take them out one by one, and without a rule those units would stand in the chronicle among the lines of a mail.
-The derivation therefore skips every event whose kind isn't `observation`, and the chronicle's version went from 2 to 3 so that the first `project` after the upgrade rebuilds the table.
+The derivation therefore skips every event whose kind isn't `observation`, and the chronicle's version went from 2 to 3 so that the first `project` that built after the upgrade rebuilt the table.
 A redaction is an action too, but it has no units, so the table of version 2 holds no row of one; the rebuild matters for the actions written with units.
 `test_the_upgrade_to_version_3_rebuilds_and_ends_as_a_fresh_build` puts such a row into a table the way version 2 would have built it, and finds the rebuilt table equal to a fresh one.
 What an action did stays readable in `log`, which reads the chain one event at a time and shows every kind.
@@ -334,7 +347,7 @@ The second starts where the first committed, so neither sees half a batch and no
 
 ### How a reader reads it
 
-A reader of the graph doesn't wait for anybody to run `previously project`.
+A reader of the graph doesn't wait for a scheduled `previously project`.
 Every listing of the command line and every MCP call first catches the projection up, in transactions of its own, and then reads in a snapshot of its own.
 When nothing is new, the catch-up costs two short transactions: one locks the state row, and the other locks it again and finds the tip of the log where the projection stands.
 Measured the same day, `previously project` with nothing new takes 0.022 s at 10,000 relations and 0.023 s at 100,000, and 0.040 s after one write, so the cost doesn't grow with the log.
@@ -376,11 +389,11 @@ It folds the log up to where the projection stands and names every thread whose 
 The projection is disposable and the log is the truth, so a projection that drifted, by one of the two ways above or by a fault nobody has found yet, mustn't stay silent.
 
 A reader has one way to the graph, and it's the projection.
-A reader never builds it: where the state row is missing, or stands at another version than the one the code declares, its catch-up stops with `ProjectionNotBuilt`, whose sentence says what it found, what the code declares, and that `previously project` builds it.
-Only `previously project` builds, the first time and after an upgrade that changes the version, the way a migration runs in the upgrade step.
+A reader never builds it: where the state row is missing, or stands at another version than the one the code declares, its catch-up stops with `ProjectionNotBuilt`, whose sentence says what it found, what the code declares, and that `previously project --build` builds it.
+Only `previously project --build` builds, the first time and after an upgrade or a rollback that changes the version, the way a migration runs in the deployment step.
 A reader that rebuilt instead would put a build as long as the log inside a client's call, 35 s at 100,000 relations, and during a rolling update that runs two releases side by side, an old reader meeting the new version would rebuild the old one and the new reader would rebuild it back, call after call, with no end a retry could reach.
 
-What a reader can still meet is a rebuild at its own version between its catch-up and its snapshot: a `previously project` that runs after an operator deleted the state row, and empties the tables.
+What a reader can still meet is a rebuild at its own version between its catch-up and its snapshot: a `previously project --build` that runs after an operator deleted the state row, and empties the tables.
 So a reader holds the state row in its snapshot against the outcome of its own catch-up, and where `up_to_id` stands behind it, the reader leaves that snapshot, catches up once more, and reads in a new snapshot.
 The second catch-up meets the projection at its own version, takes turns with the build at the state row and carries it to the tip, so one retry is enough; a second miss in a row is a build started again in that moment, and the reader reports it with `ProjectionRebuilt` rather than outlast it.
 A state row at another version in the snapshot isn't retried at all: catching up can't change a version.

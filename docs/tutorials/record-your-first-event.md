@@ -84,7 +84,7 @@ This is the first event in the chain, so there's no predecessor to link to.
 
 ```console
 $ uv run previously log
-1	2026-10-11T19:35:22.352591+00:00	observation	d0bb973765c4
+1	2026-10-19T17:54:56.218644+00:00	observation	30203e726b04
 ```
 
 Notice that the chain now has one event.
@@ -123,8 +123,8 @@ This `anchors.txt` is this tutorial's alone, so delete it from your clone once y
 ```console
 $ uv run previously show 1
 id=1 kind=observation
-occurred_at=2026-10-11T19:35:22.352591+00:00
-hash=d0bb973765c4bf3fb16f060f3d2ba42be45910fd4c29e060d9ffa8bef598abd4
+occurred_at=2026-10-19T17:54:56.218644+00:00
+hash=30203e726b042da56a70ef02bc0a568421dc5ca5ed68797d96bced2bd859ecb7
 evidence=recollection
 payload={"artifact_hash": "dc61469da1b794f30b8e795e72b06b98e6a5ad04bb46bac936d98c3ac3888b01", "evidence": "recollection"}
   ¶1 The client approved the new homepage design.
@@ -144,17 +144,17 @@ Only `artifact_hash` comes out the same as above, because it's computed from the
 ## Build the derived views
 
 The chronicle, the counts per source, and the graph are derived from the log, and they start out empty.
-One command fills them all.
+One command builds them all, with `--build`.
 
 ```console
-$ uv run previously project
+$ uv run previously project --build
 chronicle       built: 1 event, up_to_id 1
 source-stats    built: 1 event, up_to_id 1
 graph           built: 1 event, up_to_id 1
 ```
 
 Notice that all three lines say `built`: nothing existed yet, so the worker built each view from the log, starting at the first event.
-Run the same command a second time.
+Now run the command without `--build`, the way a scheduled job runs it to keep the views current.
 
 ```console
 $ uv run previously project
@@ -171,8 +171,8 @@ There was nothing left to project.
 
 ```console
 $ uv run previously chronicle
-1	1	2026-10-11T19:35:22.352591+00:00	email	2026-10-03-kickoff@example.org	The client approved the new homepage design.
-1	2	2026-10-11T19:35:22.352591+00:00	email	2026-10-03-kickoff@example.org	Next milestone: content migration starts Monday.
+1	1	2026-10-19T17:54:56.218644+00:00	email	2026-10-03-kickoff@example.org	The client approved the new homepage design.
+1	2	2026-10-19T17:54:56.218644+00:00	email	2026-10-03-kickoff@example.org	Next milestone: content migration starts Monday.
 ```
 
 Notice that each line is one unit, and that each one carries `email` and the message identifier we passed to `append`.
@@ -182,7 +182,7 @@ That source attribution is what makes this a chronicle and not a copy of `log`.
 
 ```console
 $ uv run previously stats
-email	1	2	2026-10-11T19:35:22.352591+00:00	2026-10-11T19:35:22.352591+00:00
+email	1	2	2026-10-19T17:54:56.218644+00:00	2026-10-19T17:54:56.218644+00:00
 ```
 
 Notice that `email` stands at one event and two units, and that the two timestamps are the same moment: the log holds one event, so the first one seen and the last one seen are that event.
@@ -196,100 +196,100 @@ It raises its own PostgreSQL container, a RustFS container as the S3 server for 
 $ uv run pytest
 ============================= test session starts ==============================
 platform linux -- Python 3.14.8, pytest-9.1.1, pluggy-1.6.0
-Using --randomly-seed=2533819512
+Using --randomly-seed=4221965967
 
 configfile: pyproject.toml
 testpaths: tests
-plugins: hypothesis-6.168.3, cov-7.1.0, randomly-5.0.0, platformdirs-4.12.2, anyio-4.15.1
-collected 2827 items
+plugins: anyio-4.15.1, hypothesis-6.168.3, cov-7.1.0, randomly-5.0.0, platformdirs-4.12.2
+collected 2849 items
 
-tests/test_chain.py ...............................                      [  1%]
-tests/test_chronicle.py ....                                             [  1%]
-tests/test_hashing.py ........................................           [  2%]
-tests/test_anchor.py .............                                       [  3%]
-tests/test_gate_adapters.py ......................                       [  3%]
-tests/test_migration_0005.py .                                           [  3%]
-tests/test_action.py ....                                                [  4%]
-tests/test_watermark.py ........                                         [  4%]
-tests/test_migrations_dsn.py ...                                         [  4%]
-tests/test_redact.py .......................................             [  5%]
-tests/test_cli.py ...................................................... [  7%]
-........................................................................ [ 10%]
-........................................................................ [ 12%]
+tests/test_units.py .............                                        [  0%]
+tests/test_schema.py ....................                                [  1%]
+tests/test_migration_0005.py .                                           [  1%]
+tests/test_verify.py ................................................... [  2%]
+...................................................................      [  5%]
+tests/test_confirm.py .........................                          [  6%]
+tests/test_migrate.py ....................                               [  6%]
+tests/test_contracts.py ...................                              [  7%]
+tests/test_migrations_dsn.py ...                                         [  7%]
+tests/test_render.py ................................................... [  9%]
+.................................................                        [ 11%]
+tests/test_cli.py ...................................................... [ 13%]
 ........................................................................ [ 15%]
-........................................................................ [ 17%]
+........................................................................ [ 18%]
 ........................................................................ [ 20%]
 ........................................................................ [ 23%]
-....................................                                     [ 24%]
-tests/test_projection_store.py ............                              [ 24%]
-tests/test_confirm.py .........................                          [ 25%]
-tests/test_migrate.py ....................                               [ 26%]
-tests/test_mcp_server.py ............................................... [ 27%]
-........................................................................ [ 30%]
-........................................................................ [ 33%]
-........................................................................ [ 35%]
-.....................................                                    [ 36%]
-tests/test_decide.py ................................................... [ 38%]
-..                                                                       [ 38%]
-tests/test_units.py .............                                        [ 39%]
-tests/test_graph_read.py ............                                    [ 39%]
-tests/test_identity.py ...                                               [ 39%]
-tests/test_sealing.py .....................                              [ 40%]
-tests/test_append.py ..................................................  [ 42%]
-tests/test_migration_0004.py .                                           [ 42%]
-tests/test_s3.py ....................                                    [ 43%]
-tests/test_access.py ...............                                     [ 43%]
-tests/test_keys.py ..............                                        [ 44%]
-tests/test_ingest.py ................                                    [ 44%]
-tests/test_canonical.py ...............                                  [ 45%]
-tests/test_blob.py ...................                                   [ 45%]
-tests/test_gate.py ..................................................... [ 47%]
-.................                                                        [ 48%]
-tests/test_members.py .....................                              [ 49%]
-tests/test_migration_0006.py .                                           [ 49%]
-tests/test_policy.py ...............................................     [ 50%]
-tests/test_projection_worker.py ....................                     [ 51%]
-tests/test_docs_typed_output.py .                                        [ 51%]
-tests/test_storage.py ...............................................    [ 53%]
-tests/test_mail.py ..................................................... [ 55%]
-........................................................................ [ 57%]
-..................................                                       [ 58%]
-tests/test_graph_write.py .............................................. [ 60%]
-.................                                                        [ 61%]
-tests/test_projection_derive.py ...........                              [ 61%]
-tests/test_projection_graph.py ...................                       [ 62%]
-tests/test_graph.py .................................................... [ 63%]
-........................................................................ [ 66%]
-........................................................................ [ 69%]
-.................................................................        [ 71%]
-tests/test_assertion.py ................................................ [ 73%]
-........................................................................ [ 75%]
-.............                                                            [ 76%]
-tests/test_docs_build.py ......                                          [ 76%]
-tests/test_cascade.py .........................................          [ 77%]
-tests/test_classes.py .................................................. [ 79%]
-...............................                                          [ 80%]
-tests/test_clients.py ..........                                         [ 80%]
-tests/test_rows.py ......                                                [ 81%]
-tests/test_imap.py ..................................                    [ 82%]
-tests/test_schema.py ....................                                [ 83%]
-tests/test_wheel.py ..                                                   [ 83%]
-tests/test_contracts.py ...................                              [ 83%]
-tests/test_verify.py ................................................... [ 85%]
-...................................................................      [ 87%]
-tests/test_render.py ................................................... [ 89%]
-.................................................                        [ 91%]
-tests/test_settings.py ...........................                       [ 92%]
-tests/test_vocabulary.py ............................................... [ 94%]
-..................................................                       [ 95%]
-tests/test_assertions.py ............................................... [ 97%]
-                                                                         [ 97%]
-tests/test_docs_references.py ................................           [ 98%]
-tests/test_redaction.py ..........................                       [ 99%]
-tests/test_migration_0003.py ..                                          [ 99%]
-tests/test_properties.py ..........                                      [100%]
+........................................................................ [ 25%]
+........................................................................ [ 28%]
+............................................                             [ 29%]
+tests/test_redaction.py ..........................                       [ 30%]
+tests/test_sealing.py .....................                              [ 31%]
+tests/test_vocabulary.py ............................................... [ 33%]
+..................................................                       [ 34%]
+tests/test_policy.py ...............................................     [ 36%]
+tests/test_assertions.py ............................................... [ 38%]
+                                                                         [ 38%]
+tests/test_blob.py ...................                                   [ 38%]
+tests/test_keys.py ..............                                        [ 39%]
+tests/test_gate.py ..................................................... [ 41%]
+.................                                                        [ 41%]
+tests/test_projection_graph.py ...................                       [ 42%]
+tests/test_identity.py ...                                               [ 42%]
+tests/test_hashing.py ........................................           [ 43%]
+tests/test_properties.py ..........                                      [ 44%]
+tests/test_chain.py ...............................                      [ 45%]
+tests/test_docs_build.py ......                                          [ 45%]
+tests/test_assertion.py ................................................ [ 47%]
+........................................................................ [ 49%]
+.............                                                            [ 50%]
+tests/test_migration_0004.py .                                           [ 50%]
+tests/test_wheel.py ..                                                   [ 50%]
+tests/test_decide.py ................................................... [ 52%]
+..                                                                       [ 52%]
+tests/test_migration_0006.py .                                           [ 52%]
+tests/test_classes.py .................................................. [ 54%]
+...............................                                          [ 55%]
+tests/test_clients.py ..........                                         [ 55%]
+tests/test_s3.py ....................                                    [ 56%]
+tests/test_cascade.py .........................................          [ 57%]
+tests/test_mail.py ..................................................... [ 59%]
+........................................................................ [ 61%]
+..................................                                       [ 63%]
+tests/test_projection_store.py ............                              [ 63%]
+tests/test_append.py ..................................................  [ 65%]
+tests/test_canonical.py ...............                                  [ 65%]
+tests/test_ingest.py ................                                    [ 66%]
+tests/test_access.py ...............                                     [ 66%]
+tests/test_docs_references.py .................................          [ 68%]
+tests/test_chronicle.py ....                                             [ 68%]
+tests/test_graph_read.py ............                                    [ 68%]
+tests/test_storage.py ...............................................    [ 70%]
+tests/test_gate_adapters.py ......................                       [ 71%]
+tests/test_anchor.py .............                                       [ 71%]
+tests/test_docs_typed_output.py .                                        [ 71%]
+tests/test_settings.py ...........................                       [ 72%]
+tests/test_projection_worker.py .............................            [ 73%]
+tests/test_members.py .....................                              [ 74%]
+tests/test_mcp_server.py ............................................... [ 75%]
+........................................................................ [ 78%]
+........................................................................ [ 81%]
+........................................................................ [ 83%]
+.........................................                                [ 84%]
+tests/test_migration_0003.py ..                                          [ 85%]
+tests/test_graph.py .................................................... [ 86%]
+........................................................................ [ 89%]
+........................................................................ [ 91%]
+.................................................................        [ 94%]
+tests/test_projection_derive.py ...........                              [ 94%]
+tests/test_redact.py .......................................             [ 95%]
+tests/test_watermark.py ........                                         [ 96%]
+tests/test_action.py ....                                                [ 96%]
+tests/test_imap.py ..................................                    [ 97%]
+tests/test_graph_write.py .............................................. [ 99%]
+.................                                                        [ 99%]
+tests/test_rows.py ......                                                [100%]
 
-======================= 2827 passed in 449.36s (0:07:29) =======================
+======================= 2849 passed in 401.19s (0:06:41) =======================
 ```
 
 `pytest-randomly` reshuffles the file order on every run and prints its seed, so a hidden dependency between two tests surfaces instead of staying hidden.

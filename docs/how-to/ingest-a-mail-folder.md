@@ -58,10 +58,10 @@ imap: 0 appended, 0 known, 0 variants, up to uid 4 in Kunde Müller
 ```
 
 `ingest` doesn't catch the derived views up.
-Run `project`, then read the chronicle:
+On a new database they aren't built yet: build them with `project --build`, then read the chronicle:
 
 ```console
-$ previously project
+$ previously project --build
 chronicle       built: 5 events, up_to_id 5
 source-stats    built: 5 events, up_to_id 5
 graph           built: 5 events, up_to_id 5
@@ -123,7 +123,7 @@ After an error, run the command again once the cause is gone: the run moves its 
 
 ## Run it on a schedule
 
-Run `ingest imap` and then `project` every 5 to 15 minutes, and never two runs of `ingest imap` that read the same folder at once.
+Run `ingest imap` and then `project`, without `--build`, every 5 to 15 minutes, and never two runs of `ingest imap` that read the same folder at once.
 
 On a host with Docker, put the settings into a file that only root can read, such as `/etc/previously/ingest.env`, one `NAME=value` per line and without quotes, since `--env-file` takes a value as it stands, and add a line like this one with `crontab -e`, as root:
 

@@ -37,6 +37,7 @@ from previously.core.assertion import Source
 from previously.core.assertion import Statement
 from previously.core.assertions import write_statements
 from previously.core.errors import ProjectionGap
+from previously.core.errors import ProjectionNotBuilt
 from previously.core.errors import ProjectionRebuilt
 from previously.core.graph import ACTIVE
 from previously.core.graph import Claim
@@ -47,9 +48,11 @@ from previously.core.graph import RelationBody
 from previously.core.graph import SOURCES
 from previously.core.graph import STANDING
 from previously.core.graph_write import write_claims
+from previously.core.projection import GRAPH
 from previously.core.projection import PROJECTIONS
 from previously.core.projection.chronicle import CHRONICLE
 from previously.core.projection.chronicle import ChronicleProjection
+from previously.core.projection.graph import GraphProjection
 from previously.core.projection.source_stats import SOURCE_STATS
 from previously.core.projection.source_stats import SourceStatsProjection
 from previously.core.projection.worker import catch_up
@@ -76,6 +79,7 @@ if TYPE_CHECKING:
     from contextlib import AbstractContextManager
     from previously.contract.store import ProjectionStore
     from previously.core.projection.worker import Outcome
+    from previously.core.projection.worker import Projection
 
 NOW = datetime(2026, 10, 4, 12, 0, 0, tzinfo=UTC)
 
@@ -259,6 +263,54 @@ def test_a_lower_code_version_rebuilds_too(db: Engine) -> None:
     assert outcome.rebuilt_from == 4
     assert outcome.version == 3
     assert outcome.events == 1
+
+
+def _states(db: Engine) -> list[tuple[object, ...]]:
+    with db.begin() as c:
+        return [tuple(r) for r in c.execute(text("SELECT * FROM projection_state ORDER BY name"))]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize("projection", PROJECTIONS, ids=lambda p: p.name)
+@pytest.mark.parametrize("found", ["newer", "older", "none"])
+def test_a_catch_up_that_may_not_build_builds_in_no_direction(
+    db: Engine, projection: Projection, found: str
+) -> None:
+    """Without `rebuild`, a catch-up that meets the projection at a newer
+    version, an older one or without a state row raises
+    `ProjectionNotBuilt`, and every table and every state row stay as they
+    were, for every projection the command line builds; a plain `previously
+    project` is such a catch-up. An older projection is staged as a rollback
+    meets it, with the code's version raised by one, since no projection
+    can stand below version 1. The control: with `rebuild`, the same
+    finding is built, in each direction. Measured red on 2026-10-19 with the
+    `if not rebuild` refusal taken out of `catch_up`: all nine built."""
+    storage = PostgresStorage(db)
+    append(storage, [_raw(n, "email", NOW) for n in (1, 2)], recorded_at=NOW)
+    _graph_history(storage, lambda: None)
+    _project_all(storage)
+    newer_code: dict[str, Projection] = {
+        CHRONICLE.name: ChronicleProjection(version=CHRONICLE.version + 1),
+        SOURCE_STATS.name: SourceStatsProjection(version=SOURCE_STATS.version + 1),
+        GRAPH.name: GraphProjection(version=GRAPH.version + 1),
+    }
+    code = newer_code[projection.name] if found == "older" else projection
+    if found == "newer":
+        change = "UPDATE projection_state SET version = version + 1 WHERE name = :name"
+    else:
+        change = "DELETE FROM projection_state WHERE name = :name"
+    if found != "older":
+        with db.begin() as c:
+            c.execute(text(change), {"name": projection.name})
+    before = (_snapshot(db), _states(db))
+
+    with pytest.raises(ProjectionNotBuilt):
+        catch_up(storage, storage, code, rebuild=False)
+    assert (_snapshot(db), _states(db)) == before
+
+    outcome = catch_up(storage, storage, code, rebuild=True)
+    expected = {"none": 0, "newer": projection.version + 1, "older": projection.version}
+    assert (outcome.rebuilt_from, outcome.version) == (expected[found], code.version)
 
 
 class _FailingStore:

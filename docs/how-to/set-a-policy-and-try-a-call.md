@@ -9,7 +9,7 @@ For why a policy is built from circles and rules, see {ref}`processing-policy`, 
 You need three things before you start.
 
 - The `previously` command, from the first release after `0.1.0a2`, the first one with the gate, or from a checkout, where `uv run previously …` runs it without activating anything.
-- A database that `previously migrate` has brought up to date, with `PREVIOUSLY_DSN` exported, and a blob store with a key, with its settings exported too ({ref}`run-a-blob-store-on-your-machine`, {ref}`keep-the-blob-key-safe`).
+- A database that `previously migrate` has brought up to date and `previously project --build` has built the projections in, with `PREVIOUSLY_DSN` exported, and a blob store with a key, with its settings exported too ({ref}`run-a-blob-store-on-your-machine`, {ref}`keep-the-blob-key-safe`).
 - At least one mail in the log that `previously ingest imap` took in ({ref}`ingest-a-mail-folder`), and in it somebody from the customer you want to put into a circle.
 
 ## Start the local model

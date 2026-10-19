@@ -327,7 +327,7 @@ def test_the_command_line_names_the_calls_it_cascaded(
     call = _call(storage, 1, units=(1,))
     monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
     # `previously project` builds the projections; `redact` only catches up.
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     capsys.readouterr()
 
     assert main(["redact", "event", "1", "--reason", "wrong"]) == 0
@@ -664,7 +664,7 @@ def test_the_command_line_names_the_assertions_it_cascaded(
     (owed,) = _assert(storage, _owed(Source(1, None)))
     monkeypatch.setenv("PREVIOUSLY_DSN", db.url.render_as_string(hide_password=False))
     # `previously project` builds the projections; `redact` only catches up.
-    assert main(["project"]) == 0
+    assert main(["project", "--build"]) == 0
     capsys.readouterr()
 
     assert main(["redact", "event", "1", "--reason", "wrong"]) == 0

@@ -9,7 +9,7 @@ For why finding works the way it does, see {ref}`chronicle-of-a-bracket`; for ev
 You need three things before you start.
 
 - The `previously` command from the first release with assignments, the one after `0.1.0a7`, or from a checkout, where `uv run previously …` runs it.
-- A database that `previously migrate` has brought up to date, with `PREVIOUSLY_DSN` exported.
+- A database that `previously migrate` has brought up to date and `previously project --build` has built the projections in, with `PREVIOUSLY_DSN` exported.
 - The base vocabulary, applied with `previously vocabulary apply --base` after the update, which adds the relation kind `concerns`; see {ref}`keep-a-club-and-its-offices`.
 
 ## Find the mail and its units

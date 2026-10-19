@@ -95,12 +95,15 @@ def catch_up[Conn](
 
     **Only `rebuild=True` builds.** With it, a projection without a state
     row is built from the start, and one whose state row stands at another
-    version is emptied and built again. Without it, the same finding raises
-    `ProjectionNotBuilt` and the transaction that found it rolls back, so
-    the tables and the state row stay as they were. `previously project`
-    alone passes `True`: every reader, the MCP server and `redact` pass
-    `False` and catch up only ({ref}`projections`). Keyword-only and without
-    a default, so that no caller rebuilds by leaving it out.
+    version, older or newer, is emptied and built again. Without it, the
+    same finding raises `ProjectionNotBuilt` and the transaction that found
+    it rolls back, so the tables and the state row stay as they were.
+    `previously project --build` alone passes `True`, the step that deploys
+    a release: a plain `previously project`, every reader, the MCP server
+    and `redact` pass `False` and catch up only ({ref}`projections`). A
+    build at this code's version is no rebuild: with the state row at it,
+    `True` catches up as `False` does. Keyword-only and without a default,
+    so that no caller rebuilds by leaving it out.
 
     **Rows and `up_to_id` move in one transaction or not at all.** An abort in
     the middle leaves a consistent partial projection, and the next run
@@ -144,8 +147,9 @@ def catch_up[Conn](
                 raise ProjectionNotBuilt(
                     projection.name, None if state is None else state.version, projection.version
                 )
-            # `!=` and not `<`: a rolled-back release derives differently from
-            # the table it meets, in either direction.
+            # `!=` and not `<`: a release derives differently from a table
+            # another version built, older after an upgrade, newer in a
+            # rollback, and only the deploy step asks for either.
             rebuilt_from = 0 if state is None else state.version
             store.truncate_projection(conn, projection.name)
             state = ProjectionState(projection.name, 0, projection.version, datetime.now(UTC))
