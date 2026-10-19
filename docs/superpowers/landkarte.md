@@ -1599,6 +1599,11 @@ auf `assertions.md` unter *What the pilot leaves open*.
   gemessen: die Seite trägt eine Kennung aus einem Hexadezimal-Digest, etwa die
   erzeugte Kennung der gefälschten Mail ohne Message-ID. Mit der Saat
   nachstellen, bevor etwas geändert wird.
+  Drittes Auftreten am 2026-10-20, wieder `[legacy]`, Saat `3162145117`, beim
+  Abtippen des Testlaufs auf dem Zweig der Antwort auf a9; einzeln dreimal
+  grün. Drei Mal in einer Woche ist kein Rand mehr: als Nächstes mit den
+  Saaten `167703447` und `3162145117` nachstellen und die Zahl festhalten, die
+  `_text` beanstandet.
 - Drei geparkte Testlöcher am Doku-Tor (1b §10 Punkt 5).
 - Die Reihenfolge der zwei `stderr`-Hinweise in `cli.md` hält nichts
   mechanisch; `_message_patterns` nimmt auch die `_describe`-Literale auf
