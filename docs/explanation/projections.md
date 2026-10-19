@@ -97,8 +97,14 @@ With the lock, B waits for A, reads `up_to_id 1` from the row A committed, reads
 `test_two_catch_ups_of_one_projection_take_turns` in `tests/test_projection_worker.py` holds that interleaving, with a control that leaves out the extra append, and `test_two_first_builds_build_once` holds the first build.
 
 The lock settles two catch-ups of one version of the code, and not two versions.
-`previously project` rebuilds whenever the version it finds differs from its own, in either direction, so two releases that each ran it against one database would each rebuild what the other built.
-That's why `project` is the only command that builds: a reader, the MCP server and `redact` catch up and never build, and meeting no state row or one at another version they stop with `ProjectionNotBuilt`, whose sentence names `previously project` ({ref}`graph-readers`).
+`previously project` rebuilds when the version it finds is older than its own, and two releases that each rebuilt the other's version would each undo what the other built.
+That's why `project` is the only command that builds, and why it builds forward by itself and back only when asked.
+A projection at a newer version than the code declares is what an older release meets when it starts after a newer one built: a scheduled `project` of the old image during an upgrade, or the first run of a rollback.
+The two look the same from inside, and only the operator knows which, so a plain `project` leaves the newer projection standing and stops with `ProjectionNewer`, and `project --build-back` builds it back for the rollback.
+Building back by default was the rule until the answer to the kup6s feedback on `v0.1.0a8`: there, the scheduled `project` of the old image could start in the seconds between the upgrade hook and the step that moves the scheduled jobs to the new image, and the new server would have failed its graph calls until the next scheduled run.
+Before that, the advice was to move or suspend the scheduled job around every upgrade, a step of operations that a refusal in the code makes unnecessary.
+
+The readers don't build at all: a reader, the MCP server and `redact` catch up and never build, and meeting no state row or one at another version they stop with `ProjectionNotBuilt`, whose sentence names `previously project` ({ref}`graph-readers`).
 A batch that finds the row at another version than its own, or finds no row, stops with `ProjectionRebuilt` instead of rebuilding in turn: two runs that each rebuilt whenever they met the other's version would take turns at the lock and never finish, while one that stops leaves the other to carry its build to the end.
 The error names the version it found; {ref}`rebuild-a-projection` says what to do, and `test_a_catch_up_stops_when_another_release_rebuilds_under_it` holds it.
 
@@ -193,7 +199,7 @@ Beside the comparison stands a property that interleaves "append some events," "
 Twenty-five examples per run, with `occurred_at` drawn at random as well and sources from a set of three, so that something is aggregated at all.
 
 The version trigger gets the same treatment.
-A projection declares its version in the code, and a catch-up of `previously project` that meets a different version in `projection_state` empties the table and starts over—any difference, not only a higher one, because a rolled-back release derives differently from the table it meets.
+A projection declares its version in the code, and a catch-up of `previously project` that meets an older version in `projection_state` empties the table and starts over, as does one with `--build-back` that meets a newer one, because a rolled-back release derives differently from the table it meets.
 The test poisons a row in `p_source_stats`, raises the version, and finds the poison gone.
 Its control sits right next to it: a catch-up at the unchanged version leaves the poison in place.
 Without that control the first half would show only that the worker writes, not that the version is what set it off.

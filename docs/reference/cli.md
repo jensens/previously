@@ -68,7 +68,7 @@ Error: the role of PREVIOUSLY_DSN lacks a privilege on database previously at lo
 | `anchor` | The anchor line was printed, or the log is empty. | The chain has at least one finding. | Storage raised an error. |
 | `show` | The event was printed. | No event exists at the given `event_id`. | The input was invalid, or storage raised an error. |
 | `blob` | The blob was written to the file. | No event names the blob, or the blob is erased. | The input was invalid, a blob setting is missing or invalid, the blob is missing from the store, can't be opened or doesn't match its address, the file can't be written, or storage or the blob store raised an error. |
-| `project` | Every projection stands at the tip of the log, and with `--check` every row of the graph projection agrees with the fold. | With `--check`, a row of the graph projection differs from the fold. | Storage raised an error, the worker found a gap in the log, or a catch-up at another version rebuilt a projection while this one ran. |
+| `project` | Every projection stands at the tip of the log, and with `--check` every row of the graph projection agrees with the fold. | With `--check`, a row of the graph projection differs from the fold. | Storage raised an error, the worker found a gap in the log, a projection stands at a newer version than this release declares and `--build-back` wasn't given, or a catch-up at another version rebuilt a projection while this one ran. |
 | `chronicle` | The chronicle was printed, even when the window holds no row, or the bracket of `--within` none. | Not used. | The input was invalid, including a `--within` that names no entity that stands, under `--within` the graph projection isn't built at this code's version or couldn't be caught up, or storage raised an error. |
 | `stats` | The statistics were printed, even when no source has an event. | Not used. | Storage raised an error. |
 | `policy` | The statement was written, `show` printed the policy, or `gaps` printed what fell back, even when nothing did. | The confirmation was answered with anything but yes, or not answered, and nothing was written. | The input was invalid, the statement was refused, or storage raised an error. |
@@ -406,12 +406,14 @@ If deleting a blob or the catch-up fails, the redaction stays recorded, nothing 
 Error: the redaction is recorded as event 42, but it is not finished: blob 5891b5b522d5df086d0ff0b110fbd9d21bb4fc7163af34d08286a2e846f6be03 is not deleted from the store (the blob store at http://localhost:9000 is not reachable: EndpointConnectionError); run the same command again
 Error: the redaction is recorded as event 42, but it is not finished: projection chronicle is not caught up (expected events 2.. above id 1, read [3, 4]; the tip is 4); run the same command again
 Error: the redaction is recorded as event 42, but it is not finished: projection chronicle is not built, and this code declares version 3; run `previously project`, then the same command again
-Error: the redaction is recorded as event 42, but it is not finished: projection chronicle stands at version 4, and this code declares version 3; the release that is to serve builds it with `previously project`, then run the same command again
+Error: the redaction is recorded as event 42, but it is not finished: projection chronicle stands at version 4, and this code declares version 3; the release that is to serve builds it with `previously project`, with `--build-back` if that is this release, which is the older, then run the same command again
 ```
 
 The text in parentheses is the error that stopped it.
 The third and fourth forms name a projection the catch-up would have had to build; the same command alone would stop there again, so `project` comes first and takes the redaction in as it builds.
-Where the projection stands at another version, the code can't tell which of the two releases is the older, so the fourth form names the release meant to serve: the `project` of an older release would build the projection back to its own version.
+Where the projection stands at another version, the code can't tell which release is meant to serve, so the fourth form names that release.
+Where the projection is the newer, as in the example, it adds `--build-back`: the `project` of an older release builds a projection back to its own version only with that flag, which a rollback to that release needs.
+Where the projection is the older, the clause about the flag is left out.
 For `redact units`, the notice that the payload holds the wording of an erased unit, described below, can come before that sentence.
 When several blobs are still to delete, the first form names them all, separated by a comma and a space, as `blobs <hashes> are not deleted from the store`.
 `redact` attempts the catch-up whether or not the deletion failed.
@@ -797,7 +799,7 @@ On every error, the temporary file is gone and an existing `--output` is unchang
 ## `project`
 
 ```text
-previously project [--check]
+previously project [--check] [--build-back]
 ```
 
 Brings every projection up to the tip of the log.
@@ -805,6 +807,7 @@ Brings every projection up to the tip of the log.
 | Option | Description |
 |---|---|
 | `--check` | After the catch-up, folds the log and holds every row of `p_graph_thread` against the fold. |
+| `--build-back` | Builds a projection that stands at a newer version than this release declares back to this release's version, as a rollback to this release needs. At this release's version or an older one, it changes nothing. |
 
 `project` prints one line per projection: `chronicle` first, `source-stats` second, and `graph` third.
 Each line holds the projection's name padded to 15 characters, a space, and the outcome of the run.
@@ -814,13 +817,22 @@ There are four outcomes:
 |---|---|
 | `built: <n> events, up_to_id <id>` | The projection had no state row, and the log held events to project. |
 | `caught up: <n> events, up_to_id <id>` | The projection had a state row at the code's version, and the log had grown since. |
-| `rebuilt: version <n> -> <m>, <k> events, up_to_id <id>` | The state row stood at version `<n>` and the code declares `<m>`, so the table was emptied and built again. |
+| `rebuilt: version <n> -> <m>, <k> events, up_to_id <id>` | The state row stood at version `<n>` and the code declares `<m>`, so the table was emptied and built again: `<n>` is older than `<m>`, or newer with `--build-back`. |
 | `up to date, up_to_id <id>` | No event was projected, and the version was unchanged. |
 
 A count of one prints as `1 event`, every other count as `<n> events`.
 `up to date` carries no count, and `up_to_id 0` means that nothing has been projected yet.
 
 `project` is the only command that builds a projection or rebuilds it at another version; every other command that catches one up stops where it would have to ({ref}`rebuild-a-projection`).
+Without `--build-back`, it doesn't build a projection back either: where a projection stands at a newer version than this release declares, `project` leaves it as it stands, prints no line for it or for the projections after it, and exits 2 with one sentence on standard error:
+
+```text
+Error: projection graph stands at version 2, newer than this release's version 1; it was left as it stands, and a rollback to this release runs `previously project --build-back`
+```
+
+The lines of the projections before it in the order are printed, and those projections are caught up.
+A newer release built that projection, so a `project` of this release that meets it can be a run of the old release during an upgrade, which has to leave the newer projection alone, or the first run of a rollback, which `--build-back` asks for.
+
 Two catch-ups of one projection, such as a `project` and the catch-up of a `redact`, take turns at the projection's state row, batch by batch; see {ref}`projections`.
 A catch-up that finds the state row at another version than its own, or gone, between two of its batches stops with exit code 2 and one sentence on standard error:
 
@@ -831,7 +843,7 @@ Error: projection chronicle was rebuilt while this catch-up ran: it has no state
 
 The first means that a catch-up of another version of the code ran against the same database and rebuilt the projection between two batches of this one.
 The second means that the state row was deleted while this catch-up ran, as {ref}`rebuild-a-projection` does by hand to force a rebuild.
-`project` rebuilds whenever the version it finds differs from its own, in either direction, so the next `project` of this release rebuilds the table back to its own version, and a `project` of the other release rebuilds it back again.
+A `project` of the newer of the two releases rebuilds the table at its own version, and one of the older release leaves the table to the newer unless it runs with `--build-back`.
 Inside `redact`, the same sentence stands in parentheses in the sentence of an unfinished redaction, whose advice to run the same command again holds once only one release runs against the database.
 {ref}`rebuild-a-projection` says what to do.
 
@@ -1467,8 +1479,10 @@ Where the projection has no state row, or one at another version than the code d
 
 ```text
 Error: projection graph is not built, and this code declares version 1; `previously project` builds it
-Error: projection graph stands at version 2, and this code declares version 1; the release that is to serve builds it with `previously project`
+Error: projection graph stands at version 2, and this code declares version 1; the release that is to serve builds it with `previously project`, with `--build-back` if that is this release, which is the older
 ```
+
+Where the projection stands at an older version than the code declares, the second sentence ends after `previously project`.
 
 Where `project` rebuilt the projection at the same version between the catch-up and the read, they catch up once more and read; where that happens twice in a row, they exit 2 with this sentence:
 

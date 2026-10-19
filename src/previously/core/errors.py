@@ -84,7 +84,9 @@ class ProjectionRebuilt(PreviouslyError):
     between its catch-up and its snapshot more often than it retries.
 
     Only `previously project` rebuilds, of this release or of another, or an
-    operator who deleted the state row by hand. Raised rather than rebuilt
+    operator who deleted the state row by hand: a newer release's builds a
+    projection forward, an older release's builds it back only with
+    `--build-back`. Raised rather than rebuilt
     over in turn, because two releases that each rebuilt whenever they met
     the other's version would take turns at the lock and never finish; this
     one stops, and the other carries its build to the end.
@@ -104,7 +106,9 @@ class ProjectionNotBuilt(PreviouslyError):
     version would undo each other without end.
 
     `finding` is what was found and what this code declares, which
-    `redact` puts into its own sentence; the message adds who builds it.
+    `redact` puts into its own sentence; `advice` is who builds it, which
+    the message adds, and `redact` too where the projection stands at
+    another version.
     """
 
     def __init__(self, name: str, found: int | None, declared: int) -> None:
@@ -116,14 +120,52 @@ class ProjectionNotBuilt(PreviouslyError):
                 f"projection {name} stands at version {found}, "
                 f"and this code declares version {declared}"
             )
-            # Which of the two releases is the newer one, this code cannot
-            # know; the advice must not send an old release to build back.
+            # Which release is to serve, this code cannot know: the one that
+            # built the projection, or this one. So the advice names the
+            # release that is to serve. Where the projection is the newer,
+            # that release's plain `project` builds it only if it is the
+            # newer one; an older one's refuses (`ProjectionNewer`), so the
+            # advice names the flag a rollback to this release needs.
             advice = "the release that is to serve builds it with `previously project`"
+            if found > declared:
+                advice += ", with `--build-back` if that is this release, which is the older"
         super().__init__(f"{finding}; {advice}")
         self.name = name
         self.found = found
         self.declared = declared
         self.finding = finding
+        self.advice = advice
+
+
+class ProjectionNewer(PreviouslyError):
+    """`previously project` found a projection standing at a newer version
+    than this code declares, and was not asked to build it back
+    ({ref}`projections`).
+
+    Raised inside the transaction that found it, which rolls back, so the
+    tables and the state row stay as the newer release left them. A
+    projection is built back to an older version only on purpose, with
+    `previously project --build-back` in a rollback: an older release's
+    `project` that starts while a newer one has just built the projection,
+    such as a scheduled run of the old image during an upgrade, would
+    otherwise take the projection back from under the release that is to
+    serve, and that release's readers fail until its next `project`.
+
+    Not a `ProjectionNotBuilt`: that one is what a caller that may not
+    build meets, and `redact` and the MCP server catch it as such. This one
+    is met only by the caller that may build, and nothing catches it but
+    the command line, which shows the sentence and returns 2.
+    """
+
+    def __init__(self, name: str, found: int, declared: int) -> None:
+        super().__init__(
+            f"projection {name} stands at version {found}, newer than this release's "
+            f"version {declared}; it was left as it stands, and a rollback to this release "
+            "runs `previously project --build-back`"
+        )
+        self.name = name
+        self.found = found
+        self.declared = declared
 
 
 class RedactionRefused(PreviouslyError):

@@ -535,8 +535,10 @@ def test_a_reader_meeting_a_projection_it_would_have_to_build_fails_and_touches_
     assert str(raised.value).startswith(f"projection graph {found}, and this code declares ")
     assert "`previously project`" in str(raised.value)
     assert _projection_rows(db) == before
-    # The control: `previously project` builds it, and the reader reads.
-    _project(storage)
+    # The control: `previously project` builds it, and the reader reads; the
+    # version it met is newer than this code's, so building it takes the
+    # step back a rollback asks for.
+    catch_up(storage, storage, GRAPH, rebuild=True, build_back=True)
     assert _listed(storage)
 
 

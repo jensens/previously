@@ -1330,10 +1330,10 @@ def test_project_on_an_empty_log_is_up_to_date_at_zero_but_still_names_a_rebuild
     ]
 
     with db.begin() as c:
-        c.execute(text("UPDATE projection_state SET version = 4 WHERE name = 'chronicle'"))
+        c.execute(text("UPDATE projection_state SET version = 2 WHERE name = 'chronicle'"))
     assert main(["project"]) == 0
     assert capsys.readouterr().out.splitlines() == [
-        "chronicle       rebuilt: version 4 -> 3, 0 events, up_to_id 0",
+        "chronicle       rebuilt: version 2 -> 3, 0 events, up_to_id 0",
         "source-stats    up to date, up_to_id 0",
         "graph           up to date, up_to_id 0",
     ]
@@ -1383,22 +1383,130 @@ def test_project_says_which_path_it_took(
     ]
 
     # The fourth path, and the only one invisible in the table itself: the
-    # stored version is raised past the one the code declares, the way a
-    # rolled-back release leaves it, and the next run empties `p_chronicle` and
-    # builds it again. Without this line `rebuilt:` would be a format the
+    # stored version is set below the one the code declares, the way an
+    # upgrade finds what the older release built, and the next run empties
+    # `p_chronicle` and builds it again. Without this line `rebuilt:` would be a format the
     # reference page promises and nothing produces. `source-stats` and
     # `graph` are left alone, so the projections report different paths in
     # the same run.
     with db.begin() as c:
-        c.execute(text("UPDATE projection_state SET version = 4 WHERE name = 'chronicle'"))
+        c.execute(text("UPDATE projection_state SET version = 2 WHERE name = 'chronicle'"))
     capsys.readouterr()
     assert main(["project"]) == 0
     fourth = capsys.readouterr().out.splitlines()
     assert fourth == [
-        "chronicle       rebuilt: version 4 -> 3, 2 events, up_to_id 2",
+        "chronicle       rebuilt: version 2 -> 3, 2 events, up_to_id 2",
         "source-stats    up to date, up_to_id 2",
         "graph           up to date, up_to_id 2",
     ]
+
+
+def _projection_rows(engine: object) -> tuple[object, ...]:
+    """Every state row and every row of every projection table."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(engine, Engine)
+    with engine.begin() as c:
+        return tuple(
+            c.execute(text(query)).all()
+            for query in (
+                "SELECT * FROM projection_state ORDER BY name",
+                "SELECT * FROM p_chronicle ORDER BY event_id, seq",
+                "SELECT * FROM p_source_stats ORDER BY source",
+                "SELECT * FROM p_graph_version ORDER BY id",
+                "SELECT * FROM p_graph_thread ORDER BY subject",
+            )
+        )
+
+
+@pytest.mark.db
+def test_project_of_an_older_release_leaves_a_newer_projection_and_exits_2(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A scheduled `project` of the old image that starts after the upgrade
+    step's `project` of a newer release: it meets the graph projection at a
+    newer version than this code declares, refuses with exit code 2, and
+    leaves every table and every state row as the newer release left them.
+    The projections before the graph in the order are caught up, which
+    changes nothing here. Measured red on 2026-10-19 with the refusal taken
+    out of `catch_up`: exit 0, and the graph rebuilt back to version 1."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    _setup(db, monkeypatch)
+    _append("email", "m1", "Hello\n\nWorld", "2026-10-01T09:00:00Z")
+    assert main(["project"]) == 0
+    with db.begin() as c:
+        c.execute(text("UPDATE projection_state SET version = 2 WHERE name = 'graph'"))
+    before = _projection_rows(db)
+    capsys.readouterr()
+
+    assert main(["project"]) == 2
+    out, err = capsys.readouterr()
+    assert out.splitlines() == [
+        "chronicle       up to date, up_to_id 1",
+        "source-stats    up to date, up_to_id 1",
+    ]
+    assert err == (
+        "Error: projection graph stands at version 2, newer than this release's version 1; "
+        "it was left as it stands, and a rollback to this release runs "
+        "`previously project --build-back`\n"
+    )
+    assert _projection_rows(db) == before
+
+    # A rollback to this release asks for the step back, and gets it.
+    assert main(["project", "--build-back"]) == 0
+    assert capsys.readouterr().out.splitlines() == [
+        "chronicle       up to date, up_to_id 1",
+        "source-stats    up to date, up_to_id 1",
+        "graph           rebuilt: version 2 -> 1, 1 event, up_to_id 1",
+    ]
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    ("version", "argv", "line"),
+    [
+        (2, ["project"], "rebuilt: version 2 -> 3, 1 event, up_to_id 1"),
+        (2, ["project", "--build-back"], "rebuilt: version 2 -> 3, 1 event, up_to_id 1"),
+        (3, ["project", "--build-back"], "up to date, up_to_id 1"),
+    ],
+    ids=["older-version", "older-version-with-the-flag", "this-version-with-the-flag"],
+)
+def test_project_builds_an_older_projection_forward_with_or_without_the_flag(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    version: int,
+    argv: list[str],
+    line: str,
+) -> None:
+    """The control of the refusal: a chronicle an older release built is
+    rebuilt forward by a plain `project`, as an upgrade needs. And
+    `--build-back` permits a step back without forcing a rebuild: below this
+    code's version it builds forward as a plain run does, and at this code's
+    version it catches up, so a rollback's `project` that runs on every sync
+    of a deployment does nothing more than a plain one there. Measured on
+    2026-10-19 with the flag forcing a rebuild wherever the version matched:
+    the third case goes red with `rebuilt: version 3 -> 3`."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    assert isinstance(db, Engine)
+    _setup(db, monkeypatch)
+    _append("email", "m1", "Hello\n\nWorld", "2026-10-01T09:00:00Z")
+    assert main(["project"]) == 0
+    with db.begin() as c:
+        c.execute(
+            text("UPDATE projection_state SET version = :v WHERE name = 'chronicle'"),
+            {"v": version},
+        )
+    capsys.readouterr()
+
+    assert main(argv) == 0
+    assert capsys.readouterr().out.splitlines()[0] == f"chronicle       {line}"
 
 
 @pytest.mark.db
@@ -2429,24 +2537,28 @@ def _chronicle_rows(engine: Engine) -> tuple[object, ...]:
 
 @pytest.mark.db
 @pytest.mark.parametrize(
-    ("change", "found", "then"),
+    ("change", "found", "then", "build"),
     [
         (
             "UPDATE projection_state SET version = 1 WHERE name = 'chronicle'",
             "stands at version 1",
             "the release that is to serve builds it with `previously project`, "
             "then run the same command again",
+            ["project"],
         ),
         (
             "UPDATE projection_state SET version = 4 WHERE name = 'chronicle'",
             "stands at version 4",
             "the release that is to serve builds it with `previously project`, "
+            "with `--build-back` if that is this release, which is the older, "
             "then run the same command again",
+            ["project", "--build-back"],
         ),
         (
             "DELETE FROM projection_state WHERE name = 'chronicle'",
             "is not built",
             "run `previously project`, then the same command again",
+            ["project"],
         ),
     ],
     ids=["older-version", "newer-version", "no-state-row"],
@@ -2458,6 +2570,7 @@ def test_redact_does_not_rebuild_and_names_project_as_what_finishes_it(
     change: str,
     found: str,
     then: str,
+    build: list[str],
 ) -> None:
     """Ruling F-c of the 2026-10-15 assignments plan: a `redact` that is the
     first catch-up after an upgrade does not rebuild the chronicle, which
@@ -2471,7 +2584,11 @@ def test_redact_does_not_rebuild_and_names_project_as_what_finishes_it(
     `previously project`" would build it back. Measured red by letting
     `_catch_up_after` catch up with `rebuild=True` (exit 0, the chronicle
     rebuilt), and by giving the plain advice to every `ProjectionNotBuilt`
-    (the two version cases)."""
+    (the two version cases). Since an older release's `project` builds back
+    only with `--build-back`, the advice for a newer chronicle names the
+    flag, and the control builds with it; measured red on 2026-10-19 with
+    the flag's clause taken out of `ProjectionNotBuilt` (the newer case
+    alone)."""
     from sqlalchemy import text
 
     engine = _connect(db, monkeypatch)
@@ -2489,7 +2606,7 @@ def test_redact_does_not_rebuild_and_names_project_as_what_finishes_it(
     assert _chronicle_rows(engine) == before
     # The control: `project` builds it and takes the redaction in, and the
     # same command finds the target covered and finishes.
-    assert main(["project"]) == 0
+    assert main(build) == 0
     assert capsys.readouterr().out.splitlines()[0].startswith("chronicle       ")
     assert main(["chronicle"]) == 0
     assert capsys.readouterr().out == ""
@@ -7976,8 +8093,10 @@ def test_a_listing_meeting_a_projection_it_would_have_to_build_fails_and_touches
         assert sentence.startswith(f"projection graph {found}, and this code declares version ")
         assert "`previously project`" in sentence
         assert _graph_rows(db) == before
-    # The control: `previously project` builds it, and the listings read.
-    _run(capsys, "project")
+    # The control: `previously project` builds it, and the listings read;
+    # version 7 is newer than this code's, so building it takes the flag of
+    # a rollback.
+    _run(capsys, "project", "--build-back")
     assert _expected_listings(capsys) == expected
 
 
