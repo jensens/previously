@@ -113,8 +113,9 @@ Without `--build-back`, that release's `project` leaves the newer projection as 
 Releases up to `v0.1.0a8` don't know the flag and refuse it as an unknown argument; their plain `previously project` builds back by itself.
 The flag builds back and doesn't force anything else: at the release's own version or an older one, `project --build-back` does what a plain `project` does, so a rollback step that runs again does no harm.
 
-Give the flag to the run of the rollback only, not to a scheduled `previously project`.
+Give the flag only to the `project` of the release that's to serve, and never to a scheduled `previously project`.
 A scheduled run with `--build-back` builds back whenever it's older than the projection, the window of an upgrade included.
+If your deployment runs `previously project` in a step that always runs the release it deploys, before that release serves, you can give that step the flag for good, so that a rollback needs no step of its own.
 
 ## Force a rebuild without a code change
 

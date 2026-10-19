@@ -27,7 +27,7 @@ Gebaut und abgenommen, auf `main`:
 | Einheit 4 | MCP-Lesezugang: Clients als Prinzipale mit Token und Verarbeitungskette (`client`); die Zusage um Betreiber, Training, Unterverarbeiter und Herkunft des Modells erweitert, die Regel um die vier passenden Einschränkungen; `previously mcp` (stdio) und `previously serve` (HTTP, beide Generationen, Bereitschaft über `GET /healthz` ohne Token); fünf Werkzeuge, zwei Ressourcen-Vorlagen, zwei Prompts, jeder Inhalt nur nach `decide` mit der Kette des Clients; das Zugriffsprotokoll als `mcp_access` und `previously access`; `policy gaps` zählt, was MCP zurückhielt; die Seiten `mcp-interface.md`, `mcp-tools.md` und die Anleitung `connect-claude-code-and-vibe.md`; der Handoff `handoffs/2026-10-11-kup6s-mcp.md` | `specs/2026-10-10-pilot-mcp-lesezugang.md` mit dem Konzept `specs/2026-10-10-mcp-schnittstelle.md`, beide eingefroren am 2026-10-11 | PR #12, `ffa28fb`; veröffentlicht als `v0.1.0a3` am 2026-10-11; Bedingung 9 erledigt am 2026-10-11, nach Entscheidung des Betreuers auf den Lauf von kup6s (RG), ohne Vibe und ohne die drei Kreise |
 | Einheit 5 | Feststellungen: Verpflichtung und Entscheidung mit Quellen (`core/assertion.py`, `core/assertions.py`), Vorschläge, Freigabe und Ablehnung, Lesen durch Falten des Logs, die Kommandos dazu, fünf MCP-Werkzeuge; die Antworten in einem Aufruf (PR #20) | `specs/2026-10-12-pilot-feststellungen.md`, eingefroren am 2026-10-12 | PR #17, `4735e3f`; veröffentlicht als `v0.1.0a5`; die Abnahme nach F §14 lief am 2026-10-13; `v0.1.0a6` mit PR #20 |
 | Zuordnungen, Phase 1 | Das Vokabular als Handlung `vocabulary` mit Grundvokabular (`core/vocabulary.py`), Entitäten und Beziehungen als Feststellungen (`core/graph.py`, `core/graph_write.py`), die Freigabeklassen (`core/classes.py`), die Kommandos dazu, fünf MCP-Werkzeuge | `specs/2026-10-14-zuordnungen.md` (lebendig) | PR #24, `cce8b4b`; veröffentlicht als `v0.1.0a7`; der Lauf mit Vellenfeld nach Z §17 Punkt 1 lief am 2026-10-14 in kup6s (die vier Befunde sind geschlossen, `14de3d3`) |
-| Zuordnungen, Phase 2 | Die Zuordnung von Events und Einheiten an Klammern: die Art `concerns` im Grundvokabular (`from = ["event"]`, `to = ["*"]`), ein Event am Anfang ist Quelle, `members` (die Menge einer Klammer, das Genauere ersetzt das Allgemeine); die Projektion `graph` (Migration `0006_graph`, `p_graph_version`, `p_graph_thread`), von Lesern beim Lesen nachgezogen und nur von `previously project` gebaut, ohne Rückfall auf das Falten des Logs (Fixrunde F2); `project --check`; `chronicle --within N` und MCP `previously(within=N)`, über MCP zählt eine Kante nur, wo der Client sie sieht; die Seiten und `handoffs/2026-10-15-kup6s-graph-phase-2.md` | `specs/2026-10-14-zuordnungen.md` (lebendig), Plan `plans/2026-10-15-zuordnungen-phase-2.md` | gebaut auf dem Zweig `worktree-zuordnungen-2`, PR #26 offen, noch nicht gemerged; Endprüfung und Messung am 2026-10-15 gelaufen, die Fixwelle und die Fixrunde F2 danach; der Handoff steht im Zweig, Release und Abnahme stehen aus |
+| Zuordnungen, Phase 2 | Die Zuordnung von Events und Einheiten an Klammern: die Art `concerns` im Grundvokabular (`from = ["event"]`, `to = ["*"]`), ein Event am Anfang ist Quelle, `members` (die Menge einer Klammer, das Genauere ersetzt das Allgemeine); die Projektion `graph` (Migration `0006_graph`, `p_graph_version`, `p_graph_thread`), von Lesern beim Lesen nachgezogen und nur von `previously project` gebaut, ohne Rückfall auf das Falten des Logs (Fixrunde F2); `project --check`; `chronicle --within N` und MCP `previously(within=N)`, über MCP zählt eine Kante nur, wo der Client sie sieht; die Seiten und `handoffs/2026-10-15-kup6s-graph-phase-2.md` | `specs/2026-10-14-zuordnungen.md` (lebendig), Plan `plans/2026-10-15-zuordnungen-phase-2.md` | PR #26, `98375a7`, gemerged am 2026-10-15; veröffentlicht als `v0.1.0a8`; läuft seit dem 2026-10-19 in kup6s, alle sechs Prüfungen des Handoffs stehen (R8); die Antwort auf R8 ist PR #27 |
 
 Mit Stufe 1c ist Teilprojekt 1 gebaut und abgeschlossen, wie die Architektur
 es in §12.1 zuschneidet: Log, Projektionen, Blobs. Die Auslieferung und die
@@ -145,18 +145,32 @@ beide in der Fixwelle geschlossen. Die Messung bei 100 000 Beziehungen steht in
 Klammer über MCP, das Schreiben und `verify` tragen nicht (Punkte unten unter
 *Zuordnungen*).
 
+Seit dem 2026-10-19 läuft `0.1.0a8` in kup6s (R8): die Migration meldete
+`0005_watermark -> 0006_graph`, `previously project` lief vor dem neuen
+`previously-mcp` (`graph built: 131 events`), `concerns` ist im Vokabular,
+`project --check` endet mit 0, `chronicle --within` und `previously(within=N)`
+antworten, fünfzehn Werkzeuge. Der Migrationsjob ist ein Sync-Hook von ArgoCD,
+der `migrate` als Init-Container und `project` als Hauptcontainer fährt;
+`previously-mcp` läuft mit `Recreate`; `project --check` läuft täglich um
+03:45 UTC. Zwei Punkte der Rückmeldung schließt der Zweig
+`worktree-rueckmeldung-a8` (PR #27, unter *Erledigt*): ein älteres `project`
+baut eine neuere Projektion nicht mehr zurück, außer mit `--build-back`, so
+dass die Forderung entfällt, den geplanten `project` vor dem Hook umzustellen;
+und `within` über MCP nennt eine Klammer, die der Client nicht sehen darf,
+zurückgehalten, wie `list_entities` sie als Platzhalter zeigt. Der Handoff
+`handoffs/2026-10-19-kup6s-a8-answer.md` liegt bei.
+
 Nicht gebaut: die Suche, Kreise im Graphen
 und am Gate (Phase 3), Verpflichtungen im Schema (Phase 4), KI-Schicht, jeder
 Konnektor außer dem für IMAP.
 
 ## Was als Nächstes kommt
 
-Zuerst Phase 2 der Zuordnungen zu Ende bringen: die Endprüfung über den Zweig
-`worktree-zuordnungen-2` mit Messung auf einer festen Kopie (10 000 und 100 000
-Beziehungen) und ihre Fixwelle sind gelaufen; es folgen die Nachprüfung, der PR, das Release nach
-`v0.1.0a7`, der Handoff
-`handoffs/2026-10-15-kup6s-graph-phase-2.md` (erst nach grünem `manifest`) und
-die Abnahme von Phase 2 nach Z §17 Punkt 2. Danach der Pilot, wie unten.
+Zuerst die Antwort auf R8 (PR #27), das Release nach `v0.1.0a8` und der
+Handoff `handoffs/2026-10-19-kup6s-a8-answer.md` (erst nach grünem `manifest`).
+Phase 2 der Zuordnungen ist gemerged (PR #26) und läuft in kup6s (R8); die
+Abnahme von Phase 2 nach Z §17 Punkt 2 vermerkt diese Karte nicht als gelaufen.
+Danach der Pilot, wie unten.
 
 Der Pilot an einem echten Kunden, jetzt an erster Stelle. Die Reihenfolge
 hat der Betreuer am 2026-10-04 entschieden, nach dem Prüfpunkt und der kleinen
@@ -340,7 +354,9 @@ ebenso, **RA** seine Rückmeldung vom 2026-10-12 auf die Handoffs der
 Einstellungen und der Feststellungen
 (`handoffs/2026-10-12-kup6s-feedback-settings-and-assertions.md`), ebenso,
 **R6** seine Rückmeldung vom 2026-10-13 auf den Handoff von `0.1.0a6`
-(`handoffs/2026-10-13-kup6s-feedback-a6.md`), ebenso, **Z** der Spec der
+(`handoffs/2026-10-13-kup6s-feedback-a6.md`), ebenso, **R8** seine
+Rückmeldung vom 2026-10-19 auf den Handoff von Phase 2, mit `0.1.0a8`
+(`handoffs/2026-10-19-kup6s-feedback-a8.md`), ebenso, **Z** der Spec der
 Zuordnungen (`specs/2026-10-14-zuordnungen.md`) mit Abschnitt, **P-Z1** das
 Ausführungsprotokoll seiner Phase 1 (`sdd/2026-10-14-zuordnungen-phase-1/`)
 mit dem Ruling oder der Aufgabe, **P-Z2** das seiner Phase 2
@@ -560,7 +576,9 @@ das mit der Endprüfung ins Repository kommt):
   Platzhalter bleibt, solange der Faden besteht (P-Z1, Endprüfung). Seit dem
   Zweig `worktree-rueckmeldung-a7` bleibt der Platzhalter einer verborgenen,
   widerrufenen Entität unter jedem Filter stehen, mit Absicht (Option A des
-  Betreuers).
+  Betreuers). Seit PR #27 nennt `within` über MCP einen verborgenen Faden ohne
+  Gewinner zurückgehalten, wie `list_entities` mit `subject` und `history`
+  seinen Platzhalter zeigt; die Liste ohne `subject` lässt ihn weiter aus.
 - **Das Vokabular kann sich zwischen Vorschau und Schreiben von `vocabulary
   apply FILE` ändern.** `_cmd_vocabulary_apply` zeigt die Unterschiede aus
   einer Transaktion, `apply_vocabulary` rechnet sie unter dem Tip neu und
@@ -629,10 +647,6 @@ das mit der Endprüfung ins Repository kommt):
   occurred_at)`, die `p_chronicle` schon hat, ersetzte das zweite. Auf der
   Kommandozeile trägt `chronicle --within` (0,143 s), sie geht die Kanten ohne
   Policy ab (P-Z2, Aufgabe 5; Endprüfung, Messung).
-- **Zeitunterschied zwischen verborgener und fehlender Klammer.** Beide
-  antworten mit demselben Satz, aber eine verborgene Klammer geht erst durch die
-  Sichtbarkeitsprüfung; ein Client könnte den Unterschied messen. Die Probe ist
-  grob, gibt keinen Inhalt frei und ist von der Art, die die Schreibwerkzeuge schon hinnehmen (Aufgabe 5, Review ⚠️ 4).
 - **`relations --at` und `entities` nutzen die Projektion nur zur Hälfte.**
   Die Projektion gibt die Kennungen, aber jeder gelistete Faden wird aus dem Log
   gefaltet, weil die Leser zeigen, was im Log steht (Ruling T4-a der Phase 2).
@@ -1645,6 +1659,30 @@ auf `assertions.md` unter *What the pilot leaves open*.
   Nachtrag).
 
 ## Erledigt, seit es auf einer Liste stand
+
+- ~~Zeitunterschied zwischen verborgener und fehlender Klammer~~ (P-Z2,
+  Aufgabe 5, Review ⚠️ 4) — hinfällig mit PR #27: eine verborgene Klammer
+  antwortet nicht mehr mit dem Satz einer fehlenden, sondern sagt offen, dass
+  sie zurückgehalten ist, wie `list_entities` es mit dem Platzhalter sagt; eine
+  Zeitmessung verrät nichts mehr, was die Antwort nicht schon sagt.
+- ~~Ein geplanter `project` des alten Images baut die Projektion zurück~~ (R8,
+  *One requirement kup6s meets only in part*) — geschlossen im Zweig
+  `worktree-rueckmeldung-a8`, PR #27: `catch_up` mit `rebuild=True` weist eine
+  Projektion, deren Zustandszeile über der Version des Codes steht, mit
+  `ProjectionNewer` ab und lässt Tabellen und Zustandszeile stehen; nur
+  `previously project --build-back` baut zurück, wie ein Rollback es braucht,
+  und das Flag erzwingt sonst nichts. Für jede Projektion in `PROJECTIONS`,
+  gemessen rot mit der Abweisung herausgenommen. Die Forderung des Handoffs
+  vom 2026-10-15, den geplanten `project` vor dem Hook umzustellen oder
+  auszusetzen, entfällt (`handoffs/2026-10-19-kup6s-a8-answer.md`).
+- ~~`within` und `list_entities` sagen über eine verborgene Entität
+  Verschiedenes~~ (R8, *One thing a reader stumbles over*) — geschlossen im
+  Zweig `worktree-rueckmeldung-a8`, PR #27: `within` weist eine Klammer, die
+  `list_entities` als Platzhalter zeigt, als zurückgehalten ab, mit dem Grund
+  des Platzhalters, und liest nichts von ihr; `entity_presence` entscheidet für
+  beide Werkzeuge. Die Platzhalter von `list_entities` (PR #25) bleiben; eine
+  Tabelle über jeden Fall, den `list_entities` unterscheidet, hält die beiden
+  gegeneinander, gemessen rot mit dem alten Satz und mit gelesenen Mitgliedern.
 
 - ~~Eine fehlende Berechtigung meldet sich als unvollständiges Schema~~
   (P-Z2, Fixwelle der Endprüfung, beim Schreiben des Handoffs gefunden) —
