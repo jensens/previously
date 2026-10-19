@@ -53,6 +53,7 @@ from previously.core.decide import Decision
 from previously.core.graph import claim_changes
 from previously.core.graph import ENTITY
 from previously.core.graph import EntityBody
+from previously.core.graph import GraphThread
 from previously.core.graph import level_of
 from previously.core.graph import RECOLLECTION
 from previously.core.graph import RELATION
@@ -103,7 +104,6 @@ if TYPE_CHECKING:
     from previously.core.graph import Claim
     from previously.core.graph import ClassState
     from previously.core.graph import Graph
-    from previously.core.graph import GraphThread
     from previously.core.graph import GraphVersion
     from previously.core.members import Members
     from previously.core.policy import Client
@@ -1338,10 +1338,47 @@ def _state_listed(state: str, listing: EntityListing) -> bool:
     return state != RETRACTED or listing.proposals
 
 
+@dataclass(frozen=True)
+class Presence:
+    """An entity as one client may know of it: its thread, the policy's
+    verdict on it, and, where the verdict keeps it from the client, its
+    placeholder and access entry, whose reason is the sentence the client
+    is given."""
+
+    thread: GraphThread
+    verdict: ThreadVerdict
+    placeholder: tuple[WithheldMark, Withheld] | None
+
+
+def entity_presence(view: GraphView, subject: int, *, history: bool = False) -> Presence | None:
+    """Whether `subject` names an entity the client may know of, and whether
+    it is shown or withheld, for `list_entities` and for the bracket of
+    `previously` alike, so that the two tools cannot tell a client different
+    things about one id ({ref}`chronicle-of-a-bracket`).
+
+    `None` where no entity thread stands under the id: an unknown id, a
+    relation, an assertion of another kind, or an entity none of whose
+    versions wins; with `history`, an entity without a winner counts, as
+    `list_entities` shows its history, and the bracket asks with it, so
+    that it names withheld every entity that `list_entities` shows as a
+    placeholder under some call. Otherwise the policy decides, before
+    anything that looks at the content: a withheld entity has its
+    placeholder whatever its state, so that a retracted one is withheld in
+    the same words as one that stands."""
+    thread = view.graph.threads.get(subject)
+    if thread is None or thread.kind != ENTITY:
+        return None
+    if thread.winner(view.graph.classes) is None and not history:
+        return None
+    verdict = view.verdict(subject)
+    placeholder = None if verdict.blocked is None else view.withheld(subject, verdict)
+    return Presence(thread, verdict, placeholder)
+
+
 def _entity_entry(
     view: GraphView,
     vocabulary: Vocabulary,
-    thread: GraphThread,
+    presence: Presence,
     listing: EntityListing,
     language: str,
 ) -> Read | None:
@@ -1349,11 +1386,11 @@ def _entity_entry(
     filter drops it. The policy decides before every filter that looks at
     the content, so that a placeholder stands under every one of them alike,
     as an obligation's does."""
+    thread, verdict = presence.thread, presence.verdict
     subject = thread.subject
-    verdict = view.verdict(subject)
     rules = view.rules(verdict)
-    if verdict.blocked is not None:
-        mark, entry = view.withheld(subject, verdict)
+    if presence.placeholder is not None:
+        mark, entry = presence.placeholder
         return Read(mark, entry, rules, subject)
     classes = view.graph.classes
     winner = thread.winner(classes)
@@ -1411,14 +1448,11 @@ def entities[Conn](
         thread = graph.threads.get(subject)
         if thread is None and erased_assertion(log, conn, subject):
             return Seen((Read(ErasedMark(uri), Delivered(subject, (), ()), event=subject),))
-        if (
-            thread is None
-            or thread.kind != ENTITY
-            or (thread.winner(graph.classes) is None and not listing.history)
-        ):
+        presence = entity_presence(view, subject, history=listing.history)
+        if presence is None:
             missing = ErrorMark(uri, "no entity stands under this id")
             return Seen((Read(missing, None, event=subject),))
-        return Seen((cast("Read", _entity_entry(view, vocabulary, thread, listing, language)),))
+        return Seen((cast("Read", _entity_entry(view, vocabulary, presence, listing, language)),))
     standing = graph.winners(ENTITY)
     view = graph_view(log, conn, policy, client, graph, standing)
     reads: list[Read] = []
@@ -1426,7 +1460,10 @@ def entities[Conn](
     for subject in sorted(standing):
         if after is not None and subject <= after:
             continue
-        read = _entity_entry(view, vocabulary, graph.threads[subject], listing, language)
+        # Every id of `standing` names an entity with a winner, so its
+        # presence is never `None`.
+        presence = cast("Presence", entity_presence(view, subject))
+        read = _entity_entry(view, vocabulary, presence, listing, language)
         if read is None:
             continue
         if size > PAGE_CHARS:

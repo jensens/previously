@@ -270,7 +270,8 @@ The client can find less than the operator, and in that last case one more unit 
 An event left with no unit of the bracket isn't shown.
 The policy decides every event that `within` keeps as it does without `within`.
 When an event is cut at the end of a page, the note's `get_event` call serves every unit from the next one on, of the bracket or not.
-A bracket the client may not see is refused with the sentence of an id that names no entity, and so are an id of an event, a relation or a retracted entity, and an id below 1 or beyond 2^53 − 1.
+A bracket the client may not see is refused as withheld, with the reason its placeholder in `list_entities` gives, wherever `list_entities` shows a placeholder for the id, a retracted entity's or a rejected proposal's included, and nothing of the bracket is read.
+An id under which `list_entities` shows no entity, such as an id of an event or a relation, an erased entity, a retracted entity or a rejected proposal the client sees, and an id below 1 or beyond 2^53 − 1 are refused with the sentence of an id that names no entity that stands.
 A cursor carries the id of the last item the page consumed, the filters and the number of the page it opens, encoded as base64url without padding; it isn't sealed, and grants nothing, because every call decides again.
 A cursor carries `within` as text, such as `"12"`, and the access entry as the number the call gave.
 A cursor for other filters, a malformed one, or one whose id names no observation is refused.
@@ -757,6 +758,7 @@ Error: no circle nowhere exists; list_circles names the circles
 Error: since is not an ISO 8601 date, or a moment with a zone, such as 2026-09-01
 Error: since has no zone; give a date, or a moment such as 2026-09-01T09:00+02:00
 Error: within 12 is not an entity that stands
+Error: within 12 is withheld: circle team has no rule, so only local processing is allowed; this client (claude-code) processes with claude-max, which is not local
 Error: cursor is not valid for these filters; call again without a cursor for the first page
 Error: ids takes 1 to 20 event ids, this call gave 0
 Error: from_unit is a unit number, 1 or more

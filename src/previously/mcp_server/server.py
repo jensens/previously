@@ -153,6 +153,7 @@ from previously.mcp_server.read import chronicle
 from previously.mcp_server.read import circle_verdict
 from previously.mcp_server.read import claim_lines
 from previously.mcp_server.read import entities
+from previously.mcp_server.read import entity_presence
 from previously.mcp_server.read import EntityListing
 from previously.mcp_server.read import event_hidden
 from previously.mcp_server.read import event_uri
@@ -1164,18 +1165,26 @@ class Service[Conn]:
         """What belongs to `bracket` in the graph of the call, as the client
         finds it over the edges it may see (`seen_members`).
 
-        A bracket the client may not see is refused in the words of one
-        that doesn't exist: an empty page would tell the client that an
-        entity it may not see stands under the id
-        ({ref}`chronicle-of-a-bracket`). An id beyond what an event id can
-        be is refused alike, before the lookup would hand it to the
-        database."""
+        A bracket the client may not see is refused as withheld, with the
+        reason its placeholder in `list_entities` gives: that tool shows the
+        client the placeholder under the same id, so the refusal tells it
+        nothing it can't learn there, and `entity_presence` decides for
+        both ({ref}`chronicle-of-a-bracket`). The policy decides first, as
+        `list_entities` with `history` does, so an entity that is withheld
+        is refused in those words whether it stands, is retracted or has no
+        winner; its members are not read. An id under which `list_entities`
+        shows no entity, and an entity the client sees that doesn't stand,
+        are refused as not standing; an id beyond what an event id can be is
+        refused alike, before the lookup would hand it to the database."""
         graph = self.graph_now()
-        if (
-            not 1 <= bracket <= MAX_SAFE_INT
-            or bracket not in EntityTypes(graph)
-            or not graph_view(self.log, conn, policy, client, graph, (bracket,)).seen(bracket)
-        ):
+        presence = None
+        if 1 <= bracket <= MAX_SAFE_INT:
+            view = graph_view(self.log, conn, policy, client, graph, (bracket,))
+            presence = entity_presence(view, bracket, history=True)
+        if presence is not None and presence.placeholder is not None:
+            mark, _entry = presence.placeholder
+            raise Refused(f"within {bracket} is withheld: {mark.reason}")
+        if presence is None or bracket not in EntityTypes(graph):
             raise Refused(f"within {bracket} is not an entity that stands")
         return seen_members(self.log, conn, policy, client, graph, bracket)
 

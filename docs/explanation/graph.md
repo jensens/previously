@@ -250,7 +250,10 @@ Finding mustn't tell a client what the rest of the server keeps from it, either,
 So over MCP an edge counts only where the client sees it, by the same rule that decides whether a relation appears on an entity's page or in the triage.
 An assignment starts at its mail, and the mail is among its sources, so a client that may not see a mail doesn't see its assignments: under `within` the mail isn't there at all, not even as a placeholder, while the whole chronicle shows its placeholder as before.
 A part or a `part_of` that the client may not see stops the walk, so a mail that belongs to the bracket only through it isn't found.
-A bracket that the client may not see is refused with the sentence of one that doesn't exist, since an empty page would tell the client that an entity stands under the id.
+A bracket that the client may not see is refused as withheld, with the reason of its placeholder in `list_entities`, since a page, even an empty one, would tell the client what belongs to an entity it may not see.
+Until the answer to the kup6s feedback on `v0.1.0a8`, the refusal used the sentence of an id that names no entity, while `list_entities` showed a placeholder under the same id, so the two tools disagreed about whether the client may know that the entity exists.
+`list_entities` shows the placeholder under every filter alike, so that a client learns neither the state nor the kind of what it may not see, and that decision stands; `within` now follows it, and one function decides for both whether an id names an entity that's shown, withheld or absent.
+The policy decides before anything that looks at the content, so a withheld entity is refused in the same words whether it stands, is retracted or lost its proposal, and none of its members is read.
 
 The command line is the operator's tool and walks every edge, so a client can find less than the operator.
 In one case it finds one unit more.
