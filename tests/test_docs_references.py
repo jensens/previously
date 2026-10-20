@@ -2028,7 +2028,7 @@ def test_the_reference_quotes_what_a_reader_of_the_graph_says_when_it_cannot_rea
     from previously.core.graph_read import REBUILD_RETRIES
 
     page = (DOCS / "reference" / "cli.md").read_text(encoding="utf-8")
-    quoted = _quoted_block(page, "they exit 2 with one sentence on standard error")
+    quoted = _quoted_block(page, "they exit 4 with one sentence on standard error")
     assert quoted == [
         f"Error: {ProjectionNotBuilt('graph', None, 1)}",
         f"Error: {ProjectionNotBuilt('graph', 2, 1)}",

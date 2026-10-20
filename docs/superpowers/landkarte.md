@@ -163,14 +163,24 @@ und `within` über MCP nennt eine Klammer, die der Client nicht sehen darf,
 zurückgehalten, wie `list_entities` sie als Platzhalter zeigt. Der Handoff
 `handoffs/2026-10-19-kup6s-a8-answer.md` liegt bei.
 
+Seit dem 2026-10-20 läuft `0.1.0a9` in kup6s (R9): alle fünf Prüfungen des
+Handoffs stehen. Die Rückmeldung nennt zwei Kleinigkeiten, die der Zweig
+`worktree-rueckmeldung-a9` (PR #28, unter *Erledigt*) schließt: ein
+Exit-Code 4 für eine Projektion, die in dieser Version nicht gebaut ist
+(`ProjectionNotBuilt`), damit ein Planer die Wiederholungen auslassen kann,
+und `previously --version`. Der dritte Punkt, Ollama von `0.13.2` auf
+`0.40.5`, ist keine Forderung, sondern eine Messung, die noch aussteht
+(Punkt unter *Gate und Policy*). Der Handoff
+`handoffs/2026-10-20-kup6s-a9-answer.md` liegt bei.
+
 Nicht gebaut: die Suche, Kreise im Graphen
 und am Gate (Phase 3), Verpflichtungen im Schema (Phase 4), KI-Schicht, jeder
 Konnektor außer dem für IMAP.
 
 ## Was als Nächstes kommt
 
-Zuerst die Antwort auf R8 (PR #27), das Release nach `v0.1.0a8` und der
-Handoff `handoffs/2026-10-19-kup6s-a8-answer.md` (erst nach grünem `manifest`).
+Zuerst die Antwort auf R9 (PR #28), das Release nach `v0.1.0a9` und der
+Handoff `handoffs/2026-10-20-kup6s-a9-answer.md` (erst nach grünem `manifest`).
 Phase 2 der Zuordnungen ist gemerged (PR #26) und läuft in kup6s (R8); die
 Abnahme von Phase 2 nach Z §17 Punkt 2 vermerkt diese Karte nicht als gelaufen.
 Danach der Pilot, wie unten.
@@ -359,7 +369,9 @@ Einstellungen und der Feststellungen
 **R6** seine Rückmeldung vom 2026-10-13 auf den Handoff von `0.1.0a6`
 (`handoffs/2026-10-13-kup6s-feedback-a6.md`), ebenso, **R8** seine
 Rückmeldung vom 2026-10-19 auf den Handoff von Phase 2, mit `0.1.0a8`
-(`handoffs/2026-10-19-kup6s-feedback-a8.md`), ebenso, **Z** der Spec der
+(`handoffs/2026-10-19-kup6s-feedback-a8.md`), ebenso, **R9** seine
+Rückmeldung vom 2026-10-20 auf den Handoff von `0.1.0a8`, mit `0.1.0a9`
+(`handoffs/2026-10-20-kup6s-feedback-a9.md`), ebenso, **Z** der Spec der
 Zuordnungen (`specs/2026-10-14-zuordnungen.md`) mit Abschnitt, **P-Z1** das
 Ausführungsprotokoll seiner Phase 1 (`sdd/2026-10-14-zuordnungen-phase-1/`)
 mit dem Ruling oder der Aufgabe, **P-Z2** das seiner Phase 2
@@ -1114,6 +1126,14 @@ was die Ausführung offen ließ (P-PG).
   Neuversuch von `append_action` gibt es keinen eigenen Test, er ist über
   `redact` abgedeckt.
 
+- Der lokale Pfad des Gates ist gegen Ollama `0.40.5` nicht gemessen (R9, *For
+  your information: Ollama moved on*): kup6s hat Renovate von `0.13.2`
+  darauf gehoben, `qwen3:4b` antwortet auf `/v1/models` und
+  `/v1/chat/completions`. Kein Verhalten von `0.13.2` ist als wesentlich
+  bekannt; statt zu pinnen, bittet der Handoff um einen Lauf von `previously
+  gate try` gegen ein Ereignis und den Exit-Code. Geschlossen, wo der Lauf
+  gemeldet ist.
+
 ### MCP-Lesezugang (Pilot, Einheit 4)
 
 Die Punkte aus MK §10 und ML §13, soweit sie nicht zu einer anderen Einheit
@@ -1579,6 +1599,11 @@ auf `assertions.md` unter *What the pilot leaves open*.
   gemessen: die Seite trägt eine Kennung aus einem Hexadezimal-Digest, etwa die
   erzeugte Kennung der gefälschten Mail ohne Message-ID. Mit der Saat
   nachstellen, bevor etwas geändert wird.
+  Drittes Auftreten am 2026-10-20, wieder `[legacy]`, Saat `3162145117`, beim
+  Abtippen des Testlaufs auf dem Zweig der Antwort auf a9; einzeln dreimal
+  grün. Drei Mal in einer Woche ist kein Rand mehr: als Nächstes mit den
+  Saaten `167703447` und `3162145117` nachstellen und die Zahl festhalten, die
+  `_text` beanstandet.
 - Drei geparkte Testlöcher am Doku-Tor (1b §10 Punkt 5).
 - Die Reihenfolge der zwei `stderr`-Hinweise in `cli.md` hält nichts
   mechanisch; `_message_patterns` nimmt auch die `_describe`-Literale auf
@@ -1677,6 +1702,21 @@ auf `assertions.md` unter *What the pilot leaves open*.
   Nachtrag).
 
 ## Erledigt, seit es auf einer Liste stand
+
+- ~~Ein Exit-Code für „diese Projektion ist hier nicht gebaut“~~ (R9, *Two small
+  things*, erste) — geschlossen im Zweig `worktree-rueckmeldung-a9`, PR #28:
+  `ProjectionNotBuilt` endet mit 4 statt 2, an der einen Stelle, an der `main`
+  Fehler auf Codes abbildet, und damit in jedem Befehl, der darauf stoßen
+  kann (`project` ohne `--build`, die Leser des Graphen, `mcp` und `serve`
+  beim Start); eine unfertige Tilgung endet mit 4, wo eine nicht gebaute
+  Projektion zu dem gehört, was aussteht. `ProjectionRebuilt` und
+  `ProjectionGap` bleiben bei 2: nach einem Umbau unter dem Nachzug kann ein
+  neuer Lauf lesen, und eine Lücke im Log repariert kein Bauen. Ein
+  Planer darf die Wiederholungen bei 4 auslassen; ein älteres Image endet
+  weiter mit 2.
+- ~~`previously --version`~~ (R9, *Two small things*, zweite) — geschlossen in
+  PR #28: gibt `previously <Version>` der installierten Distribution aus und
+  endet mit 0.
 
 - ~~Zeitunterschied zwischen verborgener und fehlender Klammer~~ (P-Z2,
   Aufgabe 5, Review ⚠️ 4) — hinfällig mit PR #27: eine verborgene Klammer

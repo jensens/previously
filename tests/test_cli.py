@@ -1487,7 +1487,7 @@ def test_a_plain_project_builds_in_no_direction_and_project_build_does(
     before = _projection_rows(db)
     capsys.readouterr()
 
-    assert main(["project"]) == 2
+    assert main(["project"]) == 4
     out, err = capsys.readouterr()
     order = [projection.name for projection in PROJECTIONS]
     assert [line.split()[0] for line in out.splitlines()] == order[: order.index(name)]
@@ -2634,7 +2634,7 @@ def test_redact_does_not_rebuild_and_names_project_as_what_finishes_it(
     before = _chronicle_rows(engine)
     capsys.readouterr()
 
-    assert _refused(capsys, "redact", "event", "1", "--reason", "r") == (
+    assert _refused(capsys, "redact", "event", "1", "--reason", "r", code=4) == (
         "the redaction is recorded as event 2, but it is not finished: "
         f"projection chronicle {found}, and this code declares version 3; {then}"
     )
@@ -3655,6 +3655,52 @@ def test_a_delete_and_a_catch_up_that_both_fail_are_named_in_one_sentence(
         "read [3, 4]; the tip is 4); run the same command again"
     )
     assert blobs.secret not in err
+
+
+@pytest.mark.db
+@pytest.mark.s3
+def test_a_failed_delete_beside_an_unbuilt_projection_exits_4(
+    blobs: _Blobs,
+    tmp_path: pathlib.Path,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    s3_settings: dict[str, str],
+) -> None:
+    """The store does not answer and the chronicle has no state row: the
+    one sentence names both, and the exit code is 4, because running the
+    command again stops at the projection until `project --build` has run,
+    whatever the store does. The control: once the store answers and the
+    projection is built, the same command finishes with 0. Measured red
+    with the code 2 whenever a deletion is outstanding: exit 2."""
+    from sqlalchemy import text
+
+    content = b"the attachment to erase"
+    address = hashlib.sha256(content).hexdigest()
+    assert main(_attach("a", _file(tmp_path, "a.txt", content))) == 0
+    assert main(["project", "--build"]) == 0
+    with blobs.engine.begin() as c:
+        c.execute(text("DELETE FROM projection_state WHERE name = 'chronicle'"))
+    capsys.readouterr()
+
+    good_endpoint = s3_settings["endpoint"]
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", "http://127.0.0.1:1")
+    assert main(["redact", "event", "1", "--reason", "r"]) == 4
+    out, err = capsys.readouterr()
+    assert out == ""
+    line = _single_line(err)
+    assert line.startswith(
+        "Error: the redaction is recorded as event 2, but it is not finished: "
+        f"blob {address} is not deleted from the store ("
+    )
+    assert line.endswith(
+        "), and projection chronicle is not built, and this code declares version 3; "
+        "run `previously project --build`, then the same command again"
+    )
+
+    monkeypatch.setenv("PREVIOUSLY_BLOB_ENDPOINT", good_endpoint)
+    assert main(["project", "--build"]) == 0
+    capsys.readouterr()
+    assert main(["redact", "event", "1", "--reason", "r"]) == 0
 
 
 @pytest.mark.db
@@ -5170,7 +5216,7 @@ def test_mcp_and_serve_refuse_to_start_before_project_built_the_graph(
         "`previously project --build` builds it\n"
     )
     for command in ("mcp", "serve"):
-        assert main([command]) == 2
+        assert main([command]) == 4
         assert capsys.readouterr() == ("", sentence)
 
 
@@ -6655,9 +6701,10 @@ def _written(capsys: pytest.CaptureFixture[str], *argv: str) -> int:
     return int(last[1])
 
 
-def _refused(capsys: pytest.CaptureFixture[str], *argv: str) -> str:
-    """The sentence after `Error: ` of a command that exits 2."""
-    assert main(list(argv)) == 2
+def _refused(capsys: pytest.CaptureFixture[str], *argv: str, code: int = 2) -> str:
+    """The sentence after `Error: ` of a command that exits `code`, 2 unless
+    the caller says otherwise."""
+    assert main(list(argv)) == code
     captured = capsys.readouterr()
     assert captured.err.startswith("Error: "), captured.err
     return captured.err.removeprefix("Error: ").rstrip("\n")
@@ -8124,7 +8171,7 @@ def test_a_listing_meeting_a_projection_it_would_have_to_build_fails_and_touches
         c.execute(text(change))
     before = _graph_rows(db)
     for command in (["entities"], ["triage"], ["status"]):
-        sentence = _refused(capsys, *command)
+        sentence = _refused(capsys, *command, code=4)
         assert sentence.startswith(f"projection graph {found}, and this code declares version ")
         assert "`previously project --build`" in sentence
         assert _graph_rows(db) == before
@@ -8132,6 +8179,98 @@ def test_a_listing_meeting_a_projection_it_would_have_to_build_fails_and_touches
     # read.
     _run(capsys, "project", "--build")
     assert _expected_listings(capsys) == expected
+
+
+@pytest.mark.db
+@pytest.mark.parametrize(
+    "command",
+    [
+        ["entities"],
+        ["relations"],
+        ["entity", "13"],
+        ["triage"],
+        ["status"],
+        ["classes", "list"],
+        ["chronicle", "--within", "13"],
+    ],
+    ids=lambda command: " ".join(command),
+)
+@pytest.mark.parametrize(
+    "change",
+    [
+        "DELETE FROM projection_state WHERE name = 'graph'",
+        "UPDATE projection_state SET version = 7 WHERE name = 'graph'",
+    ],
+    ids=["no-state-row", "other-version"],
+)
+def test_every_reader_of_the_graph_exits_4_where_the_projection_is_not_built(
+    db: object,
+    capsys: pytest.CaptureFixture[str],
+    monkeypatch: pytest.MonkeyPatch,
+    command: list[str],
+    change: str,
+) -> None:
+    """A projection that is not built at this code's version exits 4 on
+    every command that reads the graph, so that a scheduler can tell it from
+    a failure that running again may cure. The controls: the same command
+    runs once the projection is built, and a database that is not reachable
+    still exits 2. Measured red with `_exit_code` returning 2 for
+    `ProjectionNotBuilt`: every case exits 2."""
+    from sqlalchemy import Engine
+    from sqlalchemy import text
+
+    storage = _graph_log(db, monkeypatch, capsys)
+    _listed_history(storage, capsys)
+    _run(capsys, "project", "--build")
+    assert isinstance(db, Engine)
+    with db.begin() as c:
+        c.execute(text(change))
+    sentence = _refused(capsys, *command, code=4)
+    assert sentence.startswith("projection graph ")
+    _run(capsys, "project", "--build")
+    assert main(command) == 0, capsys.readouterr().err
+    capsys.readouterr()
+    monkeypatch.setenv("PREVIOUSLY_DSN", "not-a-dsn")
+    _refused(capsys, *command)
+
+
+@pytest.mark.db
+def test_project_exits_2_where_a_catch_up_meets_a_gap_or_a_rebuild(
+    db: object, capsys: pytest.CaptureFixture[str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """`ProjectionRebuilt` and `ProjectionGap` keep exit code 2: the first
+    means that a rebuild landed under the catch-up, so the next run may find
+    the projection built, and a gap in the log is a fault that no build
+    repairs. The control of the test above: `ProjectionNotBuilt` is the only
+    one of the three that exits 4. Measured red with `_exit_code` returning
+    4 for every error of a projection: both exit 4."""
+    from previously.core.errors import ProjectionGap
+    from previously.core.errors import ProjectionRebuilt
+
+    _setup(db, monkeypatch)
+
+    def refusing(error: Exception) -> Callable[..., object]:
+        def catch_up(*args: object, **kwargs: object) -> object:
+            raise error
+
+        return catch_up
+
+    for error in (ProjectionRebuilt("rebuilt under a catch-up"), ProjectionGap("a gap")):
+        monkeypatch.setattr("previously.cli.catch_up", refusing(error))
+        assert main(["project"]) == 2
+        assert capsys.readouterr().err == f"Error: {error}\n"
+
+
+def test_version_prints_the_distribution_and_exits_0(capsys: pytest.CaptureFixture[str]) -> None:
+    """`previously --version` prints `previously <version>` with the version
+    of the installed distribution, and exits 0 without a database. Measured
+    red by naming another string in the argument."""
+    from importlib.metadata import version
+
+    with pytest.raises(SystemExit) as stopped:
+        main(["--version"])
+    assert stopped.value.code == 0
+    assert capsys.readouterr() == (f"previously {version('previously')}\n", "")
 
 
 @pytest.mark.db

@@ -85,7 +85,7 @@ docker run --rm --network previously-blobs -e PREVIOUSLY_DSN \
 ```
 
 It's the only command that builds a projection; a scheduled `project` without `--build` only catches up.
-Until it has run, the listings of the graph exit 2 with a sentence that names `previously project --build`, `mcp` and `serve` refuse to start, and `redact` leaves its redaction unfinished; see {ref}`rebuild-a-projection`.
+Until it has run, the listings of the graph exit 4 with a sentence that names `previously project --build`, `mcp` and `serve` refuse to start, and `redact` leaves its redaction unfinished; see {ref}`rebuild-a-projection`.
 Images up to `0.1.0a8` don't know `--build`; with one of those, run `project` without it, which builds in either direction.
 
 ## Run a command
