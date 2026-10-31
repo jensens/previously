@@ -6,7 +6,7 @@
 # version of the release, from PyPI, without resolving anything again. The
 # image thus holds the package that is on PyPI and the versions the gates ran
 # against ({ref}`delivery`).
-FROM ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:8e88a074b0969bdc461f681727238e109438d70771828909f9ef19cfcc96c43a
+FROM ghcr.io/astral-sh/uv:python3.14-trixie-slim@sha256:637619278855a77885a94312efa7decd8479ca6cec5f959e134cbab96582821e
 
 ARG PREVIOUSLY_VERSION
 
